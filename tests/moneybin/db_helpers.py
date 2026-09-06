@@ -12,6 +12,11 @@ import duckdb
 
 from moneybin.database import SQLMESH_ROOT, Database
 
+_MODEL_FRESHNESS_DDL = (
+    "meta.model_freshness (model_name VARCHAR, last_changed_at TIMESTAMP, "
+    "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, model_kind VARCHAR)"
+)
+
 
 def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     """Stamp every model as executed at ``when``, read as UTC.
@@ -30,15 +35,29 @@ def record_sqlmesh_apply(db: Database, when: datetime) -> None:
     describe the same instants on any machine.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS meta")
-    db.execute(
-        "CREATE OR REPLACE TABLE meta.model_freshness "
-        "(model_name VARCHAR, last_changed_at TIMESTAMP, "
-        "last_applied_at TIMESTAMP, last_executed_at TIMESTAMP, "
-        "model_kind VARCHAR)"
-    )
+    db.execute(f"CREATE OR REPLACE TABLE {_MODEL_FRESHNESS_DDL}")
     db.execute(
         "INSERT INTO meta.model_freshness VALUES ('core.dim_accounts', ?, ?, ?, 'FULL')",
         [when, when, when],
+    )
+
+
+def record_model_execution(
+    db: Database, model_name: str, when: datetime, *, model_kind: str = "FULL"
+) -> None:
+    """Stamp one model's last successful backfill, leaving its siblings alone.
+
+    ``record_sqlmesh_apply`` answers "the whole warehouse was refreshed"; this
+    answers "this one model was rebuilt at this instant", which is what a
+    per-report staleness check reads. ``when`` is naive UTC, as
+    ``meta.model_freshness`` stores it.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS meta")
+    db.execute(f"CREATE TABLE IF NOT EXISTS {_MODEL_FRESHNESS_DDL}")
+    db.execute("DELETE FROM meta.model_freshness WHERE model_name = ?", [model_name])
+    db.execute(
+        "INSERT INTO meta.model_freshness VALUES (?, ?, ?, ?, ?)",
+        [model_name, when, when, when, model_kind],
     )
 
 
@@ -582,3 +601,39 @@ def install_uncategorized_queue_view(db: Database) -> None:
     end = raw.index(");", start) + 2
     body = raw[end:].strip()
     db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+
+
+def seed_pending_dedup_pair(db: Database) -> None:
+    """Two same-amount rows from different sources, proposed as duplicates, undecided.
+
+    The shape issue #409 reported: dedup escalated the pair instead of merging
+    it, so both rows stay in ``core.fct_transactions`` and every total covering
+    them counts the payment twice. Needs the core tables already created.
+    """
+    from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415  # keep the repo off this helper module's import path
+        MatchDecisionsRepo,
+    )
+
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('dup_ofx', 'acct_11112222', -25.00),
+               ('dup_csv', 'acct_11112222', -25.00)
+        """
+    )
+    MatchDecisionsRepo(db).insert(
+        match_id="match00000001",
+        source_transaction_id_a="ofx-1",
+        source_type_a="ofx",
+        source_origin_a="test-bank",
+        source_transaction_id_b="csv-1",
+        source_type_b="tabular",
+        source_origin_b="test-export",
+        account_id="acct_11112222",
+        confidence_score=0.58,
+        match_signals={"date_distance": 0},
+        match_status="pending",
+        match_tier="3",
+        decided_by="auto",
+        actor="test",
+    )
