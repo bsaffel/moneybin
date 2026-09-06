@@ -81,29 +81,11 @@ class CategorizationRuleStateResult:
 
 
 @dataclass(frozen=True, slots=True)
-class CategorizationRuleConflictSummary:
-    """One target refused because an active rule owns the same matcher."""
-
-    conflict_id: Annotated[str, DataClass.RECORD_ID]
-    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
-    existing_category: Annotated[str, DataClass.CATEGORY]
-    existing_subcategory: Annotated[str | None, DataClass.CATEGORY]
-    proposed_category: Annotated[str, DataClass.CATEGORY]
-    proposed_subcategory: Annotated[str | None, DataClass.CATEGORY]
-    reason: Annotated[str, DataClass.CATEGORY]
-
-
-@dataclass(frozen=True, slots=True)
 class CategorizationRulesSetPayload:
-    """Result of atomically declaring one or more rule target states.
-
-    ``conflicts`` is non-empty only on a ``status="conflict"`` envelope, where
-    ``results`` is empty because nothing was written.
-    """
+    """Result of atomically declaring one or more rule target states."""
 
     results: list[CategorizationRuleStateResult]
     operation_id: Annotated[str, DataClass.RECORD_ID]
-    conflicts: list[CategorizationRuleConflictSummary] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)

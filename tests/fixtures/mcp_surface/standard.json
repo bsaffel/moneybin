@@ -1,5 +1,5 @@
 {
-  "sha256": "863e8c1f726da62e4e322764e3bf1b2c90325fed670232b391b2aafba981de31",
+  "sha256": "9634d793a1530a6913d18b7df42862c70df455cdb9259a0283f4cc8920a11df2",
   "tool_count": 50,
   "tools": [
     {
@@ -4806,7 +4806,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category refuses the whole batch: status='conflict', nothing written, and data.conflicts names each one for reviews(kind='rule_conflicts').",
+        "description": "Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category fails the whole batch with taxonomy_rule_conflict: nothing is written, and error.details.conflict_ids names each refusal for reviews(kind='rule_conflicts').",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -5121,12 +5121,12 @@
         },
         "name": "transactions_categorize_rules_set"
       },
-      "description_bytes": 612,
+      "description_bytes": 638,
       "input_schema_bytes": 2428,
       "name": "transactions_categorize_rules_set",
       "other_bytes": 87,
       "output_schema_bytes": 0,
-      "total_bytes": 3263
+      "total_bytes": 3289
     },
     {
       "annotation_bytes": 90,
@@ -5229,5 +5229,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 61907
+  "total_bytes": 61933
 }

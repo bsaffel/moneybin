@@ -294,8 +294,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   disagreed about the category, priority and creation order silently picked a
   winner while creation still reported success — sameness is now decided once by
   a canonical matcher key shared by every activation path, and a same-matcher
-  proposal assigning a different category activates nothing and returns the new
-  `status="conflict"` envelope instead. The proposal is recorded in the new
+  proposal assigning a different category activates nothing and fails with
+  `taxonomy_rule_conflict` instead. The proposal is recorded in the new
   `app.rule_conflicts` table and resolved explicitly — `replace`,
   `reprioritize`, or `cancel` — through `reviews`/`reviews_decide` or
   `moneybin transactions categorize rules list-conflicts`/`resolve`. Amount

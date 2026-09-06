@@ -197,33 +197,40 @@ class TestResponseEnvelope:
         assert d["error"]["code"] == error_codes.INFRA_DATABASE_LOCKED
 
     @pytest.mark.unit
-    def test_conflict_is_a_successful_outcome(self) -> None:
-        """An operation that ran and deliberately changed nothing is not an error."""
-        envelope = build_envelope(data={"conflicts": 1}, conflict=True)
-        assert envelope.status == "conflict"
-        assert envelope.error is None
-        assert envelope.to_dict()["status"] == "conflict"
+    def test_status_has_only_two_values(self) -> None:
+        """No caller may declare a third outcome; `error` alone decides."""
+        from typing import get_args, get_type_hints
+
+        assert set(get_args(get_type_hints(ResponseEnvelope)["status"])) == {
+            "ok",
+            "error",
+        }
 
     @pytest.mark.unit
-    def test_error_outranks_a_declared_conflict(self) -> None:
-        from moneybin.errors import ErrorDetail
-
-        envelope = build_envelope(data={"conflicts": 1}, conflict=True).with_error(
-            ErrorDetail(message="DB locked", code=error_codes.INFRA_DATABASE_LOCKED)
+    def test_a_declared_status_never_survives_construction(self) -> None:
+        """`status` is derived, so passing one cannot desync it from `error`."""
+        envelope = ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0),
+            data={"conflicts": 1},
+            status="error",
         )
-        assert envelope.status == "error"
+        assert envelope.status == "ok"
+        assert envelope.error is None
+        assert envelope.to_dict()["status"] == "ok"
 
     @pytest.mark.unit
     def test_build_envelope_defaults_to_ok(self) -> None:
         assert build_envelope(data={"n": 1}).status == "ok"
 
     @pytest.mark.unit
-    def test_rules_set_counts_results_not_its_conflict_diagnostics(self) -> None:
-        """`conflicts` reports what could NOT be written, not a second row set.
+    def test_rules_set_counts_every_declared_target_state(self) -> None:
+        """`results` is the payload's only list, so it is the returned set.
 
-        Both fields are lists, so without an auxiliary declaration the generic
-        counter sees two collections, declines to pick one, and reports
-        `returned_count=1` for a batch that declared N target states.
+        Not an auxiliary-field test: this payload used to carry a second
+        `conflicts` list, and the counter reported `returned_count=1` for a
+        batch that declared N target states until that list was declared
+        auxiliary. The refusal is an error now and the list is gone, so what
+        survives here is the count contract itself.
         """
         from moneybin.privacy.payloads.categorize import (
             CategorizationRulesSetPayload,

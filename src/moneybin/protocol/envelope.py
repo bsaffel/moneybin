@@ -227,9 +227,8 @@ class ResponseEnvelope[T]:
     error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
-    # Derived in __post_init__ — see the method's docstring for the one value a
-    # caller may declare.
-    status: Literal["ok", "conflict", "error"] = "ok"
+    # Derived in __post_init__ from `error`; never set by a caller.
+    status: Literal["ok", "error"] = "ok"
     # Internal observability only: per-call DataClass names for dynamic-SQL
     # tools, read by the @mcp_tool decorator to log accurate classes_returned.
     # NOT part of the wire contract — `to_dict()` omits it, and `to_dict()` is
@@ -242,19 +241,8 @@ class ResponseEnvelope[T]:
         `status` is a real field rather than a `to_dict()` computation so that
         every consumer of the envelope — the wire, direct dataclass readers,
         and tests — sees one value from one source.
-
-        `"conflict"` is the one value a caller may declare: an operation that
-        ran to completion and deliberately changed nothing because live state
-        disagrees with the request, and the response carries what disagreed.
-        That is not a failure — `error` stays null, `data` is the conflict —
-        so it cannot be spelled as an `ErrorDetail`. `error` still wins:
-        anything genuinely broken reads as `"error"`, and every other supplied
-        value normalizes to `"ok"`.
         """
-        if self.error is not None:
-            self.status = "error"
-        elif self.status != "conflict":
-            self.status = "ok"
+        self.status = "error" if self.error is not None else "ok"
 
     def with_error(self, error: ErrorDetail) -> ResponseEnvelope[T]:
         """Return a copy carrying `error`, with `status` re-derived.
@@ -325,7 +313,6 @@ def build_envelope(
     recovery_actions: list[RecoveryAction] | None = None,
     classes_returned: list[str] | None = None,
     applied_rates: list[dict[str, Any]] | None = None,
-    conflict: bool = False,
 ) -> ResponseEnvelope[Any]:
     """Build a ResponseEnvelope with computed metadata.
 
@@ -378,10 +365,6 @@ def build_envelope(
             for dynamic-SQL tools that self-classify per call (``dynamic_classification``
             mode). Read by the ``@mcp_tool`` decorator for privacy audit logging.
             NOT serialized to the wire: ``to_dict()`` never emits this field.
-        conflict: The operation completed and deliberately changed nothing
-            because live state disagrees with the request; ``data`` carries
-            what disagreed. Sets ``status="conflict"``. Not a failure — pass
-            an ``ErrorDetail`` for that instead.
 
     Returns:
         A fully populated ResponseEnvelope.
@@ -440,7 +423,6 @@ def build_envelope(
         next_cursor=next_cursor,
         recovery_actions=recovery_actions,
         classes_returned=classes_returned,
-        status="conflict" if conflict else "ok",
     )
 
 
@@ -483,14 +465,10 @@ AUXILIARY_LIST_FIELDS = frozenset({
     # payload; without it the heuristic saw two lists and reported
     # `returned_count=1` for a pull covering N institutions.
     "investment_source_overlap_accounts",
-    # The rule-conflict diagnostics on `CategorizationRulesSetPayload`
-    # (`conflicts`) and `RulesCreatePayload` (`conflict_ids`,
-    # `conflict_details`). Same rationale as `error_details` above: they name
-    # the targets that were REFUSED, beside each payload's actual written set
-    # (`results`, `rule_ids`). Without them a 5-target `rules_set` saw two
-    # lists and reported `returned_count=1`, and a 3-rule `rules_create` saw
-    # three and reported the same.
-    "conflicts",
+    # The rule-conflict diagnostics on `RulesCreatePayload`. Same rationale as
+    # `error_details` above: they name the rules that were REFUSED, beside the
+    # payload's actual written set (`rule_ids`). Without them a 3-rule
+    # `rules_create` saw three lists and reported `returned_count=1`.
     "conflict_ids",
     "conflict_details",
 })

@@ -17,6 +17,7 @@ from fastmcp import FastMCP
 
 from moneybin import error_codes
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp.tools.categories import (
     categories,
     categories_set,
@@ -599,6 +600,37 @@ class TestCategorizationRulesTargetState:
             ).fetchone() == (0,)
 
     @pytest.mark.unit
+    async def test_conflicting_target_fails_and_queues_the_refusal(
+        self, mcp_db: Path
+    ) -> None:
+        """The refusal is an error, and the queued row must survive it."""
+        await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present", category="Food")]
+        )
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present", category="Travel")]
+        )
+
+        error = response.to_dict()["error"]
+        assert error["code"] == error_codes.TAXONOMY_RULE_CONFLICT
+        with get_database(read_only=True) as db:
+            conflict_ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT conflict_id FROM app.rule_conflicts"
+                ).fetchall()
+            ]
+        assert error["details"]["conflict_ids"] == conflict_ids
+        assert len(conflict_ids) == 1
+        assert [
+            action["tool"] for action in response.to_dict()["recovery_actions"]
+        ] == [
+            "reviews",
+            "reviews_decide",
+        ]
+
+    @pytest.mark.unit
     async def test_unsafe_short_contains_target_is_rejected(self, mcp_db: Path) -> None:
         response = await transactions_categorize_rules_set_coarse(
             rules=[_rule_target(state="present", value="TO")]
@@ -893,7 +925,7 @@ class TestRuleConflictPayloadPrivacy:
     def test_rules_create_reports_conflicts_without_claiming_nothing_changed(
         self,
     ) -> None:
-        """A batch that created a row is not a `status='conflict'` envelope."""
+        """A batch that created a row really wrote, so it is not a failure."""
         result = RuleCreationResult(
             created=1,
             existing=0,
@@ -932,7 +964,7 @@ class TestRuleConflictPayloadPrivacy:
         assert envelope.status == "ok"
 
     @pytest.mark.unit
-    def test_rules_create_that_wrote_nothing_is_a_conflict(self) -> None:
+    def test_rules_create_that_wrote_nothing_raises_a_conflict(self) -> None:
         result = RuleCreationResult(
             created=0,
             existing=0,
@@ -960,12 +992,18 @@ class TestRuleConflictPayloadPrivacy:
         ):
             mock_get_db.return_value.__enter__.return_value = MagicMock()
             mock_svc_cls.return_value.create_rules.return_value = result
-            envelope = transactions_categorize_rules_create([
-                {
-                    "name": "Transfer TO",
-                    "merchant_pattern": "TRANSFER",
-                    "category": "Transfer",
-                }
-            ])
+            with pytest.raises(UserError) as excinfo:
+                transactions_categorize_rules_create([
+                    {
+                        "name": "Transfer TO",
+                        "merchant_pattern": "TRANSFER",
+                        "category": "Transfer",
+                    }
+                ])
 
-        assert envelope.status == "conflict"
+        assert excinfo.value.code == error_codes.TAXONOMY_RULE_CONFLICT
+        assert excinfo.value.details == {"conflict_ids": ["conf_aaaaaaaaaaaaaaaa"]}
+        assert [action.tool for action in excinfo.value.recovery_actions or []] == [
+            "reviews",
+            "reviews_decide",
+        ]

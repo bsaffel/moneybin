@@ -87,7 +87,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / at least low |
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / at least low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
-| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; refuses the whole batch with `status="conflict"` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
+| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
 | `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to high / queue-derived |
 | `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
@@ -149,11 +149,10 @@ resumable `accounts_balances` views retain immutable-key cursors.
 ## Response contract
 
 Every tool returns canonical JSON text and equivalent structured content with a
-`summary`, `data`, and `actions` envelope. `status` is `"ok"`, `"error"`, or
-`"conflict"`. `"conflict"` is a **successful** outcome, not a failure: the
-operation ran, deliberately changed nothing because live state disagrees with
-the request, and `data` carries what disagreed. `error` stays null on it, and
-an actual failure still outranks it. Amounts use the accounting
+`summary`, `data`, and `actions` envelope. `status` is `"ok"` or `"error"`,
+derived from `error` alone so the two can never disagree: an operation that
+refuses to change anything raises a classified error rather than reporting a
+third outcome. Amounts use the accounting
 convention (negative expense, positive income) unless the tool explicitly
 states a presentation override; currency-bearing responses name their currency
 in `summary.display_currency`. Current registry tools advertise zero output
@@ -237,7 +236,8 @@ and confirmation contracts.
   pattern as written. Same matcher **and** same category is still
   idempotent and returns the existing rule. Same matcher, different category is
   refused: no rule is activated, the proposal is recorded in
-  `app.rule_conflicts`, and the response carries `status="conflict"` — from
+  `app.rule_conflicts`, and the call fails with `taxonomy_rule_conflict`,
+  whose `details.conflict_ids` names each refusal — from
   `transactions_categorize_rules_set` the whole batch is refused, because an
   atomic target-state declaration that dropped only the conflicting member
   would report a state that was never applied. `reviews(kind='rule_conflicts')`

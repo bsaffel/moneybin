@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.commands.transactions.categorize import app
 from moneybin.privacy.payloads.categorize import RuleConflictDetail
 from moneybin.services.categorization import (
@@ -292,10 +293,10 @@ def test_rules_resolve_missing_batch_file_exits_two(
 
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
-def test_rules_create_reports_a_conflict_without_failing(
+def test_rules_create_that_wrote_nothing_fails_with_a_conflict(
     mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """A refused rule is a decision to make, not a command that failed."""
+    """Nothing was written, so the call failed — and says which conflict to decide."""
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.create_rules.return_value = RuleCreationResult(
@@ -318,10 +319,14 @@ def test_rules_create_reports_a_conflict_without_failing(
 
     result = runner.invoke(app, [*_ARGS, "--output", "json"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)
-    assert payload["status"] == "conflict"
-    assert payload["data"]["conflicts"] == 1
+    assert payload["status"] == "error"
+    assert payload["error"]["code"] == error_codes.TAXONOMY_RULE_CONFLICT
+    assert payload["error"]["details"] == {"conflict_ids": ["conf_aaaaaaaaaaaaaaaa"]}
+    # The refusal names no rule, so the 👀 note is the only place the reader is
+    # given the conflict id to resolve.
+    assert "conf_aaaaaaaaaaaaaaaa" in result.stderr
 
 
 _CONFLICT_ROW: dict[str, object] = {
@@ -365,10 +370,10 @@ def test_list_conflicts_keeps_merchant_text_out_of_the_log(
 
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
-def test_rules_create_partial_write_is_not_a_conflict_status(
+def test_rules_create_partial_write_is_not_a_failure(
     mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:
-    """`status='conflict'` promises nothing changed; one row was created."""
+    """An error promises nothing changed; one row was created."""
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.create_rules.return_value = RuleCreationResult(

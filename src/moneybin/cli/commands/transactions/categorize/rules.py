@@ -26,7 +26,7 @@ from moneybin.protocol.envelope import build_envelope
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from moneybin.services.categorization import ConflictDecision
+    from moneybin.services.categorization import ConflictDecision, RuleCreationResult
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,29 @@ def rules_apply() -> None:
                 logger.info(f"✅ Categorized {applied} transactions by rule")
             else:
                 logger.info("✅ No uncategorized transactions matched active rules")
+
+
+def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
+    """Report each failed and each refused row on stderr.
+
+    Per-row warnings always surface — they're diagnostic, not informational —
+    so neither takes `quiet`. Both go to stderr through `render_note` rather
+    than the logger: each names the rule its author named, and the log pipeline
+    persists to disk where `SanitizedLogFormatter` cannot recognize
+    user-authored text.
+    """
+    for err in result.error_details:
+        render_note(
+            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
+            warn=True,
+        )
+    for conflict in result.conflict_details:
+        render_note(
+            f"👀 {conflict.name}: {conflict.reason} "
+            f"Decide it with `moneybin transactions categorize rules resolve "
+            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
+            warn=True,
+        )
 
 
 @app.command("create")
@@ -233,6 +256,22 @@ def rules_create(
                 validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
+        if result.conflicts > 0 and result.created == 0:
+            # An error promises the call changed nothing. This batch routes
+            # each row independently, so one call can create a rule *and*
+            # refuse another; only a batch that wrote nothing fails, and
+            # `data.conflicts` reports the refusals either way.
+            #
+            # The notes go out first: the refusal below names no rule — a rule
+            # name is its author's text and this message reaches the logger —
+            # so they carry the conflict id the resolve command needs.
+            _warn_rule_create_rows(result)
+            raise UserError(
+                "A rule in this batch matches the same transactions as an "
+                "active rule and assigns a different category.",
+                code=error_codes.TAXONOMY_RULE_CONFLICT,
+                details={"conflict_ids": list(result.conflict_ids)},
+            )
 
     if output == OutputFormat.JSON:
         actions = [
@@ -248,11 +287,6 @@ def rules_create(
             data=result.to_payload(),
             sensitivity="low",
             total_count=len(rules),
-            # `status="conflict"` promises the call changed nothing. This batch
-            # routes each row independently, so one call can create a rule
-            # *and* refuse another; the status only claims the refusal when
-            # nothing was written, and `data.conflicts` reports it either way.
-            conflict=result.conflicts > 0 and result.created == 0,
             actions=actions,
         )
         render_or_json(envelope, output, cli_actor="rules_create")
@@ -263,23 +297,7 @@ def rules_create(
             f"conflicts {result.conflicts}"
         )
 
-    # Per-row failure warnings always surface — they're diagnostic, not
-    # informational — so neither takes `quiet`. Both go to stderr through
-    # `render_note` rather than the logger: each names the rule its author
-    # named, and the log pipeline persists to disk where `SanitizedLogFormatter`
-    # cannot recognize user-authored text.
-    for err in result.error_details:
-        render_note(
-            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
-            warn=True,
-        )
-    for conflict in result.conflict_details:
-        render_note(
-            f"👀 {conflict.name}: {conflict.reason} "
-            f"Decide it with `moneybin transactions categorize rules resolve "
-            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
-            warn=True,
-        )
+    _warn_rule_create_rows(result)
 
     if result.skipped > 0:
         raise typer.Exit(1)

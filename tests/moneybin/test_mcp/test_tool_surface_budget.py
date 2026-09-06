@@ -162,11 +162,11 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # makes each description public text.
     "accounts_balance_assert": (1_420, 1_679),
     "transactions_annotate": (3_457, 3_653),
-    # Plus 216 bytes stating the conflict refusal: a target claiming an active
-    # rule's matcher under a different category refuses the *whole* batch with
-    # `status="conflict"`. An agent that reads the refusal as a partial failure
-    # retries the batch instead of opening the conflict queue.
-    "transactions_categorize_rules_set": (3_263, 2_670),
+    # Plus the conflict refusal: a target claiming an active rule's matcher
+    # under a different category fails the *whole* batch with
+    # `taxonomy_rule_conflict`. An agent that reads the refusal as a partial
+    # failure retries the batch instead of opening the conflict queue.
+    "transactions_categorize_rules_set": (3_289, 2_670),
     # The one cohort whose candidate now costs more than the four tools it
     # replaced (4,127 vs 2,566). The overrun is two disclosures the replaced
     # tools never owed. First: accepting a match can reverse a transfer the
@@ -175,7 +175,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # variant — its own request schema plus the three resolutions, which are
     # not the accept/reject axis every other kind uses, so an agent given
     # only `kind="rule_conflict"` would guess "accept" and get a validation
-    # error. Registry-wide the consolidation still stands at -31.8% — 61,907
+    # error. Registry-wide the consolidation still stands at -31.7% — 61,933
     # bytes against the baseline's 90,734, both readable as `total_bytes` in
     # the two fixtures this test loads. (The figure has drifted before —
     # because nothing fails when a comment goes stale. Recompute it from the

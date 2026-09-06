@@ -894,7 +894,7 @@ Access: read-only, idempotent. Sensitivity: at least `high`.
 
 ### transactions_categorize_rules_set
 
-Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category refuses the whole batch: status='conflict', nothing written, and data.conflicts names each one for reviews(kind='rule_conflicts').
+Atomically declare categorization rules present, inactive, or absent. Present requires matcher, category, and priority; inactive and absent require rule_id and forbid replacement fields. The tool advertises its maximum destructive risk, but asks for exact payload-bound confirmation only before a present rule is hard-deleted. Rule removal is recoverable with system_audit_undo(operation_id=...). A target matching the same transactions as an active rule under a different category fails the whole batch with taxonomy_rule_conflict: nothing is written, and error.details.conflict_ids names each refusal for reviews(kind='rule_conflicts').
 
 Access: write, destructive, idempotent. Sensitivity: at least `low`.
 

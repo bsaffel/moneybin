@@ -2093,7 +2093,9 @@ class TestCategorizeRulesResolveCLI:
     """`moneybin transactions categorize rules resolve` — decide a rule conflict."""
 
     @staticmethod
-    def _create(env: dict[str, str], name: str, category: str) -> dict[str, Any]:
+    def _create(
+        env: dict[str, str], name: str, category: str, *, expect_exit: int = 0
+    ) -> dict[str, Any]:
         result = run_cli(
             "transactions",
             "categorize",
@@ -2108,7 +2110,7 @@ class TestCategorizeRulesResolveCLI:
             "json",
             env=env,
         )
-        result.assert_success()
+        assert result.exit_code == expect_exit, result.output
         return json.loads(result.stdout)
 
     def test_second_category_is_refused_then_replaced(
@@ -2119,11 +2121,11 @@ class TestCategorizeRulesResolveCLI:
         )
         first = self._create(env, "conflict-a", "Other")
         assert first["status"] == "ok"
-        second = self._create(env, "conflict-b", "Shopping")
+        second = self._create(env, "conflict-b", "Shopping", expect_exit=1)
 
-        assert second["status"] == "conflict"
-        assert second["data"]["created"] == 0
-        conflict_id = str(second["data"]["conflict_ids"][0])
+        assert second["status"] == "error"
+        assert second["error"]["code"] == "taxonomy_rule_conflict"
+        conflict_id = str(second["error"]["details"]["conflict_ids"][0])
 
         listed = run_cli(
             "transactions",
