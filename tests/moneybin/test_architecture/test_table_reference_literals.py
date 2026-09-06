@@ -11,10 +11,14 @@ AND ``scripts/**/*.py`` under one ``TABLE_LITERAL_ALLOWLIST`` — executable
 maintenance scripts are a real DuckDB consumer (``scripts/backfill_categorization_links.py``
 has three ``db.execute(...)`` call sites) and are not a special case. Only
 ``src/moneybin/sql/migrations/`` is exempt (see Exemptions below); nothing
-under ``scripts/`` is. MB-172 widened the walk from ``src/moneybin`` alone
-to both trees; a whole-tree re-scan at that time found zero existing
-literals under ``scripts/``, so no allowlist entries were needed for the
-widening itself.
+under ``scripts/`` is. ``tests/`` itself is NOT walked: its own synthetic
+fixtures (below) write throwaway SQL to ``tmp_path`` rather than executing
+against a real schema, so they are not the DuckDB consumer this guard
+exists to police. MB-172 widened the walk from ``src/moneybin`` alone to
+both trees; a whole-tree re-scan at that time found zero existing literals
+under ``scripts/``, so no allowlist entries were needed for the widening
+itself. ``test_scripts_directory_is_scanned`` pins that the widening stays
+in effect even though it added no allowlist entries to notice a regression.
 
 ## Threat model
 
@@ -1246,6 +1250,18 @@ def _is_exempt_migration(path: Path) -> bool:
     return path.is_relative_to(MIGRATIONS_DIR)
 
 
+def _source_paths() -> list[Path]:
+    """Every .py file under SRC_ROOT and SCRIPTS_ROOT, sorted for a stable scan order.
+
+    Factored out of `_scan_source_tree` so `test_scripts_directory_is_scanned`
+    can pin that a known scripts/ file is actually in the walked set,
+    independently of `_scan_file`'s own logic — see that test's docstring for
+    why this needs its own pin rather than trusting the two zero-violation
+    tests below to notice a silently narrowed walk.
+    """
+    return sorted([*SRC_ROOT.rglob("*.py"), *SCRIPTS_ROOT.rglob("*.py")])
+
+
 def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
     """Walk src/moneybin/**/*.py AND scripts/**/*.py, collecting every occurrence.
 
@@ -1258,8 +1274,7 @@ def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
     identifies and why it is not a position.
     """
     found: list[tuple[str, int, str, str, str]] = []
-    paths = sorted([*SRC_ROOT.rglob("*.py"), *SCRIPTS_ROOT.rglob("*.py")])
-    for path in paths:
+    for path in _source_paths():
         if _is_exempt_migration(path):
             continue
         relpath = path.relative_to(REPO_ROOT).as_posix()
@@ -1335,9 +1350,31 @@ def test_migrations_runner_is_not_exempt() -> None:
     assert not _is_exempt_migration(runner)
 
 
+def test_scripts_directory_is_scanned() -> None:
+    """scripts/ must actually be in the walked set, not just nominally in scope.
+
+    The live tree currently has ZERO hardcoded literals under scripts/ (MB-172
+    triage), and the allowlist holds zero scripts/ entries either — so if
+    `_source_paths` silently stopped including SCRIPTS_ROOT (a rename, a
+    revert to src/moneybin-only, a typo'd glob), both
+    test_no_hardcoded_table_literals_reach_execute and
+    test_allowlist_has_no_dead_entries would stay green with nothing to catch
+    the regression. This pins scripts/ into the walked set directly, the same
+    way test_migrations_runner_is_not_exempt above pins a directory-membership
+    fact independently of what the live tree happens to contain.
+    """
+    assert SCRIPTS_ROOT.is_dir(), "expected scripts/ to exist"
+    known_consumer = SCRIPTS_ROOT / "backfill_categorization_links.py"
+    assert known_consumer.is_file(), (
+        "expected scripts/backfill_categorization_links.py to exist"
+    )
+    assert known_consumer in _source_paths()
+
+
 # --- Synthetic-fixture scanner unit tests -----------------------------------
 #
-# The tests above assert against whatever src/moneybin currently contains —
+# The tests above assert against whatever src/moneybin and scripts/ currently
+# contain —
 # real coverage of the scanner's own core logic (sqlglot table parsing,
 # alias exclusion, CTE-splice tracing, function-scope boundary, name-to-name
 # aliasing) is incidental to that, not guaranteed. These exercise
