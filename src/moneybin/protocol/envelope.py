@@ -388,8 +388,12 @@ def build_envelope(
             returned = _count_declared_row_set(data_any)
 
         actual_total = total_count if total_count is not None else returned
-        # A payload whose declared row set is empty counts 0. When the caller
-        # explicitly supplied total_count, treat all inputs as "returned".
+        # Kept exactly as it was, and no longer for the reason it was written:
+        # the spurious 0 it papered over came from the removed heuristic, and an
+        # empty declared row set means the call really returned nothing. Whether
+        # to keep promoting that to total_count moves a public returned_count on
+        # every paginated read whose page came back empty, so it is MB-175's
+        # decision rather than this change's.
         if returned == 0 and total_count is not None and total_count > 0:
             returned = actual_total
     has_more = next_cursor is not None or actual_total > returned

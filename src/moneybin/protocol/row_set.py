@@ -30,6 +30,18 @@ collection, so the count describes the payload itself — one snapshot, one sync
 run, one write result. A payload that carries a collection and declares nothing
 raises, because a declaration that can quietly go missing or out of date is the
 inference this replaced, one level up.
+
+The declaration is about the type, not about where it is used: it answers "if an
+envelope's ``data`` were this, which field holds the rows it returned". A list
+that qualifies the one thing the payload *is* — a status sub-object's
+diagnostics, a row's tags, an echo of the ids the caller passed — is not that
+field, so those types declare ``NO_ROW_SET``. Many such types are only ever
+nested inside another payload and so are never counted either way; declare the
+honest answer rather than deducing one from where the type happens to appear.
+
+Only a class's own declaration answers for it: the lookup reads the class
+``__dict__``, so a subclass that adds or renames a collection cannot inherit a
+parent's answer by accident, and one that does not still states its own.
 """
 
 from __future__ import annotations

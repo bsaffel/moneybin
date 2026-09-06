@@ -1,9 +1,16 @@
 """Every payload that carries a collection declares which one is its row set.
 
 The runtime raise in ``moneybin.protocol.row_set`` is the backstop; this is the
-guard that fires first. It runs over the whole payload package rather than over
-the payloads some test happened to build, because the defect it prevents is a
-new payload shipping with no declaration and picking up a count nobody chose.
+guard that fires first. It runs over whole modules rather than over the payloads
+some test happened to build, because the defect it prevents is a new payload
+shipping with no declaration — which is not a wrong count but a
+``RowSetContractError`` on its first production call, on any command whose
+envelope derives its own display currency.
+
+The scanned roots are every module that defines a type used as envelope ``data``:
+the payload package, plus the two modules that define envelope payloads outside
+it. A new such module has to be added here, which is why the anti-vacuity test
+below names a class from each root.
 
 Payloads with no list field are exempt: there is nothing to name, and adding a
 list later brings the class into this test's scope in the same commit.
@@ -44,13 +51,27 @@ def _list_field_names(cls: type) -> list[str]:
     return [name for name in names if _is_list_hint(hints.get(name))]
 
 
-def _payload_classes_with_collections() -> list[type]:
-    """Every payload dataclass / model in the package that carries a list."""
+def _payload_module_names() -> list[str]:
+    """Every module defining a type that can be an envelope payload."""
     import moneybin.privacy.payloads as pkg
 
+    return [
+        f"moneybin.privacy.payloads.{mod_info.name}"
+        for mod_info in pkgutil.iter_modules(pkg.__path__)
+    ] + [
+        # The export outputs the CLI renders through the same envelope.
+        "moneybin.cli.output",
+        # `ReportResult` / `CatalogReportResult`, which the MCP surface builds
+        # envelopes over directly.
+        "moneybin.reports._framework.execute",
+    ]
+
+
+def _payload_classes_with_collections() -> list[type]:
+    """Every payload dataclass / model in those modules that carries a list."""
     out: list[type] = []
-    for mod_info in pkgutil.iter_modules(pkg.__path__):
-        mod = importlib.import_module(f"moneybin.privacy.payloads.{mod_info.name}")
+    for module_name in _payload_module_names():
+        mod = importlib.import_module(module_name)
         for name in dir(mod):
             obj = getattr(mod, name)
             if not isinstance(obj, type) or obj.__module__ != mod.__name__:
@@ -70,14 +91,17 @@ def test_the_scan_reaches_the_payloads_it_is_meant_to_guard() -> None:
     """A discovery bug would make every case below vacuously pass.
 
     The three payloads the declaration was designed against must be in the
-    scanned set, and the set must be substantial rather than a handful the
-    import walk happened to reach.
+    scanned set, one class from each non-package root must be too — a root
+    dropped from the list above is otherwise invisible — and the set must be
+    substantial rather than a handful the import walk happened to reach.
     """
     names = {cls.__name__ for cls in _PAYLOADS_WITH_COLLECTIONS}
     assert {
         "ReportResultPayload",
         "ImportInboxSyncPayload",
         "NetWorthSnapshotPayload",
+        "ExportDestinationsOutput",
+        "ReportResult",
     } <= names
     assert len(_PAYLOADS_WITH_COLLECTIONS) > 100
 

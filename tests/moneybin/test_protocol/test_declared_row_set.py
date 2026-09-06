@@ -15,7 +15,7 @@ to a guess.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
@@ -37,7 +37,12 @@ from moneybin.privacy.payloads.reports import (
     ReportSemanticsPayload,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.protocol.row_set import NO_ROW_SET, RowSetContractError, row_set
+from moneybin.protocol.row_set import (
+    NO_ROW_SET,
+    RowSetContractError,
+    declared_row_set,
+    row_set,
+)
 
 
 def _report_result(row_count: int) -> ReportResultPayload:
@@ -133,8 +138,34 @@ def _networth_snapshot() -> NetWorthSnapshotPayload:
     )
 
 
+class TestDeclaresOneAnswerPerCase:
+    """The declaration itself, for one payload per case it has to serve.
+
+    Pinned separately from the counts below because two of those three counts
+    were already 1 under the inference this replaced. A count alone cannot show
+    that the answer is now declared rather than guessed; these can.
+    """
+
+    @pytest.mark.unit
+    def test_a_report_result_declares_its_rows(self) -> None:
+        assert declared_row_set(ReportResultPayload) == "rows"
+
+    @pytest.mark.unit
+    def test_an_inbox_drain_declares_no_row_set(self) -> None:
+        assert declared_row_set(ImportInboxSyncPayload) is NO_ROW_SET
+
+    @pytest.mark.unit
+    def test_a_networth_snapshot_declares_no_row_set(self) -> None:
+        assert declared_row_set(NetWorthSnapshotPayload) is NO_ROW_SET
+
+
 class TestCountsTheDeclaredRowSet:
-    """One payload per case the issue named, each pinned to its declared answer."""
+    """What each declaration above makes ``returned_count`` report.
+
+    Only the first changes: the other two counted 1 before this too, because
+    the inference answered "several collections, so neither". They are pinned
+    as the regressions they would be if a later edit nominated a bucket.
+    """
 
     @pytest.mark.unit
     def test_a_report_result_counts_its_rows_not_its_columns(self) -> None:
@@ -259,6 +290,27 @@ class TestAnUndeclaredPayloadFailsLoudly:
             total: int
 
         assert build_envelope(data=_Scalars(total=4)).summary.returned_count == 1
+
+    @pytest.mark.unit
+    def test_a_subclass_does_not_inherit_its_parents_declaration(self) -> None:
+        """A subclass that adds a collection must not pick up the parent's answer.
+
+        The declaration is read off the class's own ``__dict__`` for this: a
+        parent declaring ``NO_ROW_SET`` would otherwise keep answering for a
+        subclass whose whole point is the collection it adds.
+        """
+
+        @row_set(NO_ROW_SET)
+        @dataclass(frozen=True)
+        class _Base:
+            total: int
+
+        @dataclass(frozen=True)
+        class _AddsACollection(_Base):
+            rows: list[dict[str, Any]] = field(default_factory=list)
+
+        with pytest.raises(RowSetContractError, match="_AddsACollection"):
+            build_envelope(data=_AddsACollection(total=1, rows=[{"id": "a1"}]))
 
     @pytest.mark.unit
     def test_no_row_set_is_a_declaration_not_an_absence(self) -> None:

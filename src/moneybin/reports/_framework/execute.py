@@ -121,8 +121,8 @@ class ReportResult:
         )
 
 
-# Re-declared rather than inherited: a subclass states its own answer, so one
-# that adds a collection cannot pick up a parent's by accident.
+# A declaration is read off the class's own __dict__, never inherited, so a
+# subclass states its answer even when it matches the parent's.
 @row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportResult(ReportResult):
@@ -134,6 +134,7 @@ class CatalogReportResult(ReportResult):
     provenance: tuple[str, ...]
 
 
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportExecution:
     """One raw catalog-runner execution before terminal redaction."""
