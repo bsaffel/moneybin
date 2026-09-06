@@ -6,6 +6,16 @@ never a hardcoded ``"core.fct_transactions"``-shaped string. #519 swept 95
 pre-existing literals to ``TableRef`` constants; nothing stopped the next PR
 from reintroducing one. This test closes that gap.
 
+**Scope.** The walk (``_scan_source_tree``) covers ``src/moneybin/**/*.py``
+AND ``scripts/**/*.py`` under one ``TABLE_LITERAL_ALLOWLIST`` — executable
+maintenance scripts are a real DuckDB consumer (``scripts/backfill_categorization_links.py``
+has three ``db.execute(...)`` call sites) and are not a special case. Only
+``src/moneybin/sql/migrations/`` is exempt (see Exemptions below); nothing
+under ``scripts/`` is. MB-172 widened the walk from ``src/moneybin`` alone
+to both trees; a whole-tree re-scan at that time found zero existing
+literals under ``scripts/``, so no allowlist entries were needed for the
+widening itself.
+
 ## Threat model
 
 This guard defends against **accidental** reintroduction of a hardcoded
@@ -206,6 +216,7 @@ Exemptions:
   would be wrong, not merely undesirable. ``src/moneybin/migrations.py`` (the
   runner) is a different file, lives one directory up, and is NOT exempt —
   ``test_migrations_runner_is_not_exempt`` pins that.
+- Nothing under ``scripts/`` is exempt — see Scope above.
 - Everything else is an individual ``TABLE_LITERAL_ALLOWLIST`` entry with a
   ``# why`` comment. Prose, docstrings, comments, and the
   ``schema_catalog.py`` ``EXAMPLES``/hint-text strings from the #519 sweep
@@ -227,6 +238,7 @@ from sqlglot.errors import ErrorLevel
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
 MIGRATIONS_DIR = SRC_ROOT / "sql" / "migrations"
 
 # Method names treated as SQL-execution sinks. `sql` covers
@@ -398,8 +410,11 @@ def _statement_key(text: str) -> str:
 
 
 # Allowlist entries are (file_relpath, clause_type, "schema.table",
-# statement_key) 4-tuples. `file_relpath` is relative to src/moneybin/ for
-# stability across moves. `clause_type` is the upper-cased sqlglot node type
+# statement_key) 4-tuples. `file_relpath` is relative to REPO_ROOT (e.g.
+# `src/moneybin/seeds.py`, `scripts/foo.py`) — not to SRC_ROOT alone — so a
+# path unambiguously identifies which of the two scanned trees it names
+# now that `_scan_source_tree` walks both. `clause_type` is the upper-cased
+# sqlglot node type
 # that directly parents the `exp.Table` — `FROM`/`JOIN`/`DROP`/`COPY`/
 # `DESCRIBE`/`UPDATE`/`INSERT`/... (see `_tables_in_text`, module docstring
 # point 2) — keying on it, not just the table name, separates a
@@ -451,15 +466,15 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, str]] = frozenset({
     # TableRef would misrepresent them as live tables. Clause type is `DROP`
     # (both are `DROP VIEW IF EXISTS ...`) — sqlglot represents `IF EXISTS`
     # as a modifier on the `Drop` node, not a distinct clause.
-    ("seeds.py", "DROP", "app.categories", "df05543d3c74"),
-    ("seeds.py", "DROP", "app.merchants", "b5e4415a12b7"),
+    ("src/moneybin/seeds.py", "DROP", "app.categories", "df05543d3c74"),
+    ("src/moneybin/seeds.py", "DROP", "app.merchants", "b5e4415a12b7"),
     # NOT a retired-view drop — `app.merchants` here is read live, inside the
     # pre-V006 backward-compat passthrough that wraps the legacy TABLE (still
     # a BASE TABLE, not yet migrated to `app.user_merchants`) so
     # categorization reads keep working before V006 runs. It has no
     # TableRef because tables.py registers only the *current* schema shape;
     # this statement exists specifically to read the pre-migration one.
-    ("seeds.py", "FROM", "app.merchants", "3490dff615c2"),
+    ("src/moneybin/seeds.py", "FROM", "app.merchants", "3490dff615c2"),
 })
 
 
@@ -1232,17 +1247,22 @@ def _is_exempt_migration(path: Path) -> bool:
 
 
 def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
-    """Walk src/moneybin/**/*.py, collecting every occurrence.
+    """Walk src/moneybin/**/*.py AND scripts/**/*.py, collecting every occurrence.
 
-    Returns (relpath, lineno, clause_type, table, statement_key) 5-tuples —
-    see TABLE_LITERAL_ALLOWLIST's key-shape comment for what the key
+    One walk, one allowlist (MB-172) — `scripts/` is a real DuckDB consumer,
+    not a special case, and `src/moneybin/sql/migrations/` is the only
+    exemption (see module docstring "Exemptions"). Returns (relpath, lineno,
+    clause_type, table, statement_key) 5-tuples, `relpath` relative to
+    REPO_ROOT so a path from either tree is unambiguous — see
+    TABLE_LITERAL_ALLOWLIST's key-shape comment for what the rest of the key
     identifies and why it is not a position.
     """
     found: list[tuple[str, int, str, str, str]] = []
-    for path in sorted(SRC_ROOT.rglob("*.py")):
+    paths = sorted([*SRC_ROOT.rglob("*.py"), *SCRIPTS_ROOT.rglob("*.py")])
+    for path in paths:
         if _is_exempt_migration(path):
             continue
-        relpath = path.relative_to(SRC_ROOT).as_posix()
+        relpath = path.relative_to(REPO_ROOT).as_posix()
         for lineno, clause, table, statement_key in _scan_file(path):
             found.append((relpath, lineno, clause, table, statement_key))
     return found
