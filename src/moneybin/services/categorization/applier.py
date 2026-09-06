@@ -58,6 +58,10 @@ from moneybin.repositories.user_categories_repo import (
     UserCategoriesRepo,
 )
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
+from moneybin.services._validators import (
+    validate_category_hierarchy,
+    validate_category_text,
+)
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import (
     SOURCE_PRIORITY,
@@ -480,7 +484,7 @@ class MatchApplier:
                 §Schema changes); user-authored merchants pick 'contains' or
                 'regex' explicitly.
             category: Optional default category for this merchant.
-            subcategory: Optional default subcategory.
+            subcategory: Optional default subcategory; requires ``category``.
             created_by: Who created the mapping ('user', 'ai', 'rule').
             exemplars: Initial exemplar set (exact match_text values) for
                 oneOf merchants. Defaults to ``[]``.
@@ -489,6 +493,20 @@ class MatchApplier:
                 ``"system"`` default.
             in_outer_txn: Join the caller's active transaction when true.
         """
+        # The same two rules a split's (category, subcategory) takes, because
+        # this pair is resolved against the same dim and then copied verbatim
+        # into app.transaction_categories by the categorize_pending sweep,
+        # which skips only on None. Blank text would survive that copy into
+        # core.fct_transactions.category and render as an empty cell that
+        # core.uncategorized_queue's `category IS NULL` filter cannot see.
+        try:
+            if category is not None:
+                validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+            validate_category_hierarchy(category, subcategory, "subcategory")
+        except ValueError as exc:
+            raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
         # Resolve the FK alongside the text snapshot (read; stays in the
         # service per Req 2). The repo owns the INSERT + audit.
         category_id = resolve_category_id(self._db, category, subcategory)
@@ -1082,6 +1100,18 @@ class MatchApplier:
                 ``core.dim_categories`` (either as a seeded default or a
                 prior user-created row).
         """
+        # The taxonomy is the one surface that stores a category rather than a
+        # reference to one, so the rule the writers take has to hold here
+        # first: a blank row reaches core.dim_categories, renders as an empty
+        # name in `categories list`, and gives resolve_category_id a row
+        # nothing can usefully match. Runs before the duplicate scan so an
+        # unusable name is refused on its own terms rather than as a collision.
+        try:
+            validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+        except ValueError as exc:
+            raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
         existing = self._db.execute(
             f"""
             SELECT 1 FROM {CATEGORIES.full_name}

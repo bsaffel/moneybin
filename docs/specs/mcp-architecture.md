@@ -431,7 +431,7 @@ The `detail` parameter controls response verbosity — `summary` returns aggrega
 ### Tool sensitivity declarations
 
 Every tool is classified through one of two live paths. Static tools derive a
-maximum sensitivity from the data classes on their typed response payload.
+sensitivity floor from the data classes on their typed response payload.
 Tools whose projection varies by request declare `dynamic_classification=True`,
 classify the returned payload, and advertise a `maximum_sensitivity` ceiling.
 Such a tool classifies from one of two sources. Most read the classes off a

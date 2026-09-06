@@ -265,6 +265,11 @@ def large_transactions(
         predicate = "amount_zscore_account > 2.5"
     elif anomaly == "category":
         predicate = "amount_zscore_category > 2.5"
+    # `BETWEEN 1 AND ?`, not `<= ?`: DuckDB 1.5.4 and 1.5.5 rewrite a
+    # `ROW_NUMBER() ... <= n` filter into a top-N and push it through the
+    # recursive match-group CTE behind core.bridge_transfers, where it fails
+    # with "Type mismatch for SET OPERATION". The BETWEEN spelling is the same
+    # predicate and escapes the rewrite; tests/scenarios pins it on real views.
     sql = f"""
         SELECT transaction_id, account_id, merchant_id, account_name,
                merchant_normalized, description, category, currency_code,
@@ -282,7 +287,7 @@ def large_transactions(
             FROM {REPORTS_LARGE_TRANSACTIONS.full_name}
             WHERE {predicate}
         )
-        WHERE rank_in_currency <= ?
+        WHERE rank_in_currency BETWEEN 1 AND ?
         ORDER BY rank_in_currency, currency_code
     """  # noqa: S608  # TableRef + LARGE_TXN_ANOMALIES allowlists
     # The binding declares the class of the value it carries (R9).

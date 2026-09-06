@@ -45,7 +45,12 @@ from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.introspection import PrivacyContractError, derive_tier
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
-from moneybin.privacy.sensitivity import Sensitivity, log_tool_call, tier_to_sensitivity
+from moneybin.privacy.sensitivity import (
+    Sensitivity,
+    log_tool_call,
+    sensitivity_to_tier,
+    tier_to_sensitivity,
+)
 from moneybin.privacy.taxonomy import Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_error_envelope
 from moneybin.services.mutation_context import operation
@@ -335,12 +340,25 @@ def _envelope_row_count(envelope: ResponseEnvelope[Any]) -> int:
 def _stamp_envelope_sensitivity(
     envelope: ResponseEnvelope[Any], sensitivity: Sensitivity
 ) -> ResponseEnvelope[Any]:
-    """Return an envelope stamped with the operation's static sensitivity."""
-    if sensitivity.value == envelope.summary.sensitivity:
+    """Return an envelope floored at the operation's static sensitivity.
+
+    ``sensitivity`` is a floor, not an answer: it may only ever raise the
+    envelope's already-derived tier, never lower it. Overriding unconditionally
+    would let a payload that actually derived a higher tier (e.g. a helper that
+    computed its own per-call sensitivity from the data it returned) get
+    stamped back down to whatever the decorator declared — silently
+    understating both the response and the privacy audit row. Comparison goes
+    through ``sensitivity_to_tier`` (Tier is the one canonical severity
+    ordering; see its docstring), the same mechanism the ``discloses=`` floor
+    uses at registration time.
+    """
+    derived = Sensitivity(envelope.summary.sensitivity)
+    floored = max(derived, sensitivity, key=sensitivity_to_tier)
+    if floored.value == envelope.summary.sensitivity:
         return envelope
     updated = dataclasses.replace(
         envelope.summary,
-        sensitivity=sensitivity.value,  # pyright: ignore[reportArgumentType]
+        sensitivity=floored.value,  # pyright: ignore[reportArgumentType]
     )
     return dataclasses.replace(envelope, summary=updated)  # pyright: ignore[reportUnknownArgumentType]
 
@@ -430,7 +448,7 @@ def mcp_tool(
         maximum_sensitivity: Required ceiling for a dynamic-classification tool.
             This is a declared contract for documentation and admission review;
             it does not replace the tool's per-call classification. Static tools
-            derive their maximum from their typed response and must not set it.
+            derive a floor from their typed response and must not set this.
         discloses: Tier this tool shows the caller *outside* its typed response —
             in practice, the text of a confirmation elicitation. The derived tier
             walks the payload, so a prompt rendering transaction dates or a
@@ -545,11 +563,20 @@ def mcp_tool(
             loop and serialize concurrent tool calls.
 
             For dynamic_classification tools, reads sensitivity and classes from
-            the envelope itself (set by the tool per call); for static tools,
-            uses the registration-time closure values.
+            the envelope itself (set by the tool per call). For static tools,
+            sensitivity is also read off the envelope — every call site below
+            passes it through ``_stamp_sensitivity`` first, so this always sees
+            the floored (derived vs. declared) value, never a stale closure
+            read — while classes still use the registration-time closure value
+            (`classes_for_log`), which is a fixed function of the return type
+            with no per-call analogue to floor against (MB-157).
             """
+            # Both kinds read sensitivity off the envelope now: a dynamic tool
+            # set it per call, and a static tool's has been floored by
+            # _stamp_sensitivity on every path that reaches here. Only the data
+            # classes still branch.
+            ev_sensitivity = env.summary.sensitivity
             if dynamic_classification:
-                ev_sensitivity = env.summary.sensitivity
                 # Only an absent (None) field falls back; an explicit empty list
                 # is a real "no data classes" signal and is preserved as-is.
                 ev_classes = (
@@ -558,7 +585,6 @@ def mcp_tool(
                     else ["unclassified"]
                 )
             else:
-                ev_sensitivity = sensitivity.value
                 ev_classes = classes_for_log
             event = build_tool_call_event(
                 actor=f"mcp.{_public_privacy_actor.get() or fn.__name__}",
@@ -570,12 +596,19 @@ def mcp_tool(
             await asyncio.to_thread(write_privacy_event, event)
 
         def _stamp_sensitivity(env: ResponseEnvelope[Any]) -> ResponseEnvelope[Any]:
-            """Override summary.sensitivity with the decorator-derived tier.
+            """Floor summary.sensitivity at the decorator-derived tier.
 
             Error envelopes from build_error_envelope hardcode "low"; without
             this a CRITICAL-tier tool (e.g. accounts_get) that raises would
             report summary.sensitivity="low" in its error response and audit
-            row, understating the tier. Applied on every error return path.
+            row, understating the tier. It raises and never lowers, so a call
+            that already derived a higher tier keeps it. Applied on every
+            return path that reaches _emit_privacy_event — including the two
+            crash/cancellation paths that build their envelope inline rather
+            than through one of the classify/timeout helpers above (MB-157:
+            _emit_privacy_event's static branch now reads sensitivity off the
+            envelope, so any path that skipped this stamp would under-report
+            its audit row).
 
             No-op for dynamic_classification tools: their sensitivity is decided
             per call (the static ``sensitivity`` here is only a HIGH placeholder),
@@ -732,8 +765,13 @@ def mcp_tool(
                     # CancelledError (a BaseException, not Exception) raised here
                     # would escape both the TimeoutError and Exception handlers
                     # with no audit row. Emit the crash event, then propagate.
+                    # Stamped like every other emit call site (MB-157) — this
+                    # crash-escape envelope would otherwise report "low" for a
+                    # HIGH/CRITICAL-tier tool's audit row.
                     await _emit_privacy_event(
-                        _build_unclassified_failure_envelope(fn.__name__)
+                        _stamp_sensitivity(
+                            _build_unclassified_failure_envelope(fn.__name__)
+                        )
                     )
                     raise
                 timeout_env = _stamp_sensitivity(
@@ -762,9 +800,14 @@ def mcp_tool(
                 request_lifetime.cancel()
                 await asyncio.to_thread(request_lifetime.wait_for_publication)
                 try:
+                    # Stamped like every other emit call site (MB-157) — this
+                    # cancellation envelope would otherwise report "low" for a
+                    # HIGH/CRITICAL-tier tool's audit row.
                     await asyncio.shield(
                         _emit_privacy_event(
-                            _build_unclassified_failure_envelope(fn.__name__)
+                            _stamp_sensitivity(
+                                _build_unclassified_failure_envelope(fn.__name__)
+                            )
                         )
                     )
                 except asyncio.CancelledError:
@@ -819,7 +862,14 @@ def mcp_tool(
             return envelope
 
         wrapper._mcp_sensitivity = sensitivity  # type: ignore[attr-defined]
-        wrapper._mcp_maximum_sensitivity = sensitivity  # type: ignore[attr-defined]
+        # One attribute, two meanings, and the docs must not blur them: for a
+        # dynamic tool this is the declared ceiling (`maximum_sensitivity=`),
+        # which nothing enforces at runtime; for a static tool it is the tier
+        # derived from the return type, which `_stamp_envelope_sensitivity`
+        # treats as a floor the envelope may only raise. It was named
+        # `_mcp_maximum_sensitivity` until MB-157, when publishing the static
+        # half as a "maximum" became a promise the floor can break.
+        wrapper._mcp_declared_sensitivity = sensitivity  # type: ignore[attr-defined]
         wrapper._mcp_dynamic_classification = dynamic_classification  # type: ignore[attr-defined]
         wrapper._mcp_domain = domain  # type: ignore[attr-defined]
         wrapper._mcp_read_only = read_only  # type: ignore[attr-defined]
