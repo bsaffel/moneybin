@@ -416,14 +416,13 @@ def _statement_key(text: str) -> str:
 # Allowlist entries are (file_relpath, clause_type, "schema.table",
 # statement_key) 4-tuples. `file_relpath` is relative to REPO_ROOT (e.g.
 # `src/moneybin/seeds.py`, `scripts/foo.py`) — not to SRC_ROOT alone — so a
-# path unambiguously identifies which of the two scanned trees it names
-# now that `_scan_source_tree` walks both. `clause_type` is the upper-cased
-# sqlglot node type
-# that directly parents the `exp.Table` — `FROM`/`JOIN`/`DROP`/`COPY`/
-# `DESCRIBE`/`UPDATE`/`INSERT`/... (see `_tables_in_text`, module docstring
-# point 2) — keying on it, not just the table name, separates a
-# `DROP VIEW ... app.merchants` from an unrelated `FROM app.merchants`
-# naming the same table for a different reason.
+# path unambiguously identifies which of the two scanned trees it names now
+# that `_scan_source_tree` walks both. `clause_type` is the upper-cased
+# sqlglot node type that directly parents the `exp.Table` —
+# `FROM`/`JOIN`/`DROP`/`COPY`/`DESCRIBE`/`UPDATE`/`INSERT`/... (see
+# `_tables_in_text`, module docstring point 2) — keying on it, not just the
+# table name, separates a `DROP VIEW ... app.merchants` from an unrelated
+# `FROM app.merchants` naming the same table for a different reason.
 # `statement_key` is `_statement_key()` over the normalized text of the
 # statement the match was found in. It answers "which statement did a human
 # actually review and exempt", which is the only question an exemption
@@ -1374,10 +1373,9 @@ def test_scripts_directory_is_scanned() -> None:
 # --- Synthetic-fixture scanner unit tests -----------------------------------
 #
 # The tests above assert against whatever src/moneybin and scripts/ currently
-# contain —
-# real coverage of the scanner's own core logic (sqlglot table parsing,
-# alias exclusion, CTE-splice tracing, function-scope boundary, name-to-name
-# aliasing) is incidental to that, not guaranteed. These exercise
+# contain — real coverage of the scanner's own core logic (sqlglot table
+# parsing, alias exclusion, CTE-splice tracing, function-scope boundary,
+# name-to-name aliasing) is incidental to that, not guaranteed. These exercise
 # `_scan_file` directly against small synthetic snippets written to
 # `tmp_path`, so each mechanism is pinned independently of what the live
 # tree happens to contain.
