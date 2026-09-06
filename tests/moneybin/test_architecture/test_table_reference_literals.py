@@ -6,6 +6,20 @@ never a hardcoded ``"core.fct_transactions"``-shaped string. #519 swept 95
 pre-existing literals to ``TableRef`` constants; nothing stopped the next PR
 from reintroducing one. This test closes that gap.
 
+**Scope.** The walk (``_scan_source_tree``) covers ``src/moneybin/**/*.py``
+AND ``scripts/**/*.py`` under one ``TABLE_LITERAL_ALLOWLIST`` — executable
+maintenance scripts are a real DuckDB consumer (``scripts/backfill_categorization_links.py``
+has three ``db.execute(...)`` call sites) and are not a special case. Only
+``src/moneybin/sql/migrations/`` is exempt (see Exemptions below); nothing
+under ``scripts/`` is. ``tests/`` itself is NOT walked: its own synthetic
+fixtures (below) write throwaway SQL to ``tmp_path`` rather than executing
+against a real schema, so they are not the DuckDB consumer this guard
+exists to police. MB-172 widened the walk from ``src/moneybin`` alone to
+both trees; a whole-tree re-scan at that time found zero existing literals
+under ``scripts/``, so no allowlist entries were needed for the widening
+itself. ``test_scripts_directory_is_scanned`` pins that the widening stays
+in effect even though it added no allowlist entries to notice a regression.
+
 ## Threat model
 
 This guard defends against **accidental** reintroduction of a hardcoded
@@ -206,6 +220,7 @@ Exemptions:
   would be wrong, not merely undesirable. ``src/moneybin/migrations.py`` (the
   runner) is a different file, lives one directory up, and is NOT exempt —
   ``test_migrations_runner_is_not_exempt`` pins that.
+- Nothing under ``scripts/`` is exempt — see Scope above.
 - Everything else is an individual ``TABLE_LITERAL_ALLOWLIST`` entry with a
   ``# why`` comment. Prose, docstrings, comments, and the
   ``schema_catalog.py`` ``EXAMPLES``/hint-text strings from the #519 sweep
@@ -227,6 +242,7 @@ from sqlglot.errors import ErrorLevel
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
+SCRIPTS_ROOT = REPO_ROOT / "scripts"
 MIGRATIONS_DIR = SRC_ROOT / "sql" / "migrations"
 
 # Method names treated as SQL-execution sinks. `sql` covers
@@ -398,13 +414,15 @@ def _statement_key(text: str) -> str:
 
 
 # Allowlist entries are (file_relpath, clause_type, "schema.table",
-# statement_key) 4-tuples. `file_relpath` is relative to src/moneybin/ for
-# stability across moves. `clause_type` is the upper-cased sqlglot node type
-# that directly parents the `exp.Table` — `FROM`/`JOIN`/`DROP`/`COPY`/
-# `DESCRIBE`/`UPDATE`/`INSERT`/... (see `_tables_in_text`, module docstring
-# point 2) — keying on it, not just the table name, separates a
-# `DROP VIEW ... app.merchants` from an unrelated `FROM app.merchants`
-# naming the same table for a different reason.
+# statement_key) 4-tuples. `file_relpath` is relative to REPO_ROOT (e.g.
+# `src/moneybin/seeds.py`, `scripts/foo.py`) — not to SRC_ROOT alone — so a
+# path unambiguously identifies which of the two scanned trees it names now
+# that `_scan_source_tree` walks both. `clause_type` is the upper-cased
+# sqlglot node type that directly parents the `exp.Table` —
+# `FROM`/`JOIN`/`DROP`/`COPY`/`DESCRIBE`/`UPDATE`/`INSERT`/... (see
+# `_tables_in_text`, module docstring point 2) — keying on it, not just the
+# table name, separates a `DROP VIEW ... app.merchants` from an unrelated
+# `FROM app.merchants` naming the same table for a different reason.
 # `statement_key` is `_statement_key()` over the normalized text of the
 # statement the match was found in. It answers "which statement did a human
 # actually review and exempt", which is the only question an exemption
@@ -451,15 +469,15 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, str]] = frozenset({
     # TableRef would misrepresent them as live tables. Clause type is `DROP`
     # (both are `DROP VIEW IF EXISTS ...`) — sqlglot represents `IF EXISTS`
     # as a modifier on the `Drop` node, not a distinct clause.
-    ("seeds.py", "DROP", "app.categories", "df05543d3c74"),
-    ("seeds.py", "DROP", "app.merchants", "b5e4415a12b7"),
+    ("src/moneybin/seeds.py", "DROP", "app.categories", "df05543d3c74"),
+    ("src/moneybin/seeds.py", "DROP", "app.merchants", "b5e4415a12b7"),
     # NOT a retired-view drop — `app.merchants` here is read live, inside the
     # pre-V006 backward-compat passthrough that wraps the legacy TABLE (still
     # a BASE TABLE, not yet migrated to `app.user_merchants`) so
     # categorization reads keep working before V006 runs. It has no
     # TableRef because tables.py registers only the *current* schema shape;
     # this statement exists specifically to read the pre-migration one.
-    ("seeds.py", "FROM", "app.merchants", "3490dff615c2"),
+    ("src/moneybin/seeds.py", "FROM", "app.merchants", "3490dff615c2"),
 })
 
 
@@ -1231,18 +1249,34 @@ def _is_exempt_migration(path: Path) -> bool:
     return path.is_relative_to(MIGRATIONS_DIR)
 
 
-def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
-    """Walk src/moneybin/**/*.py, collecting every occurrence.
+def _source_paths() -> list[Path]:
+    """Every .py file under SRC_ROOT and SCRIPTS_ROOT, sorted for a stable scan order.
 
-    Returns (relpath, lineno, clause_type, table, statement_key) 5-tuples —
-    see TABLE_LITERAL_ALLOWLIST's key-shape comment for what the key
+    Factored out of `_scan_source_tree` so `test_scripts_directory_is_scanned`
+    can pin that a known scripts/ file is actually in the walked set,
+    independently of `_scan_file`'s own logic — see that test's docstring for
+    why this needs its own pin rather than trusting the two zero-violation
+    tests below to notice a silently narrowed walk.
+    """
+    return sorted([*SRC_ROOT.rglob("*.py"), *SCRIPTS_ROOT.rglob("*.py")])
+
+
+def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
+    """Walk src/moneybin/**/*.py AND scripts/**/*.py, collecting every occurrence.
+
+    One walk, one allowlist (MB-172) — `scripts/` is a real DuckDB consumer,
+    not a special case, and `src/moneybin/sql/migrations/` is the only
+    exemption (see module docstring "Exemptions"). Returns (relpath, lineno,
+    clause_type, table, statement_key) 5-tuples, `relpath` relative to
+    REPO_ROOT so a path from either tree is unambiguous — see
+    TABLE_LITERAL_ALLOWLIST's key-shape comment for what the rest of the key
     identifies and why it is not a position.
     """
     found: list[tuple[str, int, str, str, str]] = []
-    for path in sorted(SRC_ROOT.rglob("*.py")):
+    for path in _source_paths():
         if _is_exempt_migration(path):
             continue
-        relpath = path.relative_to(SRC_ROOT).as_posix()
+        relpath = path.relative_to(REPO_ROOT).as_posix()
         for lineno, clause, table, statement_key in _scan_file(path):
             found.append((relpath, lineno, clause, table, statement_key))
     return found
@@ -1315,12 +1349,33 @@ def test_migrations_runner_is_not_exempt() -> None:
     assert not _is_exempt_migration(runner)
 
 
+def test_scripts_directory_is_scanned() -> None:
+    """scripts/ must actually be in the walked set, not just nominally in scope.
+
+    The live tree currently has ZERO hardcoded literals under scripts/ (MB-172
+    triage), and the allowlist holds zero scripts/ entries either — so if
+    `_source_paths` silently stopped including SCRIPTS_ROOT (a rename, a
+    revert to src/moneybin-only, a typo'd glob), both
+    test_no_hardcoded_table_literals_reach_execute and
+    test_allowlist_has_no_dead_entries would stay green with nothing to catch
+    the regression. This pins scripts/ into the walked set directly, the same
+    way test_migrations_runner_is_not_exempt above pins a directory-membership
+    fact independently of what the live tree happens to contain.
+    """
+    assert SCRIPTS_ROOT.is_dir(), "expected scripts/ to exist"
+    known_consumer = SCRIPTS_ROOT / "backfill_categorization_links.py"
+    assert known_consumer.is_file(), (
+        "expected scripts/backfill_categorization_links.py to exist"
+    )
+    assert known_consumer in _source_paths()
+
+
 # --- Synthetic-fixture scanner unit tests -----------------------------------
 #
-# The tests above assert against whatever src/moneybin currently contains —
-# real coverage of the scanner's own core logic (sqlglot table parsing,
-# alias exclusion, CTE-splice tracing, function-scope boundary, name-to-name
-# aliasing) is incidental to that, not guaranteed. These exercise
+# The tests above assert against whatever src/moneybin and scripts/ currently
+# contain — real coverage of the scanner's own core logic (sqlglot table
+# parsing, alias exclusion, CTE-splice tracing, function-scope boundary,
+# name-to-name aliasing) is incidental to that, not guaranteed. These exercise
 # `_scan_file` directly against small synthetic snippets written to
 # `tmp_path`, so each mechanism is pinned independently of what the live
 # tree happens to contain.
