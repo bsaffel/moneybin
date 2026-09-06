@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-04 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -75,7 +75,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 Eight registered report routes back both the CLI and MCP surfaces, and you can
 save your own beside them (below). Six use SQL runners over curated `reports.*`
-views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
+views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cashflow` and `spending`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [Reports guide](guides/reports.md) · [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
 The six SQL-runner routes use declarative `@report` definitions; the two service-backed net-worth routes keep their specialized execution path. The shared catalog derives parameters and masking without adding MCP tool slots. See [Extensibility](#extensibility).
 
@@ -106,8 +106,9 @@ home-currency default falls back quietly, so a profile that has set one is not
 warned on every report it cannot price.
 
 Nothing converted is stored. The original amount and its currency stay
-untouched in every table, and a converted figure is recomputed on each read —
-so the original reading is always one command away, with the flag omitted.
+untouched in every table, and a converted figure is recomputed on each read;
+on a profile with a home currency, `moneybin sql query` over the `reports.*`
+view returns the stored, unconverted figures.
 `moneybin reports networth` prints one position per currency, and a single
 combined position once conversion has priced them into the same one.
 
@@ -166,7 +167,7 @@ blocker.
 
 ## MCP server
 
-- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md).
+- **Bounded tool registry** — One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes. Registered reports run through the generic `reports` catalog and runner without consuming additional tool slots; 50 tools is the hard limit, and the registry now sits at it — admitting another tool means retiring one. Full per-domain inventory: [MCP registry](specs/moneybin-mcp.md); every tool's client-visible definition, generated from the code: [MCP tool reference](reference/mcp-tools.md).
 - **Transport** — stdio today. Streamable HTTP transport ships with the web UI milestone (see [roadmap](roadmap.md)).
 - **Auth and session model** — Each MCP session inherits the profile unlocked by `moneybin db unlock`. `moneybin db lock` clears the stored key so no new session can open the profile; sessions already running keep their in-memory key until they exit (`moneybin db kill` is the confirmation-gated command that terminates them).
 - **Concurrency** — Reads coexist freely; writes are serialized per profile (single-writer rule). Two agents can read concurrently; only one can mutate at a time.

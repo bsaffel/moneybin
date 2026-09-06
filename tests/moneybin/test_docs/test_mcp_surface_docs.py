@@ -1990,19 +1990,25 @@ async def test_mcp_contract_matrix_matches_live_sensitivity_metadata() -> None:
         tool = await mcp.get_tool(name)
         assert isinstance(tool, FunctionTool)
         callback = getclosurevars(tool.fn).nonlocals["fn"]
-        maximum = callback._mcp_maximum_sensitivity  # type: ignore[attr-defined]
-        assert maximum is not None, f"{name}: missing declared maximum sensitivity"
-        sensitivity = maximum.value
+        declared = callback._mcp_declared_sensitivity  # type: ignore[attr-defined]
+        assert declared is not None, f"{name}: missing declared sensitivity"
+        sensitivity = declared.value
         is_dynamic = callback._mcp_dynamic_classification  # type: ignore[attr-defined]
         safety = documented[name].lower()
 
-        assert f"maximum {sensitivity}" in safety, f"{name}: {documented[name]}"
+        # "up to" and "at least" are not interchangeable, and the matrix must
+        # not blur them: a dynamic tool declares a ceiling it classifies
+        # beneath, while a static tool declares a floor its envelope may only
+        # raise. Accepting either phrase for either kind is what let the matrix
+        # advertise a maximum nothing enforces (MB-157).
+        expected = f"up to {sensitivity}" if is_dynamic else f"at least {sensitivity}"
+        assert expected in safety, f"{name}: {documented[name]}"
         if is_dynamic:
             assert "dynamic" in safety, f"{name}: {documented[name]}"
 
     assert (
         documented["reports"].lower()
-        == "read / dynamic / maximum critical / report-derived"
+        == "read / dynamic / up to critical / report-derived"
     )
 
 

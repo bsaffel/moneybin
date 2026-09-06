@@ -340,5 +340,5 @@ def register_curation_tools(mcp: FastMCP) -> None:
         "transactions_create",
         "Create manual transactions as a validated batch. Amounts use the "
         "accounting convention: negative = expense, positive = income; "
-        "transfers exempt. Reverse with system_audit_undo(operation_id).",
+        "transfers exempt. Reverse with system_audit_undo(operation_id=...).",
     )

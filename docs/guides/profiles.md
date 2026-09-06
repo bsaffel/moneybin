@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-04 -->
 
 # Profiles
 
@@ -118,7 +118,7 @@ moneybin profile set logging.level DEBUG
 moneybin profile set logging.log_to_file false --profile business
 ```
 
-This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time.
+This only updates the per-profile YAML — env-var overrides like `MONEYBIN_DATABASE__PATH` still take precedence at load time. Every variable, with its type and default, is in the [configuration reference](../reference/configuration.md).
 
 ### `moneybin profile delete <name>`
 

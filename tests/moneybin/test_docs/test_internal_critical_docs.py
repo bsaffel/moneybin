@@ -80,7 +80,11 @@ _CLAIM_SITES = {
     "docs/guides/sql-access.md": 4,
     "docs/guides/threat-model.md": 1,
     "docs/guides/what-the-ai-sees.md": 2,
+    # Generated copies of the `sql` help and the `sql_query` description below;
+    # the drift test in test_documentation_policy.py pins them to the source.
+    "docs/reference/cli/sql.md": 1,
     "docs/reference/data-model.md": 1,
+    "docs/reference/mcp-tools.md": 1,
     "docs/reference/system-overview.md": 1,
     "docs/roadmap.md": 1,
     "docs/specs/INDEX.md": 1,

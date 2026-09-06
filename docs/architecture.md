@@ -146,7 +146,7 @@ These are the contracts a consumer (MCP user, CLI driver, SQL writer) actually e
   ```
 
 - **Table references** — `TableRef` values carry schema, name, and audience; named values such as `FCT_TRANSACTIONS` are module-level constants imported from `moneybin.tables`. The `moneybin://schema` MCP resource derives from the interface set, so what you can query is what the agent sees.
-- **Sensitivity tiers** (`low` / `medium` / `high` / `critical`) — static tools derive a maximum tier from their typed payload; projection-varying tools classify each response dynamically under a declared maximum. The middleware masks critical fields, records audit metadata, and applies a 30-second default dispatch cap, with explicit 180-second overrides for bounded long-running workflows. Global consent gating is not yet enforced.
+- **Sensitivity tiers** (`low` / `medium` / `high` / `critical`) — static tools derive a floor tier from their typed payload, which a response may raise but never lower; projection-varying tools classify each response dynamically under a declared ceiling. The middleware masks critical fields, records audit metadata, and applies a 30-second default dispatch cap, with explicit 180-second overrides for bounded long-running workflows. Global consent gating is not yet enforced.
 - **Privacy middleware** — read-only validation for the general SQL tool (DDL and writes are rejected). See [`docs/specs/mcp-architecture.md`](specs/mcp-architecture.md).
 
 ## Internal invariants

@@ -25,7 +25,6 @@ import re
 import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
-from collections.abc import Collection
 from pathlib import Path
 from typing import NamedTuple
 
@@ -326,7 +325,6 @@ _TERMINATORS = {"|", "||", "&&", ";", ">", ">>", "2>", "<"}
 # `2>&1`, `>/dev/null`, a trailing `&`. Not `<`: that opens a placeholder.
 _REDIRECTION = re.compile(r"^(\d*>|&>|&$)")
 _ELISIONS = {"...", "…"}
-_FLAG_SPAN = re.compile(r"-{1,2}[A-Za-z]")  # `-y, --yes`, not a lone `-` cell
 _COMMAND_SUBSTITUTION = re.compile(r"\$\((?P<inner>[^()]*)\)")
 _SUBSTITUTED_INVOCATION = re.compile(r"^\s*moneybin(?:\s|$)")
 _ANGLE_PLACEHOLDER = re.compile(r"<[^<>]*>")
@@ -361,15 +359,8 @@ def _user_facing_documents() -> list[Path]:
     return [document for document in documents if document.exists()]
 
 
-def _inline_spans(
-    prose: list[tuple[int, str]], top_level: Collection[str]
-) -> list[tuple[int, str]]:
-    """Inline code spans in one run of prose, each on the line it opens.
-
-    With ``top_level`` (the CLI reference), a table row whose first span starts
-    with a top-level command is read as `moneybin …`, and the row's flag spans
-    (`-y, --yes`) are appended so the flags column is checked as well.
-    """
+def _inline_spans(prose: list[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Inline code spans in one run of prose, each on the line it opens."""
     if not prose:
         return []
     first, joined = prose[0][0], "\n".join(line for _, line in prose)
@@ -377,20 +368,11 @@ def _inline_spans(
     for match in _INLINE_CODE.finditer(joined):
         number = first + joined.count("\n", 0, match.start())
         span = " ".join(match.group(1).split())
-        line = prose[number - first][1]
-        line_start = joined.rfind("\n", 0, match.start()) + 1
-        first_in_row = "`" not in joined[line_start : match.start()]
-        words = span.split(maxsplit=1)
-        if top_level and line.lstrip().startswith("|") and first_in_row:
-            if words and words[0] in top_level:
-                row_spans = [" ".join(s.split()) for s in _INLINE_CODE.findall(line)]
-                flags = [s for s in row_spans[1:] if _FLAG_SPAN.match(s)]
-                span = " ".join(["moneybin", span, *flags])
         spans.append((number, span))
     return spans
 
 
-def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
+def _code_lines(text: str) -> list[_CodeLine]:
     """Return one `_CodeLine` per fenced-block line and inline code span."""
     lines: list[_CodeLine] = []
     prose: list[tuple[int, str]] = []
@@ -399,10 +381,7 @@ def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
     for number, line in enumerate(text.splitlines(), start=1):
         match = _FENCE.match(line.strip())
         if match and (fence is None or line.strip().startswith(fence)):
-            lines += (
-                _CodeLine(n, c, runnable=False)
-                for n, c in _inline_spans(prose, top_level)
-            )
+            lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
             prose = []
             if fence:
                 fence = None
@@ -415,9 +394,7 @@ def _code_lines(text: str, top_level: Collection[str] = ()) -> list[_CodeLine]:
                 lines.append(_CodeLine(number, line, runnable=True))
         else:
             prose.append((number, line))
-    lines += (
-        _CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose, top_level)
-    )
+    lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
     return lines
 
 
@@ -448,14 +425,25 @@ def _unmask_or_hide_substitution(match: re.Match[str]) -> str:
     return "SUBST"
 
 
+def _optional_segment(match: re.Match[str]) -> str:
+    """`[--yes]` keeps its option; any other bracket is an optional positional.
+
+    Click's own usage line (`moneybin profile create [OPTIONS] NAME`, as the
+    generated reference prints it) spells its options as `[OPTIONS]`, which
+    names no positional at all.
+    """
+    inner = match.group(1)
+    if inner.startswith("-"):
+        return inner
+    return "" if inner == "OPTIONS" else "<optional>"
+
+
 def _invocations(code: str) -> list[list[str]]:
     """Every `moneybin …` token list found in one line of code."""
     code = _TRAILING_COMMENT.sub(r"\1", code)
     code = _COMMAND_SUBSTITUTION.sub(_unmask_or_hide_substitution, code)
     code = _ANGLE_PLACEHOLDER.sub(lambda m: m.group(0).replace(" ", "_"), code)
-    code = _OPTIONAL_SEGMENT.sub(
-        lambda m: m.group(1) if m.group(1).startswith("-") else "<optional>", code
-    )
+    code = _OPTIONAL_SEGMENT.sub(_optional_segment, code)
     found: list[list[str]] = []
     for match in _INVOCATION_START.finditer(code):
         rest = code[match.end() :]
@@ -580,7 +568,7 @@ def _resolve_invocation(
             ):
                 return f"`{' '.join(path)}` option `{name}` requires a value"
             following = tokens[index] if index < len(tokens) else ""
-            # A bare value-taking option in a flags column (`--pattern`,
+            # A bare value-taking option in an inline mention (`--pattern`,
             # `--match-type {exact,contains,regex}`) must not swallow the next
             # flag; a negative number (`--amount -12.50`) is still a value. A
             # *runnable* transcript gets no such benefit of the doubt: Click
@@ -675,11 +663,9 @@ def test_public_docs_cli_invocations_resolve() -> None:
     subcommand, a required option, and a required positional (including a
     required variadic) actually being present, and a value-taking option
     greedily consuming the next token exactly as Click does; an inline span
-    or table row names a command and is exempt from those four. A row of the CLI
-    reference tables whose first code span starts with a top-level command is
-    read as `moneybin …` with the row's flag spans appended, so the flags
-    column is checked too. A line that must show a wrong invocation on
-    purpose (an error example) carries ``<!-- cli-invocation-ok: <reason> -->``.
+    or table row names a command and is exempt from those four. A line that
+    must show a wrong invocation on purpose (an error example) carries
+    ``<!-- cli-invocation-ok: <reason> -->``.
     """
     from typer.main import get_command
 
@@ -695,8 +681,7 @@ def test_public_docs_cli_invocations_resolve() -> None:
             for number, line in enumerate(text.splitlines(), start=1)
             if _CLI_INVOCATION_MARKER in line
         }
-        top_level = root.commands if document.name == "cli-reference.md" else ()
-        for entry in _join_continuations(_code_lines(text, top_level)):
+        for entry in _join_continuations(_code_lines(text)):
             if entry.number in allowed_lines:
                 continue
             for tokens in _invocations(entry.code):
@@ -912,6 +897,17 @@ def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: click.Group) ->
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
+def test_invocations_drop_click_usage_options_placeholder(
+    _fixture_cli: click.Group,
+) -> None:
+    """Click's `[OPTIONS]` names no positional; `[--yes]` still keeps its option."""
+    (command,) = _invocations("moneybin create [OPTIONS] NAME [AMOUNT]")
+    assert command == ["create", "NAME", "<optional>"]
+    assert _resolve_invocation(command, _fixture_cli, runnable=False) is None
+    (flagged,) = _invocations("moneybin commit [--yes]")
+    assert flagged == ["commit", "--yes"]
+
+
 def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: click.Group) -> None:
     (command,) = _invocations("moneybin -h")
     assert _resolve_invocation(command, _fixture_cli, runnable=True) is not None
@@ -926,23 +922,6 @@ def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
     assert (
         _resolve_invocation(command, _fixture_cli, runnable=entry.runnable) is not None
     )
-
-
-def test_code_lines_reference_row_checks_flags_column(
-    _fixture_cli: click.Group,
-) -> None:
-    """A CLI-reference-table row reads its flags column as part of the invocation.
-
-    The row's second span (`--bogus`, not first-in-row) surfaces as its own
-    non-invocation entry alongside the enriched one — harmless, since it
-    contains no `moneybin` for `_invocations` to find.
-    """
-    text = "| `create <name>` | Create a thing. | `--bogus` |"
-    entries = _code_lines(text, top_level=_fixture_cli.commands)
-    commands = [tokens for entry in entries for tokens in _invocations(entry.code)]
-    assert commands == [["create", "<name>", "--bogus"]]
-    (command,) = commands
-    assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
 def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
@@ -972,6 +951,28 @@ def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
     ]
     assert inline_problems == [None]
     assert fenced_problems and all(problem is not None for problem in fenced_problems)
+
+
+# ---------------------------------------------------------------------------
+# Generated reference pages match the code they are rendered from
+# ---------------------------------------------------------------------------
+
+
+def test_generated_references_are_current() -> None:
+    """`docs/reference/cli/`, `mcp-tools.md`, and `configuration.md` are current.
+
+    scripts/generate_reference_docs.py renders them from the command tree,
+    the MCP server's tool list, and the settings model; a change to any of those
+    that leaves the pages stale fails here. Run `make generate-docs` and
+    commit the result.
+    """
+    from scripts.generate_reference_docs import stale_pages
+
+    stale = stale_pages()
+    assert not stale, (
+        "Generated reference pages are stale; run `make generate-docs` and "
+        "commit the result:\n" + "\n".join(str(page) for page in stale)
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-04 -->
 # Contributing to MoneyBin
 
 Thanks for helping out. This file gets you to a landed change without a reading
@@ -155,7 +155,10 @@ matching or categorization heuristics, or migrations, and `make test-e2e` when
 CLI startup or packaging can change. A `.sql` diff runs `make format-sql` and
 the unit tests, which parse the SQLMesh models off disk. Any other diff runs its
 layer's gate instead — docs and agent instructions take
-`uv run pytest tests/test_documentation_policy.py`. The full rule is under
+`uv run pytest tests/test_documentation_policy.py`. A diff that changes a CLI
+command, an MCP tool description, or a setting also runs `make generate-docs`
+and commits the rewritten pages under `docs/reference/`; that same policy test
+fails while they are stale. The full rule is under
 "Pre-commit gate" in [`AGENTS.md`](AGENTS.md). CI runs every category regardless.
 
 ### 6. Commit and PR

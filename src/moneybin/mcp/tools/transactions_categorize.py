@@ -264,7 +264,7 @@ def register_categorization_coarse_writes(mcp: FastMCP) -> None:
         "require rule_id and forbid replacement fields. The tool advertises its "
         "maximum destructive risk, but asks for exact payload-bound confirmation "
         "only before a present rule is hard-deleted. Rule removal is recoverable "
-        "with system_audit_undo(operation_id).",
+        "with system_audit_undo(operation_id=...).",
         privacy_actor="transactions_categorize_rules_set",
     )
 

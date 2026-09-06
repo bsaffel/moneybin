@@ -132,13 +132,13 @@ def description_budget_violations(
                 )
             )
             continue
-        first_sentence = _first_sentence(description)
-        if len(first_sentence) > FIRST_SENTENCE_CHARACTER_LIMIT:
+        opening = first_sentence(description)
+        if len(opening) > FIRST_SENTENCE_CHARACTER_LIMIT:
             violations.append(
                 DescriptionBudgetViolation(
                     tool_name=tool_name,
                     budget="first_sentence",
-                    actual=len(first_sentence),
+                    actual=len(opening),
                     limit=FIRST_SENTENCE_CHARACTER_LIMIT,
                 )
             )
@@ -181,7 +181,8 @@ def _name_delta(expected_names: frozenset[str], actual_names: frozenset[str]) ->
     return f"MCP tool-name contract drift. Missing: {missing}; unexpected: {unexpected}"
 
 
-def _first_sentence(description: str) -> str:
+def first_sentence(description: str) -> str:
+    """The description up to and including its first sentence-ending mark."""
     for index, character in enumerate(description):
         if character in ".!?" and (
             index == len(description) - 1 or description[index + 1].isspace()

@@ -249,6 +249,57 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
                 )
             )
 
+    results.extend(_runner_assertions(db))
+    return results
+
+
+# The two service-backed net-worth routes take a required window; every other
+# built-in runs on its declared defaults.
+_RUNNER_PARAMETERS: dict[str, dict[str, str]] = {
+    "core:networth_history": {"from_date": "2024-01-01", "to_date": "2024-12-31"},
+}
+
+
+def _runner_assertions(db: Database) -> list[AssertionResult]:
+    """Every built-in report executes through the catalog against the built views.
+
+    The row-count floors above SELECT each view directly, and the e2e suite
+    drives each command against one-row stub views. Neither runs a runner's
+    own SQL over the real views, so a runner shape the planner rewrites into
+    something DuckDB cannot execute over the recursive match-group CTE — the
+    `ROW_NUMBER() ... <= ?` top-N that broke `core:merchants` and
+    `core:large_transactions` — reached main with every gate green.
+    """
+    from moneybin.reports._framework.catalog import get_report_catalog, report_tier
+
+    catalog = get_report_catalog(db)
+    results: list[AssertionResult] = []
+    for report in catalog.list():
+        if report_tier(report) != "builtin":
+            continue
+        parameters = _RUNNER_PARAMETERS.get(report.report_id, {})
+        name = f"runner_{report.report_id}_executes"
+        try:
+            catalog.execute(
+                db, report_id=report.report_id, parameters=parameters, limit=5
+            )
+        except Exception as exc:  # noqa: BLE001 — surface as structured failure
+            results.append(
+                AssertionResult(
+                    name=name,
+                    passed=False,
+                    details={"report_id": report.report_id, "parameters": parameters},
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            continue
+        results.append(
+            AssertionResult(
+                name=name,
+                passed=True,
+                details={"report_id": report.report_id, "parameters": parameters},
+            )
+        )
     return results
 
 
