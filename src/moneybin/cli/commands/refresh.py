@@ -12,14 +12,74 @@ from enum import StrEnum
 import typer
 
 from moneybin.cli.output import OutputFormat, output_option, quiet_option
+from moneybin.cli.render import render_note
 from moneybin.cli.utils import (
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
 )
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+from moneybin.services.refresh_outcome import StageOutcome
 
 logger = logging.getLogger(__name__)
+
+# One phrase per step, in that step's own vocabulary. A shared template would
+# have to call every step's numbers the same thing, and they are not the same
+# thing — "12 bound" and "12 rows" answer different questions.
+_STAGE_LABELS: dict[str, str] = {
+    "gsheet": "Sheets",
+    "match": "Matching",
+    "transform": "Transforms",
+    "categorize": "Categorization",
+    "identity": "Identity",
+    "rates": "Rates",
+}
+
+
+def _stage_summary(stage: StageOutcome) -> str:
+    """One line naming a stage and what it observably did.
+
+    A stage that was reached and declined says so rather than reporting zeros:
+    "nothing found" and "nothing examined" send the user to different remedies,
+    and only the second is worth re-running.
+    """
+    label = _STAGE_LABELS.get(stage.step, stage.step)
+    if stage.error is not None:
+        return f"  {label}: failed"
+    if not stage.ran:
+        return f"  {label}: skipped (nothing examined)"
+    counts = stage.counts
+    if stage.step == "gsheet":
+        detail = f"{counts['completed']} pulled, {counts['rows']} rows"
+        if counts["non_complete"]:
+            detail += f", {counts['non_complete']} incomplete"
+        return f"  {label}: {detail}"
+    if stage.step == "match":
+        return (
+            f"  {label}: {counts['auto_merged']} merged, "
+            f"{counts['pending_review']} to review, "
+            f"{counts['pending_transfers']} transfers to review"
+        )
+    if stage.step == "transform":
+        return f"  {label}: rebuilt"
+    if stage.step == "categorize":
+        return (
+            f"  {label}: {counts['total']} categorized "
+            f"({counts['merchant']} merchant, {counts['rule']} rule, "
+            f"{counts['plaid']} provider)"
+        )
+    if stage.step == "identity":
+        # Each domain reports only if it ran: one can fail while the other
+        # succeeds, and a missing key means that domain never answered.
+        parts: list[str] = []
+        if "accounts_linked" in counts:
+            parts.append(f"{counts['accounts_linked']} accounts linked")
+        if "merchants_bound" in counts:
+            parts.append(f"{counts['merchants_bound']} merchants bound")
+        return f"  {label}: {', '.join(parts) if parts else 'no domains reported'}"
+    if stage.step == "rates":
+        return f"  {label}: {counts['rates_written']} written"
+    return f"  {label}: ran"
 
 
 class RefreshStepChoice(StrEnum):
@@ -144,6 +204,16 @@ def refresh_command(
         if result.error is not None:
             raise typer.Exit(1)
         return
+
+    # Requirement 18: one note per stage, before the summary line that closes
+    # the run. Sited after the `-q` return above rather than passing
+    # quiet=True, so there is one place that decides a status line is
+    # suppressed. A stage the caller never requested is absent from the tuple,
+    # so a narrowed `--step` run prints only what it actually ran.
+    if result.stages:
+        render_note("Pipeline:")
+        for stage in result.stages:
+            render_note(_stage_summary(stage))
 
     # Suppress the step-retry hint when apply also failed: the apply error is
     # the blocker (reported by ❌ below), so "re-run the failed step" would

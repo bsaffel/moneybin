@@ -493,6 +493,26 @@ class SelfHealActionRow:
 
 
 @dataclass(frozen=True, slots=True)
+class RefreshStageRow:
+    """What one pipeline step did inside RefreshRunPayload.
+
+    All operational metadata (Tier.LOW): ``step`` is a fixed label from the
+    canonical step list, ``counts`` holds plain decision and row counts naming
+    no transaction, and ``ran`` separates a step that examined nothing from one
+    that examined rows and found none — the same distinction
+    ``matching_skipped`` draws for the match step alone.
+
+    ``error`` is DESCRIPTION for the same reason the payload's other error
+    strings are: a step's error text can embed a model path.
+    """
+
+    step: Annotated[str, DataClass.TXN_TYPE]
+    ran: Annotated[bool, DataClass.TXN_TYPE]
+    counts: Annotated[dict[str, int], DataClass.AGGREGATE]
+    error: Annotated[str | None, DataClass.DESCRIPTION]
+
+
+@dataclass(frozen=True, slots=True)
 class RefreshRunPayload:
     """Payload for ``refresh_run`` — pipeline execution result.
 
@@ -522,6 +542,10 @@ class RefreshRunPayload:
     matching_skipped: Annotated[bool, DataClass.TXN_TYPE]
     transfers_retired: Annotated[int, DataClass.AGGREGATE]
     self_heal_actions: list[SelfHealActionRow]
+    # One entry per step this run actually executed, in pipeline order. A step
+    # the caller did not request is absent rather than present-and-zero, so a
+    # narrowed `steps=[...]` call reports only what it ran.
+    stages: list[RefreshStageRow]
     # Counts of rates gathered, and the pairs the provider could not answer. A
     # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
     # no amount. `rates_written` is None when the rates step did not run —

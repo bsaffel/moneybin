@@ -10,7 +10,11 @@ from __future__ import annotations
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.errors import RecoveryAction
 from moneybin.orchestration.refresh import RefreshResult, step_outcome
-from moneybin.privacy.payloads.system import RefreshRunPayload, SelfHealActionRow
+from moneybin.privacy.payloads.system import (
+    RefreshRunPayload,
+    RefreshStageRow,
+    SelfHealActionRow,
+)
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 
@@ -246,6 +250,17 @@ def refresh_envelope(
                     timestamp=r.timestamp,
                 )
                 for r in result.self_heal_actions
+            ],
+            stages=[
+                RefreshStageRow(
+                    step=s.step,
+                    ran=s.ran,
+                    # Copied out of the read-only view the carrier holds: the
+                    # payload is serialized, and a MappingProxyType is not.
+                    counts=dict(s.counts),
+                    error=s.error,
+                )
+                for s in result.stages
             ],
             rates_written=(
                 None

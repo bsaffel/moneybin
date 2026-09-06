@@ -207,6 +207,26 @@ def step_outcome(result: RefreshResult) -> RefreshStepOutcome:
     )
 
 
+def _rates_stage(
+    backfill: RateBackfillResult | None, error: str | None
+) -> StageOutcome:
+    """The rates step's outcome, in the same shape every other step reports.
+
+    A null backfill means the step declined to run — it needs a home currency
+    and built views — so it comes back ``ran=False`` rather than as a zero.
+    Zero rates written by a step that *did* run is a different fact, and the
+    two were previously indistinguishable to a caller reading the count alone.
+    """
+    if backfill is None:
+        return StageOutcome(step="rates", ran=False, error=error)
+    return StageOutcome(
+        step="rates",
+        ran=True,
+        counts=MappingProxyType({"rates_written": backfill.rates_written}),
+        error=error,
+    )
+
+
 def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     """Resolve a steps list (or None) to the canonical frozenset.
 
@@ -277,28 +297,29 @@ def refresh(
         # _run_gsheet_step catches all exceptions internally and always
         # returns a list — no outer try/except needed here.
         pull_results = _run_gsheet_step(db)
+        completed = [r for r in pull_results if r.status == "complete"]
+        non_complete = [r for r in pull_results if r.status != "complete"]
+        # Both hoisted out of the `if pull_results:` that used to wrap this
+        # whole block. A pull with no connections completes nothing, and the
+        # zero it reports is exactly the outcome requirement 18 asks a stage
+        # to name — the old shape recorded no stage at all for it.
+        total_rows = sum(
+            r.load_result.rows_inserted + r.load_result.rows_upserted
+            for r in completed
+            if r.load_result
+        )
+        stages.append(
+            StageOutcome(
+                step="gsheet",
+                ran=True,
+                counts=MappingProxyType({
+                    "completed": len(completed),
+                    "rows": total_rows,
+                    "non_complete": len(non_complete),
+                }),
+            )
+        )
         if pull_results:
-            completed = [r for r in pull_results if r.status == "complete"]
-            non_complete = [r for r in pull_results if r.status != "complete"]
-            # Hoisted out of the `if completed:` below, which computed it only
-            # to log it. The stage reports zero rows on a pull that completed
-            # nothing, and a zero is the outcome requirement 18 asks for.
-            total_rows = sum(
-                r.load_result.rows_inserted + r.load_result.rows_upserted
-                for r in completed
-                if r.load_result
-            )
-            stages.append(
-                StageOutcome(
-                    step="gsheet",
-                    ran=True,
-                    counts=MappingProxyType({
-                        "completed": len(completed),
-                        "rows": total_rows,
-                        "non_complete": len(non_complete),
-                    }),
-                )
-            )
             if completed:
                 logger.info(
                     f"GSheet pull: {len(completed)} completed, {total_rows} total rows"
@@ -366,6 +387,24 @@ def refresh(
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
         except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
             matching_error = _step_error(exc, step="Matching")
+        # One append covering all four branches rather than one per branch: the
+        # counts are already accumulated in locals that every branch sets, and
+        # a skipped run must report no counts at all rather than four zeros.
+        stages.append(
+            StageOutcome(
+                step="match",
+                ran=not matching_skipped,
+                counts=MappingProxyType({})
+                if matching_skipped
+                else MappingProxyType({
+                    "auto_merged": auto_merged,
+                    "pending_review": pending_review,
+                    "pending_transfers": pending_transfers,
+                    "transfers_retired": transfers_retired,
+                }),
+                error=matching_error,
+            )
+        )
 
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
@@ -379,9 +418,10 @@ def refresh(
         if "identity" in requested:
             identity_stage, identity_errors = _run_identity_step(db)
             stages.append(identity_stage)
-        rate_backfill, rate_backfill_error = (
-            _run_rates_step(db) if "rates" in requested else (None, None)
-        )
+        rate_backfill, rate_backfill_error = (None, None)
+        if "rates" in requested:
+            rate_backfill, rate_backfill_error = _run_rates_step(db)
+            stages.append(_rates_stage(rate_backfill, rate_backfill_error))
         return RefreshResult(
             applied=False,
             duration_seconds=None,
@@ -399,6 +439,15 @@ def refresh(
         )
 
     apply_result = TransformService(db).apply()
+    # No counts: apply rebuilds models rather than producing a countable
+    # outcome, and its duration and error already ride on the result itself.
+    # The stage exists so the renderer's per-stage loop has an entry to name
+    # for the one step every full refresh runs.
+    stages.append(
+        StageOutcome(
+            step="transform", ran=apply_result.applied, error=apply_result.error
+        )
+    )
     if not apply_result.applied:
         # categorize is not attempted when apply fails (it reads SQLMesh-built
         # views), so categorization_error stays None here — "not attempted",
@@ -423,9 +472,10 @@ def refresh(
     if "identity" in requested:
         identity_stage, identity_errors = _run_identity_step(db)
         stages.append(identity_stage)
-    rate_backfill, rate_backfill_error = (
-        _run_rates_step(db) if "rates" in requested else (None, None)
-    )
+    rate_backfill, rate_backfill_error = (None, None)
+    if "rates" in requested:
+        rate_backfill, rate_backfill_error = _run_rates_step(db)
+        stages.append(_rates_stage(rate_backfill, rate_backfill_error))
 
     return RefreshResult(
         applied=True,

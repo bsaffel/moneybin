@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
 from click.testing import Result
@@ -12,6 +13,7 @@ from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.rate_backfill import RateBackfillResult
+from moneybin.services.refresh_outcome import StageOutcome
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
@@ -491,3 +493,165 @@ def test_refresh_unknown_step_rejected_at_parse_time(runner: CliRunner) -> None:
     result = runner.invoke(app, ["refresh", "--step", "bogus"])
     assert result.exit_code == 2, result.output
     assert "bogus" in result.output  # Typer prints the bad value
+
+
+# --- Requirement 18: one note per pipeline stage ----------------------------
+
+
+def _staged_result(*stages: StageOutcome) -> RefreshResult:
+    return RefreshResult(
+        applied=True, duration_seconds=1.5, error=None, stages=tuple(stages)
+    )
+
+
+def _run_text_refresh(runner: CliRunner, result: RefreshResult) -> Result:
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        return runner.invoke(app, ["refresh"])
+
+
+def test_refresh_names_every_stage_that_ran(runner: CliRunner) -> None:
+    """A run that changed things says what each stage did, on stderr.
+
+    Requirement 18: the outcome per stage is the payload. Before this, a full
+    refresh printed one duration line and the counts lived only in the log.
+    """
+    invocation = _run_text_refresh(
+        runner,
+        _staged_result(
+            StageOutcome(
+                step="categorize",
+                ran=True,
+                counts=MappingProxyType({
+                    "total": 400,
+                    "merchant": 250,
+                    "rule": 120,
+                    "plaid": 30,
+                }),
+            ),
+            StageOutcome(
+                step="identity",
+                ran=True,
+                counts=MappingProxyType({
+                    "accounts_linked": 7,
+                    "merchants_bound": 12,
+                    "merchant_conflicts": 0,
+                }),
+            ),
+        ),
+    )
+
+    assert invocation.exit_code == 0, invocation.output
+    # The note names the stage in the user's vocabulary; the machine-readable
+    # step name stays in the JSON branch, asserted separately below.
+    assert "Categorization: 400 categorized" in invocation.output
+    assert "Identity: 7 accounts linked, 12 merchants bound" in invocation.output
+
+
+def test_refresh_distinguishes_a_zero_stage_from_a_skipped_one(
+    runner: CliRunner,
+) -> None:
+    """Zero and skipped must not print the same sentence.
+
+    A skipped match examined nothing, so reporting "no duplicates found" would
+    invent a result the run never established.
+    """
+    invocation = _run_text_refresh(
+        runner,
+        _staged_result(
+            StageOutcome(
+                step="match",
+                ran=False,
+            ),
+            StageOutcome(
+                step="categorize",
+                ran=True,
+                counts=MappingProxyType({
+                    "total": 0,
+                    "merchant": 0,
+                    "rule": 0,
+                    "plaid": 0,
+                }),
+            ),
+        ),
+    )
+
+    assert invocation.exit_code == 0, invocation.output
+    lines = [ln for ln in invocation.output.splitlines() if ln.strip()]
+    match_line = next(ln for ln in lines if "Matching" in ln)
+    categorize_line = next(ln for ln in lines if "Categorization" in ln)
+    assert "skipped" in match_line
+    # A skipped step reports no counts at all — four zeros would be a claim
+    # about rows it never examined.
+    assert "0" not in match_line
+    # The zero stage still reports its zero, and never says it was skipped.
+    assert "0 categorized" in categorize_line
+    assert "skipped" not in categorize_line
+
+
+def test_refresh_stage_notes_are_silenced_by_quiet(runner: CliRunner) -> None:
+    """``-q`` suppresses status lines, and a stage note is one (requirement 4)."""
+    invocation = _run_text_refresh_quiet(
+        runner,
+        _staged_result(
+            StageOutcome(
+                step="categorize",
+                ran=True,
+                counts=MappingProxyType({
+                    "total": 400,
+                    "merchant": 0,
+                    "rule": 0,
+                    "plaid": 0,
+                }),
+            )
+        ),
+    )
+
+    assert invocation.exit_code == 0, invocation.output
+    assert "categorize" not in invocation.output
+
+
+def _run_text_refresh_quiet(runner: CliRunner, result: RefreshResult) -> Result:
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        return runner.invoke(app, ["refresh", "-q"])
+
+
+def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
+    """The agent surface gets the same outcomes as structured data, not prose."""
+    fake = _staged_result(
+        StageOutcome(
+            step="categorize",
+            ran=True,
+            counts=MappingProxyType({
+                "total": 400,
+                "merchant": 250,
+                "rule": 120,
+                "plaid": 30,
+            }),
+        )
+    )
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        invocation = runner.invoke(app, ["refresh", "--output", "json"])
+
+    assert invocation.exit_code == 0, invocation.output
+    payload = json.loads(invocation.stdout)
+    stages = payload["data"]["stages"]
+    assert stages == [
+        {
+            "step": "categorize",
+            "ran": True,
+            "counts": {"total": 400, "merchant": 250, "rule": 120, "plaid": 30},
+            "error": None,
+        }
+    ]

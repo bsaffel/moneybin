@@ -1179,7 +1179,8 @@ def test_refresh_omits_a_stage_the_caller_never_asked_for(
     result = refresh(db=MagicMock(spec=Database), steps=["transform"])
 
     assert result.stage("categorize") is None
-    assert [s.step for s in result.stages] == []
+    # Only the step that was asked for — the other five contribute nothing.
+    assert [s.step for s in result.stages] == ["transform"]
 
 
 def test_refresh_marks_a_requested_categorize_that_could_not_run(
@@ -1299,3 +1300,105 @@ def test_refresh_reports_what_the_gsheet_pull_fetched(
     assert stage is not None
     assert stage.ran is True
     assert stage.counts == {"completed": 2, "rows": 50, "non_complete": 1}
+
+
+def test_refresh_reports_what_the_matcher_examined_as_a_stage(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """The match counts already existed on the result; they join the stage list.
+
+    Leaving them as flat fields beside a structured stage list would be two
+    ways to say the same thing, which is what the renderer would then have to
+    reconcile.
+    """
+    patched_services["matcher_run"].return_value = MagicMock(
+        has_matches=True,
+        has_pending=True,
+        auto_merged=4,
+        pending_review=2,
+        pending_transfers=1,
+        transfers_retired=0,
+        summary=MagicMock(return_value="4 auto-merged, 2 pending"),
+    )
+
+    result = refresh(db=MagicMock(spec=Database), steps=["match", "transform"])
+
+    stage = result.stage("match")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.counts == {
+        "auto_merged": 4,
+        "pending_review": 2,
+        "pending_transfers": 1,
+        "transfers_retired": 0,
+    }
+
+
+def test_refresh_marks_a_match_step_whose_views_were_missing(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A skipped match must not report zero duplicates found.
+
+    Nothing was examined, so a zero count would be an invented result — the
+    same distinction ``matching_skipped`` already draws, now carried by
+    ``ran``.
+    """
+    patched_services["matcher_run"].side_effect = duckdb.CatalogException(
+        "Table with name fct_transactions does not exist!"
+    )
+
+    result = refresh(db=MagicMock(spec=Database), steps=["match", "transform"])
+
+    stage = result.stage("match")
+    assert stage is not None
+    assert stage.ran is False
+    assert stage.counts == {}
+
+
+def test_refresh_reports_the_rates_step_as_a_stage(
+    monkeypatch: pytest.MonkeyPatch, patched_services: dict[str, MagicMock]
+) -> None:
+    """The rates step's count moves into the stage list with the others."""
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult | None, str | None]:
+        return (
+            RateBackfillResult(
+                rates_written=31,
+                pairs_failed=(),
+                pairs_unsupported=(),
+                pairs_discarded=(),
+            ),
+            None,
+        )
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+
+    result = refresh(db=MagicMock(spec=Database), steps=["transform", "rates"])
+
+    stage = result.stage("rates")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.counts == {"rates_written": 31}
+
+
+def test_refresh_lists_stages_in_canonical_pipeline_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The renderer prints the list in order, so the order is the contract.
+
+    A note sequence that does not match the order the steps actually ran in
+    would misdescribe the pipeline it is reporting on.
+    """
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    result = refresh(db=MagicMock(spec=Database), steps=None)
+
+    assert [s.step for s in result.stages] == [
+        "gsheet",
+        "match",
+        "transform",
+        "categorize",
+        "identity",
+        "rates",
+    ]
