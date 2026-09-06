@@ -185,7 +185,7 @@ Files in `.claude/rules/` auto-load via `paths:` frontmatter — path-scoped loa
 | `data-extraction.md` | Incremental sync, dedup, parameter design, new data sources |
 | `identifiers.md` | Content hashes, truncated UUIDs, source IDs, semantic slugs |
 | `documentation.md` | Diagram conventions (Mermaid over ASCII) |
-| `reports.md` | The `@report` contract, declared privacy classes + derivation/CI verification, the `reports.*`-means-user-facing boundary — loads when touching `reports/**` or SQLMesh `reports` models |
+| `reports.md` | The SQL-backed default (a non-SQL report kind needs approval before you write it), the `@report` contract, declared privacy classes + derivation/CI verification, the `reports.*`-means-user-facing boundary — loads when touching `reports/**` or SQLMesh `reports` models |
 | `shipping.md` | Post-implementation checklist (CHANGELOG, roadmap, features, README, INDEX) — loads when editing those |
 | `surface-design.md` | Cross-surface operation-shape taxonomy, verb vocabulary, audience layering — loads when touching mcp/cli/services code or the moneybin-mcp/cli/capabilities + mcp-architecture specs |
 | `column-ordering.md` | Column order on every dataset surface: dbt data-type order in `prep`/`core`, grain-first in `reports`, statement order inside the measure block, the SQL projection as the one source consumers read — loads when touching SQLMesh models, report specs, or exports |
