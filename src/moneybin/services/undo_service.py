@@ -16,6 +16,7 @@ service silently reversing unrelated later work.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -523,6 +524,19 @@ class UndoService:
             [operation_id],
         ).fetchone()
         return row is not None
+
+    def undone_operation_ids(self, operation_ids: Iterable[str]) -> frozenset[str]:
+        """Which of ``operation_ids`` are *currently* reversed (net liveness).
+
+        One scan of the undo edges answers the whole batch, so a caller holding
+        many candidates pays one query rather than one each. Public because
+        "was this operation undone" is a question outside this service too —
+        the stranded-curation heal asks it of each alias re-key — and the
+        answer must come from the same definition ``can_undo`` uses, not a
+        parallel one.
+        """
+        liveness = self._build_undo_liveness()
+        return frozenset(op for op in operation_ids if liveness.is_undone(op))
 
     def _build_undo_liveness(self) -> _UndoLiveness:
         """Load every undo edge once and index it for net-liveness queries.

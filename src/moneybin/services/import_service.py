@@ -6489,6 +6489,7 @@ class ImportService:
         import_id: str,
         *,
         verify: Callable[[ImportRevertPlan], None],
+        actor: str = "system",
     ) -> dict[str, str | int]:
         """Revalidate and revert one import batch in the same transaction.
 
@@ -6496,13 +6497,28 @@ class ImportService:
         *inside* the write transaction, immediately before the first delete, so
         approval can never be applied to state it did not describe.
 
+        Deleting the rows behind a merged transaction re-keys it — the dedup
+        group re-anchors to a surviving member — so the curation hanging off the
+        old canonical id is stranded the instant the delete lands. The repair
+        runs in this same transaction rather than waiting for the next matcher
+        run: an annotation must not be invisible in between, and a repair that
+        cannot commit means the revert that stranded it must not commit either.
+
         Returns:
             ``{'status': 'reverted', 'rows_deleted': N}`` on success, else the
             live non-revertable outcome.
         """
+        # Deferred with the rest: `matching.aliasing` reaches back into the
+        # repositories, whose base -> audit chain re-enters this package.
         from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
+        from moneybin.matching.aliasing import (  # noqa: PLC0415
+            AliasForwardResult,
+            forward_rekeyed_transaction_ids,
+            record_committed_alias_forwarding,
+        )
         from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
 
+        forwarding = AliasForwardResult()
         self._db.begin()
         try:
             live = self.plan_revert(import_id)
@@ -6522,6 +6538,10 @@ class ImportService:
                     """,
                     [import_id],
                 )
+                # After the deletes: the re-key it causes is what the pass reads.
+                forwarding = forward_rekeyed_transaction_ids(
+                    self._db, actor=actor, in_outer_txn=True
+                )
             self._db.commit()
         except BaseException:
             self._db.rollback()
@@ -6529,6 +6549,8 @@ class ImportService:
 
         if not live.revertable:
             return live.as_result()
+
+        record_committed_alias_forwarding(forwarding)
 
         # Drop the auto-generated raw.pdf_<alias> view after row deletion
         # succeeds. DDL is autocommit in DuckDB (cannot be inside the transaction),

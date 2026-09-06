@@ -387,8 +387,10 @@ class TestRevertStrandsCurationAndTheHealPassRecoversIt:
 
         The canonical id flips back to the CSV row's hash, which already
         forwards away, so the append-only map cannot be corrected and the
-        curation is left on an id no view serves. The healing pass walks the
-        map backwards and puts all four curation kinds back.
+        curation is left on an id no view serves. The revert runs the healing
+        pass itself, so all four curation kinds are back before it returns —
+        the annotation is never invisible between the delete and some later
+        matcher run.
         """
         csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
         assert _live_ids(pipeline_db) == {csv_id}
@@ -407,19 +409,21 @@ class TestRevertStrandsCurationAndTheHealPassRecoversIt:
         assert _aliases(pipeline_db) == {csv_id: ofx_id}
         assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [ofx_id])
 
-        ImportService(pipeline_db).revert_confirmed("imp2", verify=lambda _plan: None)
+        ImportService(pipeline_db).revert_confirmed(
+            "imp2", verify=lambda _plan: None, actor="cli"
+        )
 
         assert _live_ids(pipeline_db) == {csv_id}, "the group re-anchors to the CSV row"
         assert _curation_ids(pipeline_db) == dict.fromkeys(
-            _CURATION_TABLES, [ofx_id]
-        ), "the curation is stranded until the healing pass runs"
-        assert _categories_fk_status(pipeline_db) == "fail"
+            _CURATION_TABLES, [csv_id]
+        ), "the revert healed it; no later matcher run is needed"
+        assert _categories_fk_status(pipeline_db) == "pass"
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}, "no alias row is appended"
 
         MatchingService(pipeline_db).run(actor="system")
 
         assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
         assert _categories_fk_status(pipeline_db) == "pass"
-        assert _aliases(pipeline_db) == {csv_id: ofx_id}, "no alias row is appended"
 
     @pytest.mark.unit
     def test_a_second_pass_over_the_healed_state_writes_nothing(
@@ -525,7 +529,7 @@ class TestComponentsThatCannotBeResolved:
             pipeline_db, transaction_id="csv_dead", import_id="imp-csv-dead"
         )
         _curate(pipeline_db, dead_csv_id, suffix="0001")
-        dead_ofx_id = _load_ofx_row(
+        _load_ofx_row(
             pipeline_db, source_transaction_id="ofx_dead", import_id="imp-ofx-dead"
         )
         _accept_dedup(
@@ -562,15 +566,21 @@ class TestComponentsThatCannotBeResolved:
         service = ImportService(pipeline_db)
         # Both of the first transaction's imports go, so its whole component is
         # dead; only the control's anchor goes, so the control can be healed.
-        service.revert_confirmed("imp-ofx-dead", verify=lambda _plan: None)
-        service.revert_confirmed("imp-csv-dead", verify=lambda _plan: None)
-        service.revert_confirmed("imp-ofx-live", verify=lambda _plan: None)
+        # The first revert re-anchors the dead pair onto its CSV row and heals
+        # onto it; the second kills that id too, leaving the component with no
+        # live member at all.
+        service.revert_confirmed("imp-ofx-dead", verify=lambda _plan: None, actor="cli")
+        assert dead_csv_id in _curation_ids(pipeline_db)["transaction_categories"]
+        service.revert_confirmed("imp-csv-dead", verify=lambda _plan: None, actor="cli")
+        # The last revert's heal pass sees both components: it must move the
+        # control and decline the dead one.
+        service.revert_confirmed("imp-ofx-live", verify=lambda _plan: None, actor="cli")
         assert _live_ids(pipeline_db) == {control_csv_id}
 
         MatchingService(pipeline_db).run(actor="system")
 
         assert _curation_ids(pipeline_db) == dict.fromkeys(
-            _CURATION_TABLES, sorted((dead_ofx_id, control_csv_id))
+            _CURATION_TABLES, sorted((dead_csv_id, control_csv_id))
         ), "the control healed in this same pass; the dead component did not move"
         assert _categories_fk_status(pipeline_db) == "fail"
 
@@ -663,14 +673,21 @@ class TestComponentsThatCannotBeResolved:
         assert _categories_fk_status(pipeline_db) == "pass"
 
 
-class TestHealingRunsWhenTheMatcherFails:
-    """``MatchingService.run`` forwards in a ``finally``; the heal must be safe there."""
+class TestAnUndoneMergeStopsTheWalk:
+    """The alias row outlives the merge; the walk must not.
+
+    `matches undo` revives both halves and deliberately leaves the map row
+    standing, so an edge alone no longer means "the same transaction". Liveness
+    cannot tell the difference either — a reversed re-key whose old id later
+    died looks exactly like an ordinary chained re-key — so the reversal itself
+    has to be what scopes the walk.
+    """
 
     @pytest.mark.unit
-    def test_a_raising_matcher_still_heals_stranded_curation(
-        self, pipeline_db: Database, mocker: MockerFixture
+    def test_a_later_strand_of_a_revived_id_is_not_walked_onto_its_ex_twin(
+        self, pipeline_db: Database
     ) -> None:
-        """A matcher run that raises leaves durable writes; the heal still lands."""
+        """Merge, undo, then strand the revived id by a *separate* later event."""
         csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
         _curate(pipeline_db, csv_id)
         ofx_id = _load_ofx_row(
@@ -682,8 +699,106 @@ class TestHealingRunsWhenTheMatcherFails:
             side_a=("csv", "csv_1234"),
             side_b=("ofx", "ofx_5678"),
         )
-        ImportService(pipeline_db).revert_confirmed("imp2", verify=lambda _plan: None)
-        assert _curation_ids(pipeline_db)["transaction_categories"] == [ofx_id]
+        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [ofx_id])
+
+        MatchingService(pipeline_db).undo("match0000001", actor="cli")
+
+        assert _live_ids(pipeline_db) == {csv_id, ofx_id}, "the group split apart"
+        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}, "the map row still stands"
+
+        # Unrelated to the merge and to each other: the CSV batch is reverted
+        # months later, which is what strands the curation sitting on csv_id.
+        ImportService(pipeline_db).revert_confirmed(
+            "imp1", verify=lambda _plan: None, actor="cli"
+        )
+
+        assert _live_ids(pipeline_db) == {ofx_id}
+        assert _curation_ids(pipeline_db) == dict.fromkeys(
+            _CURATION_TABLES, [csv_id]
+        ), "the reversed merge's edge is not a route onto the OFX transaction"
+        assert _categories_fk_status(pipeline_db) == "fail", (
+            "the doctor reports the orphan rather than the pass guessing at it"
+        )
+
+        MatchingService(pipeline_db).run(actor="system")
+
+        assert _curation_ids(pipeline_db) == dict.fromkeys(
+            _CURATION_TABLES, [csv_id]
+        ), "a later matcher pass declines for the same reason"
+
+    @pytest.mark.unit
+    def test_a_reversed_rekey_that_carried_no_curation_still_stops_the_walk(
+        self, pipeline_db: Database
+    ) -> None:
+        """The user curates *after* undoing a merge that moved nothing.
+
+        With no curation to put back, the reversal writes no inverse rows, so
+        nothing records that the re-key was taken back unless the undo says so
+        explicitly. Curation authored afterwards is then walked onto the wrong
+        transaction the first time the revived id stops being live.
+        """
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+        no_curation: list[str] = []
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}
+        assert _curation_ids(pipeline_db) == dict.fromkeys(
+            _CURATION_TABLES, no_curation
+        )
+
+        MatchingService(pipeline_db).undo("match0000001", actor="cli")
+        assert _live_ids(pipeline_db) == {csv_id, ofx_id}
+        _curate(pipeline_db, csv_id)
+
+        ImportService(pipeline_db).revert_confirmed(
+            "imp1", verify=lambda _plan: None, actor="cli"
+        )
+
+        assert _live_ids(pipeline_db) == {ofx_id}
+        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
+        assert _categories_fk_status(pipeline_db) == "fail"
+
+
+class TestHealingRunsWhenTheMatcherFails:
+    """``MatchingService.run`` forwards in a ``finally``; the heal must be safe there."""
+
+    @pytest.mark.unit
+    def test_a_raising_matcher_still_heals_stranded_curation(
+        self, pipeline_db: Database, mocker: MockerFixture
+    ) -> None:
+        """A matcher run that raises leaves durable writes; the heal still lands.
+
+        The strand is made by a Plaid removal rather than a revert, because
+        ``revert_confirmed`` heals inside its own transaction — reaching the
+        matcher with the curation still stranded takes the path that does not.
+        """
+        anchor_id = _load_plaid_row(
+            pipeline_db,
+            transaction_id="plaid_anchor",
+            loaded_at=datetime(2024, 3, 16, 9, 0, 0),
+        )
+        twin_id = _load_plaid_row(
+            pipeline_db,
+            transaction_id="plaid_twin",
+            loaded_at=datetime(2024, 3, 17, 9, 0, 0),
+        )
+        _curate(pipeline_db, twin_id)
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("plaid", "plaid_anchor"),
+            side_b=("plaid", "plaid_twin"),
+        )
+        PlaidExtractor(pipeline_db).handle_removed_transactions(["plaid_anchor"])
+        assert _curation_ids(pipeline_db)["transaction_categories"] == [anchor_id]
 
         def _explode(*_args: object, **_kwargs: object) -> None:
             raise MatchRunError(RuntimeError("tier 4 blew up"), partial=MatchResult())
@@ -692,7 +807,7 @@ class TestHealingRunsWhenTheMatcherFails:
         with pytest.raises(MatchRunError):
             MatchingService(pipeline_db).run(actor="system")
 
-        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
+        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [twin_id])
         assert _categories_fk_status(pipeline_db) == "pass"
 
 
@@ -869,14 +984,16 @@ class TestSplitsAreNeverMovedOntoAnAlreadySplitTransaction:
         )
         assert _splits_by_transaction(pipeline_db) == {ofx_id: ["split0001000"]}
 
-        # Reverting the anchor's import re-anchors the group onto the CSV row,
-        # stranding every curation on the OFX id the map already forwards to.
-        ImportService(pipeline_db).revert_confirmed("imp2", verify=lambda _plan: None)
-        assert _live_ids(pipeline_db) == {csv_id}
-        # The user splits the live transaction while the old allocation is
-        # stranded, so the heal's destination is already fully allocated.
+        # The user re-splits the CSV half before it comes back, so the heal's
+        # destination is already fully allocated when the revert re-anchors the
+        # group onto it and strands every curation on the OFX id.
         _add_split(pipeline_db, csv_id, split_id="splitlive001", amount="-12.34")
         _build_transaction_lines_view(pipeline_db)
+
+        ImportService(pipeline_db).revert_confirmed(
+            "imp2", verify=lambda _plan: None, actor="cli"
+        )
+        assert _live_ids(pipeline_db) == {csv_id}
 
         MatchingService(pipeline_db).run(actor="system")
 

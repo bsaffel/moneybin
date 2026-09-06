@@ -45,7 +45,9 @@ can reconstruct. :func:`restore_forwarded_curation` replays that re-key's own
 audit rows backwards; :func:`live_superseded_ids` is how the caller names the
 ids the reversal handed back, since only the map plus the matched view know.
 The alias row stands either way: the map is append-only, and a consumer holding
-the superseded id must keep resolving through it.
+the superseded id must keep resolving through it. The healing walk stops
+following it, though — the two ids are transactions of their own again, so the
+edge no longer means "the same transaction" and the reversal is what says so.
 
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
@@ -72,6 +74,7 @@ from moneybin.metrics.registry import (
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.tables import (
+    AUDIT_LOG,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
@@ -173,6 +176,10 @@ ORDER BY old_id
 # it), which is the "leave it alone" case; `live_count` distinguishes the other
 # one, where several ids in the component are live and nothing says which the
 # curation belongs to.
+#
+# `{{live_edges}}` drops the edges of re-keys a reversal took back — see
+# :func:`_reversed_alias_edges`. It is a format hole rather than a fixed
+# predicate because the excluded ids arrive as a bind list of unknown length.
 _STRANDED_CURATION_SQL = f"""
 WITH RECURSIVE curated AS (
   SELECT DISTINCT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
@@ -192,12 +199,14 @@ WITH RECURSIVE curated AS (
   FROM curated AS c
   LEFT JOIN live AS l ON l.transaction_id = c.transaction_id
   WHERE l.transaction_id IS NULL
+), alias_edges AS (
+  SELECT old_transaction_id, new_transaction_id
+  FROM {TRANSACTION_ID_ALIASES.full_name}
+  WHERE {{live_edges}}
 ), edges AS (
-  SELECT old_transaction_id AS src, new_transaction_id AS dst
-  FROM {TRANSACTION_ID_ALIASES.full_name}
+  SELECT old_transaction_id AS src, new_transaction_id AS dst FROM alias_edges
   UNION ALL
-  SELECT new_transaction_id AS src, old_transaction_id AS dst
-  FROM {TRANSACTION_ID_ALIASES.full_name}
+  SELECT new_transaction_id AS src, old_transaction_id AS dst FROM alias_edges
 ), component AS (
   SELECT transaction_id AS stranded_id, transaction_id AS member FROM stranded
   UNION
@@ -219,6 +228,20 @@ ORDER BY c.stranded_id
 #: The audit action every alias row is written under; the anchor `matches undo`
 #: walks back from a revived id to the curation that re-key carried away.
 _ALIAS_INSERT_ACTION = "transaction_id_alias.insert"
+
+#: Recorded when a reversal takes a re-key back that moved no curation. The
+#: alias row itself stays — the map is append-only — so nothing is inverted;
+#: the row exists only to carry the ``undoes_operation_id`` edge that the
+#: reversal would otherwise leave unwritten. See :func:`_reversed_alias_edges`.
+_ALIAS_REVERSED_ACTION = f"{_ALIAS_INSERT_ACTION}.reversed"
+
+# Which operation wrote each alias row, so a reversal of that operation can be
+# read back off the audit log.
+_ALIAS_INSERT_OPERATIONS_SQL = f"""
+SELECT target_id, operation_id
+FROM {AUDIT_LOG.full_name}
+WHERE action = ? AND target_table = ? AND target_id IS NOT NULL
+"""  # noqa: S608  # AUDIT_LOG is a TableRef constant; both values are parameterized
 
 # An aliased id that the matched view still serves. Normally empty: an id is in
 # the map because it stopped being canonical. A reversed merge puts one back.
@@ -339,7 +362,9 @@ def restore_forwarded_curation(
 
     **The alias itself is deliberately not reversed.** The map is append-only,
     and a consumer still holding the superseded id has to keep resolving through
-    it. Only the curation moves back.
+    it. Only the curation moves back — but the *reversal* is always recorded
+    against the re-key's operation, because :func:`_heal_stranded_curation`
+    reads that to know the edge no longer means "the same transaction".
 
     Must run inside the caller's transaction, so the reversal and the restore
     are one atomic act. Returns the number of rows it put back.
@@ -368,7 +393,30 @@ def restore_forwarded_curation(
             and event.target_id is not None
         ]
         if not moves:
-            continue  # the re-key carried no curation
+            # Nothing to put back, but the reversal still has to be *recorded*:
+            # :func:`_reversed_alias_edges` reads operation-grain undo liveness
+            # to tell a stale edge from a live one, and with no curation moved
+            # there are no inverse rows to carry that edge. Without this marker
+            # a merge that moved no curation, was undone, and was then curated
+            # by the user would still walk its dead edge later.
+            with operation():
+                audit.record_audit_event(
+                    action=_ALIAS_REVERSED_ACTION,
+                    target=(
+                        TRANSACTION_ID_ALIASES.schema,
+                        TRANSACTION_ID_ALIASES.name,
+                        old_id,
+                    ),
+                    before=None,
+                    after=None,
+                    actor=actor,
+                    is_undo=True,
+                    undoes_operation_id=alias_event.operation_id,
+                )
+            logger.debug(
+                f"Recorded a reversed re-key that carried no curation: {old_id}"
+            )
+            continue
         # Its own operation, mirroring the forwarding it reverses: the caller's
         # operation stays a plain, still-undoable reversal rather than becoming
         # half an undo, which `UndoService.history` would then hide.
@@ -386,6 +434,53 @@ def restore_forwarded_curation(
                     restored += 1
         logger.debug(f"Restored curation onto a revived transaction id: {old_id}")
     return restored
+
+
+def _reversed_alias_edges(db: Database) -> frozenset[str]:
+    """Superseded ids whose re-key was reversed, so their alias edge is stale.
+
+    `matches undo` revives both halves of a merge but deliberately leaves the
+    alias row standing, so the map alone cannot say whether an edge still means
+    "the same transaction". Liveness cannot say either: a reversed re-key whose
+    old id later died and an ordinary chained re-key are indistinguishable by
+    it — old dead, new live, in both cases — so a filter reading only
+    `core.fct_transactions` would drop the edges the heal exists to follow and
+    still walk the stale one.
+
+    The audit log is the record that survives the source row's deletion. Every
+    alias row is written under its own operation (see :func:`_forward`), and a
+    reversal marks that operation undone, so "is this re-key still in effect"
+    is exactly ``UndoService``'s net-liveness question asked of that operation.
+    """
+    # Deferred import: `undo_service` pulls in the dispatch registry, which
+    # imports every repository module — the same cycle the rest of this module
+    # defers around.
+    from moneybin.services.undo_service import UndoService  # noqa: PLC0415
+
+    rows = db.execute(
+        _ALIAS_INSERT_OPERATIONS_SQL,
+        [_ALIAS_INSERT_ACTION, TRANSACTION_ID_ALIASES.name],
+    ).fetchall()
+    if not rows:
+        return frozenset()
+    ids_by_operation: dict[str, list[str]] = {}
+    for old_id, operation_id in rows:
+        ids_by_operation.setdefault(str(operation_id), []).append(str(old_id))
+    undone = UndoService(db).undone_operation_ids(ids_by_operation)
+    return frozenset(old_id for op in undone for old_id in ids_by_operation[op])
+
+
+def _stranded_curation_query(reversed_ids: tuple[str, ...]) -> tuple[str, list[str]]:
+    """The stranded-curation query with the reversed re-keys' edges removed."""
+    if not reversed_ids:
+        return _STRANDED_CURATION_SQL.format(live_edges="TRUE"), []
+    placeholders = ", ".join("?" for _ in reversed_ids)
+    return (
+        _STRANDED_CURATION_SQL.format(
+            live_edges=f"old_transaction_id NOT IN ({placeholders})"
+        ),
+        list(reversed_ids),
+    )
 
 
 def _relations_exist(db: Database, *refs: TableRef) -> bool:
@@ -498,6 +593,10 @@ def _heal_stranded_curation(
     got here; what went wrong is only that the curation stopped tracking the
     canonical id, so only the curation moves. Idempotent for the same reason a
     repointed row is no longer stranded.
+
+    Walks only edges whose re-key is still in effect — a reversed merge left its
+    alias row standing but the two ids are separate transactions again, so
+    following it would move a user's edit onto one they never touched.
     """
     if not _relations_exist(db, FCT_TRANSACTIONS, TRANSACTION_ID_ALIASES):
         # A first load precedes the transform that builds the fact view, and the
@@ -508,10 +607,9 @@ def _heal_stranded_curation(
         )
         return 0
 
+    sql, params = _stranded_curation_query(tuple(sorted(_reversed_alias_edges(db))))
     forwarded = 0
-    for stranded_id, live_id, live_count in db.execute(
-        _STRANDED_CURATION_SQL
-    ).fetchall():
+    for stranded_id, live_id, live_count in db.execute(sql, params).fetchall():
         if int(live_count) != 1:
             # Several ids in the component are live, so the transaction the
             # curation was written against split back apart. Guessing one would
