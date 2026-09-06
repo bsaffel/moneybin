@@ -750,7 +750,7 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 30 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 31 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
@@ -759,7 +759,9 @@ def test_run_all_returns_expected_invariants(
     # exchange_rate_overrides (M1K.2, composite pk_expr) /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
-    # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
+    # account_settings->dim_accounts FK + account_settings reserved-label fold
+    # (a stored display_name that normalizes onto UNNAMED_ACCOUNT_LABEL) +
+    # balance_assertions->dim_accounts FK +
     # budgets->dim_categories FK + match_decisions->dim_accounts FK +
     # pdf_formats recipe-validity / bounds / fingerprint-shape) +
     # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs
@@ -779,8 +781,10 @@ def test_run_all_returns_expected_invariants(
     # sources *after* the link is accepted, which is where the overlap check
     # stops applying and dedup_reconciliation never applied)
     # + rule_conflicts audit coverage (MB-124: the rule-conflict queue is a
-    # protected app.* table, so its writes carry the same coverage check).
-    assert len(report.invariants) == 59
+    # protected app.* table, so its writes carry the same coverage check)
+    # + dim_accounts_reserved_label (the same fold reached through a source's
+    # own account_label, which never touches app.*).
+    assert len(report.invariants) == 61
     names = [r.name for r in report.invariants]
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
@@ -807,6 +811,8 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_user_reports" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
+    assert "app_account_settings_reserved_display_name" in names
+    assert "dim_accounts_reserved_display_name" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
