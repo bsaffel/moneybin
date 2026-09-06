@@ -31,6 +31,7 @@ from moneybin.orchestration.refresh import (
     # The step's own branches are the subject of the last section in this file.
     # Only two of them are swallows; a step that ran and crashed reports an
     # error `refresh()` carries out to the caller.
+    _run_identity_step,  # pyright: ignore[reportPrivateUsage]
     _run_rates_step,  # pyright: ignore[reportPrivateUsage]
     refresh,
 )
@@ -40,6 +41,7 @@ from moneybin.services.rate_backfill import (
     RateBackfillNotReadyError,
     RateBackfillResult,
 )
+from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.transform_service import ApplyResult
 
 
@@ -59,7 +61,9 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
         return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
-    identity = MagicMock(return_value=())
+    identity = MagicMock(
+        return_value=(StageOutcome(step="identity", ran=True), ()),
+    )
 
     # Patches target the consumer module (moneybin.orchestration.refresh) where
     # each name is bound — refresh.py imports TransformService at module level
@@ -132,13 +136,13 @@ def patch_all_refresh_stages(monkeypatch: pytest.MonkeyPatch, calls: list[str]) 
         service.apply.side_effect = _apply
         return service
 
-    def _categorize(_db: Database) -> str | None:
+    def _categorize(_db: Database) -> StageOutcome:
         calls.append("categorize")
-        return None
+        return StageOutcome(step="categorize", ran=True)
 
-    def _identity(_db: Database) -> tuple[str, ...]:
+    def _identity(_db: Database) -> tuple[StageOutcome, tuple[str, ...]]:
         calls.append("identity")
-        return ()
+        return StageOutcome(step="identity", ran=True), ()
 
     def _rates(_db: Database) -> tuple[RateBackfillResult | None, str | None]:
         # Spelled out rather than `-> Any`: this double stands in for the real
@@ -1100,3 +1104,198 @@ def test_step_outcome_keeps_null_rates_written_distinct_from_zero() -> None:
 
     assert outcome.rates_written is None
     assert outcome.has_failure is False
+
+
+# --- Requirement 18: per-stage outcomes reach the caller ---------------------
+#
+# `refresh` runs six steps on the user's behalf and, at spec time, four of them
+# computed a real outcome number and dropped it: gsheet and categorize logged
+# theirs, identity discarded both service return values. A renderer cannot
+# recover a count the service already threw away, and must not re-query for it,
+# so the counts travel out on the result carrier.
+
+
+def test_refresh_reports_what_the_categorizer_did(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A run that recategorized 400 rows differs from one that did nothing.
+
+    The categorize step already computes this breakdown and logs it at DEBUG.
+    Requirement 18 needs it on the result instead, because stderr at default
+    verbosity is where the user reads the outcome.
+    """
+    patched_services["categorize_pending"].return_value = {
+        "total": 400,
+        "merchant": 250,
+        "rule": 120,
+        "plaid": 30,
+    }
+
+    result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])
+
+    stage = result.stage("categorize")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.counts == {
+        "total": 400,
+        "merchant": 250,
+        "rule": 120,
+        "plaid": 30,
+    }
+
+
+def test_refresh_records_a_categorize_that_ran_and_found_nothing(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """A zero outcome is still an outcome and still reports.
+
+    Requirement 18 names the zero case specifically: a stage that stays silent
+    reads as a stage that was never reached, so ``ran`` is True and the counts
+    are present and zero.
+    """
+    patched_services["categorize_pending"].return_value = {
+        "total": 0,
+        "merchant": 0,
+        "rule": 0,
+        "plaid": 0,
+    }
+
+    result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])
+
+    stage = result.stage("categorize")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.counts["total"] == 0
+
+
+def test_refresh_omits_a_stage_the_caller_never_asked_for(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Narrowing ``steps`` narrows the stage list, so the renderer stays quiet.
+
+    A note for every canonical step would tell a user who ran
+    ``--step transform`` about five stages their command excluded.
+    """
+    result = refresh(db=MagicMock(spec=Database), steps=["transform"])
+
+    assert result.stage("categorize") is None
+    assert [s.step for s in result.stages] == []
+
+
+def test_refresh_marks_a_requested_categorize_that_could_not_run(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """Asked-for-but-declined is neither a zero outcome nor an absence.
+
+    On a first load the categorizer's views postdate SQLMesh apply, so the step
+    is reached and correctly declines. That is not a crash — no error — but the
+    user must not read it as "categorized nothing", which is what a zero count
+    would say.
+    """
+    patched_services["categorize_pending"].side_effect = duckdb.CatalogException(
+        "Table with name stg_transactions does not exist!"
+    )
+
+    result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])
+
+    stage = result.stage("categorize")
+    assert stage is not None
+    assert stage.ran is False
+    assert stage.error is None
+    assert stage.counts == {}
+
+
+def test_identity_step_reports_what_both_domains_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both identity services return a count, and both were being thrown away.
+
+    ``AccountLinksService.run`` returns an int and ``MerchantLinksService.run``
+    a ``HarvestResult``; the step's loop called each for its side effect and
+    kept only the labels of the ones that raised, so a clean pass had no
+    observable outcome at all.
+    """
+
+    def _accounts(_db: Database) -> MagicMock:
+        return MagicMock(run=MagicMock(return_value=7))
+
+    def _merchants(_db: Database) -> MagicMock:
+        return MagicMock(
+            run=MagicMock(return_value=HarvestResult(bound=12, conflicts=3))
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.account_links_service.AccountLinksService", _accounts
+    )
+    monkeypatch.setattr(
+        "moneybin.services.merchant_links_service.MerchantLinksService", _merchants
+    )
+
+    stage, errors = _run_identity_step(MagicMock(spec=Database))
+
+    assert errors == ()
+    assert stage.ran is True
+    assert stage.counts == {
+        "accounts_linked": 7,
+        "merchants_bound": 12,
+        "merchant_conflicts": 3,
+    }
+
+
+def test_identity_step_keeps_the_healthy_domain_s_count_when_the_other_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One domain failing must not erase what the other actually did.
+
+    The two domains route to different remedies, so the failed label and the
+    surviving count both have to travel.
+    """
+
+    def _accounts(_db: Database) -> MagicMock:
+        return MagicMock(run=MagicMock(side_effect=RuntimeError("accounts boom")))
+
+    def _merchants(_db: Database) -> MagicMock:
+        return MagicMock(
+            run=MagicMock(return_value=HarvestResult(bound=12, conflicts=0))
+        )
+
+    monkeypatch.setattr(
+        "moneybin.services.account_links_service.AccountLinksService", _accounts
+    )
+    monkeypatch.setattr(
+        "moneybin.services.merchant_links_service.MerchantLinksService", _merchants
+    )
+
+    stage, errors = _run_identity_step(MagicMock(spec=Database))
+
+    assert errors == ("accounts",)
+    assert "accounts_linked" not in stage.counts
+    assert stage.counts["merchants_bound"] == 12
+
+
+def test_refresh_reports_what_the_gsheet_pull_fetched(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    """The gsheet step's two numbers were computed for a log line and dropped.
+
+    ``refresh`` itself derives completed-connection and row counts to log them,
+    so the renderer needs no new query — only the carrier.
+    """
+    patched_services["gsheet_pull"].return_value = [
+        MagicMock(
+            status="complete",
+            load_result=MagicMock(rows_inserted=40, rows_upserted=2),
+        ),
+        MagicMock(
+            status="complete",
+            load_result=MagicMock(rows_inserted=8, rows_upserted=0),
+        ),
+        MagicMock(status="partial", load_result=None),
+    ]
+
+    result = refresh(db=MagicMock(spec=Database), steps=["gsheet", "transform"])
+
+    stage = result.stage("gsheet")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.counts == {"completed": 2, "rows": 50, "non_complete": 1}

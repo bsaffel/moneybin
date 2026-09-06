@@ -8,8 +8,35 @@ flattened primitives keeps the type free to travel anywhere a result does.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TypedDict
+
+# Shared empty mapping: a frozen dataclass blocks reassignment but not in-place
+# mutation of a dict field, so every default has to be a read-only view rather
+# than a fresh {}.
+_NO_COUNTS: Mapping[str, int] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class StageOutcome:
+    """What one refresh step did, in the vocabulary that step measures in.
+
+    ``counts`` is a per-step mapping rather than a fixed set of fields because
+    the six steps measure different things — rows pulled, pairs written,
+    transactions categorized. Flattening them into one namespace gives a key
+    set where which step a key belongs to is implied only by its prefix.
+
+    ``ran`` separates a step that executed and found nothing from one the
+    caller never asked for. Both leave every count at zero, and requirement 18
+    needs a note on the first and silence on the second.
+    """
+
+    step: str
+    ran: bool
+    counts: Mapping[str, int] = _NO_COUNTS
+    error: str | None = None
 
 
 @dataclass(frozen=True)
