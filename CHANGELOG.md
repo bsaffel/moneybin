@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **`moneybin refresh` says what each pipeline step did.** A run that changed
+  nothing and a run that recategorized 400 transactions both printed a single
+  `✅ Refresh complete in 4.2s`, because the counts each step computed went to
+  the debug log and no further. Four of the six steps were discarding their
+  outcome outright — the sheet pull and the categorizer derived theirs for a log
+  line, and the identity pass called both of its services purely for the side
+  effect, keeping only the labels of the ones that raised. Refresh now reports
+  one line per step it ran, naming the step and what it observably did,
+  including the steps whose outcome was zero. A step that was reached but could
+  not run (views not yet built on a first load) says so rather than reporting
+  zeros, because "found nothing" and "examined nothing" send you to different
+  remedies. `--output json` carries the same outcomes as a `stages` array, and
+  `-q` suppresses the lines as it does every other status line. A step you did
+  not ask for is absent rather than reported empty, so `--step match` still
+  prints one line.
 - **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
   says which.** A statically classified tool's declared tier could overwrite a
   higher tier the response had already derived, understating both the response
