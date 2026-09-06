@@ -26,6 +26,7 @@ from moneybin.privacy.payloads.merchants import (
 )
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 ReviewQueueKind = Literal[
     "categorization",
@@ -75,6 +76,7 @@ class QueueUnavailable(BaseModel):
     hint: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
+@row_set(NO_ROW_SET)
 class ReviewsSummaryView(BaseModel):
     """Exact counts for every normalized review collection.
 
@@ -142,6 +144,7 @@ class CategorizationReviewRow(BaseModel):
     details: CategorizationDetails
 
 
+@row_set("rows")
 class ReviewsCategorizationView(BaseModel):
     """Categorization pending or history collection."""
 
@@ -161,6 +164,7 @@ class AutoRulePendingDetails(BaseModel):
     proposal: AutoReviewProposalRow
 
 
+@row_set(NO_ROW_SET)
 class AutoRuleHistoryDetails(BaseModel):
     """One terminal auto-rule proposal decision."""
 
@@ -200,6 +204,7 @@ class AutoRuleReviewRow(BaseModel):
     details: AutoRuleDetails
 
 
+@row_set("rows")
 class ReviewsAutoRulesView(BaseModel):
     """Auto-rule pending or history collection."""
 
@@ -247,6 +252,7 @@ class MatchReviewRow(BaseModel):
     details: MatchDetails
 
 
+@row_set("rows")
 class ReviewsMatchesView(BaseModel):
     """Match pending or history collection."""
 
@@ -299,6 +305,7 @@ class AccountLinkReviewRow(BaseModel):
     details: AccountLinkDetails
 
 
+@row_set("rows")
 class ReviewsAccountLinksView(BaseModel):
     """Account-link pending or history collection."""
 
@@ -346,6 +353,7 @@ class MerchantLinkReviewRow(BaseModel):
     details: MerchantLinkDetails
 
 
+@row_set("rows")
 class ReviewsMerchantLinksView(BaseModel):
     """Merchant-link pending or history collection."""
 
@@ -393,6 +401,7 @@ class SecurityLinkReviewRow(BaseModel):
     details: SecurityLinkDetails
 
 
+@row_set("rows")
 class ReviewsSecurityLinksView(BaseModel):
     """Security-link pending or history collection."""
 
@@ -511,6 +520,10 @@ class ReviewDecisionOutcome(BaseModel):
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+# Two id lists that qualify what one resolution batch did; neither is a
+# collection this payload returned, and it is only ever nested inside
+# ReviewsDecidePayload, whose row set is `results`.
+@row_set(NO_ROW_SET)
 class RuleConflictImpact(BaseModel):
     """What one rule-conflict resolution batch did to the rule table."""
 
@@ -521,6 +534,7 @@ class RuleConflictImpact(BaseModel):
     superseded_rule_ids: Annotated[list[str], DataClass.RECORD_ID]
 
 
+@row_set("results")
 class ReviewsDecidePayload(BaseModel):
     """Ordered outcomes for one atomic ordinary-decision batch."""
 
@@ -555,6 +569,7 @@ class IdentityDecisionOutcome(BaseModel):
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set("results")
 class IdentityLinksDecidePayload(BaseModel):
     """Ordered outcomes for one atomic identity-decision batch."""
 

@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from moneybin import error_codes
 from moneybin.errors import ErrorDetail, RecoveryAction, UserError
+from moneybin.protocol.row_set import row_set_rows
 
 
 def serialize_payload(value: Any) -> Any:
@@ -382,18 +383,16 @@ def build_envelope(
     else:
         if isinstance(data_any, list):
             returned = len(cast(list[Any], data_any))
-        elif is_dataclass(data_any) and not isinstance(data_any, type):
-            returned = _count_typed_payload(data_any)
-        elif isinstance(data_any, BaseModel):
-            returned = _count_pydantic_payload(data_any)
         else:
-            returned = 1
+            returned = _count_declared_row_set(data_any)
 
         actual_total = total_count if total_count is not None else returned
-        # For write-result payloads (aggregate dataclasses with no primary row
-        # list), _count_typed_payload returns 0 from an empty error_details
-        # field. When the caller explicitly supplied total_count, treat all
-        # inputs as "returned".
+        # Kept exactly as it was, and no longer for the reason it was written:
+        # the spurious 0 it papered over came from the removed heuristic, and an
+        # empty declared row set means the call really returned nothing. Whether
+        # to keep promoting that to total_count moves a public returned_count on
+        # every paginated read whose page came back empty, so it is MB-175's
+        # decision rather than this change's.
         if returned == 0 and total_count is not None and total_count > 0:
             returned = actual_total
     has_more = next_cursor is not None or actual_total > returned
@@ -426,54 +425,6 @@ def build_envelope(
     )
 
 
-# Auxiliary list fields that commonly accompany single-object write results
-# but are NOT the primary row collection. Without this filter the first-list
-# heuristic returns len(warnings)=0 for a successful write whose only list is
-# an empty diagnostic field, and propagates that into summary.returned_count
-# and the privacy log's row_count.
-AUXILIARY_LIST_FIELDS = frozenset({
-    "warnings",
-    "errors",
-    "error_details",
-    "unmapped_columns",
-    "flagged_fields",
-    # Rate provenance describes the rows; it is not a second set of them. A
-    # payload carrying both (`InvestmentHoldingsPayload`) has two lists, and the
-    # heuristic answers "several, so neither" — reporting an unknown currency
-    # and a count of 1 for a read that returned N priced positions. Empty on
-    # almost every call, so the field's presence alone would break the count.
-    "applied_rates",
-    # The post-load refresh's four best-effort diagnostics, on the same
-    # rationale: they report what the refresh *did to* the rows, not a second
-    # set of rows. `GsheetPullPayload` carries all four beside its `pulls`
-    # collection, so without them the heuristic saw five lists and reported
-    # `returned_count=1` for a pull that returned N per-connection outcomes.
-    "identity_errors",
-    "rate_pairs_failed",
-    "rate_pairs_unsupported",
-    "rate_pairs_discarded",
-    # `RefreshRunPayload`'s record of the self-heal recipes that ran. Listed
-    # with the four above rather than after them: it is the only other list on
-    # that payload, so excluding the four alone would promote it to "the" row
-    # collection and report `returned_count=0` for a clean refresh that healed
-    # nothing. `refresh_run` returns one pipeline outcome, not N recipes.
-    "self_heal_actions",
-    # `SyncPullPayload`'s warning that some accounts carry both manual and Plaid
-    # investment history. Same rationale again: it describes a condition
-    # affecting the rows the pull returned, not a second set of them. It sits
-    # beside `identity_errors` and the three `rate_pairs_*` lists on that
-    # payload; without it the heuristic saw two lists and reported
-    # `returned_count=1` for a pull covering N institutions.
-    "investment_source_overlap_accounts",
-    # The rule-conflict diagnostics on `RulesCreatePayload`. Same rationale as
-    # `error_details` above: they name the rules that were REFUSED, beside the
-    # payload's actual written set (`rule_ids`). Without them a 3-rule
-    # `rules_create` saw three lists and reported `returned_count=1`.
-    "conflict_ids",
-    "conflict_details",
-})
-
-
 _CURRENCY_FIELD = "currency_code"
 
 
@@ -498,7 +449,7 @@ def _derive_display_currency(data: Any) -> str | None:
         return _currency_of_rows(rows)
     if _has_currency_field(data):
         return resolve_display_currency([getattr(data, _CURRENCY_FIELD)])
-    rows = _primary_rows(data)
+    rows = _declared_rows(data)
     return _currency_of_rows(rows) if rows is not None else None
 
 
@@ -536,74 +487,29 @@ def _currency_of_rows(rows: list[Any]) -> str | None:
     return resolve_display_currency(_currency_value(row) for row in rows)
 
 
-def _primary_rows(data: Any) -> list[Any] | None:
-    """The payload's sole non-auxiliary list field, if it has exactly one.
+def _declared_rows(data: Any) -> list[Any] | None:
+    """The payload's declared row set, or ``None`` when it declares none.
 
-    Mirrors ``_count_primary_lists``' choice of "the" row collection so the
-    derived currency describes the same rows that ``returned_count`` counts.
+    One reader for both consumers: the derived currency describes exactly the
+    rows ``returned_count`` counts, because both ask the payload the same
+    question. See ``moneybin.protocol.row_set``.
     """
     if isinstance(data, type):
         return None
-    if is_dataclass(data):
-        names = [item.name for item in fields(data)]
-    elif isinstance(data, BaseModel):
-        names = list(type(data).model_fields)
-    else:
-        return None
-    primary: list[list[Any]] = []
-    for name in names:
-        if name in AUXILIARY_LIST_FIELDS:
-            continue
-        value: Any = getattr(data, name)
-        if isinstance(value, list):
-            primary.append(cast(list[Any], value))
-    return primary[0] if len(primary) == 1 else None
+    if is_dataclass(data) or isinstance(data, BaseModel):
+        return row_set_rows(data)
+    return None
 
 
-def _count_typed_payload(data: Any) -> int:
-    """For a typed payload, return the row count if a primary list field exists, else 1.
+def _count_declared_row_set(data: Any) -> int:
+    """The declared row set's length, or ``1`` when the payload declares none.
 
-    - Skips auxiliary diagnostic list fields (see ``AUXILIARY_LIST_FIELDS``)
-      so write-result payloads like ``AccountSettingsPayload(warnings=[])``
-      report ``returned_count=1`` instead of ``0``.
-    - Falls back to ``1`` when the payload has more than one non-auxiliary
-      list field — these are aggregate result objects (e.g.
-      ``ImportInboxSyncPayload`` with ``processed``/``failed``/``skipped``/
-      ``ignored``), not row collections, so no single list represents the
-      "returned" count.
+    ``NO_ROW_SET`` payloads — a snapshot, a sync run, a write result — return
+    one thing, so one is the count. A payload that carries a collection and
+    declares nothing raises out of ``row_set_rows`` rather than guessing.
     """
-    return _count_primary_lists(data, [item.name for item in fields(data)])
-
-
-def _count_pydantic_payload(data: BaseModel) -> int:
-    """Pydantic equivalent of ``_count_typed_payload``.
-
-    A Pydantic wrapper with a single primary list field (e.g. a payload whose
-    one list is the result set) reports that list's length; an aggregate model
-    with zero or multiple non-auxiliary lists reports 1. Without this, every
-    ``BaseModel`` payload fell through to ``returned=1``, misreporting
-    ``summary.returned_count`` / ``has_more`` and the privacy log's row_count.
-    """
-    return _count_primary_lists(data, list(type(data).model_fields))
-
-
-def _count_primary_lists(data: Any, field_names: list[str]) -> int:
-    """Return the length of the sole non-auxiliary list field, else 1.
-
-    Shared by the dataclass and Pydantic counters. Auxiliary diagnostic lists
-    (see ``AUXILIARY_LIST_FIELDS``) are skipped; more than one remaining list
-    means an aggregate result object with no single "returned" collection.
-    """
-    primary_lists: list[list[Any]] = []
-    for name in field_names:
-        if name in AUXILIARY_LIST_FIELDS:
-            continue
-        v: Any = getattr(data, name)
-        if isinstance(v, list):
-            primary_lists.append(cast(list[Any], v))
-    if len(primary_lists) == 1:
-        return len(primary_lists[0])
-    return 1
+    rows = _declared_rows(data)
+    return 1 if rows is None else len(rows)
 
 
 def not_implemented_envelope(

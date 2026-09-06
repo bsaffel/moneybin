@@ -47,6 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field
 # the model. `payloads.currency` pulls in nothing heavy of its own.
 from moneybin.privacy.payloads.currency import FxRatePayload
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # Every payload below classifies its `warnings` field AGGREGATE (Tier.LOW), not
 # DESCRIPTION: these are canned system-generated diagnostic strings (the
@@ -124,6 +125,7 @@ class InvestmentEventRow:
         )
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentEventsPayload:
     """Payload for the ``investments`` tool (ledger list)."""
@@ -191,6 +193,7 @@ class InvestmentHoldingRow:
         )
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentHoldingsPayload:
     """Payload for ``investments_holdings``.
@@ -280,6 +283,7 @@ class InvestmentLotRow:
         )
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentLotsPayload:
     """Payload for ``investments_lots``."""
@@ -344,6 +348,7 @@ class InvestmentGainRow:
         )
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentGainsPayload:
     """Payload for ``investments_gains``."""
@@ -400,6 +405,7 @@ class InvestmentSecurityRow:
         )
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentSecuritiesPayload:
     """Payload for ``investments_securities``."""
@@ -422,6 +428,7 @@ class InvestmentSecuritiesPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("rows")
 class InvestmentsEventsView(BaseModel):
     """Paginated investment-ledger events."""
 
@@ -432,6 +439,7 @@ class InvestmentsEventsView(BaseModel):
     warnings: Annotated[list[str], DataClass.AGGREGATE]
 
 
+@row_set("rows")
 class InvestmentsHoldingsView(BaseModel):
     """Paginated current positions with portfolio-level valuation.
 
@@ -458,6 +466,7 @@ class InvestmentsHoldingsView(BaseModel):
     applied_rates: list[FxRatePayload] = Field(default_factory=list)
 
 
+@row_set("rows")
 class InvestmentsLotsView(BaseModel):
     """Paginated open tax lots."""
 
@@ -468,6 +477,7 @@ class InvestmentsLotsView(BaseModel):
     warnings: Annotated[list[str], DataClass.AGGREGATE]
 
 
+@row_set("rows")
 class InvestmentsGainsView(BaseModel):
     """Paginated realized gains."""
 
@@ -478,6 +488,7 @@ class InvestmentsGainsView(BaseModel):
     warnings: Annotated[list[str], DataClass.AGGREGATE]
 
 
+@row_set("rows")
 class InvestmentsSecuritiesView(BaseModel):
     """Paginated securities catalog."""
 
@@ -504,6 +515,7 @@ InvestmentsCoarsePayload = Annotated[
 # ---------------------------------------------------------------------------
 
 
+@row_set("investment_transaction_ids")
 @dataclass(frozen=True, slots=True)
 class InvestmentRecordPayload:
     """Payload for ``investments_record`` — batch event-recording result.
@@ -536,6 +548,7 @@ class InvestmentLotSelectionEntry:
     quantity: Annotated[Decimal, DataClass.TXN_AMOUNT]
 
 
+@row_set("selections")
 @dataclass(frozen=True, slots=True)
 class InvestmentLotsSelectPayload:
     """Payload for ``investments_lots_select`` — the selection set that was applied."""
@@ -569,6 +582,7 @@ class SecurityLinkCandidateRow:
     match_reason: Annotated[str | None, DataClass.USER_NOTE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SecurityLinkPendingGroup:
     """One provider ref awaiting review + its candidate merge-survivor proposals."""
@@ -603,6 +617,7 @@ class SecurityLinkPendingGroup:
         )
 
 
+@row_set("groups")
 @dataclass(frozen=True, slots=True)
 class SecurityLinksPendingPayload:
     """Payload for ``investments securities links pending`` — pending queue grouped by provider ref."""
@@ -673,6 +688,7 @@ class SecurityLinkHistoryRow:
         )
 
 
+@row_set("decisions")
 @dataclass(frozen=True, slots=True)
 class SecurityLinksHistoryPayload:
     """Payload for ``investments securities links history`` — decision log, newest first."""
@@ -687,6 +703,7 @@ class SecurityLinksHistoryPayload:
         )
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class InvestmentPricePullPayload:
     """Payload for ``investments_prices_pull`` — counts plus what stayed unpriced.
@@ -772,6 +789,7 @@ class InvestmentPriceRow:
     price_basis: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class InvestmentPricesPayload:
     """Payload for ``investments_prices_list`` — the resolved series, newest first."""

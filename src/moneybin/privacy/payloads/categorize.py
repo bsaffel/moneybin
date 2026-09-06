@@ -40,6 +40,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # transactions_categorize_rules
@@ -64,6 +65,7 @@ class RuleRow:
     is_active: Annotated[bool | None, DataClass.TXN_TYPE]
 
 
+@row_set("rules")
 @dataclass(frozen=True, slots=True)
 class CategorizeRulesPayload:
     """Payload for transactions_categorize_rules."""
@@ -80,6 +82,7 @@ class CategorizationRuleStateResult:
     changed: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set("results")
 @dataclass(frozen=True, slots=True)
 class CategorizationRulesSetPayload:
     """Result of atomically declaring one or more rule target states."""
@@ -109,6 +112,7 @@ class CategorizationRuleSnapshot:
     updated_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set("rules")
 @dataclass(frozen=True, slots=True)
 class CategorizationRulesCurrentView:
     """Active or inactive exact categorization-rule states."""
@@ -130,6 +134,7 @@ class CategorizationRuleHistoryEvent:
     current: CategorizationRuleSnapshot | None
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class CategorizationRulesHistoryView:
     """Complete audit-backed categorization-rule transitions."""
@@ -205,6 +210,7 @@ class PendingTxnRow:
     pending_transfer_match: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set("transactions")
 @dataclass(frozen=True, slots=True)
 class CatPendingPayload:
     """Payload for transactions_categorize_pending."""
@@ -217,6 +223,7 @@ class CatPendingPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class CategorizeCommitPayload:
     """Payload for transactions_categorize_commit — aggregate result counts."""
@@ -233,6 +240,7 @@ class CategorizeCommitPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("rule_ids")
 @dataclass(frozen=True, slots=True)
 class RuleConflictDetail:
     """One refused proposal, explained where the caller submitted it.
@@ -283,6 +291,7 @@ class RulesDeletePayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class AutoReviewProposalRow:
     """One pending auto-rule proposal row."""
@@ -299,6 +308,7 @@ class AutoReviewProposalRow:
     is_broad: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set("proposals")
 @dataclass(frozen=True, slots=True)
 class AutoReviewPayload:
     """Payload for transactions_categorize_auto_review."""
@@ -311,6 +321,7 @@ class AutoReviewPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("rule_ids")
 @dataclass(frozen=True, slots=True)
 class AutoAcceptPayload:
     """Payload for transactions_categorize_auto_accept — aggregate counts."""
@@ -360,6 +371,7 @@ class AutoRuleRow:
     priority: Annotated[int | None, DataClass.AGGREGATE]
 
 
+@row_set("rules")
 @dataclass(frozen=True, slots=True)
 class AutoRulesPayload:
     """Payload for ``moneybin transactions categorize auto rules``."""
@@ -424,6 +436,7 @@ class AssistRow:
     amount_sign: Annotated[Literal["+", "-", "0"], DataClass.TXN_TYPE]
 
 
+@row_set("transactions")
 @dataclass(frozen=True, slots=True)
 class CatAssistPayload:
     """Payload for transactions_categorize_assist."""

@@ -12,8 +12,6 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-import duckdb
-
 from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
@@ -29,12 +27,12 @@ from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
+    count_pending_matches,
     get_active_dedup_edges,
     get_match_log,
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
-from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
@@ -151,22 +149,7 @@ class MatchingService:
         ``match_type`` filters to a single type; None counts all pending. Used
         for the total_count an MCP read tool needs to report ``has_more``.
         """
-        where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
-        params: list[Any] = []
-        if match_type is not None:
-            where += " AND match_type = ?"
-            params.append(match_type)
-        try:
-            row = self._db.execute(
-                f"""
-                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
-                {where}
-                """,  # noqa: S608  # TableRef constant + literal where; values parameterized
-                params,
-            ).fetchone()
-            return int(row[0]) if row else 0
-        except duckdb.CatalogException:
-            return 0  # table not created until the first matcher run
+        return count_pending_matches(self._db, match_type=match_type)
 
     def run(
         self, *, auto_accept_transfers: bool = False, actor: str = "system"
