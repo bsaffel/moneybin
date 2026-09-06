@@ -61,6 +61,10 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_PLAID_INVESTMENT_HOLDINGS,
+    STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    STG_PLAID_INVESTMENT_TRANSACTIONS,
+    STG_PLAID_OPENING_LOT_REVIEW,
     STG_SECURITY_PRICES,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
@@ -132,7 +136,7 @@ _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 # reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
 # an item that never reported has NO newest snapshot (its positions are out of
 # scope) — the distinction the raw holdings rows cannot express.
-_NEWEST_HOLDINGS_SNAPSHOT_CTE = """
+_NEWEST_HOLDINGS_SNAPSHOT_CTE = f"""
 newest_snapshot AS (
     SELECT source_origin, source_file
     FROM (
@@ -143,7 +147,7 @@ newest_snapshot AS (
                 PARTITION BY source_origin
                 ORDER BY extracted_at DESC, source_file DESC
             ) AS snapshot_rank
-        FROM prep.stg_plaid__investment_holdings_snapshots
+        FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
     )
     WHERE snapshot_rank = 1
 )
@@ -832,12 +836,12 @@ class DoctorService:
         name = "investment_staging_rejects"
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT investment_transaction_id, review_reason
-                FROM prep.stg_plaid__investment_transactions
+                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name}
                 WHERE review_reason IS NOT NULL
                 ORDER BY investment_transaction_id
-                """  # noqa: S608  # fixed view name, no user input
+                """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — view absent before first transform
             return InvariantResult(
@@ -876,13 +880,13 @@ class DoctorService:
         name = "investment_opening_lot_review"
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT account_id,
                        COALESCE(security_id, source_security_key) AS security_key,
                        reason
-                FROM prep.stg_plaid__opening_lot_review
+                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name}
                 ORDER BY account_id, security_key
-                """  # noqa: S608  # fixed view name, no user input
+                """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — view absent before first transform
             return InvariantResult(
@@ -1092,12 +1096,12 @@ class DoctorService:
                 f"""
                 SELECT c.investment_transaction_id
                 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS c
-                JOIN prep.stg_plaid__investment_transactions AS p
+                JOIN {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
                   ON p.investment_transaction_id = c.investment_transaction_id
                 WHERE c.security_id IS NULL
                   AND p.source_security_key IS NOT NULL
                 ORDER BY c.investment_transaction_id
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — core/staging view absent before first transform
             return InvariantResult(
@@ -1227,7 +1231,7 @@ class DoctorService:
                 WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
                 SELECT DISTINCT h.account_id,
                        COALESCE(h.security_id, h.source_security_key) AS security_key
-                FROM prep.stg_plaid__investment_holdings AS h
+                FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name} AS h
                 JOIN newest_snapshot AS ns
                   ON ns.source_file = h.source_file
                   AND ns.source_origin = h.source_origin
@@ -1236,7 +1240,7 @@ class DoctorService:
                 WHERE d.account_id IS NULL
                   AND COALESCE(h.quantity, 0) > 0
                 ORDER BY h.account_id, security_key
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
             return InvariantResult(
@@ -1299,7 +1303,7 @@ class DoctorService:
                 f"""
                 WITH ever_reported_positions AS (
                     SELECT DISTINCT account_id, security_id
-                    FROM prep.stg_plaid__investment_holdings
+                    FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name}
                     WHERE NOT security_id IS NULL
                 )
                 SELECT d.account_id, d.security_id
@@ -1309,7 +1313,7 @@ class DoctorService:
                   AND erp.security_id = d.security_id
                 WHERE d.provider_reported_quantity IS NULL
                 ORDER BY d.account_id, d.security_id
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
             return InvariantResult(
