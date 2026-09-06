@@ -14,6 +14,7 @@ from moneybin.privacy.payloads.investments import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.row_set import row_set
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class _TypedRow:
     amount: Annotated[Decimal, DataClass.TXN_AMOUNT]
 
 
+@row_set("rows")
 @dataclass(frozen=True)
 class _TypedListPayload:
     rows: list[_TypedRow]

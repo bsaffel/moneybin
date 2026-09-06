@@ -28,6 +28,7 @@ from moneybin.privacy.redaction import redact_typed
 from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
+from moneybin.protocol.row_set import row_set
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class _AccountRow:
     institution: Annotated[str, DataClass.INSTITUTION]
 
 
+@row_set("rows")
 @dataclass(frozen=True)
 class _AccountView:
     rows: list[_AccountRow]

@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +26,7 @@ class ConsentGrantRow:
     granted_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set("active_grants")
 @dataclass(frozen=True, slots=True)
 class PrivacyStatusPayload:
     """Result of privacy_status / `privacy status`.
@@ -53,6 +55,7 @@ class ConsentMutationPayload:
     action: Annotated[Literal["granted", "revoked", "noop"], DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ConsentSetPayload:
     """Effective consent state after one declarative batch."""
@@ -72,6 +75,7 @@ class ConsentRevokeAllPayload:
     revoked_count: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class PrivacyLogRow:
     """One privacy log event — a consent grant/revoke or a tool_call.
@@ -118,6 +122,7 @@ class PrivacyLogRow:
         )
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class PrivacyLogPayload:
     """Result of privacy_log / `privacy log`."""
@@ -125,6 +130,7 @@ class PrivacyLogPayload:
     events: list[PrivacyLogRow] = field(default_factory=list)
 
 
+@row_set("active_grants")
 class PrivacyStatusView(BaseModel):
     """Consent configuration and active grants in consolidated privacy."""
 
@@ -136,6 +142,7 @@ class PrivacyStatusView(BaseModel):
     active_grants: list[ConsentGrantRow] = Field(default_factory=list)
 
 
+@row_set("events")
 class PrivacyLogView(BaseModel):
     """One deterministic page of classified privacy-log events."""
 

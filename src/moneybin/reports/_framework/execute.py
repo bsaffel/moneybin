@@ -36,6 +36,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     resolve_display_currency,
 )
+from moneybin.protocol.row_set import row_set
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
@@ -61,6 +62,7 @@ type FrozenJsonValue = (
 )
 
 
+@row_set("records")
 @dataclass(frozen=True)
 class ReportResult:
     """Redacted rows plus the envelope-relevant metadata for one report call.
@@ -119,6 +121,9 @@ class ReportResult:
         )
 
 
+# A declaration is read off the class's own __dict__, never inherited, so a
+# subclass states its answer even when it matches the parent's.
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportResult(ReportResult):
     """A report result tagged with its catalog identity and financial meaning."""
@@ -129,6 +134,7 @@ class CatalogReportResult(ReportResult):
     provenance: tuple[str, ...]
 
 
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportExecution:
     """One raw catalog-runner execution before terminal redaction."""

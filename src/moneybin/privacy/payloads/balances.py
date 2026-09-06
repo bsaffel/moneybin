@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import row_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +36,7 @@ class BalanceObservationRow:
     currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
+@row_set("observations")
 @dataclass(frozen=True, slots=True)
 class BalanceObservationListPayload:
     """Payload for accounts_balances, accounts_balance_history, accounts_balance_reconcile."""
@@ -62,6 +64,7 @@ class BalanceAssertionRow:
     currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
+@row_set("assertions")
 @dataclass(frozen=True, slots=True)
 class BalanceAssertionListPayload:
     """Payload for accounts_balance_assertions."""
