@@ -66,6 +66,7 @@ from moneybin.tables import (
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_OFX_ACCOUNTS,
     STG_PLAID_ACCOUNTS,
     STG_PLAID_INVESTMENT_HOLDINGS,
     STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
@@ -1940,6 +1941,15 @@ class DoctorService:
                         LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
                           AS has_last_four
                     FROM {STG_PLAID_ACCOUNTS.full_name}
+                    UNION ALL
+                    SELECT
+                        account_id,
+                        NULL::TEXT AS account_label,
+                        extracted_at,
+                        LENGTH(
+                          REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')
+                        ) >= 4 AS has_last_four
+                    FROM {STG_OFX_ACCOUNTS.full_name}
                 ), winning AS (
                     SELECT
                         account_id,
@@ -1973,14 +1983,18 @@ class DoctorService:
             )
         # `dim_accounts.sql`'s account_label arm only promotes a folded label
         # bare when no last four is derivable for the account (`LENGTH(...) >=
-        # 4`, mirrored above for both sources plus the `app.account_settings`
-        # override). When one is derivable the model instead renders
-        # "<label> …<four>", which no longer folds onto the reserved label, so
-        # flagging it here would be a false positive for a row `dim_accounts`
-        # never actually collides.
+        # 4`, mirrored above for all three sources -- tabular, plaid, ofx --
+        # plus the `app.account_settings` override). When one is derivable the
+        # model instead renders "<label> …<four>", which no longer folds onto
+        # the reserved label, so flagging it here would be a false positive
+        # for a row `dim_accounts` never actually collides. `last_four_derived`
+        # merges across every source sharing one `account_id` (`ARG_MIN(...,
+        # (source_rank, -EPOCH_US(extracted_at)))`), so a linked OFX row's
+        # last four clears a tabular/plaid row's folded label on the same
+        # account -- the ordinary shape of an `accounts links run` merge.
         #
         # `account_id` is `COALESCE(links.account_id, a.account_id)` (mirrored
-        # in both staging models) -- an unresolved account's source-native
+        # in all three staging models) -- an unresolved account's source-native
         # key, per .claude/rules/identifiers.md. Masked unconditionally before
         # it leaves this method, the same way every other surface treats that
         # field: never conditioned on what a particular value happens to look

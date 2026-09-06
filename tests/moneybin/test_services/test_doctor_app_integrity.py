@@ -579,6 +579,7 @@ def _seed_source_account(
     account_number: str | None = None,
     account_number_masked: str | None = None,
     mask: str | None = None,
+    source_account_key: str | None = None,
 ) -> None:
     """Stand in for the ``prep.stg_*__accounts`` view the transform builds.
 
@@ -586,9 +587,15 @@ def _seed_source_account(
     columns ``dim_accounts.sql`` derives a last four from for each source:
     ``account_number``/``account_number_masked`` on tabular
     (``stg_tabular__accounts.sql``), ``mask`` on plaid
-    (``stg_plaid__accounts.sql``). The reserved-label check must read the same
+    (``stg_plaid__accounts.sql``), ``source_account_key`` on ofx
+    (``stg_ofx__accounts.sql``). The reserved-label check must read the same
     columns to know whether a last four is derivable for a row before deciding
     whether the model would actually promote the folded label bare.
+
+    OFX has no ``account_label`` column at all (mirrored from
+    ``dim_accounts.sql``'s ``ofx_accounts`` CTE, which casts
+    ``NULL::TEXT AS account_label``), so ``account_label`` must be ``None``
+    for ``source="ofx"``.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
@@ -599,6 +606,10 @@ def _seed_source_account(
     db.execute(
         "CREATE TABLE IF NOT EXISTS prep.stg_plaid__accounts "
         "(account_id TEXT, account_label TEXT, extracted_at TIMESTAMP, mask TEXT)"
+    )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.stg_ofx__accounts "
+        "(account_id TEXT, extracted_at TIMESTAMP, source_account_key TEXT)"
     )
     if source == "tabular":
         db.execute(
@@ -618,6 +629,14 @@ def _seed_source_account(
             "INSERT INTO prep.stg_plaid__accounts "
             "(account_id, account_label, extracted_at, mask) VALUES (?, ?, ?, ?)",
             [account_id, account_label, extracted_at, mask],
+        )
+    elif source == "ofx":
+        if account_label is not None:
+            raise ValueError("ofx has no account_label column; pass None")
+        db.execute(
+            "INSERT INTO prep.stg_ofx__accounts "
+            "(account_id, extracted_at, source_account_key) VALUES (?, ?, ?)",
+            [account_id, extracted_at, source_account_key],
         )
     else:
         raise ValueError(f"unsupported source: {source!r}")
@@ -964,6 +983,39 @@ def test_dim_accounts_reserved_display_name_still_flags_with_no_last_four(
     result = DoctorService(db)._run_dim_accounts_reserved_display_name()
     assert result.status == "fail"
     assert result.affected_ids == ["acct_tabular_no_lastfour"]
+
+
+def test_dim_accounts_reserved_display_name_ignores_a_derivable_ofx_last_four(
+    db: Database,
+) -> None:
+    """A last four merged in from a linked OFX source still clears the row.
+
+    ``dim_accounts.sql`` merges ``last_four_derived`` across all three
+    ``ofx``/``tabular``/``plaid`` sources sharing one ``account_id`` -- the
+    ordinary shape of an ``accounts links run`` merge -- and OFX has the
+    highest source-rank priority (0). Here the tabular row supplies the folded
+    label with no last four of its own, and the OFX row (linked to the same
+    ``account_id``) supplies one via its ``source_account_key`` digits, so the
+    model would render ``"<label> …<four>"`` and never actually collide with
+    the reserved label. A check that only unions tabular/plaid would miss the
+    OFX row's contribution and wrongly report this account.
+    """
+    _seed_source_account(
+        db,
+        "acct_ofx_merged",
+        account_label="unnamed account",
+        source="tabular",
+    )
+    _seed_source_account(
+        db,
+        "acct_ofx_merged",
+        account_label=None,
+        source="ofx",
+        source_account_key="ofx1237890",
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
 
 
 def test_dim_accounts_reserved_display_name_masks_an_unresolved_source_key(
