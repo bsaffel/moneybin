@@ -29,12 +29,14 @@ from decimal import Decimal
 from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # transactions_get
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransactionRow:
     """One row from core.fct_transactions (transactions_get result)."""
@@ -59,6 +61,7 @@ class TransactionRow:
     splits: Annotated[list[dict[str, object]] | None, DataClass.TXN_AMOUNT]
 
 
+@row_set("transactions")
 @dataclass(frozen=True, slots=True)
 class TransactionGetPayload:
     """Operational transaction payload shared by live and dormant reads."""
@@ -72,6 +75,7 @@ class TransactionGetPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransactionAnnotationOutcome:
     """One requested annotation mutation, retained in request order."""
@@ -82,6 +86,7 @@ class TransactionAnnotationOutcome:
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set("outcomes")
 @dataclass(frozen=True, slots=True)
 class TransactionAnnotationBatchPayload:
     """Payload for ``transactions_annotate`` — atomic annotation outcomes."""
@@ -121,6 +126,7 @@ class ManualBatchEntryResult:
     source_transaction_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set("results")
 @dataclass(frozen=True, slots=True)
 class ManualBatchPayload:
     """Payload for transactions_create."""
@@ -146,6 +152,7 @@ class NotePayload:
     created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set("notes")
 @dataclass(frozen=True, slots=True)
 class NotesListPayload:
     """Payload for transactions_notes_list — all notes on one transaction.
@@ -175,6 +182,7 @@ class NoteDeletePayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("tags")
 @dataclass(frozen=True, slots=True)
 class TagsPayload:
     """Payload for transactions_tags_set — final sorted tag list."""
@@ -225,6 +233,7 @@ class SplitRow:
     created_by: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set("splits")
 @dataclass(frozen=True, slots=True)
 class SplitsPayload:
     """Payload for transactions_splits_set — ordered list of split rows."""
@@ -294,6 +303,7 @@ class MatchPendingRow:
     component_key: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set("matches")
 @dataclass(frozen=True, slots=True)
 class MatchesPendingPayload:
     """Payload for transactions_matches_pending."""
@@ -354,6 +364,7 @@ class MatchHistoryRow:
     source_type_b: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set("matches")
 @dataclass(frozen=True, slots=True)
 class MatchesHistoryPayload:
     """Payload for transactions_matches_history."""

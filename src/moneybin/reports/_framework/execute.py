@@ -36,6 +36,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     resolve_display_currency,
 )
+from moneybin.protocol.row_set import row_set
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
@@ -61,6 +62,7 @@ type FrozenJsonValue = (
 )
 
 
+@row_set("records")
 @dataclass(frozen=True)
 class ReportResult:
     """Redacted rows plus the envelope-relevant metadata for one report call.
@@ -119,6 +121,9 @@ class ReportResult:
         )
 
 
+# Re-declared rather than inherited: a subclass states its own answer, so one
+# that adds a collection cannot pick up a parent's by accident.
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportResult(ReportResult):
     """A report result tagged with its catalog identity and financial meaning."""
