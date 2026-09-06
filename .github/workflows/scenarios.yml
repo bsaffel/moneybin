@@ -52,7 +52,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Restore CI test durations
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .test_durations
           key: ci-test-durations-v1-${{ github.run_id }}

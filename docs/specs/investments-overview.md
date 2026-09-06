@@ -1,6 +1,9 @@
 # Investments — Overview
 
-> Last updated: 2026-07-04 — draft → ready reconciliation: HIFO promoted into the
+> Last updated: 2026-09-04 — the review-first, source-neutral investment-event
+> matching child is now specified at
+> [`investment-event-matching.md`](investment-event-matching.md).
+> Earlier reconciliation: HIFO promoted into the
 > foundation child's v1 method set (LIFO stays demand-gated); lots-model
 > SQL-vs-Python question resolved (Python SQLMesh model); foundation child
 > Plaid-validated against the OpenAPI spec.
@@ -104,13 +107,16 @@ cost-basis-method election, and specific-lot selection overrides. Everything in
 
 ### Already-carved children
 
-Specs that build on the contracts above — the first has graduated from stub to
-a full spec; the rest remain planned stubs:
+Specs that build on the contracts above; Plaid sync has shipped, event matching
+is specified, and the other children remain planned stubs:
 
-- [`sync-plaid-investments.md`](sync-plaid-investments.md) — Plaid Investments product (holdings, securities, investment transactions). **Spec ready 2026-07-10** — the first carved child to land.
+- [`sync-plaid-investments.md`](sync-plaid-investments.md) — shipped Plaid
+  Investments product (holdings, securities, investment transactions).
 - Investment OFX import — `<INVSTMTRS>` handling, a child of `smart-import-financial.md`.
 - Portfolio/holdings reports — `reports.portfolio`, `reports.holdings`, gated per `reports-recipe-library.md`.
-- Investment-transaction dedup + transfer detection — children of the matching initiative.
+- [`investment-event-matching.md`](investment-event-matching.md) — whole-event
+  matching across manual and aggregator histories, including transfer shapes;
+  review-first and source-neutral.
 
 ### The foundation boundary (why A+B ship first, without a price feed)
 
