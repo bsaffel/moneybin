@@ -24,6 +24,7 @@ from moneybin.services.account_resolution_types import (
     UNNAMED_ACCOUNT_LABEL,
     is_reserved_account_name,
 )
+from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -1916,20 +1917,39 @@ class DoctorService:
             rows = self._db.execute(
                 f"""
                 WITH source_labels AS (
-                    SELECT account_id, account_label, extracted_at
+                    SELECT
+                        account_id,
+                        account_label,
+                        extracted_at,
+                        LENGTH(
+                          REGEXP_REPLACE(
+                            COALESCE(account_number, account_number_masked),
+                            '[^0-9]', '', 'g'
+                          )
+                        ) >= 4 AS has_last_four
                     FROM {STG_TABULAR_ACCOUNTS.full_name}
                     UNION ALL
-                    SELECT account_id, account_label, extracted_at
+                    SELECT
+                        account_id,
+                        account_label,
+                        extracted_at,
+                        LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
+                          AS has_last_four
                     FROM {STG_PLAID_ACCOUNTS.full_name}
                 ), winning AS (
                     SELECT
                         account_id,
                         ARG_MAX(account_label, extracted_at) FILTER(WHERE
-                          NOT account_label IS NULL) AS account_label
+                          NOT account_label IS NULL) AS account_label,
+                        BOOL_OR(has_last_four) AS has_derived_last_four
                     FROM source_labels
                     GROUP BY account_id
                 )
-                SELECT w.account_id, w.account_label
+                SELECT
+                    w.account_id,
+                    w.account_label,
+                    COALESCE(w.has_derived_last_four, FALSE)
+                      OR NOT s.last_four IS NULL AS has_last_four
                 FROM winning AS w
                 LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s
                   ON s.account_id = w.account_id
@@ -1947,10 +1967,24 @@ class DoctorService:
                 detail=f"reserved-label check unavailable: {e}",
                 affected_ids=[],
             )
+        # `dim_accounts.sql`'s account_label arm only promotes a folded label
+        # bare when no last four is derivable for the account (`LENGTH(...) >=
+        # 4`, mirrored above for both sources plus the `app.account_settings`
+        # override). When one is derivable the model instead renders
+        # "<label> …<four>", which no longer folds onto the reserved label, so
+        # flagging it here would be a false positive for a row `dim_accounts`
+        # never actually collides.
+        #
+        # `account_id` is `COALESCE(links.account_id, a.account_id)` (mirrored
+        # in both staging models) -- an unresolved account's source-native
+        # key, per .claude/rules/identifiers.md. Masked unconditionally before
+        # it leaves this method, the same way every other surface treats that
+        # field: never conditioned on what a particular value happens to look
+        # like.
         affected = [
-            str(account_id)
-            for account_id, account_label in rows
-            if is_reserved_account_name(account_label)
+            mask_embedded_account_number(str(account_id))
+            for account_id, account_label, has_last_four in rows
+            if is_reserved_account_name(account_label) and not has_last_four
         ]
         if affected:
             return InvariantResult(

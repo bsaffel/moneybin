@@ -576,25 +576,51 @@ def _seed_source_account(
     account_label: str | None,
     source: str = "tabular",
     extracted_at: str = "2026-01-01 00:00:00",
+    account_number: str | None = None,
+    account_number_masked: str | None = None,
+    mask: str | None = None,
 ) -> None:
     """Stand in for the ``prep.stg_*__accounts`` view the transform builds.
 
-    Only the three columns the reserved-label check reads: the two staging
-    models that carry an ``account_label`` at all are the only rungs whose text
-    a person wrote, and both project it beside the ``account_id`` and
-    ``extracted_at`` that ``dim_accounts``' merge resolves it by.
+    Beyond ``account_id``/``account_label``/``extracted_at``, also carries the
+    columns ``dim_accounts.sql`` derives a last four from for each source:
+    ``account_number``/``account_number_masked`` on tabular
+    (``stg_tabular__accounts.sql``), ``mask`` on plaid
+    (``stg_plaid__accounts.sql``). The reserved-label check must read the same
+    columns to know whether a last four is derivable for a row before deciding
+    whether the model would actually promote the folded label bare.
     """
-    for name in ("stg_tabular__accounts", "stg_plaid__accounts"):
-        db.execute("CREATE SCHEMA IF NOT EXISTS prep")
-        db.execute(
-            f"CREATE TABLE IF NOT EXISTS prep.{name} "  # noqa: S608  # fixed test fixture names
-            "(account_id TEXT, account_label TEXT, extracted_at TIMESTAMP)"
-        )
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
-        f"INSERT INTO prep.stg_{source}__accounts "  # noqa: S608  # fixed test fixture names
-        "(account_id, account_label, extracted_at) VALUES (?, ?, ?)",
-        [account_id, account_label, extracted_at],
+        "CREATE TABLE IF NOT EXISTS prep.stg_tabular__accounts "
+        "(account_id TEXT, account_label TEXT, extracted_at TIMESTAMP, "
+        "account_number TEXT, account_number_masked TEXT)"
     )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.stg_plaid__accounts "
+        "(account_id TEXT, account_label TEXT, extracted_at TIMESTAMP, mask TEXT)"
+    )
+    if source == "tabular":
+        db.execute(
+            "INSERT INTO prep.stg_tabular__accounts "
+            "(account_id, account_label, extracted_at, account_number, "
+            "account_number_masked) VALUES (?, ?, ?, ?, ?)",
+            [
+                account_id,
+                account_label,
+                extracted_at,
+                account_number,
+                account_number_masked,
+            ],
+        )
+    elif source == "plaid":
+        db.execute(
+            "INSERT INTO prep.stg_plaid__accounts "
+            "(account_id, account_label, extracted_at, mask) VALUES (?, ?, ?, ?)",
+            [account_id, account_label, extracted_at, mask],
+        )
+    else:
+        raise ValueError(f"unsupported source: {source!r}")
 
 
 def _upsert_settings(
@@ -882,6 +908,81 @@ def test_dim_accounts_reserved_display_name_passes_after_the_override_is_cleared
     result = DoctorService(db)._run_dim_accounts_reserved_display_name()
     assert result.status == "pass"
     assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_ignores_a_derivable_tabular_last_four(
+    db: Database,
+) -> None:
+    """A folded label that would be suffixed with a last four is not a collision.
+
+    `dim_accounts.sql`'s account_label arm only promotes the label bare when no
+    last four can be derived; when one exists it renders `<label> …<four>`,
+    which no longer folds onto the reserved label. Here `account_number`
+    supplies a derivable last four, so this row must not be reported.
+    """
+    _seed_source_account(
+        db,
+        "acct_tabular_lastfour",
+        account_label="unnamed account",
+        account_number="1234567890",
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_ignores_a_derivable_plaid_last_four(
+    db: Database,
+) -> None:
+    """Same false-positive fix, exercised through Plaid's `mask` column."""
+    _seed_source_account(
+        db,
+        "acct_plaid_lastfour",
+        account_label="unnamed account",
+        source="plaid",
+        mask="7890",
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "pass"
+    assert result.affected_ids == []
+
+
+def test_dim_accounts_reserved_display_name_still_flags_with_no_last_four(
+    db: Database,
+) -> None:
+    """The collision stays live when no last four is derivable for the row.
+
+    Same folded label as the last-four fixtures above, but with no
+    `account_number`/`account_number_masked` supplied, so `dim_accounts.sql`
+    would actually promote the label bare and collide with the reserved name.
+    """
+    _seed_source_account(
+        db,
+        "acct_tabular_no_lastfour",
+        account_label="unnamed account",
+    )
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "fail"
+    assert result.affected_ids == ["acct_tabular_no_lastfour"]
+
+
+def test_dim_accounts_reserved_display_name_masks_an_unresolved_source_key(
+    db: Database,
+) -> None:
+    """An unresolved account's `account_id` is its source-native key -- mask it.
+
+    `account_id` here is `COALESCE(links.account_id, a.account_id)`
+    (mirrored in `stg_tabular__accounts.sql` / `stg_plaid__accounts.sql`); with
+    no accepted resolver link it is the source-native key verbatim. Per
+    `.claude/rules/identifiers.md`, that field is masked unconditionally on
+    every surface -- never conditioned on whether a particular value happens
+    to look synthetic.
+    """
+    _seed_source_account(db, "acct_9876543210", account_label="unnamed account")
+    result = DoctorService(db)._run_dim_accounts_reserved_display_name()
+    assert result.status == "fail"
+    assert result.affected_ids == ["acct_****3210"]
+    assert "9876543210" not in json.dumps(result.affected_ids)
 
 
 def test_balance_assertions_account_fk_flags_orphan(db: Database) -> None:
