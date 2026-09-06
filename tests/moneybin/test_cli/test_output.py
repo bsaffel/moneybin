@@ -15,6 +15,7 @@ from moneybin.privacy.payloads.gsheet import GsheetPullPayload, GsheetPullRow
 from moneybin.privacy.payloads.sync import SyncPullInstitutionRow, SyncPullPayload
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 
 def _make_envelope(
@@ -36,6 +37,7 @@ class _AccountRow:
     label: Annotated[str, DataClass.USER_NOTE]
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class _OneListPayload:
     """The shape every migrated collection command uses: one list, plus counts."""
@@ -44,9 +46,10 @@ class _OneListPayload:
     total: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class _TwoListPayload:
-    """Two collections in one payload — no single list to project into."""
+    """Two peer collections — the payload declares that neither is its rows."""
 
     rows: list[_AccountRow]
     others: list[_AccountRow]
@@ -198,7 +201,7 @@ class TestJsonFieldsOnTypedPayloads:
         assert out["data"]["rows"] == [{"account_number": "****6789"}]
 
     @pytest.mark.unit
-    def test_no_ops_when_the_payload_carries_two_lists(
+    def test_no_ops_when_the_payload_declares_no_row_set(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         """Half a projection is worse than none — the caller cannot see which half."""

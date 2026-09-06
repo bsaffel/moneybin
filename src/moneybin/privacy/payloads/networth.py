@@ -18,6 +18,7 @@ from decimal import Decimal
 from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class NetWorthCurrencySegment:
     account_count: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class NetWorthSnapshotPayload:
     """Net worth at a point in time + per-currency and per-account breakdowns.
@@ -77,6 +79,7 @@ class NetWorthHistoryPoint:
     change_pct: Annotated[Decimal | float | None, DataClass.AGGREGATE]
 
 
+@row_set("points")
 @dataclass(frozen=True, slots=True)
 class NetWorthHistoryPayload:
     """Payload for reports_networth_history."""

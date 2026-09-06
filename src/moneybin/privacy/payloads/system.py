@@ -48,6 +48,7 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsWithAutoPayload,
 )
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # transform_status payload
@@ -70,6 +71,7 @@ class TransformStatusPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransformPlanPayload:
     """Payload for ``transform_plan`` — pending SQLMesh model change sets."""
@@ -94,6 +96,7 @@ class TransformValidationError:
     message: Annotated[str, DataClass.DESCRIPTION]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransformValidatePayload:
     """Payload for ``transform_validate`` — parse/resolve check result."""
@@ -116,6 +119,7 @@ class TransformAuditRow:
     detail: Annotated[str | None, DataClass.DESCRIPTION]
 
 
+@row_set("audits")
 @dataclass(frozen=True, slots=True)
 class TransformAuditPayload:
     """Payload for ``transform_audit`` — SQLMesh data-quality audit results."""
@@ -137,6 +141,7 @@ class SystemStatusAccountsInfo:
     count: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransactionsInfo:
     """Transaction count + range sub-object inside SystemStatusPayload."""
@@ -183,6 +188,7 @@ class SystemStatusCategorizationInfo:
     uncategorized: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransformsInfo:
     """Transform freshness sub-object inside SystemStatusPayload.
@@ -198,6 +204,7 @@ class SystemStatusTransformsInfo:
     missing_models: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SchemaDriftTable:
     """One drifted table entry inside SystemStatusPayload.schema_drift."""
@@ -206,6 +213,7 @@ class SchemaDriftTable:
     missing_columns: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusSchemaDrift:
     """Schema drift info inside SystemStatusPayload, present only when drift detected."""
@@ -229,6 +237,7 @@ class SystemStatusGsheetRow:
     reason: Annotated[str | None, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusGsheetInfo:
     """Google Sheets connection-health sub-object inside SystemStatusPayload."""
@@ -261,6 +270,7 @@ class SystemStatusReader:
     command: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusDatabaseConnectionsInfo:
     """Per-profile inventory of active database connections.
@@ -332,6 +342,7 @@ class SystemStatusPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class InvariantResultPayload:
     """One pipeline invariant check result inside SystemDoctorPayload.
@@ -349,6 +360,7 @@ class InvariantResultPayload:
     recovery_actions: list[RecoveryActionPayload]
 
 
+@row_set("invariants")
 @dataclass(frozen=True, slots=True)
 class SystemDoctorPayload:
     """Payload for ``system_doctor`` — pipeline integrity check results."""
@@ -393,6 +405,7 @@ class CategorizationStatus(BaseModel):
     statistics: CategorizeStatsPayload | CategorizeStatsWithAutoPayload
 
 
+@row_set(NO_ROW_SET)
 class SystemStatusExportDestination(BaseModel):
     """Privacy-safe readiness for one configured export destination."""
 
@@ -405,6 +418,7 @@ class SystemStatusExportDestination(BaseModel):
     reasons: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set("destinations")
 class ExportsStatus(BaseModel):
     """Export destination readiness inside sectioned system status."""
 
@@ -414,6 +428,7 @@ class ExportsStatus(BaseModel):
     destinations: list[SystemStatusExportDestination]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusCLIPayload:
     """Flat typed payload for the established ``system status`` CLI JSON shape."""
@@ -464,6 +479,7 @@ SystemStatusSection = Annotated[
 ]
 
 
+@row_set("sections")
 class SystemStatusCoarsePayload(BaseModel):
     """Selected status sections in deterministic request order."""
 
@@ -492,6 +508,7 @@ class SelfHealActionRow:
     timestamp: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class RefreshRunPayload:
     """Payload for ``refresh_run`` — pipeline execution result.
@@ -586,6 +603,7 @@ class SystemAuditEventPayload:
     undoes_operation_id: Annotated[str | None, DataClass.RECORD_ID]
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class SystemAuditPayload:
     """Payload for ``system_audit`` — filtered audit log events."""
@@ -598,6 +616,7 @@ class SystemAuditPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("tables")
 @dataclass(frozen=True, slots=True)
 class SystemAuditUndoPayload:
     """Payload for ``system_audit_undo`` — outcome of reversing one operation.
@@ -634,6 +653,7 @@ class RecoveryActionPayload:
     idempotent: Annotated[bool, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemAuditHistoryEntryPayload:
     """One operation in ``system_audit_history``, grouped by ``operation_id``.
@@ -658,6 +678,7 @@ class SystemAuditHistoryEntryPayload:
     recovery_actions: list[RecoveryActionPayload]
 
 
+@row_set("operations")
 @dataclass(frozen=True, slots=True)
 class SystemAuditHistoryPayload:
     """Payload for ``system_audit_history`` — recent operations, newest first."""
@@ -665,6 +686,7 @@ class SystemAuditHistoryPayload:
     operations: list[SystemAuditHistoryEntryPayload]
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class SystemAuditGetPayload:
     """Payload for ``system_audit_get`` — full before/after for one operation.
@@ -685,6 +707,7 @@ class SystemAuditGetPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("events")
 class AuditEvents(BaseModel):
     """Recent audit events."""
 
@@ -694,6 +717,7 @@ class AuditEvents(BaseModel):
     events: list[SystemAuditEventPayload]
 
 
+@row_set("operations")
 class AuditHistory(BaseModel):
     """Recent audited operations with undoability metadata."""
 
@@ -703,6 +727,7 @@ class AuditHistory(BaseModel):
     operations: list[SystemAuditHistoryEntryPayload]
 
 
+@row_set("events")
 class AuditDetail(BaseModel):
     """One operation or one parent audit event and its child chain."""
 

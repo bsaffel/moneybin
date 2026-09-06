@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # categories tool — list all categories
@@ -54,6 +55,7 @@ class CategoryRow:
     is_active: Annotated[bool | None, DataClass.TXN_TYPE]
 
 
+@row_set("categories")
 @dataclass(frozen=True, slots=True)
 class CategoriesPayload:
     """Payload for the ``categories`` list tool."""
@@ -131,6 +133,7 @@ class MerchantRow:
     subcategory: Annotated[str | None, DataClass.CATEGORY]
 
 
+@row_set("merchants")
 @dataclass(frozen=True, slots=True)
 class MerchantsPayload:
     """Payload for the ``merchants`` list tool."""
@@ -156,6 +159,7 @@ class MerchantCreatePayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class MerchantsCreatePayload:
     """Payload for ``merchants_create`` — batch creation result.

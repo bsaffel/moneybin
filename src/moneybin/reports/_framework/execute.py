@@ -25,7 +25,7 @@ from pydantic import JsonValue
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.log_sanitizer import sql_digest
 from moneybin.privacy.redaction import MaskStrength, mask_strength, redact_records
 from moneybin.privacy.sensitivity import tier_to_sensitivity
@@ -36,6 +36,7 @@ from moneybin.protocol.envelope import (
     build_envelope,
     resolve_display_currency,
 )
+from moneybin.protocol.row_set import row_set
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
@@ -61,6 +62,7 @@ type FrozenJsonValue = (
 )
 
 
+@row_set("records")
 @dataclass(frozen=True)
 class ReportResult:
     """Redacted rows plus the envelope-relevant metadata for one report call.
@@ -90,6 +92,9 @@ class ReportResult:
     #: converted. Rides the response only — never the durable log, which is why
     #: ``degraded_reason`` still names no date (see ``convert._missing_reason``).
     applied_rates: tuple[ResolvedRate, ...] = ()
+    #: Structured next steps for an agent, beside the prose ``actions`` the CLI
+    #: prints — a caveat's remedy an agent can call without parsing a hint.
+    recovery_actions: tuple[RecoveryAction, ...] = ()
 
     @property
     def classes_returned(self) -> list[str]:
@@ -115,10 +120,14 @@ class ReportResult:
             display_currency=self.display_currency,
             degraded=self.degraded,
             degraded_reason=self.degraded_reason,
+            recovery_actions=list(self.recovery_actions) or None,
             applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
         )
 
 
+# A declaration is read off the class's own __dict__, never inherited, so a
+# subclass states its answer even when it matches the parent's.
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportResult(ReportResult):
     """A report result tagged with its catalog identity and financial meaning."""
@@ -129,6 +138,7 @@ class CatalogReportResult(ReportResult):
     provenance: tuple[str, ...]
 
 
+@row_set("records")
 @dataclass(frozen=True, kw_only=True)
 class CatalogReportExecution:
     """One raw catalog-runner execution before terminal redaction."""
@@ -155,6 +165,8 @@ class CatalogReportExecution:
     #: Every distinct rate that priced these rows (Requirement 10). Empty until
     #: ``convert_execution`` runs, and on any result that stayed segmented.
     applied_rates: tuple[ResolvedRate, ...] = ()
+    #: See ``ReportResult.recovery_actions``.
+    recovery_actions: tuple[RecoveryAction, ...] = ()
     #: The row cap this execution still owes, or ``None`` once one has been
     #: applied. Set only on the converting path, where the cap has to wait for
     #: ``on_converted`` — see ``truncate_execution``.
@@ -558,6 +570,7 @@ def redact_catalog_execution(
         degraded=execution.degraded_reason is not None,
         degraded_reason=execution.degraded_reason,
         applied_rates=execution.applied_rates,
+        recovery_actions=execution.recovery_actions,
     )
 
 

@@ -17,6 +17,7 @@ from decimal import Decimal
 from typing import Annotated, Literal
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import row_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +31,7 @@ class BudgetCategoryStatusRow:
     status: Annotated[Literal["OK", "WARNING", "OVER"], DataClass.TXN_TYPE]
 
 
+@row_set("categories")
 @dataclass(frozen=True, slots=True)
 class BudgetStatusPayload:
     """Result of reports_budget — per-category status + month."""

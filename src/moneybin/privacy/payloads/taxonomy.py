@@ -9,8 +9,10 @@ from pydantic import BaseModel, ConfigDict
 
 from moneybin.privacy.payloads.categories import CategoryRow, MerchantRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import row_set
 
 
+@row_set("rows")
 class TaxonomyCategoriesView(BaseModel):
     """Paginated category taxonomy."""
 
@@ -20,6 +22,7 @@ class TaxonomyCategoriesView(BaseModel):
     rows: list[CategoryRow]
 
 
+@row_set("rows")
 class TaxonomyMerchantsView(BaseModel):
     """Paginated merchant mappings."""
 
@@ -45,6 +48,7 @@ class TaxonomyStateResult:
     changed: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set("results")
 @dataclass(frozen=True, slots=True)
 class TaxonomySetPayload:
     """Result of one atomic taxonomy target-state batch."""

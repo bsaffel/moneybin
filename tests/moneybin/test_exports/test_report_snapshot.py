@@ -38,7 +38,10 @@ from moneybin.reports._framework.contract import (
     ReportQuery,
     ReportSpec,
 )
-from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
+from moneybin.reports._framework.dynamic import (
+    DEGRADED_PENDING_DEDUP,
+    DEGRADED_STALE_CLASSIFICATION,
+)
 from moneybin.reports._framework.execute import (
     CatalogReportExecution,
     build_catalog_execution,
@@ -47,7 +50,7 @@ from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports.service_reports import NETWORTH_HISTORY_REPORT
 from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
-from tests.moneybin.db_helpers import create_core_tables_raw
+from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 _VIEW = TableRef("reports", "test_export")
@@ -288,6 +291,36 @@ def test_prepare_report_carries_a_degraded_reports_drift_into_the_receipt(
     manifest_receipt = snapshot.manifest["provenance"]["receipt"]  # type: ignore[index]
     assert manifest_receipt["degraded_reason"] == reason  # type: ignore[index]
     json.dumps(snapshot.manifest)
+
+
+def test_prepare_report_carries_a_pending_duplicate_caveat_into_the_receipt(
+    db: Database,
+) -> None:
+    """Issue #409: the durable artifact of an inflated total says it is provisional.
+
+    The export runs the catalog beneath ``ReportCatalog.execute``, so the caveat
+    has to be attached at the execution, not the interactive result, or the one
+    copy that outlives the review queue would be the one copy without it.
+    """
+    create_core_tables_raw(db.conn)
+    seed_pending_dedup_pair(db)
+    fed_by_transactions = replace(
+        _spec(),
+        semantics=replace(TEST_SEMANTICS, provenance=("core.fct_transactions",)),
+    )
+    service = _service(db, catalog=ReportCatalog((fed_by_transactions,)))
+
+    snapshot = service.prepare_report(
+        profile="test",
+        report_id=fed_by_transactions.report_id,
+        report_parameters={},
+        redaction_mode="unredacted",
+    )
+
+    assert snapshot.provenance is not None
+    assert snapshot.provenance.receipt["degraded"] is True
+    reason = str(snapshot.provenance.receipt["degraded_reason"])
+    assert reason.startswith(f"{DEGRADED_PENDING_DEDUP}: 1 ")
 
 
 def test_prepare_report_applies_redaction_after_raw_execution(db: Database) -> None:
