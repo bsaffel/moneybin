@@ -162,6 +162,20 @@ STG_PLAID_TRANSACTIONS = TableRef("prep", "stg_plaid__transactions")
 STG_SECURITY_PRICES = TableRef("prep", "stg_security_prices")
 STG_TABULAR_ACCOUNTS = TableRef("prep", "stg_tabular__accounts")
 
+# Diagnostic-only staging views read by DoctorService (Layer Rule 2 in
+# architecture-shared-primitives.md licenses the prep.* read, not the literal
+# string — these bring the same four remaining doctor call sites in line with
+# the STG_SECURITY_PRICES / INT_TRANSACTIONS_* constants already used beside
+# them).
+STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS = TableRef(
+    "prep", "stg_plaid__investment_holdings_snapshots"
+)
+STG_PLAID_INVESTMENT_TRANSACTIONS = TableRef(
+    "prep", "stg_plaid__investment_transactions"
+)
+STG_PLAID_INVESTMENT_HOLDINGS = TableRef("prep", "stg_plaid__investment_holdings")
+STG_PLAID_OPENING_LOT_REVIEW = TableRef("prep", "stg_plaid__opening_lot_review")
+
 # -- Meta schema (cross-source provenance + lineage) --
 FCT_TRANSACTION_PROVENANCE = TableRef("meta", "fct_transaction_provenance")
 MODEL_FRESHNESS = TableRef("meta", "model_freshness")

@@ -70,8 +70,8 @@ Related specs:
    adopt-on-strong-signal / propose-on-fuzzy ladder — purely additive to the schema
    fixed here.
 4. **Investment-transaction ledger in `core.fct_investment_transactions`.** One row
-   per investment event. The only authored/ingested surface; everything else derives
-   from it.
+   per Golden leg; every leg of the same whole event shares `event_group_id`.
+   It is the canonical consumer surface, and everything else derives from it.
 5. **Closed `type` taxonomy** (one-way-door enum), mapped from OFX `<INVTRANLIST>` and
    Plaid (see [Plaid Investments Readiness](#plaid-investments-readiness)) so
    importers slot in cleanly — fourteen values: `buy`, `sell`, `reinvest`,
@@ -89,9 +89,12 @@ Related specs:
      `fee`; `dividend`/`interest`/`capital_gain` on `reinvest` (funding source).
      Raw preserves the provider's original type string alongside. Extending the
      vocabulary is additive; consumers must tolerate NULL and unknown values.
-   - **`event_group_id`** (nullable) — links the rows of one decomposed economic
-     event (reinvest pair, merger legs, tax withholding on a dividend). Truncated
-     UUID4 minted at entry/staging time.
+   - **`event_group_id`** — after M1J.7's pre-launch migration, the required
+     MoneyBin-owned Golden event identity on every Core row, including a
+     singleton. The 12-hex UUID4 is minted in App membership when the event first
+     registers; all legs of one Golden event share it. Raw and staging retain
+     nullable source-group references as provenance but never mint or resolve
+     the Golden identity.
 6. **Sign conventions.** `quantity` is signed: positive for acquisitions
    (`buy`/`reinvest`/`transfer_in`), negative for disposals (`sell`/`transfer_out`),
    NULL for cash-only events (`deposit`, `withdrawal`, `dividend`, `interest`,
@@ -102,23 +105,24 @@ Related specs:
    So a buy's cost basis is `|amount|` and a sell's net proceeds is `amount`.
    **`reinvest` rows carry the acquisition leg only** — quantity, price, and the
    negative `amount` of cash redeployed; the income being reinvested is always its
-   own `dividend`/`interest` row sharing the `event_group_id`. This keeps semantics
+   own `dividend`/`interest` row in the same validated Source event; after Golden
+   registration, both Core legs share the required `event_group_id`. This keeps
+   semantics
    identical across manual entry, Plaid (which delivers the pair as two rows), and
    OFX, and means income reports sum income-typed rows only — reinvested income can
    never double-count or silently vanish.
 7. **Manual entry via raw, per-provider raw tables.** Manual entry writes
-   `raw.manual_investment_transactions` (mirroring `raw.manual_transactions`) →
-   `prep.stg_manual__investment_transactions` → `core.fct_investment_transactions`,
-   following the CLI-imperative / MCP-declarative-set pattern from
-   `transaction-curation.md`. Importer children add their own provider-shaped raw
-   tables (`raw.plaid_investment_transactions`, `raw.ofx_investment_transactions`)
-   plus staging models, unioned at the core boundary — the same per-provider
-   pattern as the cash-transaction pipeline (`stg_plaid__transactions` et al.) and
-   the max-data-capture posture, since provider rows carry fields (Plaid
-   `subtype`, `institution_security_id`, dual currency codes) a shared generic
-   table would flatten. With one source in v1, `core.fct_investment_transactions`
-   selects from the single staging model; the union arrives with the second source
-   (the same extension pattern as `core.dim_securities`).
+   `raw.manual_investment_transactions` (mirroring `raw.manual_transactions`) and
+   each importer writes its own provider-shaped Raw table
+   (`raw.plaid_investment_transactions`, `raw.ofx_investment_transactions`) plus
+   staging model. This preserves fields (Plaid `subtype`,
+   `institution_security_id`, dual currency codes) that a shared generic table
+   would flatten. Before M1J.7, `core.fct_investment_transactions` directly
+   unions those staging rows. M1J.7 replaces that projection: staging feeds
+   source-event comparison and membership registration, while Core projects
+   only active Golden membership joined to the exact source revisions it names.
+   Corresponding manual and provider observations therefore produce one Golden
+   leg, not duplicate Core rows.
 8. **Derived lots in `core.fct_investment_lots`** (Invariant 8). Each acquisition
    opens a lot; disposals consume lots per the elected method. Each lot carries a
    stable content-hash `lot_id` so specific-ID overrides can reference it.
@@ -202,7 +206,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_investment_transactions (
     security_ref VARCHAR,                      -- The user-supplied security reference as typed (audit trail for the resolution)
     type VARCHAR NOT NULL,                     -- Core taxonomy value (CLI/MCP validate at entry; manual rows arrive canonical)
     subtype VARCHAR,                           -- Per-type refinement (tax character, reinvest source); nullable
-    event_group_id VARCHAR,                    -- Links legs of one economic event (reinvest pair, merger legs); nullable
+    event_group_id VARCHAR,                    -- Nullable pre-M1J.7 source-group provenance; never a Golden identity
     trade_date DATE NOT NULL,                  -- Trade date (drives holding period); NOT settlement date
     settlement_date DATE,                      -- Settlement date if supplied; informational
     original_acquisition_date DATE,            -- For transfer_in: shares' original acquisition date (holding period transfers in); NULL otherwise
@@ -276,14 +280,22 @@ FROM app.securities
 
 ### SQLMesh model: `core.fct_investment_transactions` (TABLE)
 
-The canonical ledger. v1 selects from `prep.stg_manual__investment_transactions`
-(rows arrive with resolved IDs and canonical taxonomy — see Requirement 7);
-importer children add their staging models to a union here, where their raw type
-strings map to the taxonomy and unresolved security refs run the resolution chain.
+The canonical ledger. Before M1J.7 it selects directly from the manual and
+importer staging models. M1J.7 replaces that union with a projection at one row
+per active Golden leg (`investment_transaction_id`). The model starts from
+active `app.investment_event_members`, joins each source member through its
+adapter to the exact immutable observation revision named by membership (or to
+the exact opening-lot reconstruction revision), and uses the membership's bound
+Account, Security, and effective currency. It then applies explicit field
+resolutions and the deterministic default and representative-source rules to
+collapse corresponding source legs into one row. Historical or retired
+membership never projects. Staging remains an input to comparison and
+registration, but after M1J.7 it is never directly unioned into this final
+ledger.
 
 ```
 Columns:
-  investment_transaction_id  VARCHAR          -- Canonical ID (source-provided or content hash)
+  investment_transaction_id  VARCHAR          -- MoneyBin-owned UUID4-derived 12-hex Golden leg ID
   account_id                 VARCHAR          -- FK to core.dim_accounts
   security_id                VARCHAR          -- FK to core.dim_securities; NULL for cash-only events (deposit, withdrawal, account fee, cash interest)
   trade_date                 DATE             -- Trade date; drives holding-period classification
@@ -291,14 +303,16 @@ Columns:
   original_acquisition_date  DATE             -- transfer_in only: original acquisition date; lot uses COALESCE(this, trade_date)
   type                       VARCHAR          -- Closed taxonomy (see Requirement 5)
   subtype                    VARCHAR          -- Per-type refinement (tax character, reinvest source); nullable
-  event_group_id             VARCHAR          -- Links legs of one decomposed economic event; nullable
+  event_group_id             VARCHAR          -- MoneyBin-owned Golden event ID; required on every M1J.7 row, including singletons
   quantity                   DECIMAL(28,10)   -- Signed units: + acquire, − dispose, NULL cash-only
   price                      DECIMAL(28,10)   -- Per-unit price; NULL for non-priced events
   amount                     DECIMAL(18,2)    -- Signed cash effect: − out (buy), + in (sell/dividend)
   fees                       DECIMAL(18,2)    -- Fee/commission component folded into basis
   currency_code              VARCHAR          -- Denominating currency; no FX in v1
-  source_type                VARCHAR          -- Origin tag (manual | ofx | plaid)
-  source_origin              VARCHAR          -- Institution/connection scope
+  source_type                VARCHAR          -- Singleton source or deterministic representative (manual | ofx | plaid)
+  source_origin              VARCHAR          -- Singleton or representative institution/connection scope
+  provider_type              VARCHAR          -- Exact provider type from the same source member; nullable
+  provider_subtype           VARCHAR          -- Exact provider subtype from the same source member; nullable
   description                VARCHAR          -- Free-text description
   updated_at                 TIMESTAMP        -- Row freshness per core-updated-at-convention
 ```
@@ -547,6 +561,12 @@ zero-and-refill pairs (which destroy holding-period continuity):
 as **decomposed leg pairs sharing an `event_group_id`** — paired out/in legs
 carrying a group identifier, with basis derived from the exchange ratio:
 
+This describes the ledger representation and pre-M1J.7 Source-group provenance,
+not a compound shape the M1J.7 matcher supports. After slice 1, CLI and MCP
+cannot author a two-security action until a future interface can submit and
+validate the complete compound event atomically. Existing grouped rows retain
+their Source group as provenance and remain atomic but match-ineligible.
+
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
   `--acquired` (per-lot when granularity is known, aggregate otherwise).
@@ -565,11 +585,17 @@ derived lots and 1099-B therefore never depend on the order events were recorded
   value — a taxable disposal plus an acquisition, which is the US-tax-correct
   treatment.
 
-v1 supports these via manual entry of the legs (the CLI/MCP accept
-`--event-group` to link them); importer children automate the decomposition in
-their staging models. No dedicated `exchange`/`spin_off` enum values until real
-import experience demands them — the `event_group_id` linkage is the durable
-primitive.
+Before M1J.7, manual entry accepted separate legs linked by caller-authored
+`--event-group`; importer children automate the decomposition in their staging
+models. M1J.7 supersedes that manual workflow. The Golden `event_group_id`
+becomes the durable ledger identity. No dedicated `exchange`/`spin_off` enum
+values exist until real import experience demands them.
+
+M1J.7 may match ordinary `transfer_in` or `transfer_out` observations only as
+same-direction one-leg events across distinct sources. It does not infer an
+internal-transfer pair. Plaid merger, spin-off, and trade legs remain
+NULL-grouped and ineligible for matching so a compound action cannot be
+partially consolidated.
 
 ### Oversold lots and incomplete acquisitions
 
@@ -614,12 +640,8 @@ provider-identifier resolution rung all exist because of this validation.
 > only; no rename/retype. The child also supersedes the `dim_securities`
 > "Future: UNION ALL from staging" comment — its resolver mints synced
 > securities into `app.securities` (merchant precedent), so the dim stays a
-> catalog view. One refinement to Requirement 5's "`event_group_id` …
-> truncated UUID4 minted at entry/staging time": staging-synthesized group ids
-> are **content hashes**, not UUIDs — a UUID minted inside a staging view
-> would churn on every SQLMesh rebuild. Manual entry keeps its minted UUID
-> (persisted in raw, so determinism is unaffected). Finally, the Taxonomy
-> mapping table below is **one subtype short**: `stock distribution`
+> catalog view. Finally, the Taxonomy mapping table below is **one subtype
+> short**: `stock distribution`
 > (`InvestmentTransactionSubtype.STOCK_DISTRIBUTION`, verified in the Plaid
 > Python SDK 2026-07-10) is a real security-bearing inflow the "48 subtypes,
 > no residue" count missed. It maps to `transfer_in` (opens a lot; the child
@@ -632,6 +654,27 @@ provider-identifier resolution rung all exist because of this validation.
 > change, made because the original mapping was a latent correctness bug, not a
 > reshape. Short/margin accounting stays future work.
 
+> **Amended 2026-09-05** (M1J.7 design): M1J.7 supersedes the earlier
+> "no `core` migration" and direct-staging-union assumptions as well as the
+> staging-content-hash refinement for `event_group_id`. Its Core schema remains
+> provider-neutral, but its row-production path changes to the active-membership
+> projection defined above. Pre-M1J.7 manual entry
+> may retain an authored source-group reference in Raw as provenance, while
+> Plaid staging leaves `event_group_id` NULL because the aggregator supplies no
+> trustworthy group reference. M1J.7 removes caller-authored grouping from
+> public writes, constructs Source events only from validated complete shapes
+> or evidence, and persists MoneyBin-owned Golden `event_group_id` and
+> `investment_transaction_id` values in app membership; staging never
+> synthesizes those identities from mutable financial fields. Pre-M1J.7
+> source-derived transaction ids remain provenance and do not become Golden
+> resolver inputs. After the pre-launch migration, Core projects a non-NULL
+> Golden `event_group_id` on every row, including singleton events. Any physical
+> nullability exists only inside the migration/backfill boundary; Raw and staging
+> may still carry NULL source-group references as provenance. For a multi-source
+> Golden leg, the singular source and
+> provider columns copy together from one deterministic representative member;
+> complete contributor attribution remains in source-row provenance.
+
 ### Taxonomy mapping (Plaid type/subtype → ours)
 
 Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
@@ -640,7 +683,7 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 | Plaid (type/subtype) | → type | → subtype / notes |
 |---|---|---|
 | buy/{buy, contribution} | `buy` | |
-| buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source; the paired Plaid income row maps to its income type, linked by `event_group_id` in staging |
+| buy/{dividend, interest, LT/ST capital gain} reinvestment | `reinvest` | subtype records funding source; a separately delivered Plaid income row stays its own staging observation with NULL `event_group_id` until M1J.7 constructs and reviews the whole Source event |
 | buy/assignment, sell/exercise, transfer/{assignment, exercise, expire} | `other` | options out of scope |
 | sell/sell | `sell` | |
 | buy/buy to cover, sell/sell short | `other` | short-position legs — the engine models only long lots, so mapping to `buy`/`sell` would open a spurious long lot or realize an oversold phantom gain; routed to `other` (recorded, kept out of the lot engine) with a `system doctor` surface until short accounting is modeled (future work). A deliberate route to `other`, not the accidental security-bearing default the guard forbids |
@@ -653,9 +696,9 @@ Plaid's 6 types × 48 subtypes map onto the taxonomy with no residue beyond
 | fee/return of principal | `return_of_capital` | |
 | cash/{contribution, deposit} | `deposit` | NULL security |
 | cash/withdrawal | `withdrawal` | NULL security |
-| transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign |
+| transfer/{transfer, send} | `transfer_in`/`transfer_out` | direction by sign; remains a one-leg Source event that M1J.7 may compare only to the same direction across another source |
 | transfer/split | `split` | |
-| transfer/{merger, spin off, trade} | decomposed leg pairs | see Corporate actions; staging synthesizes, `event_group_id` links |
+| transfer/{merger, spin off, trade} | decomposed leg observations | staging keeps `event_group_id` NULL; M1J.7 does not construct the compound action and marks its legs ineligible so they cannot match partially |
 | transfer/{adjustment}, fee/adjustment, loan payment, rebalance | `other` | |
 | cancel (no subtype), cash/{pending credit, pending debit}, transfer/request | **excluded at staging** | cancellation/pending lifecycle is sync-child territory; `cancel_transaction_id` is a deprecated dead field — never build on it |
 
@@ -692,12 +735,12 @@ All commands under a top-level `investments` group (promoting the placeholder
 moneybin investments add --account <id|name> --security <ticker|name> \
     --type buy --date 2024-01-15 --quantity 10 --price 150.00 \
     [--subtype qualified] [--fees 4.95] [--currency USD] \
-    [--event-group <id>] [--notes "..."]
+    [--notes "..."]
 ```
-- Records one event in `raw.manual_investment_transactions`; resolves
-  `--security` via the resolution chain, prompting to create a catalog entry if
-  unknown. `--event-group` links legs of one economic event (merger pair,
-  spin-off legs). Omitting `--currency` stores no currency and
+- Records one singleton event in `raw.manual_investment_transactions`, except
+  for the complete reinvest request below; resolves `--security` via the
+  resolution chain, prompting to create a catalog entry if unknown. Omitting
+  `--currency` stores no currency and
   `core.fct_investment_transactions` inherits the account's, never a blind
   `'USD'` (multi-currency.md Requirement 3).
 - **Reinvest convenience:** `--type reinvest` records the acquisition leg AND
@@ -705,6 +748,15 @@ moneybin investments add --account <id|name> --security <ticker|name> \
   `--subtype interest|capital_gain` selects the income type), both sharing a
   minted `event_group_id` — one command, two ledger rows, mirroring how brokers
   and Plaid report the event.
+
+> **M1J.7 pre-launch amendment:** the pre-M1J.7 surface accepted a
+> caller-authored `--event-group` option and MCP `event_group_id` input; M1J.7
+> removes both. A reinvest request is a complete whole event and MoneyBin mints
+> its Source group internally; other supported manual entries are singletons. A
+> future compound manual shape must be submitted and validated atomically rather
+> than assembled by reusing a string across calls. The manual write surface
+> remains create-only in M1J.7; manual event correction is a separate future
+> contract, not part of matching.
 
 ```
 moneybin investments list [--account <id|name>] [--security <ticker|name>] \
@@ -867,15 +919,17 @@ broker-carried valuation fields.
 Per `surface-design.md` — one tool per operation shape, no polymorphic `*_set` catch-all.
 
 **`investments_record`** — Shape 3 (discrete batch event). Record one or more investment
-events; resolves securities, reports unresolved refs in `error_details`. Accepts
-`subtype` and `event_group_id` per event; a `reinvest` event expands to the
-acquisition + income row pair exactly like the CLI convenience (same outcomes,
-per functional parity). The batch is **atomic**: all events are validated and
-resolved before any write, then written in a single transaction under one
-`import_log` batch — a hard-validation or infra failure leaves nothing written
-so a retry cannot double-insert. The one soft exception is an unresolved or
-ambiguous *security* ref: that event is skipped and reported in `error_details`,
-and the rest of the batch still commits.
+events; resolves securities, reports unresolved refs in `error_details`. The
+shipped surface accepts `subtype` and `event_group_id` per event; M1J.7 removes
+the caller-authored grouping input. A `reinvest` event expands to the acquisition
+and income row pair exactly like the CLI convenience and receives an internally
+minted Source group (same outcomes, per functional parity). The batch is
+**atomic**: all events are validated and resolved before any write, then written
+in a single transaction under one `import_log` batch — a hard-validation or
+infra failure leaves nothing written so a retry cannot double-insert. The one
+soft exception is an unresolved or ambiguous *security* ref: that event is
+skipped and reported in `error_details`, and the rest of the batch still
+commits.
 
 Registered top-level schema: `investments_record(events=[...])`. `events` is
 the sole required top-level field and must be an array; no other top-level
@@ -980,7 +1034,9 @@ output schema, so this spec does not freeze a JSON response object.
 
 - **External price feeds, manual overrides, and daily valuation history** — Pillar C.2/C.3 (`investments-price-feeds.md`); broker-carried close valuation shipped in C.1.
 - **Holdings in net worth** — Pillar D (`investments-net-worth.md`).
-- **Plaid / OFX import** — separate children; each adds its own provider-shaped raw table + staging model into the core union (Requirement 7).
+- **Plaid / OFX import** — separate children; each adds its own provider-shaped
+  Raw table and staging model as comparison and membership-registration input
+  (Requirement 7), not a direct post-M1J.7 Core union.
 - **Options, margin, short positions, derivatives** — future.
 - **Wash sales, Schedule D, qualified-dividend logic** — the `us_tax` package.
 - **IRS election-policy enforcement** — v1 mirrors the broker.
