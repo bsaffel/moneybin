@@ -45,10 +45,15 @@ signal back:
    (``ast.Assign``/``ast.AnnAssign``/``ast.AugAssign``/``ast.NamedExpr``) —
    that is later passed as an argument (including transitively, through an
    f-string interpolation inside another candidate literal, OR through a
-   chain of aliases of any length — see ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in
-   ``doctor_service.py`` for the interpolation shape this exists to catch: a
-   module-level query fragment assigned once, then spliced into other
-   queries via ``f"...{_CTE}..."``). Name-to-name aliasing closes a gap
+   chain of aliases of any length — but only among names bound in the SAME
+   scope; see point 3). ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` in
+   ``doctor_service.py`` is the interpolation shape this machinery was
+   built for — a query fragment assigned once, then spliced into other
+   queries via ``f"...{_CTE}..."`` — and it is worth being precise about
+   what happens to it now: the constant is module-level and every splice
+   sits inside a method, so under point 3's same-scope rule it is NOT
+   reported. Transitivity is real, and it stops at the scope boundary.
+   Name-to-name aliasing closes a gap
    found in round 3 of this guard's review: ``query = "SELECT * FROM
    core.x"; sql = query; db.execute(sql)`` is ordinary refactoring, not
    evasion, and a scan that only recorded literal RHS values missed it. The
@@ -156,19 +161,33 @@ signal back:
    round-trips it back into reconstructed SQL as `/* ... */`) from becoming
    a new false positive.
 
-3. **Function-scoped name binding, with module-level fallback.** A candidate
-   name is resolved within the module or function/method body that binds it
-   — NOT across the whole file. Two unrelated functions in the same module
-   reusing a conventional local name (``query``, ``sql``) no longer
-   contaminate each other: a literal assigned to ``query`` in function ``f``
-   is invisible when a *different* ``query`` (e.g. a parameter) reaches
-   ``execute()`` in function ``g``. A name with no local binding falls back
-   to the module-level scope — this is what lets a module-level constant
-   like ``_NEWEST_HOLDINGS_SNAPSHOT_CTE`` (point 1) still resolve from
-   inside a method. This is Local + Global, not full Python LEGB: a name
-   bound only in an *enclosing function* (a closure) is not resolved,
-   consistent with this being a bounded, file-local heuristic. See the
-   scoping comment above ``_scan_file``'s per-scope loop.
+3. **Same-scope name binding. No fallback.** A candidate name is resolved
+   only within the scope that binds it — the module body, a function or
+   method body, a ``lambda``, or a class body, each walked independently
+   (``_SCOPE_NODES``). Two unrelated functions reusing a conventional local
+   name (``query``, ``sql``) cannot contaminate each other. **A name this
+   scope does not bind to a visible literal is opaque, and an opaque name
+   is never reported** — not resolved against a same-named module constant,
+   not against an enclosing function's binding.
+
+   This replaced a Local + Global model that fell back to module scope for
+   any name without a local binding. The fallback had to decide when a
+   function-local name legitimately referred to a same-named module
+   constant, and answering that needs real scope and flow analysis: which
+   binder forms make a name local, whether a ``global`` rebinding is
+   definite and whether it precedes the sink, whether ``lambda`` and class
+   bodies are scopes. Six consecutive review rounds found defects in that
+   machinery, and across every one of them the whole-tree scan returned the
+   same three allowlisted results — it never once found a hardcoded table
+   in this codebase, while repeatedly reporting correct code.
+
+   The cost is named, not hidden: a hardcoded query held in a module-level
+   constant and executed inside a function is not reported. That gap fails
+   silently, which this file otherwise refuses, so it is pinned by
+   ``test_module_constant_used_inside_a_function_is_deliberately_not_
+   reported`` and its module-scope control. If module-level constants
+   become a real hardcoding route, the answer is a mechanism aimed at that
+   — not a return to same-name fallback.
 
 A SQL comment mentioning a table by name (``-- core.fct_transactions is
 expensive``) is not a residual false-positive risk under the sqlglot design:
@@ -197,6 +216,7 @@ Exemptions:
 from __future__ import annotations
 
 import ast
+import hashlib
 import re
 from pathlib import Path
 
@@ -316,7 +336,13 @@ _FALLBACK_TABLE_KEYWORDS = (
 # the two matchers in this file would disagree about what an identifier is.
 _FALLBACK_SCHEMA_TABLE_PATTERN = re.compile(
     r"(?:\b(" + "|".join(_FALLBACK_TABLE_KEYWORDS) + r")\s+)?"
-    r"\"?(" + "|".join(_SCHEMA_NAMES) + r")\"?\.\"?([a-z][a-z0-9_]+)\b\"?",
+    # The lookbehind, not `\b`, is what stops `score.foo` from matching
+    # `core.foo` on the tail of a longer identifier: the schema group is
+    # preceded by an OPTIONAL quote, and `\b` placed before that quote
+    # still permits a start inside a word. A quote is not a word
+    # character, so one lookbehind covers the quoted and bare spellings.
+    r"(?<![A-Za-z0-9_])\"?(" + "|".join(_SCHEMA_NAMES) + r")\"?"
+    r"\.\"?([a-z][a-z0-9_]+)\b\"?",
     re.IGNORECASE,
 )
 
@@ -344,42 +370,77 @@ def _fallback_regex_tables(text: str, default_clause: str) -> list[tuple[str, st
     found: list[tuple[str, str]] = []
     for match in _FALLBACK_SCHEMA_TABLE_PATTERN.finditer(text):
         clause = match.group(1).upper() if match.group(1) else default_clause
-        found.append((clause, f"{match.group(2)}.{match.group(3)}"))
+        # Lowercased for the same reason `_table_arg_match` documents:
+        # DuckDB is case-insensitive, so reporting the source spelling
+        # would split one table across two allowlist keys.
+        found.append((
+            clause,
+            f"{match.group(2).lower()}.{match.group(3).lower()}",
+        ))
     return found
 
 
+def _statement_key(text: str) -> str:
+    """Short digest of one statement, identifying WHICH statement was exempted.
+
+    Whitespace is collapsed first so reindenting a query — or reflowing a
+    triple-quoted string — does not churn the key. sqlglot's own
+    ``.sql(dialect="duckdb")`` rendering already normalizes keyword casing
+    and spacing for the structural path; the collapse matters for the raw
+    literal text the `INTERPOLATED` and `TABLE_ARG` paths hash.
+
+    Twelve hex characters is 48 bits. This is not a security boundary — it
+    identifies one of a handful of exempted statements in one file, and a
+    collision would have to occur between two statements in the SAME file
+    that also share a clause type and a table name.
+    """
+    return hashlib.sha256(" ".join(text.split()).encode("utf-8")).hexdigest()[:12]
+
+
 # Allowlist entries are (file_relpath, clause_type, "schema.table",
-# occurrence) 4-tuples. `file_relpath` is relative to src/moneybin/ for
+# statement_key) 4-tuples. `file_relpath` is relative to src/moneybin/ for
 # stability across moves. `clause_type` is the upper-cased sqlglot node type
 # that directly parents the `exp.Table` — `FROM`/`JOIN`/`DROP`/`COPY`/
 # `DESCRIBE`/`UPDATE`/`INSERT`/... (see `_tables_in_text`, module docstring
 # point 2) — keying on it, not just the table name, separates a
 # `DROP VIEW ... app.merchants` from an unrelated `FROM app.merchants`
 # naming the same table for a different reason.
-# `occurrence` is a 0-based count of prior matches of that same
-# (clause_type, table) pair *within the file*, assigned in source order
-# (`_scan_file` sorts by lineno before counting) — this, not a line number,
-# disambiguates two genuinely distinct occurrences that share both the same
-# clause type and the same table (e.g. two separate `FROM app.merchants`
-# reads in the same file). It is deliberately NOT the line number: a line
-# number shifts on any unrelated edit above it, turning every such edit into
-# a guard failure. The occurrence count only changes when an occurrence of
-# that exact (clause, table) pair is itself added, removed, or reordered
-# relative to its siblings — reordering is safe too, since same-pair
-# occurrences are interchangeable by construction (each gets a distinct
-# index regardless of which physical occurrence holds it).
+# `statement_key` is `_statement_key()` over the normalized text of the
+# statement the match was found in. It answers "which statement did a human
+# actually review and exempt", which is the only question an exemption
+# should turn on.
 #
-# Collision behavior: two occurrences collide (compute to the same key) only
-# if they share file, clause type, table, AND relative order — which,
-# given the sort-by-lineno step, requires two distinct occurrences to start
-# on the exact same source line. No such case exists in the tree today; if
-# one arises, this scheme cannot order them and the fix is to additionally
-# key on the enclosing statement's text or function name.
+# It is deliberately NOT a line number: a line number shifts on any
+# unrelated edit above it, turning every such edit into a guard failure.
+#
+# It is also deliberately no longer a positional occurrence ordinal, which
+# is what this keyed on until a review found the ordinal silently
+# transferable. Under the ordinal scheme, deleting an allowlisted
+# occurrence and adding an unrelated, never-reviewed occurrence of the same
+# (clause, table) pair elsewhere in the file renumbered the new one into
+# the freed index — so it inherited the old one's exemption and passed with
+# nothing reported, and `test_allowlist_has_no_dead_entries` stayed green
+# too because the key still matched something. An exemption transferring
+# itself to unreviewed code is the exact failure a guard exists to prevent.
+# Hashing the statement makes the transfer impossible: different statement,
+# different key, loud failure.
+#
+# The cost, stated plainly: editing an exempted statement at all — even
+# renaming a column in it — changes its key and fails the guard until the
+# entry is updated. That is the safe direction (a visible failure on a
+# statement someone is already editing, not a silent pass on code nobody
+# reviewed), and it is strictly tighter than the line number this scheme
+# rejected: only a change to THAT statement disturbs it.
+#
+# Collision behavior: two matches collide only if they share file, clause
+# type, table AND normalized statement text — i.e. the same statement
+# written twice in one file, reported once per copy. They are then
+# genuinely interchangeable and one entry covers both.
 #
 # Every entry carries a `# why` comment; entries are asserted by set
 # equality against the live scan (`test_allowlist_has_no_dead_entries`), so
 # a stale entry fails as loudly as a new violation.
-TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, int]] = frozenset({
+TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, str]] = frozenset({
     # `refresh_views` drops two pre-migration legacy view names during its
     # backward-compat upgrade path. `app.categories` and `app.merchants`
     # predate today's `core.dim_categories` / `core.dim_merchants` (CATEGORIES
@@ -390,15 +451,15 @@ TABLE_LITERAL_ALLOWLIST: frozenset[tuple[str, str, str, int]] = frozenset({
     # TableRef would misrepresent them as live tables. Clause type is `DROP`
     # (both are `DROP VIEW IF EXISTS ...`) — sqlglot represents `IF EXISTS`
     # as a modifier on the `Drop` node, not a distinct clause.
-    ("seeds.py", "DROP", "app.categories", 0),
-    ("seeds.py", "DROP", "app.merchants", 0),
+    ("seeds.py", "DROP", "app.categories", "df05543d3c74"),
+    ("seeds.py", "DROP", "app.merchants", "b5e4415a12b7"),
     # NOT a retired-view drop — `app.merchants` here is read live, inside the
     # pre-V006 backward-compat passthrough that wraps the legacy TABLE (still
     # a BASE TABLE, not yet migrated to `app.user_merchants`) so
     # categorization reads keep working before V006 runs. It has no
     # TableRef because tables.py registers only the *current* schema shape;
     # this statement exists specifically to read the pre-migration one.
-    ("seeds.py", "FROM", "app.merchants", 0),
+    ("seeds.py", "FROM", "app.merchants", "3490dff615c2"),
 })
 
 
@@ -534,6 +595,11 @@ _ScopeLiterals = dict[str, list[tuple[int, str, set[str]]]]
 _ScopeAliases = dict[str, list[str]]
 
 
+# The node types Python gives their own namespace. `_direct_scope_nodes`
+# stops at each, and `_scan_file` walks each as an independent scope.
+_SCOPE_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
+
 def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     """All descendant nodes of `root`, not descending into a nested function.
 
@@ -556,24 +622,29 @@ def _direct_scope_nodes(root: ast.AST) -> list[ast.AST]:
     ``ast.iter_child_nodes``) include its `decorator_list` and argument
     defaults, so those literals surface as part of the function's OWN
     scope, not the enclosing one. Everything else (``if``/``for``/``with``/
-    ``try``/class bodies, comprehensions) is not a distinct variable scope
-    in this heuristic and is walked through, mirroring Python's actual
-    scoping rule that only ``def``/``lambda`` introduce a new local
-    namespace.
+    ``try``, comprehensions) is not a distinct variable scope in this
+    heuristic and is walked through.
+
+    The stop list is the set of nodes Python itself gives a separate
+    namespace: ``def``, ``async def``, ``lambda`` and a class body. An
+    earlier version of this docstring named ``def``/``lambda`` as the rule
+    while the code stopped only at ``def`` — so a ``lambda``'s parameter
+    default was never scanned, and a class body was resolved against the
+    enclosing module. Both are fixed here; the rule and the code now agree.
     """
     nodes: list[ast.AST] = []
     stack = list(ast.iter_child_nodes(root))
     while stack:
         node = stack.pop()
         nodes.append(node)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, _SCOPE_NODES):
             continue
         stack.extend(ast.iter_child_nodes(node))
     return nodes
 
 
 def _parameter_default_bindings(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
+    node: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
 ) -> tuple[_ScopeLiterals, _ScopeAliases]:
     """Defaults bound to their parameter names, as literals and as aliases.
 
@@ -876,10 +947,14 @@ def _resolve_worklist(
     return scanned
 
 
-def _tables_in_text(text: str) -> list[tuple[str, str]]:
+def _tables_in_text(text: str) -> list[tuple[str, str, str]]:
     """Every schema-qualified table reference sqlglot finds in `text`.
 
-    Returns (clause_type, "schema.table") pairs. Parses with
+    Returns (clause_type, "schema.table", statement_sql) triples. The
+    third element is the normalized text of the statement the match came
+    from, which `_scan_file` hashes into the allowlist key — see
+    TABLE_LITERAL_ALLOWLIST's key-shape comment for why an exemption is
+    keyed to a statement rather than to a position. Parses with
     ``error_level=ErrorLevel.IGNORE`` because most candidate literals in this
     tree are incomplete SQL fragments by construction — an f-string whose
     ``{TABLE.full_name}`` interpolation ``_literal_text`` stripped leaves a
@@ -954,21 +1029,23 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
     except Exception:  # noqa: BLE001  # tolerant parse over arbitrary fragments is best-effort
         return []
 
-    found: list[tuple[str, str]] = []
+    found: list[tuple[str, str, str]] = []
     for statement in statements:
         if statement is None:
             continue
+        statement_sql = statement.sql(dialect="duckdb")
         if isinstance(statement, exp.Command):
             default_clause = (
                 statement.this if isinstance(statement.this, str) else "COMMAND"
             )
             found.extend(
-                _fallback_regex_tables(
-                    statement.sql(dialect="duckdb"), default_clause.upper()
+                (clause, table, statement_sql)
+                for clause, table in _fallback_regex_tables(
+                    statement_sql, default_clause.upper()
                 )
             )
             continue
-        statement_found: list[tuple[str, str]] = []
+        statement_found: list[tuple[str, str, str]] = []
         for table in statement.find_all(exp.Table):
             schema = table.db.lower()
             name = table.name.lower()
@@ -983,6 +1060,7 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
             statement_found.append((
                 type(clause_node).__name__.upper(),
                 f"{schema}.{name}",
+                statement_sql,
             ))
         # A table name also reaches execution as a string ARGUMENT to a
         # function — `PRAGMA table_info('core.foo')`,
@@ -1020,20 +1098,25 @@ def _tables_in_text(text: str) -> list[tuple[str, str]]:
             if not literal.is_string or not isinstance(literal.parent, exp.Anonymous):
                 continue
             statement_found.extend(
-                _fallback_regex_tables(literal.this, type(statement).__name__.upper())
+                (clause, table, statement_sql)
+                for clause, table in _fallback_regex_tables(
+                    literal.this, type(statement).__name__.upper()
+                )
             )
         found.extend(statement_found)
     return found
 
 
-def _scan_file(path: Path) -> list[tuple[int, str, str]]:
-    """Return (lineno, clause_type, "schema.table") violations for one file.
+def _scan_file(path: Path) -> list[tuple[int, str, str, str]]:
+    """Return (lineno, clause_type, "schema.table", statement_key) per violation.
 
-    Scans the module scope and every function/method body as independent
-    scopes (module docstring point 3), each falling back to the module scope
-    for names it doesn't bind locally. Returned in source order (sorted by
-    lineno) so a caller can assign stable per-(clause, table) occurrence
-    indices — see TABLE_LITERAL_ALLOWLIST's key-shape comment.
+    Scans the module scope and every function, method, lambda and class
+    body as independent scopes, resolving names only within the scope that
+    binds them (module docstring point 3). Returned in source order (sorted
+    by lineno) for a stable, readable failure message.
+
+    `statement_key` identifies WHICH statement the match sits in — see
+    TABLE_LITERAL_ALLOWLIST's key-shape comment.
 
     `lineno` is the enclosing string literal's own ``ast.Constant``/
     ``ast.JoinedStr`` node's ``.lineno`` — for a multi-line triple-quoted
@@ -1066,33 +1149,37 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
     )
 
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            (
-                local_literals,
-                local_aliases,
-                local_seeds,
-                local_scanned,
-                local_table_arg_seeds,
-                local_table_arg_scanned,
-            ) = _collect_scope(_direct_scope_nodes(node))
+        if not isinstance(node, _SCOPE_NODES):
+            continue
+        (
+            local_literals,
+            local_aliases,
+            local_seeds,
+            local_scanned,
+            local_table_arg_seeds,
+            local_table_arg_scanned,
+        ) = _collect_scope(_direct_scope_nodes(node))
+        # A class body has no parameters; every other scope node does, and
+        # a default is the one part of a parameter that is statically known.
+        if not isinstance(node, ast.ClassDef):
             default_literals, default_aliases = _parameter_default_bindings(node)
             for name, entries in default_literals.items():
                 local_literals.setdefault(name, []).extend(entries)
             for name, alias_targets in default_aliases.items():
                 local_aliases.setdefault(name, []).extend(alias_targets)
-            all_scanned.extend(local_scanned)
-            all_scanned.extend(
-                _resolve_worklist(local_seeds, local_literals, local_aliases)
-            )
-            all_table_arg_scanned.extend(local_table_arg_scanned)
-            all_table_arg_scanned.extend(
-                _resolve_worklist(local_table_arg_seeds, local_literals, local_aliases)
-            )
+        all_scanned.extend(local_scanned)
+        all_scanned.extend(
+            _resolve_worklist(local_seeds, local_literals, local_aliases)
+        )
+        all_table_arg_scanned.extend(local_table_arg_scanned)
+        all_table_arg_scanned.extend(
+            _resolve_worklist(local_table_arg_seeds, local_literals, local_aliases)
+        )
 
-    violations: list[tuple[int, str, str]] = []
+    violations: list[tuple[int, str, str, str]] = []
     for lineno, text in all_scanned:
-        for clause, table in _tables_in_text(text):
-            violations.append((lineno, clause, table))
+        for clause, table, statement in _tables_in_text(text):
+            violations.append((lineno, clause, table, _statement_key(statement)))
         # A resolved name need not hold whole SQL. Factoring out just the table
         # name — `t = "core.fct_transactions"; db.execute(f"SELECT * FROM {t}")`
         # — leaves a bare dotted identifier, which sqlglot parses as a column
@@ -1112,21 +1199,29 @@ def _scan_file(path: Path) -> list[tuple[int, str, str]]:
         # parses` pins.
         interpolated = _table_arg_match(text)
         if interpolated is not None:
-            violations.append((lineno, _INTERPOLATED_CLAUSE_TYPE, interpolated))
+            # No parsed statement here by construction — the whole text IS
+            # the bare identifier, so it is its own statement for keying.
+            violations.append((
+                lineno,
+                _INTERPOLATED_CLAUSE_TYPE,
+                interpolated,
+                _statement_key(text),
+            ))
     for lineno, text in all_table_arg_scanned:
         table = _table_arg_match(text)
         if table is not None:
-            violations.append((lineno, _TABLE_ARG_CLAUSE_TYPE, table))
-    # Sort by lineno so occurrence indices (assigned by the caller) reflect
-    # top-to-bottom source order rather than scan-order — see
-    # TABLE_LITERAL_ALLOWLIST's key-shape comment. `find_all` walks
-    # breadth-first (see .claude/references/sqlglot-behavior.md), so two
-    # DIFFERENT (clause, table) pairs sharing one literal's lineno may sort
-    # arbitrarily relative to each other here — harmless, since occurrence
-    # counting (in `_scan_source_tree`) is keyed per (clause, table) pair and
-    # unaffected by the order of unrelated pairs. Two matches of the SAME
-    # pair on one lineno are interchangeable by construction regardless of
-    # order (see TABLE_LITERAL_ALLOWLIST's collision-behavior comment).
+            violations.append((
+                lineno,
+                _TABLE_ARG_CLAUSE_TYPE,
+                table,
+                _statement_key(text),
+            ))
+    # Sort by lineno so a failure message reads top-to-bottom rather than
+    # in scan order. `find_all` walks breadth-first (see
+    # .claude/references/sqlglot-behavior.md), so two matches sharing one
+    # literal's lineno may sort arbitrarily relative to each other — which
+    # no longer matters to identity now that the allowlist key is the
+    # statement's hash rather than a positional ordinal.
     violations.sort(key=lambda item: item[0])
     return violations
 
@@ -1136,26 +1231,20 @@ def _is_exempt_migration(path: Path) -> bool:
     return path.is_relative_to(MIGRATIONS_DIR)
 
 
-def _scan_source_tree() -> list[tuple[str, int, str, str, int]]:
+def _scan_source_tree() -> list[tuple[str, int, str, str, str]]:
     """Walk src/moneybin/**/*.py, collecting every occurrence.
 
-    Returns (relpath, lineno, clause_type, table, occurrence) 5-tuples.
-    `occurrence` is a 0-based count of prior matches of the same
-    (clause_type, table) pair within this file, assigned in the source
-    order `_scan_file` returns (see TABLE_LITERAL_ALLOWLIST's key-shape
-    comment for why this — not the line number — is the stable identity).
+    Returns (relpath, lineno, clause_type, table, statement_key) 5-tuples —
+    see TABLE_LITERAL_ALLOWLIST's key-shape comment for what the key
+    identifies and why it is not a position.
     """
-    found: list[tuple[str, int, str, str, int]] = []
+    found: list[tuple[str, int, str, str, str]] = []
     for path in sorted(SRC_ROOT.rglob("*.py")):
         if _is_exempt_migration(path):
             continue
         relpath = path.relative_to(SRC_ROOT).as_posix()
-        occurrence_counts: dict[tuple[str, str], int] = {}
-        for lineno, clause, table in _scan_file(path):
-            key = (clause, table)
-            occurrence = occurrence_counts.get(key, 0)
-            occurrence_counts[key] = occurrence + 1
-            found.append((relpath, lineno, clause, table, occurrence))
+        for lineno, clause, table, statement_key in _scan_file(path):
+            found.append((relpath, lineno, clause, table, statement_key))
     return found
 
 
@@ -1169,20 +1258,24 @@ def test_no_hardcoded_table_literals_reach_execute() -> None:
     """
     found = _scan_source_tree()
     violations = [
-        (relpath, lineno, clause, table, occurrence)
-        for relpath, lineno, clause, table, occurrence in found
-        if (relpath, clause, table, occurrence) not in TABLE_LITERAL_ALLOWLIST
+        (relpath, lineno, clause, table, statement_key)
+        for relpath, lineno, clause, table, statement_key in found
+        if (relpath, clause, table, statement_key) not in TABLE_LITERAL_ALLOWLIST
     ]
     if violations:
+        # Print the key in copy-paste tuple form: a contributor adding a
+        # genuine exemption should not have to work out how it is computed.
         formatted = "\n".join(
-            f"  - {relpath}:{lineno}: {clause} {table} (occurrence {occurrence})"
-            for relpath, lineno, clause, table, occurrence in violations
+            f"  - {relpath}:{lineno}: {clause} {table}\n"
+            f'      ("{relpath}", "{clause}", "{table}", "{statement_key}"),'
+            for relpath, lineno, clause, table, statement_key in violations
         )
         pytest.fail(
             "Hardcoded schema-qualified table literal(s) reach a SQL execute "
             "call. Import the TableRef constant from moneybin.tables instead, "
-            'or add (file, clause_type, "schema.table", occurrence) to '
-            f"TABLE_LITERAL_ALLOWLIST with a `# why` comment.\n\n"
+            "or — only for a genuine non-executed or historically-frozen "
+            "exception — add the tuple shown below to TABLE_LITERAL_ALLOWLIST "
+            "with a `# why` comment.\n\n"
             f"Violations:\n{formatted}"
         )
 
@@ -1194,14 +1287,14 @@ def test_allowlist_has_no_dead_entries() -> None:
     literal it names is removed or fixed, the entry should go too.
     """
     found = {
-        (relpath, clause, table, occurrence)
-        for relpath, _lineno, clause, table, occurrence in _scan_source_tree()
+        (relpath, clause, table, statement_key)
+        for relpath, _lineno, clause, table, statement_key in _scan_source_tree()
     }
     stale = TABLE_LITERAL_ALLOWLIST - found
     if stale:
         formatted = "\n".join(
-            f"  - {relpath}: {clause} {table} (occurrence {occurrence})"
-            for relpath, clause, table, occurrence in stale
+            f"  - {relpath}: {clause} {table} (statement {statement_key})"
+            for relpath, clause, table, statement_key in stale
         )
         pytest.fail(
             "TABLE_LITERAL_ALLOWLIST contains entries with no matching "
@@ -1234,7 +1327,20 @@ def test_migrations_runner_is_not_exempt() -> None:
 
 
 def _scan_source(tmp_path: Path, source: str) -> list[tuple[int, str, str]]:
-    """Write `source` to a temp module and return `_scan_file`'s violations."""
+    """Write `source` to a temp module and return `_scan_file`'s violations.
+
+    Drops the statement key. These tests assert what the scanner FINDS; the
+    key is how an exemption is addressed, and it is covered on its own by
+    the `_statement_key` tests rather than restated in every fixture.
+    """
+    return [
+        (lineno, clause, table)
+        for lineno, clause, table, _key in _scan_source_keyed(tmp_path, source)
+    ]
+
+
+def _scan_source_keyed(tmp_path: Path, source: str) -> list[tuple[int, str, str, str]]:
+    """`_scan_file` on `source`, statement keys included."""
     module = tmp_path / "_synthetic_module.py"
     module.write_text(source, encoding="utf-8")
     return _scan_file(module)
@@ -1857,16 +1963,18 @@ def test_quoted_table_name_spliced_into_sql_is_flagged(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("label", "body"),
+    ("label", "signature", "body"),
     [
-        ("plain_use", "    db.execute(QUERY)\n"),
-        ("via_alias", "    sql = QUERY\n    db.execute(sql)\n"),
-        ("via_fstring", '    db.execute(f"{QUERY} LIMIT 1")\n'),
-        ("via_default", "    pass\n"),
+        ("plain_use", "def f(db):", "    db.execute(QUERY)\n"),
+        ("via_alias", "def f(db):", "    sql = QUERY\n    db.execute(sql)\n"),
+        ("via_fstring", "def f(db):", '    db.execute(f"{QUERY} LIMIT 1")\n'),
+        # The signature is the point of this case: the default names the
+        # module constant, so it is the parameter-default route specifically.
+        ("via_default", "def f(db, query=QUERY):", "    db.execute(query)\n"),
     ],
 )
 def test_module_constant_used_inside_a_function_is_deliberately_not_reported(
-    tmp_path: Path, label: str, body: str
+    tmp_path: Path, label: str, signature: str, body: str
 ) -> None:
     """The accepted cost of same-scope-only resolution — recorded, not hidden.
 
@@ -1893,7 +2001,7 @@ def test_module_constant_used_inside_a_function_is_deliberately_not_reported(
     source = (
         'QUERY = "SELECT * FROM core.fct_transactions"\n'  # noqa: S608  # fixture
         "\n"
-        "def f(db):\n"
+        f"{signature}\n"
         f"{body}"
     )
     assert _scan_source(tmp_path, source) == [], label
@@ -1914,3 +2022,191 @@ def test_module_constant_used_at_module_scope_is_still_reported(
         "db.execute(QUERY)\n"
     )
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
+
+
+# --- Scope coverage: lambda and class bodies --------------------------------
+
+
+def test_a_lambda_parameter_default_is_scanned(tmp_path: Path) -> None:
+    """A lambda is a scope, and its defaults are as visible as a def's.
+
+    `_direct_scope_nodes`' docstring named ``def``/``lambda`` as the rule
+    while the code stopped only at ``def``, so a lambda never became a scope
+    and `_parameter_default_bindings` never ran on one. The identical `def`
+    (below) was caught the whole time — a contributor factoring a one-line
+    helper into a lambda silently lost the guard.
+    """
+    source = 'f = lambda db, query="SELECT * FROM core.foo": db.execute(query)\n'  # noqa: S608  # fixture, never executed
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_a_def_parameter_default_is_scanned(tmp_path: Path) -> None:
+    """Control for the lambda case — the two must not diverge again."""
+    source = (
+        'def f(db, query="SELECT * FROM core.foo"):\n'  # noqa: S608  # fixture, never executed
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
+
+
+def test_a_class_body_does_not_resolve_names_from_module_scope(
+    tmp_path: Path,
+) -> None:
+    """A class body is its own namespace in Python; it is one here too.
+
+    The class rebinds `query` to something opaque before executing it, so
+    the module-level literal of the same name is not what runs. Walking
+    straight through `ClassDef` reported the module's literal anyway — a
+    false positive on correct code, which is the failure mode this guard's
+    design notes call the real cost.
+    """
+    source = (
+        'query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        "\n"
+        "class C:\n"
+        "    query = build()\n"
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == []
+
+
+def test_a_class_body_literal_is_still_reported(tmp_path: Path) -> None:
+    """Control: the class body is a scope, not a blind spot.
+
+    Without this, the test above would pass just as well if `ClassDef` had
+    been made invisible rather than made into a scope.
+    """
+    source = (
+        "class C:\n"
+        '    query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.foo")]
+
+
+# --- Allowlist keys identify a statement, not a position --------------------
+
+
+def test_two_statements_naming_one_table_get_distinct_keys(
+    tmp_path: Path,
+) -> None:
+    """Same file, same (clause, table), different statements — different keys."""
+    source = (
+        'db.execute("SELECT a FROM core.foo")\n'  # noqa: S608  # fixture, never executed
+        'db.execute("SELECT b FROM core.foo")\n'  # noqa: S608  # fixture, never executed
+    )
+    found = _scan_source_keyed(tmp_path, source)
+    assert [(lineno, clause, table) for lineno, clause, table, _ in found] == [
+        (1, "FROM", "core.foo"),
+        (2, "FROM", "core.foo"),
+    ]
+    assert found[0][3] != found[1][3]
+
+
+def test_an_exemption_does_not_transfer_to_a_different_statement(
+    tmp_path: Path,
+) -> None:
+    """The defect that retired the positional ordinal key.
+
+    Under the old scheme the key was a 0-based count of prior matches of the
+    same (clause, table) pair in the file. Delete the reviewed occurrence,
+    add an unrelated one elsewhere, and the newcomer renumbered into the
+    freed index — inheriting an exemption nobody had granted it, with
+    `test_allowlist_has_no_dead_entries` staying green because the key still
+    matched something. Keying on the statement makes that arithmetically
+    impossible: this asserts the two keys differ, which is the whole
+    property.
+    """
+    reviewed = _scan_source_keyed(
+        tmp_path,
+        'db.execute("SELECT a FROM core.foo")\n',  # noqa: S608  # fixture, never executed
+    )
+    replacement = _scan_source_keyed(
+        tmp_path,
+        'db.execute("DELETE FROM core.foo WHERE x")\n',  # noqa: S608  # fixture, never executed
+    )
+    assert reviewed[0][2] == replacement[0][2] == "core.foo"
+    assert reviewed[0][3] != replacement[0][3]
+
+
+def test_reflowing_a_statement_keeps_its_key(tmp_path: Path) -> None:
+    """Reflowing a query is not a guard failure — via sqlglot, not the hash.
+
+    The key must be tight enough that a different statement cannot inherit
+    an exemption, and loose enough that rewriting the same statement's
+    whitespace does not manufacture one. On this path the looseness comes
+    from sqlglot: `_tables_in_text` hands `_statement_key` the statement's
+    own `.sql(dialect="duckdb")` rendering, which is already normalized, so
+    the hash sees identical input either way.
+    """
+    flat = _scan_source_keyed(
+        tmp_path,
+        'db.execute("SELECT a FROM core.foo WHERE b")\n',  # noqa: S608  # fixture, never executed
+    )
+    reflowed = _scan_source_keyed(
+        tmp_path,
+        'db.execute("""\n    SELECT a\n    FROM core.foo\n    WHERE b\n""")\n',
+    )
+    assert flat[0][3] == reflowed[0][3]
+
+
+def test_padding_a_bare_identifier_keeps_its_key(tmp_path: Path) -> None:
+    """The half of key normalization that `_statement_key` itself performs.
+
+    The `INTERPOLATED` and `TABLE_ARG` paths never see a parsed statement —
+    they hash the raw literal text — so sqlglot's normalization does not
+    apply and the collapse in `_statement_key` is the only thing keeping
+    `"core.foo"` and `"  core.foo  "` on one key. `_table_arg_match` strips
+    before matching, so both are reported identically; without the collapse
+    they would be reported identically under two different keys, and an
+    exemption would evaporate the moment someone tidied the whitespace.
+
+    Written after a mutation run showed the reflow test above passes with
+    the collapse removed — it proves sqlglot's normalization, not the
+    hash's, and left this half unpinned.
+    """
+    tight = _scan_source_keyed(
+        tmp_path,
+        't = "core.foo"\ndb.execute(f"SELECT * FROM {t}")\n',
+    )
+    padded = _scan_source_keyed(
+        tmp_path,
+        't = "  core.foo  "\ndb.execute(f"SELECT * FROM {t}")\n',
+    )
+    assert tight[0][:3] == padded[0][:3] == (1, _INTERPOLATED_CLAUSE_TYPE, "core.foo")
+    assert tight[0][3] == padded[0][3]
+
+
+# --- Fallback matcher: boundaries and casing --------------------------------
+
+
+def test_a_schema_name_inside_a_longer_identifier_is_not_a_table() -> None:
+    r"""`score.foo` is not `core.foo`.
+
+    The schema alternation had no boundary before it, so any identifier
+    ending in a schema name matched on its tail. `\\b` before the pattern's
+    optional quote would not have fixed it — a word boundary is satisfied
+    inside `score` at the `c`; the negative lookbehind is what closes it.
+    """
+    assert _fallback_regex_tables("EXPLAIN SELECT score.foo FROM t", "SELECT") == []
+    assert _fallback_regex_tables("SELECT xprep.foo FROM t", "SELECT") == []
+    assert _fallback_regex_tables("EXPLAIN SELECT * FROM core.foo", "SELECT") == [
+        ("FROM", "core.foo")
+    ]
+
+
+def test_the_fallback_matcher_reports_one_casing() -> None:
+    """DuckDB is case-insensitive, so one table must not occupy two keys.
+
+    The structural path lowercases and so does `_table_arg_match`, which
+    documents exactly this reason. This matcher did not, so an uppercase
+    reference reaching the `EXPLAIN`/`SHOW`/`PRAGMA` fallback was reported
+    under a spelling no allowlist entry would match.
+    """
+    spellings = [
+        "SHOW CORE.FCT_TRANSACTIONS",
+        "SHOW core.fct_transactions",
+        'SHOW "CORE"."FCT_TRANSACTIONS"',
+    ]
+    reported = {_fallback_regex_tables(text, "SHOW")[0][1] for text in spellings}
+    assert reported == {"core.fct_transactions"}
