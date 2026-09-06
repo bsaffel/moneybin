@@ -113,7 +113,7 @@ dependencies = [
     "openpyxl>=3.1.5",
     "fastexcel>=0.19.0",
     # MCP server — primary AI assistant interface
-    "fastmcp>=3.1,<4",
+    "fastmcp>=3.1,<5",
     # Also a transitive dep of fastmcp, but declared directly because _registration.py,
     # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
     # a future fastmcp pin change must not silently break those importers.
