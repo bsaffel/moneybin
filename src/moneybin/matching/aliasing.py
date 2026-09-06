@@ -229,10 +229,12 @@ ORDER BY c.stranded_id
 #: walks back from a revived id to the curation that re-key carried away.
 _ALIAS_INSERT_ACTION = "transaction_id_alias.insert"
 
-#: Recorded when a reversal takes a re-key back that moved no curation. The
-#: alias row itself stays — the map is append-only — so nothing is inverted;
-#: the row exists only to carry the ``undoes_operation_id`` edge that the
-#: reversal would otherwise leave unwritten. See :func:`_reversed_alias_edges`.
+#: Recorded when a reversal takes a re-key back and nothing was actually
+#: replayed — the re-key moved no curation, or a later edit blocked the
+#: restore. The alias row itself stays — the map is append-only — so nothing
+#: is inverted; the row exists only to carry the ``undoes_operation_id`` edge
+#: that the reversal would otherwise leave unwritten. See
+#: :func:`_reversed_alias_edges`.
 _ALIAS_REVERSED_ACTION = f"{_ALIAS_INSERT_ACTION}.reversed"
 
 # Which operation wrote each alias row, so a reversal of that operation can be
@@ -366,15 +368,27 @@ def restore_forwarded_curation(
     against the re-key's operation, because :func:`_heal_stranded_curation`
     reads that to know the edge no longer means "the same transaction".
 
+    **A later edit on the survivor blocks the restore.** The re-key's own
+    operation never runs through :meth:`UndoService.undo` — the alias row
+    refuses to undo, so this function replays the curation moves by hand — but
+    it is still subject to the same block-don't-cascade rule every other undo
+    is: if a later write touched the row a move would overwrite,
+    :meth:`UndoService.cascade_blockers` says so and the whole re-key's
+    curation is left exactly where that later write put it, rather than
+    silently replaced by the pre-merge image.
+
     Must run inside the caller's transaction, so the reversal and the restore
     are one atomic act. Returns the number of rows it put back.
     """
-    # Deferred import: the dispatch registry imports every repository module,
-    # whose base → services.audit_service chain re-enters `services.__init__`
-    # and back into this package. Same cycle the forwarding defers around.
+    # Deferred imports: the dispatch registry imports every repository module,
+    # and `undo_service` pulls in that same registry — both re-enter
+    # `services.__init__` and back into this package, the cycle the forwarding
+    # defers around.
     from moneybin.services.undo_dispatch import repo_for  # noqa: PLC0415
+    from moneybin.services.undo_service import UndoService  # noqa: PLC0415
 
     audit = AuditService(db)
+    undo_service = UndoService(db)
     restored = 0
     for old_id in sorted(revived_ids):
         alias_events = audit.list_events(
@@ -386,6 +400,18 @@ def restore_forwarded_curation(
         if not alias_events:
             continue  # live and aliased, but nothing here re-keyed it
         alias_event = alias_events[0]
+        blockers = undo_service.cascade_blockers(alias_event.operation_id)
+        if blockers:
+            # Nothing replayed, but the reversal is still recorded below — the
+            # match decision itself is already reversed by the caller, so the
+            # edge must stop reading as live even though this id's curation
+            # was left exactly where the later edit put it.
+            logger.warning(
+                f"↩️  Declined to restore curation onto revived id {old_id}: a "
+                f"later edit ({blockers[0]}) touched the row this re-key moved"
+            )
+            _record_reversal_marker(audit, old_id, alias_event, actor=actor)
+            continue
         moves = [
             event
             for event in audit.events_for_operation(alias_event.operation_id)
@@ -399,20 +425,7 @@ def restore_forwarded_curation(
             # there are no inverse rows to carry that edge. Without this marker
             # a merge that moved no curation, was undone, and was then curated
             # by the user would still walk its dead edge later.
-            with operation():
-                audit.record_audit_event(
-                    action=_ALIAS_REVERSED_ACTION,
-                    target=(
-                        TRANSACTION_ID_ALIASES.schema,
-                        TRANSACTION_ID_ALIASES.name,
-                        old_id,
-                    ),
-                    before=None,
-                    after=None,
-                    actor=actor,
-                    is_undo=True,
-                    undoes_operation_id=alias_event.operation_id,
-                )
+            _record_reversal_marker(audit, old_id, alias_event, actor=actor)
             logger.debug(
                 f"Recorded a reversed re-key that carried no curation: {old_id}"
             )
@@ -434,6 +447,32 @@ def restore_forwarded_curation(
                     restored += 1
         logger.debug(f"Restored curation onto a revived transaction id: {old_id}")
     return restored
+
+
+def _record_reversal_marker(
+    audit: AuditService, old_id: str, alias_event: AuditEvent, *, actor: str
+) -> None:
+    """Mark ``alias_event``'s re-key reversed with no curation-move rows to carry it.
+
+    Shared by the two paths that put nothing back: a re-key that moved no
+    curation, and one whose restore a later edit blocked. Either way
+    :func:`_reversed_alias_edges` needs an ``undoes_operation_id`` row naming
+    this re-key, since no undone curation-move event exists to carry it.
+    """
+    with operation():
+        audit.record_audit_event(
+            action=_ALIAS_REVERSED_ACTION,
+            target=(
+                TRANSACTION_ID_ALIASES.schema,
+                TRANSACTION_ID_ALIASES.name,
+                old_id,
+            ),
+            before=None,
+            after=None,
+            actor=actor,
+            is_undo=True,
+            undoes_operation_id=alias_event.operation_id,
+        )
 
 
 def _reversed_alias_edges(db: Database) -> frozenset[str]:

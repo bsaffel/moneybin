@@ -530,6 +530,48 @@ class TestUndoingAMergeRestoresCuration:
         assert _aliases(matched_db) == {old_id: new_id}
 
     @pytest.mark.unit
+    def test_a_later_edit_on_the_survivor_blocks_the_restore(
+        self, matched_db: Database
+    ) -> None:
+        """The user re-categorizes the survivor before anyone undoes the merge.
+
+        Replaying the re-key's own before/after image blind would delete
+        whatever category is on the survivor *now* and hand the stale value
+        back to the revived id — discarding the later edit with no trace.
+        Restoring must decline instead, the same way ``UndoService`` declines
+        any operation a later write has touched (``_cascade_blockers``), and
+        leave both ids exactly where the user last left them.
+        """
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        old_id = _canonical_id("tabular", "csv_1234")
+        _categorize(matched_db, old_id, category="Food & Drink")
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        _seed_pending_dedup(matched_db, match_id="match0000009")
+        service = MatchingService(matched_db)
+        service.set_status("match0000009", status="accepted", actor="cli")
+        new_id = _canonical_id("ofx", "ofx_5678")
+        assert _categories(matched_db) == {new_id: ("Food & Drink", "user")}
+
+        _categorize(matched_db, new_id, category="Travel")
+
+        service.undo("match0000009", actor="cli")
+
+        assert _categories(matched_db) == {new_id: ("Travel", "user")}, (
+            "the later edit on the survivor must survive the undo"
+        )
+        assert _aliases(matched_db) == {old_id: new_id}
+
+    @pytest.mark.unit
     def test_a_category_the_tiebreak_dropped_from_the_anchor_is_restored(
         self, matched_db: Database
     ) -> None:
