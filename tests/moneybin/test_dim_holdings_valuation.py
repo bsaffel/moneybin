@@ -264,8 +264,9 @@ def _seed_split_reject(
     """A Plaid split routed to review: held out of the ledger, quantity not restated.
 
     Every Plaid split is routed to review as ``split_underivable``
-    (prep.stg_plaid__investment_transactions, GOLDEN-GATED 1 of 3), so no fixture
-    plumbing is needed beyond the raw row — the subtype alone produces the reject.
+    (prep.stg_plaid__investment_transactions, "NOT GOLDEN-GATED (M1J.5)"), so no
+    fixture plumbing is needed beyond the raw row — the subtype alone produces the
+    reject.
     ``amount`` is 0.00, not NULL: raw.plaid_investment_transactions.amount is NOT
     NULL, and 0 is what Plaid sends on a split.
     """

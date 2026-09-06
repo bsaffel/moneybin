@@ -1422,7 +1422,7 @@ contract above is its specification.
   pair, treats ordinary transfers as one-leg Source events, and leaves
   internal-transfer, merger, spin-off, and trade construction for a later
   atomic manual interface and comparison-adapter contract.
-- **Split multiplier derivation (M1J.5).** Whether Plaid's `transfer/split`
+- **Split-source symmetry (M1J.5) — deriving the multiplier.** Whether Plaid's `transfer/split`
   `quantity` is a share delta, a post-split total, or something
   institution-dependent is **unverified and not settleable in Sandbox** (staging
   § step 3 records why). The evidence that *can* settle it is already collected
