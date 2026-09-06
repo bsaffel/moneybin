@@ -461,6 +461,48 @@ class TestRevertStrandsCurationAndTheHealPassRecoversIt:
         ), "a second pass writes no audit rows because it moves nothing"
 
 
+class TestCurationWrittenOnAStaleIdIsRecovered:
+    """A caller holding a pre-merge id can still write curation against it.
+
+    ``TransactionService.add_note`` / ``add_tags`` / ``add_split`` take the
+    ``transaction_id`` the caller passes, and an agent or script that cached one
+    before a merge passes the superseded id. The forwarding derivation cannot
+    catch that — the id already forwards, so it is excluded — which is exactly
+    the case the healing pass exists for.
+    """
+
+    @pytest.mark.unit
+    def test_curation_added_under_a_superseded_id_heals_onto_the_anchor(
+        self, pipeline_db: Database
+    ) -> None:
+        """Write against the stale id after the merge; the next pass re-homes it."""
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+        assert _live_ids(pipeline_db) == {ofx_id}
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}
+
+        # The caller still holds the CSV row's pre-merge id.
+        _curate(pipeline_db, csv_id)
+        assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
+        assert _categories_fk_status(pipeline_db) == "fail"
+
+        MatchingService(pipeline_db).run(actor="system")
+
+        assert _curation_ids(pipeline_db) == dict.fromkeys(
+            _CURATION_TABLES, [ofx_id]
+        ), "the heal pass walks the alias edge onto the live anchor"
+        assert _categories_fk_status(pipeline_db) == "pass"
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}, "no alias row is appended"
+
+
 class TestPlaidRemovalStrandsCuration:
     """An ordinary Plaid sync deletes rows with no user action at all."""
 

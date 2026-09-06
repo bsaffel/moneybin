@@ -42,12 +42,35 @@ revives both sides of a merge as transactions of their own, so an edit written
 against the superseded one has to return to it — and a category or tag the
 collision branch *deleted* has to come back, which nothing but the audit trail
 can reconstruct. :func:`restore_forwarded_curation` replays that re-key's own
-audit rows backwards; :func:`live_superseded_ids` is how the caller names the
-ids the reversal handed back, since only the map plus the matched view know.
+audit rows backwards; :func:`misdirected_alias_ids` is how the caller names the
+members the reversal moved, since only the map plus the matched view know.
 The alias row stands either way: the map is append-only, and a consumer holding
 the superseded id must keep resolving through it. The healing walk stops
 following it, though — the two ids are transactions of their own again, so the
 edge no longer means "the same transaction" and the reversal is what says so.
+
+**A reversal moves members the reversed decision never named.**
+``app.match_decisions`` is strictly pairwise, and a 3+-member dedup group is the
+transitive closure of several accepted edges over one live anchor. Reversing a
+non-terminal edge therefore *splits* the component: the far side re-anchors as a
+group, so every member on it — not just the id that became canonical again —
+stops belonging to the id its alias forwards to. Naming only the ids the matched
+view newly serves would leave the rest of that side's curation sitting on the
+near side's still-live transaction, where the liveness test in
+:func:`_heal_stranded_curation` (and the doctor's FK invariant, which asks the
+same question) cannot see it. So the caller names every alias whose target is
+now a *different* live transaction, and each restore ends by putting the
+curation where that member's transaction lives now.
+
+**What the map does and does not promise.** ``old_transaction_id`` is its
+primary key, so a row records the re-key that happened and is never rewritten:
+after a reversal or a split the edge still names the id the member forwarded to
+*then*, which may since have become a transaction of its own. The curation is
+reconciled; the map is not, and it is the *curation* that every consumer joins
+on. Nothing in the tree resolves a read through this table today, so treat it as
+the audit of past re-keys rather than a current redirect — a consumer that
+wanted one would need a supersession marker the schema does not carry, which is
+a decision about ``app.transaction_id_aliases``' shape, not a local fix.
 
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
@@ -245,14 +268,57 @@ FROM {AUDIT_LOG.full_name}
 WHERE action = ? AND target_table = ? AND target_id IS NOT NULL
 """  # noqa: S608  # AUDIT_LOG is a TableRef constant; both values are parameterized
 
-# An aliased id that the matched view still serves. Normally empty: an id is in
-# the map because it stopped being canonical. A reversed merge puts one back.
-_LIVE_SUPERSEDED_IDS_SQL = f"""
+# Every live source row's own identity hash beside the canonical id its
+# transaction carries *now*. The alias map cannot answer this: a row records
+# where one re-key pointed at the time it happened, and a component that splits
+# later re-anchors without any row changing.
+_MEMBER_CANONICAL_CTE = f"""
+member_canonical AS (
+  SELECT
+    {_identity_hash("u.source_transaction_id")} AS member_id,
+    m.transaction_id AS canonical_id
+  FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+  JOIN {INT_TRANSACTIONS_UNIONED.full_name} AS u
+    ON u.source_type = m.source_type
+   AND u.source_transaction_id = m.source_transaction_id
+   AND u.account_id = m.account_id
+)
+"""  # noqa: S608  # TableRef constants and code-supplied column expressions only
+
+# An alias whose forwarding target is a live transaction that is no longer the
+# member's own. Normally empty; a reversal that splits a merge component fills
+# it with every member of the far side, the anchor included.
+#
+# Both predicates are load-bearing, and the second is what keeps an ordinary
+# alias *chain* out of the set. In `old -> mid -> new`, `old`'s member sits on
+# `new` while its alias still names `mid`, so the ids differ and the curation is
+# nevertheless exactly where it belongs — `mid` forwards on, and no live
+# transaction answers to it. Only a target something still answers to means the
+# curation landed on a transaction of someone else's.
+_MISDIRECTED_ALIASES_SQL = f"""
+WITH {_MEMBER_CANONICAL_CTE}
 SELECT DISTINCT a.old_transaction_id
 FROM {TRANSACTION_ID_ALIASES.full_name} AS a
-JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
-  ON m.transaction_id = a.old_transaction_id
-"""  # noqa: S608  # TableRef constants only
+JOIN member_canonical AS m
+  ON m.member_id = a.old_transaction_id
+WHERE m.canonical_id <> a.new_transaction_id
+  AND EXISTS (
+    SELECT 1 FROM member_canonical AS t
+    WHERE t.canonical_id = a.new_transaction_id
+  )
+ORDER BY a.old_transaction_id
+"""  # noqa: S608  # TableRef constants and code-supplied column expressions only
+
+# Where each named member's transaction lives now, for the members that are not
+# their own anchor. `{{ids}}` is a placeholder list, not a value.
+_MEMBER_HOME_SQL = f"""
+WITH {_MEMBER_CANONICAL_CTE}
+SELECT member_id, canonical_id
+FROM member_canonical
+WHERE member_id <> canonical_id
+  AND member_id IN ({{ids}})
+ORDER BY member_id
+"""  # noqa: S608  # TableRef constants and code-supplied column expressions only
 
 
 @dataclass(frozen=True, slots=True)
@@ -328,23 +394,31 @@ def record_committed_curation_restore(rows_restored: int) -> None:
         )
 
 
-def live_superseded_ids(db: Database) -> frozenset[str]:
-    """Aliased ids the matched view is currently serving under their own name.
+def misdirected_alias_ids(db: Database) -> frozenset[str]:
+    """Aliased ids forwarding onto a live transaction that is no longer theirs.
 
-    An id in the map is normally *not* live — being superseded is what put it
-    there. It comes back when the merge that superseded it is reversed, so
-    reading this set on either side of a reversal names exactly the transactions
-    that reversal handed back, without the caller having to re-derive an
-    identity hash the decision row does not carry.
+    Normally empty: an id is in the map because its own transaction took a new
+    canonical id, and the forwarding moved the curation there in the same pass.
+    Reversing a merge is what breaks that agreement, and reading this set on
+    either side of a reversal names exactly the members that reversal moved —
+    without the caller having to re-derive an identity hash the decision row does
+    not carry, and without assuming the split handed back only one id.
+
+    A member is named whether it became canonical again (a two-member merge's
+    losing side) or merely re-anchored onto a *different* surviving member (the
+    far side of a 3+-member component). Both cases leave its curation on the
+    near side's transaction, and only the first is visible as a newly served id.
     """
-    if not _relations_exist(db, INT_TRANSACTIONS_MATCHED, TRANSACTION_ID_ALIASES):
+    if not _relations_exist(
+        db, INT_TRANSACTIONS_MATCHED, INT_TRANSACTIONS_UNIONED, TRANSACTION_ID_ALIASES
+    ):
         # Same first-load precondition the derivation guards, asked of the
         # catalog rather than the view so a failed statement cannot poison the
         # caller's transaction.
-        logger.debug("Superseded-id liveness skipped: the alias map or view is absent")
+        logger.debug("Alias-target liveness skipped: the alias map or view is absent")
         return frozenset()
     return frozenset(
-        str(row[0]) for row in db.execute(_LIVE_SUPERSEDED_IDS_SQL).fetchall()
+        str(row[0]) for row in db.execute(_MISDIRECTED_ALIASES_SQL).fetchall()
     )
 
 
@@ -377,8 +451,17 @@ def restore_forwarded_curation(
     curation is left exactly where that later write put it, rather than
     silently replaced by the pre-merge image.
 
+    **The replay is not always the last word.** A reversal that splits a
+    3+-member component re-anchors the far side onto a member that is *not* the
+    id being restored, so replaying the re-key backwards puts the curation on an
+    identity hash no view serves. :func:`_rehome_restored_curation` then moves it
+    onto the id that member's transaction carries now — a no-op for the ordinary
+    two-member reversal, where the restored id is its own anchor.
+
     Must run inside the caller's transaction, so the reversal and the restore
-    are one atomic act. Returns the number of rows it put back.
+    are one atomic act. Returns the number of rows it put back; the re-home that
+    follows relocates those same rows rather than adding to them, so it is
+    logged rather than counted.
     """
     # Deferred imports: the dispatch registry imports every repository module,
     # and `undo_service` pulls in that same registry — both re-enter
@@ -446,7 +529,58 @@ def restore_forwarded_curation(
                 if repo.undo_event(event, actor=actor, in_outer_txn=True) is not None:
                     restored += 1
         logger.debug(f"Restored curation onto a revived transaction id: {old_id}")
+    # Deliberately after every replay, never interleaved: a re-home writes audit
+    # rows onto the very rows a later id's replay would restore, and
+    # `cascade_blockers` would then read it as the later edit that blocks it.
+    _rehome_restored_curation(db, sorted(revived_ids), actor=actor)
     return restored
+
+
+def _rehome_restored_curation(
+    db: Database, member_ids: list[str], *, actor: str
+) -> int:
+    """Move each restored member's curation onto the id its transaction carries now.
+
+    The replay above returns a member's curation to its own identity hash, which
+    is where it belongs only when that member is its group's anchor. Reversing a
+    non-terminal edge of a 3+-member component re-anchors the far side onto one
+    of its other members, so the rest of that side has to follow — otherwise the
+    curation sits on an id no view serves, and the healing pass cannot recover it
+    either: the walk stops at the edge this reversal just marked reversed.
+
+    Appends no alias row, for the same reason :func:`_heal_stranded_curation`
+    does not — the map is append-only and `old_transaction_id` is its primary
+    key, so the member keeps forwarding to the id it forwarded to before. Only
+    the curation moves. Returns the rows that landed, for the log.
+    """
+    if not member_ids or not _relations_exist(
+        db, INT_TRANSACTIONS_MATCHED, INT_TRANSACTIONS_UNIONED
+    ):
+        return 0
+    placeholders = ", ".join("?" for _ in member_ids)
+    rows = db.execute(
+        _MEMBER_HOME_SQL.format(ids=placeholders), list(member_ids)
+    ).fetchall()
+    curation = _curation_repos(db)
+    moved = 0
+    for member_id, canonical_id in rows:
+        # One operation per member, for the same reason the derivation takes one
+        # per re-key: an operation is the unit `system_audit_undo` reverses.
+        with operation():
+            for repo in curation:
+                moved += _rows_landed(
+                    repo.repoint_transaction(
+                        old_transaction_id=str(member_id),
+                        new_transaction_id=str(canonical_id),
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
+                )
+        logger.debug(
+            f"Re-homed restored curation onto the member's current group: "
+            f"{member_id} -> {canonical_id}"
+        )
+    return moved
 
 
 def _record_reversal_marker(
@@ -535,16 +669,13 @@ def _relations_exist(db: Database, *refs: TableRef) -> bool:
     return bool(row) and int(row[0]) == len(refs)
 
 
-def _forward(db: Database, *, actor: str) -> AliasForwardResult:
-    """Write the derived aliases and move each superseded id's curation."""
+def _curation_repos(db: Database) -> tuple[Any, ...]:
+    """The four repos that own a transaction's user curation, in write order."""
     # Deferred imports: the repos' base → services.audit_service chain re-enters
     # `services.__init__`, which imports this package's engine — a module-top
     # import would cycle, the same reason `engine.py` defers its repo import.
     from moneybin.repositories.transaction_categories_repo import (  # noqa: PLC0415
         TransactionCategoriesRepo,
-    )
-    from moneybin.repositories.transaction_id_aliases_repo import (  # noqa: PLC0415
-        TransactionIdAliasesRepo,
     )
     from moneybin.repositories.transaction_notes_repo import (  # noqa: PLC0415
         TransactionNotesRepo,
@@ -556,14 +687,23 @@ def _forward(db: Database, *, actor: str) -> AliasForwardResult:
         TransactionTagsRepo,
     )
 
-    rows = db.execute(_PENDING_ALIASES_SQL).fetchall()
-    aliases = TransactionIdAliasesRepo(db)
-    curation = (
+    return (
         TransactionCategoriesRepo(db),
         TransactionNotesRepo(db),
         TransactionTagsRepo(db),
         TransactionSplitsRepo(db),
     )
+
+
+def _forward(db: Database, *, actor: str) -> AliasForwardResult:
+    """Write the derived aliases and move each superseded id's curation."""
+    from moneybin.repositories.transaction_id_aliases_repo import (  # noqa: PLC0415
+        TransactionIdAliasesRepo,  # deferred for the cycle `_curation_repos` names
+    )
+
+    rows = db.execute(_PENDING_ALIASES_SQL).fetchall()
+    aliases = TransactionIdAliasesRepo(db)
+    curation = _curation_repos(db)
     forwarded = 0
     for old_id, new_id, cause in rows:
         # One operation per re-key, never one per pass — and never the caller's.

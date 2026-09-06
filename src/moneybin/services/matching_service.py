@@ -20,7 +20,7 @@ from moneybin.database import Database
 from moneybin.errors import RecoveryAction, UserError, exception_origin
 from moneybin.matching.aliasing import (
     forward_rekeyed_transaction_ids,
-    live_superseded_ids,
+    misdirected_alias_ids,
     record_committed_alias_forwarding,
     record_committed_curation_restore,
     restore_forwarded_curation,
@@ -263,18 +263,22 @@ class MatchingService:
         gone for good — from the one operation the matcher advertises as
         reversible. So the reversal and the restore are one transaction.
         ``prep.int_transactions__matched`` reads ``app.match_decisions`` through
-        a view, so the ids this reversal hands back are simply the aliased ids
-        that were not live before it and are live after.
+        a view, so the members this reversal moved are simply the aliased ids
+        whose forwarding target was still theirs before it and is another live
+        transaction after. That is the whole far side of a split component, not
+        only the id that became canonical again: decisions are pairwise, so
+        reversing one edge of a 3+-member group re-homes members the decision
+        never named.
         """
         self._db.begin()
         try:
-            superseded_before = live_superseded_ids(self._db)
+            misdirected_before = misdirected_alias_ids(self._db)
             self._match_repo().reverse(
                 match_id, reversed_by=reversed_by, actor=actor, in_outer_txn=True
             )
             restored = restore_forwarded_curation(
                 self._db,
-                revived_ids=live_superseded_ids(self._db) - superseded_before,
+                revived_ids=misdirected_alias_ids(self._db) - misdirected_before,
                 actor=actor,
             )
         except BaseException:

@@ -726,6 +726,75 @@ class TestUndoingAMergeRestoresCuration:
         assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [anchor_id])
         assert _aliases(matched_db) == {_canonical_id("tabular", "csv_1234"): anchor_id}
 
+    @pytest.mark.unit
+    def test_undoing_one_edge_of_a_three_member_merge_re_homes_the_third_member(
+        self, matched_db: Database
+    ) -> None:
+        """Undoing A-B must move C's curation onto the B-C group, not leave it on A.
+
+        ``app.match_decisions`` is pairwise; a three-member dedup group is the
+        transitive closure of two accepted edges. Both members' curation
+        forwards onto the one anchor, so reversing the *earlier* edge splits the
+        component and re-homes a member the reversed decision never named. C's
+        edit was written on C, rode onto A's id when the second edge merged it,
+        and must land on the B-C group's new anchor — leaving it on A's id
+        silently attributes it to a live transaction the user never touched, and
+        the liveness check the healing pass and the doctor share cannot see it.
+        """
+        # A (ofx, rank 0) and B (manual, rank 1) merge first; only C is curated.
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="ofx_5678",
+            source_type="ofx",
+            source_file="statement.qfx",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="manual_2345",
+            source_type="manual",
+            source_file="manual",
+        )
+        _insert_source_row(
+            matched_db,
+            source_transaction_id="csv_1234",
+            source_type="tabular",
+            source_file="export.csv",
+        )
+        ofx_id = _canonical_id("ofx", "ofx_5678")
+        manual_id = _canonical_id("manual", "manual_2345")
+        csv_id = _canonical_id("tabular", "csv_1234")
+        _curate(matched_db, csv_id)
+
+        service = MatchingService(matched_db)
+        _seed_pending_dedup(
+            matched_db,
+            match_id="match0000034",
+            side_a=("ofx", "ofx_5678"),
+            side_b=("manual", "manual_2345"),
+        )
+        service.set_status("match0000034", status="accepted", actor="cli")
+        _seed_pending_dedup(
+            matched_db,
+            match_id="match0000035",
+            side_a=("manual", "manual_2345"),
+            side_b=("tabular", "csv_1234"),
+        )
+        service.set_status("match0000035", status="accepted", actor="cli")
+
+        # One transaction, anchored on the OFX row; C's curation rode onto it.
+        assert _canonical_ids(matched_db) == {ofx_id}
+        assert _aliases(matched_db) == {manual_id: ofx_id, csv_id: ofx_id}
+        assert _curation_ids(matched_db) == dict.fromkeys(_CURATION_TABLES, [ofx_id])
+
+        service.undo("match0000034", actor="cli")
+
+        # A stands alone again; B and C stay merged and re-anchor onto B.
+        assert _canonical_ids(matched_db) == {ofx_id, manual_id}
+        assert _curation_ids(matched_db) == dict.fromkeys(
+            _CURATION_TABLES, [manual_id]
+        ), "C's curation belongs to the B-C group, not to A's own transaction"
+        assert _aliases(matched_db) == {manual_id: ofx_id, csv_id: ofx_id}
+
 
 class TestPendingPostedRekeyForwardsCuration:
     """Plaid re-mints ``transaction_id`` when a pending transaction posts."""
