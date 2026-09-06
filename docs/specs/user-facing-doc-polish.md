@@ -202,11 +202,11 @@ deliberately shows a wrong or absent command carries
 **Remaining scope.** The structure above, the broken commands, the
 `categorize assist` privacy statement, shipped-as-planned drift, and the guard
 shipped on `docs/public-docs-structure`; the generated references on
-`docs/generated-references`. What's left: `account-identifiers.md` and
-`data-pipeline.md` rewrites;
+`docs/generated-references`; `getting-started.md` and the reports guide on
+`docs/getting-started-and-reports-guides`. What's left: `account-identifiers.md`
+and `data-pipeline.md` rewrites;
 `system-overview.md` folded into `docs/architecture.md`; storefront and guide
-rewrites plus a `getting-started.md`; and reports, investments, and
-multi-currency guides.
+rewrites; and the investments and multi-currency guides.
 
 **Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
 amendment.

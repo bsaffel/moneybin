@@ -425,7 +425,8 @@ filters that fit their grain (`--from-month`/`--to-month` on `cashflow` and
 `spending`, `--from`/`--to` on `networth-history`, `--since` on
 `balance-drift`, `--as-of` on snapshots, `--account` and `--category` where
 they apply);
-[`features.md`](../features.md#reports) says what each one shows. Commands:
+[`features.md`](../features.md#reports) says what each one shows, and the
+[reports guide](reports.md) shows each one's output. Commands:
 [`reference/cli/reports.md`](../reference/cli/reports.md).
 
 ### Any report, any tier

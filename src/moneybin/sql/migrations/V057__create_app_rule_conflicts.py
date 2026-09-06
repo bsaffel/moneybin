@@ -1,4 +1,4 @@
-"""V054: create app.rule_conflicts.
+"""V057: create app.rule_conflicts.
 
 A conflict is user state, not a derivable artifact: it records that rule
 creation refused a proposal because an active rule already owns the same
@@ -131,7 +131,7 @@ _COLUMN_COMMENTS: list[tuple[str, str]] = [
 
 def migrate(conn: object) -> None:
     """Create app.rule_conflicts and apply catalog comments."""
-    logger.debug("V054: CREATE TABLE IF NOT EXISTS app.rule_conflicts")
+    logger.debug("V057: CREATE TABLE IF NOT EXISTS app.rule_conflicts")
     conn.execute(_CREATE_TABLE_SQL)  # type: ignore[union-attr]
 
     for column, comment in _COLUMN_COMMENTS:
@@ -141,4 +141,4 @@ def migrate(conn: object) -> None:
             f"IS '{escaped}'"
         )
 
-    logger.debug("V054: app.rule_conflicts ready")
+    logger.debug("V057: app.rule_conflicts ready")

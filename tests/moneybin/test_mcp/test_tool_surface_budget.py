@@ -171,14 +171,13 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # replaced (4,127 vs 2,566). The overrun is two disclosures the replaced
     # tools never owed. First: accepting a match can reverse a transfer the
     # user accepted, and an agent that cannot read that from the description
-    # reports the reversal as a clean accept. Then 1,400 more for the
-    # rule-conflict variant — its own request schema plus the three
-    # resolutions, which are not the accept/reject axis every other kind uses,
-    # so an agent given only `kind="rule_conflict"` would guess "accept" and
-    # get a validation error. Registry-wide the consolidation still stands at
-    # -32.0% — 61,735 bytes against the baseline's 90,734, both readable as
-    # `total_bytes` in the two fixtures this test loads. (The figure has
-    # drifted three times before — recorded as -38.0%, -37.0%, then -34.3% —
+    # reports the reversal as a clean accept. Then more for the rule-conflict
+    # variant — its own request schema plus the three resolutions, which are
+    # not the accept/reject axis every other kind uses, so an agent given
+    # only `kind="rule_conflict"` would guess "accept" and get a validation
+    # error. Registry-wide the consolidation still stands at -31.8% — 61,907
+    # bytes against the baseline's 90,734, both readable as `total_bytes` in
+    # the two fixtures this test loads. (The figure has drifted before —
     # because nothing fails when a comment goes stale. Recompute it from the
     # fixtures rather than trusting this line.)
     "reviews_decide": (4_127, 2_566),
@@ -193,7 +192,17 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
     "identity_links_decide": (3_497, 5_762),
-    "taxonomy_set": (3_480, 3_223),
+    # Grew 172 bytes advertising the rule its model validator already enforced:
+    # a merchant subcategory requires a category. `SplitTarget` has carried the
+    # same conditional in its JSON schema all along, so a client that validates
+    # before calling saw the constraint for splits and not for merchants, and
+    # could build a payload the schema promised was valid and the server then
+    # refused.
+    #
+    # 36 of those bytes came back when the condition dropped its redundant
+    # `state` test: the `absent` branch already forbids `subcategory`, so
+    # naming `state` narrowed the `if` without narrowing what validates.
+    "taxonomy_set": (3_652, 3_223),
     "privacy_consent_set": (1_217, 2_188),
 }
 
