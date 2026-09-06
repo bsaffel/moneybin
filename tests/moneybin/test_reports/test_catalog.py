@@ -1794,6 +1794,40 @@ def test_a_total_stays_provisional_until_the_materialization_rebuilds(
     assert [action.tool for action in result.recovery_actions] == ["refresh_run"]
 
 
+def test_rejecting_a_duplicate_proposal_never_marks_a_total_provisional(
+    saved_db: Database,
+) -> None:
+    """A rejected pair never merges, so no materialization is ever stale for it.
+
+    Every real consumer of ``app.match_decisions``
+    (``prep.int_transactions__matched``, ``core.bridge_transfers``,
+    ``meta.fct_transaction_provenance``) keys its merge exclusively off
+    ``match_status = 'accepted'``. Rejecting a false-positive duplicate — the
+    matcher's routine, expected outcome for a low-confidence pair — must not
+    produce a spurious caveat or a ``refresh_run`` recovery action that fixes
+    nothing.
+    """
+    seed_pending_dedup_pair(saved_db)
+    record_model_execution(
+        saved_db, "core.fct_balances_daily", _naive_utc(-timedelta(hours=1))
+    )
+    MatchingService(saved_db).set_status(
+        "match00000001", status="rejected", decided_by="user", actor="test"
+    )
+
+    result = ReportCatalog((
+        _transaction_total_report(("reports.net_worth",)),
+    )).execute(saved_db, report_id="core:summary", parameters={}, limit=100)
+
+    assert count_pending_matches(saved_db, match_type="dedup") == 0, (
+        "the decision must actually have left the pending queue, or this test "
+        "passes on the caveat the pending count already produced"
+    )
+    assert not result.degraded
+    assert result.degraded_reason is None
+    assert result.recovery_actions == ()
+
+
 def test_a_rebuilt_materialization_clears_the_provisional_marking(
     saved_db: Database,
 ) -> None:

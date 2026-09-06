@@ -121,7 +121,7 @@ def count_pending_matches(db: Database, *, match_type: str | None = None) -> int
 def count_matches_settled_since(
     db: Database, since: datetime | None, *, match_type: str | None = None
 ) -> int:
-    """Decisions accepted, rejected or reversed after ``since``.
+    """Decisions accepted or reversed after ``since``.
 
     The complement of :func:`count_pending_matches` for a reader that has to
     know whether a *materialized* model still holds pre-decision rows: leaving
@@ -129,8 +129,18 @@ def count_matches_settled_since(
     does. ``since`` is the model's last rebuild, aware or naive UTC; ``None``
     means no rebuild stamp is available, so no decision can be assumed
     reflected and every settled one counts.
+
+    ``rejected`` is excluded: every real consumer of ``app.match_decisions``
+    (``prep.int_transactions__matched``, ``core.bridge_transfers``,
+    ``meta.fct_transaction_provenance``) keys its merge exclusively off
+    ``match_status = 'accepted'``, so a rejected pair never enters merge logic
+    and no materialized model is ever stale with respect to it. ``reversed``
+    stays in the settled set — it can reverse a prior ``accepted`` (which *was*
+    merged and now needs to be un-merged) or a prior ``rejected`` (which was
+    never merged), and the row alone cannot cheaply prove which; counting it is
+    the fail-closed direction.
     """
-    where = "WHERE match_status <> 'pending'"
+    where = "WHERE (match_status = 'accepted' OR match_status = 'reversed')"
     params: list[Any] = []
     if since is not None:
         # `decided_at`/`reversed_at` are naive local (a `CURRENT_TIMESTAMP`

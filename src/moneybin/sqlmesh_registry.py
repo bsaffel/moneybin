@@ -137,7 +137,7 @@ def _sql_model_node(text: str) -> tuple[str, _ModelNode] | None:
         f"{m.group(1)}.{m.group(2)}".lower() for m in _RELATION_REF.finditer(body)
     ) - {name}
     kind = _SQL_MODEL_KIND.search(body)
-    return name, _ModelNode(reads, kind.group(1).upper() if kind else "")
+    return name, _ModelNode(reads, kind.group(1).upper() if kind else "VIEW")
 
 
 def _python_model_node(text: str) -> tuple[str, _ModelNode] | None:

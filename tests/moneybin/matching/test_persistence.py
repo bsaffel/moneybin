@@ -277,6 +277,29 @@ class TestCountMatchesSettledSince:
 
         assert count_matches_settled_since(db, None) == 1
 
+    def test_excludes_rejected_rows(self, db: Database) -> None:
+        """A rejected pair never merges, so no materialization is stale for it."""
+        _create_test_match(db, status="rejected", stid_a="r1", stid_b="r2")
+        before = datetime.now(UTC) - timedelta(hours=1)
+
+        assert count_matches_settled_since(db, before) == 0
+
+    def test_counts_reversed_rows(self, db: Database) -> None:
+        """A reversal may undo a prior merge; the row alone can't prove it didn't."""
+        _create_test_match(db, status="reversed", stid_a="v1", stid_b="v2")
+        before = datetime.now(UTC) - timedelta(hours=1)
+
+        assert count_matches_settled_since(db, before) == 1
+
     def test_rejects_an_unknown_match_type(self, db: Database) -> None:
         with pytest.raises(ValueError, match="Invalid match_type"):
             count_matches_settled_since(db, None, match_type="not_a_type")
+
+    def test_returns_zero_when_the_table_does_not_exist_yet(self, db: Database) -> None:
+        """Before the first matcher run, ``app.match_decisions`` has no rows.
+
+        Mirrors ``count_pending_matches``'s use of the same ``_count`` fallback.
+        """
+        db.execute("DROP TABLE app.match_decisions")
+
+        assert count_matches_settled_since(db, None) == 0
