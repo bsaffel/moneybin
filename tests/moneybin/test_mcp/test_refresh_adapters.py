@@ -15,7 +15,7 @@ from moneybin.orchestration.refresh import RefreshResult, SelfHealRecord, expand
 from moneybin.privacy.payloads.system import RefreshRunPayload
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.rate_backfill import RateBackfillResult
-from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 from tests.moneybin.test_mcp.schema_assertions import (
     assert_recovery_actions_executable,
 )
@@ -655,3 +655,25 @@ def test_pairs_a_retry_cannot_fill_are_offered_no_retry() -> None:
         )
         == []
     )
+
+
+@pytest.mark.unit
+def test_a_refresh_counts_as_one_outcome_however_many_stages_ran() -> None:
+    """``returned_count`` counts rows returned, and a refresh returns no rows.
+
+    ``stages`` is a diagnostic list like ``self_heal_actions`` beside it: it
+    reports what the run did, not a second set of rows. Left out of
+    ``AUXILIARY_LIST_FIELDS`` it becomes the payload's only primary list, and
+    the row-count heuristic reports one "row" per pipeline step — a six-step
+    refresh claiming it returned six of something.
+    """
+    stages = tuple(
+        StageOutcome(step=step, ran=True) for step in expand_steps(None) or ()
+    )
+    env = refresh_envelope(
+        RefreshResult(applied=True, duration_seconds=1.0, stages=stages),
+        requested=expand_steps(None),
+    )
+
+    assert len(stages) == 6
+    assert env.to_dict()["summary"]["returned_count"] == 1

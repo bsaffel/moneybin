@@ -459,6 +459,12 @@ AUXILIARY_LIST_FIELDS = frozenset({
     # collection and report `returned_count=0` for a clean refresh that healed
     # nothing. `refresh_run` returns one pipeline outcome, not N recipes.
     "self_heal_actions",
+    # What each pipeline step did — the same rationale one line further: it
+    # reports what the run did, not a second set of rows. Excluded for the
+    # reason `self_heal_actions` is, and it displaces it: `stages` is populated
+    # on every refresh where self-heal is usually empty, so without this a
+    # six-step refresh reports `returned_count=6`, one "row" per step.
+    "stages",
     # `SyncPullPayload`'s warning that some accounts carry both manual and Plaid
     # investment history. Same rationale again: it describes a condition
     # affecting the rows the pull returned, not a second set of them. It sits
