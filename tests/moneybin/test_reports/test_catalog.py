@@ -8,7 +8,7 @@ import logging
 import re
 import shlex
 import typing
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -18,9 +18,11 @@ from unittest.mock import MagicMock, patch
 
 import click
 import pytest
+import sqlglot
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
+from sqlglot import exp
 
 from moneybin.cli.main import app as cli_app
 from moneybin.database import (
@@ -81,10 +83,12 @@ from moneybin.reports.service_reports import (
     NETWORTH_HISTORY_REPORT,
     NETWORTH_REPORT,
 )
+from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import (
     PENDING_MATCHES_HINT,
     MatchingService,
 )
+from moneybin.services.networth_service import NetworthService
 from moneybin.tables import (
     FCT_TRANSACTIONS,
     MATCH_DECISIONS,
@@ -325,6 +329,83 @@ def test_service_report_privacy_maps_match_independent_contract() -> None:
         assert {
             parameter.name: parameter.data_class for parameter in report.parameters
         } == contract["parameters"]
+
+
+def test_service_report_provenance_matches_the_tables_its_query_reads() -> None:
+    """Declared ``provenance`` is pinned to what the service's own SQL reads.
+
+    ``pending_dedup_caveat`` reads ``ReportSemantics.provenance`` to decide
+    whether a report is downstream of ``core.fct_transactions`` and therefore
+    owed the pending-dedup caveat (#409). A SQL-backed report's ``provenance``
+    is checked against SQLMesh's own parse of its model
+    (``test_model_reads_match_the_dependencies_sqlmesh_parses`` in
+    ``test_sqlmesh_registry.py``); a service report has no SQL model for that,
+    so a future service report reading a new table without updating its
+    hand-authored ``provenance`` would silently never earn the caveat. This
+    pins the declared tuple to sqlglot's parse of the SQL the service's own
+    executor actually issues, mirroring that guard for the one report kind
+    that hand-authors its provenance.
+
+    Enumerating the live catalog rather than a hand-kept dict is what forces a
+    new service report to add coverage here, exactly as
+    ``test_service_report_privacy_maps_match_independent_contract`` does for
+    its privacy map.
+    """
+
+    class _CapturingDB:
+        """Records every SQL statement executed; answers with one throwaway row."""
+
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        def execute(self, sql: str, params: object = None) -> _CapturingDB:
+            del params
+            self.statements.append(sql)
+            return self
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            # One generic row wide enough for any of these queries' positional
+            # reads; `None` in position 0 keeps `history()`'s
+            # `row[0].isoformat() if row[0] else None` on its falsy branch.
+            return [(None, "USD", Decimal("0"), Decimal("0"), Decimal("0"), 0)]
+
+    def _tables_read(statements: list[str]) -> frozenset[str]:
+        tables: set[str] = set()
+        for sql in statements:
+            tree = sqlglot.parse_one(sql, dialect="duckdb")
+            cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
+            tables.update(
+                f"{table.db.lower()}.{table.name.lower()}"
+                for table in tree.find_all(exp.Table)
+                if table.db and table.name.lower() not in cte_names
+            )
+        return frozenset(tables)
+
+    checks: dict[str, Callable[[Database], object]] = {
+        "core:networth": lambda db: NetworthService(db).current(),
+        "core:networth_history": lambda db: NetworthService(db).history(
+            date(2026, 1, 1), date(2026, 2, 1)
+        ),
+    }
+    service_reports = {
+        report.report_id: report
+        for report in get_report_catalog().list()
+        if isinstance(report, ServiceReportSpec)
+    }
+    assert set(service_reports) == set(checks)
+
+    for report_id, invoke in checks.items():
+        capture = _CapturingDB()
+        invoke(cast(Database, capture))
+        actual = _tables_read(capture.statements)
+        declared = frozenset(
+            relation.lower()
+            for relation in service_reports[report_id].semantics.provenance
+        )
+        assert actual == declared, (
+            f"{report_id}: query reads {sorted(actual)}, "
+            f"provenance declares {sorted(declared)}"
+        )
 
 
 def test_catalog_resolves_namespaced_and_unique_short_ids() -> None:
@@ -1726,6 +1807,70 @@ def test_a_total_over_an_undecided_duplicate_pair_is_marked_provisional(
     assert result.degraded_reason.startswith(f"{DEGRADED_PENDING_DEDUP}: 1 ")
     assert PENDING_MATCHES_HINT in result.actions
     assert [action.tool for action in result.recovery_actions] == ["reviews"]
+
+
+def test_a_total_marks_both_pending_and_unreflected_clauses_together(
+    saved_db: Database,
+) -> None:
+    """Both halves of the caveat firing at once is the only path to the join.
+
+    Every other test in this module exercises ``pending`` or ``unreflected``
+    alone, so none of them reaches the ``", and ".join(clauses)`` branch in
+    ``pending_dedup_caveat``. One pair stays undecided; a second is decided
+    while the materialized model it feeds is still stamped stale, so both
+    clauses fire on the same read.
+    """
+    seed_pending_dedup_pair(saved_db)
+    record_model_execution(
+        saved_db, "core.fct_balances_daily", _naive_utc(-timedelta(hours=1))
+    )
+    saved_db.execute(
+        """
+        INSERT INTO core.fct_transactions (transaction_id, account_id, amount)
+        VALUES ('dup_ofx_2', 'acct_11112222', -15.00),
+               ('dup_csv_2', 'acct_11112222', -15.00)
+        """
+    )
+    MatchDecisionsRepo(saved_db).insert(
+        match_id="match00000002",
+        source_transaction_id_a="ofx-2",
+        source_type_a="ofx",
+        source_origin_a="test-bank",
+        source_transaction_id_b="csv-2",
+        source_type_b="tabular",
+        source_origin_b="test-export",
+        account_id="acct_11112222",
+        confidence_score=0.58,
+        match_signals={"date_distance": 0},
+        match_status="pending",
+        match_tier="3",
+        decided_by="auto",
+        actor="test",
+    )
+    MatchingService(saved_db).set_status(
+        "match00000002", status="accepted", decided_by="user", actor="test"
+    )
+
+    result = ReportCatalog((
+        _transaction_total_report(("reports.net_worth",)),
+    )).execute(saved_db, report_id="core:summary", parameters={}, limit=100)
+
+    assert count_pending_matches(saved_db, match_type="dedup") == 1, (
+        "one pair must stay pending, or this only exercises the unreflected clause"
+    )
+    assert result.degraded
+    assert result.degraded_reason is not None
+    assert ", and " in result.degraded_reason, (
+        f"only one clause fired: {result.degraded_reason!r}"
+    )
+    assert "undecided duplicate" in result.degraded_reason
+    assert "not yet rebuilt" in result.degraded_reason
+    assert PENDING_MATCHES_HINT in result.actions
+    assert STALE_DEDUP_HINT in result.actions
+    assert [action.tool for action in result.recovery_actions] == [
+        "reviews",
+        "refresh_run",
+    ]
 
 
 def test_a_total_with_nothing_pending_carries_no_provisional_marking(

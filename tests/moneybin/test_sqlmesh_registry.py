@@ -243,6 +243,38 @@ def test_model_reads_match_the_dependencies_sqlmesh_parses() -> None:
         )
 
 
+def test_model_kind_matches_the_kind_sqlmesh_parses() -> None:
+    """The kind scan is pinned to SQLMesh's own parse, mirroring the reads test.
+
+    ``materialized_model_names()`` feeds the same user-facing caveat as the
+    reads scan (``pending_dedup_caveat`` in ``reports/_framework/catalog.py``):
+    a model whose ``kind`` the regex cannot read defaults to ``"VIEW"``, which
+    would silently drop the stale-materialization half of the caveat for a real
+    FULL/INCREMENTAL model. SQLMesh resolves the same files connectionlessly, so
+    CI can hold the cheap runtime scan to the expensive parser's answer, exactly
+    as ``test_model_reads_match_the_dependencies_sqlmesh_parses`` does for reads.
+    """
+    from sqlmesh.core.dialect import parse as sqlmesh_parse
+    from sqlmesh.core.model import load_sql_based_model
+
+    from moneybin.sqlmesh_registry import (
+        _MODELS_DIR,  # pyright: ignore[reportPrivateUsage]  # the scan under test
+        _model_graph,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    graph = _model_graph()
+    for path in sorted(_MODELS_DIR.rglob("*.sql")):
+        model = load_sql_based_model(
+            sqlmesh_parse(path.read_text(), default_dialect="duckdb"),
+            path=path,
+            dialect="duckdb",
+        )
+        name = model.name.lower()
+        assert graph[name].kind == model.kind.name, (
+            f"{name}: scan says {graph[name].kind}, SQLMesh parses {model.kind.name}"
+        )
+
+
 def test_every_python_model_declares_what_it_reads() -> None:
     """A Python model's ``depends_on`` is the only read set anything can see.
 
