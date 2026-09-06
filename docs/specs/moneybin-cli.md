@@ -49,6 +49,13 @@ The global `--profile` flag provides ephemeral override without changing the def
 
 Individual commands (`transactions matches run`, `transactions categorize rules apply`, `transform apply`) exist for configuration, troubleshooting, and power-user control — not as steps in a manual pipeline. The user-intent umbrella is `moneybin refresh` (CLI peer of MCP `refresh_run`, per PR #173); `refresh --step transform` maps to `refresh_run(steps=["transform"])`.
 
+M1J.7 delivery slice 2 keeps that umbrella: it adds the selectable
+`investment_match` refresh step, and `investments matches run` maps to the same
+proposal-only operation as MCP `refresh_run` with `steps` set to
+`investment_match`. Selecting `transform` runs that planner and then the
+non-selectable membership-reconciliation prerequisite before rebuilding the
+Golden ledger and its dependents.
+
 ### Entity groups own their workflows and aggregations
 
 Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-cutting concerns** (`reports`, `import`, `sync`, `export`, infrastructure). Per-instance workflows and aggregations live *under* their entity, not as siblings. This applies uniformly across CLI, MCP, and HTTP.
@@ -187,9 +194,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--purge]                        Drops the seed view + deletes raw rows.
 |         [--yes / -y]                     Required for --purge in non-TTY contexts.
 |
-+-- refresh                        -- Run gsheet -> match -> transform -> categorize -> identity -> rates
++-- refresh                        -- Run gsheet -> match -> investment_match -> transform -> categorize -> identity -> rates (M1J.7)
 |         [--step STEP]              Subset of canonical steps; repeatable.
-|                                    Choices: match, transform, categorize, identity, rates.
+|                                    Current choices: match, transform, categorize, identity, rates.
+|                                    M1J.7 slice 2 adds: investment_match.
 |                                    Default: full cascade. Steps execute in canonical
 |                                    order regardless of flag order. `--step transform`
 |                                    is the granular form formerly exposed as the
@@ -200,20 +208,29 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |         [--output json] [-q]
 |
 +-- review                         -- What needs my attention? Pending counts across all review queues.
-|     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |     [--status]                        Counts — the default; the flag states it explicitly
 |     [--interactive]                   Walk the queue item by item (not yet built)
-|     [--confirm <id>]                  Non-interactive: confirm one match by ID
-|     [--reject <id>]                   Non-interactive: reject one match by ID
-|     [--confirm-all]                   Non-interactive: confirm all items in scope
+|     [--confirm <id>]                  Non-interactive: confirm one review item by ID
+|     [--reject <id>]                   Non-interactive: reject one review item by ID
+|     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
+|     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |     [--limit N]                       Cap items per session (applies to --interactive)
 |     [--output text|json] [-q]
-|   Aggregates matches_pending + categorize_pending + account_links_pending + merchant_links_pending
-|   + security_links_pending in one sweep. Counts are what a bare invocation prints; drill into
+|   Aggregates matches_pending + investment_matches_pending + categorize_pending +
+|   account_links_pending + merchant_links_pending + security_links_pending in one sweep.
+|   Counts are what a bare invocation prints; drill into
 |   `accounts links pending`, `merchants links pending`, `investments securities links pending`,
-|   `transactions matches pending`, or `transactions categorize pending` for queue contents.
-|   `--status`, `--interactive`, and the decision flags are mutually exclusive; passing two is a
-|   usage error (exit 2) rather than a silent pick.
+|   `investments matches pending`, `transactions matches pending`, or
+|   `transactions categorize pending` for queue contents.
+|   At most one explicit primary action among `--status`, `--interactive`, `--confirm`,
+|   `--reject`, and `--confirm-all` may be supplied; passing two is a usage error (exit 2),
+|   while omitting all of them selects the default status/counts read. `--field-choice` is a
+|   modifier, not a primary action: it requires `--type investment-matches` and exactly one
+|   `--confirm`. Any other use, including with `--reject` or a non-investment type, is a usage
+|   error (exit 2). `--confirm-all` with `--type investment-matches` or `--type all` is also a
+|   usage error (exit 2), because silently skipping the mandatory-review queue would make a
+|   partial batch look complete.
 |
 +-- accounts
 |   +-- list                       -- List accounts [--include-archived] [--type TYPE]
@@ -270,6 +287,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- lots [--open|--all]        -- Tax lots with remaining quantity + basis
 |   |   +-- select <disposal_id> --lot <lot_id>:<qty> [--lot ...]  -- Replace lot selection (declarative set; multi-lot)
 |   +-- gains                      -- Realized gain/loss (the 1099-B surface)
+|   +-- matches                    -- Review-first cross-source investment-event matching (M1J.7)
+|   |   +-- run                    -- Plan current whole-event candidates; never accepts automatically
+|   |   +-- pending                -- Show pending Proposals, choices, alternatives, and expected effects
+|   |   +-- history                -- Show accepted, rejected, stale, and reversed decisions
 |   +-- prices                     -- Market prices for held securities (Pillar C.2)
 |   |   +-- pull [--security REF]... [--since DATE] [--refresh]
 |   |   |         Refresh stored closes for held positions from the configured feeds.
@@ -349,15 +370,18 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- create                     -- Create a manual transaction
 |   +-- audit                      -- Audit one transaction's curation history (notes, tags, splits)
 |   +-- review                     -- DEPRECATED: use `moneybin review` (removed after one minor release)
-|   |                                  Unified review queue (matches + categorize + account-links + merchant-links + security-links)
-|   |     [--type all|matches|categorize|account-links|merchant-links|security-links]   Default all
+|   |                                  Unified review queue (matches + investment-matches + categorize + account-links + merchant-links + security-links)
+|   |     [--type all|matches|investment-matches|categorize|account-links|merchant-links|security-links]   Default all
 |   |     [--status]                        Counts — the default; the flag states it explicitly
 |   |     [--interactive]                   Walk the queue item by item (not yet built)
-|   |     [--confirm <id>]                  Non-interactive: confirm one match or categorize item by ID
-|   |     [--reject <id>]                   Non-interactive: reject one match by ID
-|   |     [--confirm-all]                   Non-interactive: confirm all items in scope
+|   |     [--confirm <id>]                  Non-interactive: confirm one review item by ID
+|   |     [--reject <id>]                   Non-interactive: reject one review item by ID
+|   |     [--field-choice <conflict-id>=<choice-id>]  Repeatable; investment-matches confirm only
+|   |     [--confirm-all]                   Non-interactive: confirm all items in an eligible --type scope
 |   |     [--limit N]                       Cap items per session
-|   |   Note: --confirm/--reject/--confirm-all are fully implemented for --type matches.
+|   |   Note: --confirm/--reject are defined for --type matches and investment-matches;
+|   |         --confirm-all with investment-matches or all exits 2, as does --field-choice
+|   |         without both --type investment-matches and exactly one --confirm.
 |   |         --type categorize review is not yet wired (stub); categorize items use
 |   |         transactions categorize commit instead.
 |   +-- matches                    -- Transfer detection + dedup workflow (no review — see the top-level `review`)
@@ -703,7 +727,7 @@ System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
 Data out:       export
-Pipeline:       refresh (gsheet -> match -> transform -> categorize -> identity)
+Pipeline:       refresh (gsheet -> match -> investment_match -> transform -> categorize -> identity after M1J.7 slice 2)
 Mutation:       budget (target management; the vs-actual `reports budget` read command is de-registered pending the reports.budget view)
 Operational:    logs, stats
 Ad-hoc query:   sql (privacy-safe SQL; raw operator access is db query/shell/ui)
@@ -758,6 +782,7 @@ selectors to preserve bounded agent context.
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
 | Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
+| Run investment matching after M1J.7 slice 2 | `investments matches run` | `refresh_run`, with `steps` set to `investment_match` | `POST /refresh/investment-match` (after M1J.7 slice 2) |
 | Spending report | `reports spending` | `reports(report_id="core:spending")` | `GET /reports/spending` |
 
 ### Pluralization
@@ -1011,6 +1036,7 @@ ADR-016 and the archived MCP catalog. Current sibling mappings are:
 | `transactions categorize pending` | `reviews(kind="categorization", status="pending")` |
 | `categories list`, `merchants list` | `taxonomy(view=...)` |
 | `transactions matches run` | `refresh_run(steps=["match"])` |
+| `investments matches run` | `refresh_run`, with `steps` set to `investment_match` after M1J.7 slice 2 |
 | `transform apply` | `refresh_run(steps=["transform"])` |
 
 ## Migration Table (v0 → v1, historical)
