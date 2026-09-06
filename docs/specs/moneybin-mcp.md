@@ -50,56 +50,56 @@ safety family without duplicating FastMCP's drifting JSON schema.
 
 | Tool | Selector or discriminator | Intent | Safety family |
 |---|---|---|---|
-| `system_status` | `detail`, `sections` | Orientation and pending-work inventory | Read / dynamic / maximum medium / status-derived |
-| `system_audit` | `audit_id`, `cursor`, `limit`, `operation_id`, `view` | Audited mutation history | Read / dynamic / maximum high / audit-derived |
-| `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / maximum low |
-| `profile` |  | Active profile metadata and managed settings | Read / maximum low |
-| `profile_set` | `home_currency` | Set the profile's home currency | Audited write / maximum low |
-| `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / maximum critical / report-derived |
-| `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / maximum critical / view-derived |
-| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / maximum critical |
-| `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / maximum high / balance-derived |
-| `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / maximum medium |
-| `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / maximum low |
-| `investments` | `account`, `cursor`, `end`, `limit`, `open_only`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / maximum high / view-derived |
-| `investments_record` | `events` | Record an investment event | Audited write / maximum low |
-| `investments_securities_set` | `coingecko_id`, `cost_basis_method`, `currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`, `name`, `security_id`, `security_type`, `ticker` | Securities-catalog target state | Audited write / maximum low |
-| `investments_lots_select` | `disposal_txn_id`, `selections` | Full lot-selection target state | Audited write / maximum high |
-| `transactions` | `account`, `category`, `cursor`, `end`, `limit`, `max_amount`, `merchant`, `min_amount`, `start`, `text` | Transaction projection | Read / maximum high |
-| `transactions_create` | `transactions` | Create a manual transaction | Audited write / maximum low |
-| `transactions_annotate` | `confirmation_token`, `requests` | Batch stable-ID note lifecycle, tag/split target states, and tag rename | Audited write / non-idempotent / dynamically destructive / maximum low |
-| `transactions_categorize_assist` | `account_filter`, `date_range`, `limit` | Scrubbed categorization candidates | Read / scrubbed / maximum medium |
-| `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / maximum low |
-| `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / maximum low |
-| `transactions_categorize_rules` | `view` | Current categorization rules | Read / maximum high |
-| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / maximum low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / maximum high / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / maximum low |
-| `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / maximum medium (prompt-disclosed) |
-| `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / maximum medium / view-derived |
-| `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / maximum low |
-| `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / maximum critical / file-derived |
-| `import_preview` | `file_path`, `mapping` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / maximum critical / file-derived |
-| `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / maximum critical / preview-derived |
-| `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / maximum medium / import-derived |
-| `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / maximum low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
-| `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / maximum critical |
-| `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / maximum medium |
-| `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / maximum medium |
-| `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / maximum medium / session-derived |
-| `sync_pull` | `institution` | Pull linked-provider data | External mutation / maximum medium |
-| `sync_disconnect` | `confirmation_token`, `institution`, `mode` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / maximum low |
-| `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / maximum medium / connection-derived |
-| `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / maximum medium / connection-derived |
-| `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / maximum medium |
-| `gsheet_disconnect` | `confirmation_token`, `connection_id`, `state` | Disconnect or purge a sheet binding | Destructive write / dynamic / maximum medium / connection-derived |
-| `privacy` | `cursor`, `limit`, `view` | Privacy and consent projection | Read / dynamic / maximum low / privacy-derived |
-| `privacy_consent_set` | `backend`, `categories`, `confirmation_token`, `mode`, `state` | Set consent state | Audited write / maximum low |
-| `export_run` | `destination`, `redaction_mode`, `subject` | Publish a bundle or registered report to a named destination | External delivery / dynamic / non-idempotent / maximum medium |
-| `exports_set` | `confirmation_token`, `target` | Export-destination target state | Audited write / maximum medium |
-| `refresh_run` | `steps` | Refresh derived state | Audited workflow / maximum medium |
-| `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / maximum critical / query-derived |
-| `sql_schema` | `table` | Curated SQL schema, plus a live relation listing per queryable schema | Read / dynamic / maximum critical / schema-derived |
+| `system_status` | `detail`, `sections` | Orientation and pending-work inventory | Read / dynamic / up to medium / status-derived |
+| `system_audit` | `audit_id`, `cursor`, `limit`, `operation_id`, `view` | Audited mutation history | Read / dynamic / up to high / audit-derived |
+| `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / at least low |
+| `profile` |  | Active profile metadata and managed settings | Read / at least low |
+| `profile_set` | `home_currency` | Set the profile's home currency | Audited write / at least low |
+| `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / up to critical / report-derived |
+| `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / up to critical / view-derived |
+| `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |
+| `accounts_balances` | `as_of`, `cursor`, `end`, `limit`, `reference`, `start`, `threshold`, `view` | Balance projection and reconciliation | Read / dynamic / up to high / balance-derived |
+| `accounts_balance_assert` | `account`, `amount`, `as_of`, `confirmation_token`, `state` | Record a balance assertion | Audited write / at least medium |
+| `accounts_links_run` | `account_id`, `candidate_account_id` | Propose account merges — sweep, or one named pair | Audited write / at least low |
+| `investments` | `account`, `cursor`, `end`, `limit`, `open_only`, `security`, `start`, `view` | Holdings and ledger projection | Read / dynamic / up to high / view-derived |
+| `investments_record` | `events` | Record an investment event | Audited write / at least low |
+| `investments_securities_set` | `coingecko_id`, `cost_basis_method`, `currency_code`, `cusip`, `exchange`, `figi`, `is_cash_equivalent`, `isin`, `name`, `security_id`, `security_type`, `ticker` | Securities-catalog target state | Audited write / at least low |
+| `investments_lots_select` | `disposal_txn_id`, `selections` | Full lot-selection target state | Audited write / at least high |
+| `transactions` | `account`, `category`, `cursor`, `end`, `limit`, `max_amount`, `merchant`, `min_amount`, `start`, `text` | Transaction projection | Read / at least high |
+| `transactions_create` | `transactions` | Create a manual transaction | Audited write / at least low |
+| `transactions_annotate` | `confirmation_token`, `requests` | Batch stable-ID note lifecycle, tag/split target states, and tag rename | Audited write / non-idempotent / dynamically destructive / at least low |
+| `transactions_categorize_assist` | `account_filter`, `date_range`, `limit` | Scrubbed categorization candidates | Read / scrubbed / at least medium |
+| `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / at least low |
+| `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / at least low |
+| `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
+| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / at least low |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / up to high / queue-derived |
+| `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / at least low |
+| `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
+| `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
+| `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
+| `import_files` | `account_bindings`, `force`, `paths`, `refresh` | Import files | Audited workflow / at least critical / file-derived |
+| `import_preview` | `file_path`, `mapping` | Stage and inspect an import proposal | Staged write (`readOnlyHint=false`, `idempotentHint=false`) / dynamic / up to critical / file-derived |
+| `import_confirm` | `account_bindings`, `account_id`, `account_metadata`, `account_name`, `bridge_response`, `confirmation_token`, `preview_id`, `save_format` | Ratify an import proposal | Confirmed write / dynamic / up to critical / preview-derived |
+| `import_status` | `cursor`, `import_id`, `limit`, `sections` | Import lifecycle status | Read / dynamic / up to medium / import-derived |
+| `import_revert` | `confirmation_token`, `format_name`, `import_id`, `operation` | Revert an import batch or delete a saved format | Confirmed destructive / at least low — rollback is permanent with no undo; format deletion is audited and `system_audit_undo`-recoverable |
+| `import_inbox_sync` | `refresh` | Drain the import inbox | Audited workflow / at least critical |
+| `import_labels_set` | `import_id`, `labels` | Import-label target state | Audited write / at least medium |
+| `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / at least medium |
+| `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
+| `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
+| `sync_disconnect` | `confirmation_token`, `institution`, `mode` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
+| `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / up to medium / connection-derived |
+| `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / up to medium / connection-derived |
+| `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / at least medium |
+| `gsheet_disconnect` | `confirmation_token`, `connection_id`, `state` | Disconnect or purge a sheet binding | Destructive write / dynamic / up to medium / connection-derived |
+| `privacy` | `cursor`, `limit`, `view` | Privacy and consent projection | Read / dynamic / up to low / privacy-derived |
+| `privacy_consent_set` | `backend`, `categories`, `confirmation_token`, `mode`, `state` | Set consent state | Audited write / at least low |
+| `export_run` | `destination`, `redaction_mode`, `subject` | Publish a bundle or registered report to a named destination | External delivery / dynamic / non-idempotent / at least medium |
+| `exports_set` | `confirmation_token`, `target` | Export-destination target state | Audited write / at least medium |
+| `refresh_run` | `steps` | Refresh derived state | Audited workflow / at least medium |
+| `sql_query` | `query` | Operator SQL escape hatch | Read / dynamic / up to critical / query-derived |
+| `sql_schema` | `table` | Curated SQL schema, plus a live relation listing per queryable schema | Read / dynamic / up to critical / schema-derived |
 
 ### Transaction annotation requests
 

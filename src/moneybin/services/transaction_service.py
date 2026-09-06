@@ -44,6 +44,8 @@ from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services._validators import (
+    validate_category_hierarchy,
+    validate_category_text,
     validate_currency_code,
     validate_note_text,
     validate_slug,
@@ -1299,6 +1301,39 @@ class TransactionService:
             except ValueError as e:
                 raise ValueError(f"entries[{idx}].{e}") from e
 
+        # The same pair rules a split takes. This pair reaches
+        # `set_category_in_active_txn`, which resolves it against the same dim
+        # and writes `subcategory` through verbatim without validating, so an
+        # unusable pair became a stored row rather than a refusal. Refusing
+        # here rather than at the write keeps the batch all-or-nothing: this
+        # runs over every entry before the first insert.
+        category = entry.get("category")
+        subcategory = entry.get("subcategory")
+        for name, value in (("category", category), ("subcategory", subcategory)):
+            if value is not None and not isinstance(value, str):
+                raise UserError(
+                    f"entries[{idx}].{name} must be str, got {type(value).__name__}",
+                    code=error_codes.TRANSACTION_INVALID_INPUT,
+                )
+        try:
+            # A supplied blank is refused rather than absorbed. It stores
+            # nothing wrong on its own — the row lands uncategorized, which is
+            # the right end state — but `add_split` and `create_merchant_core`
+            # refuse the identical string, so absorbing it here gave one input
+            # two answers depending on which command the user reached for.
+            # `None` remains how a caller says "uncategorized"; the
+            # `cat_entries` filter below still skips it.
+            if category is not None:
+                validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+            validate_category_hierarchy(category, subcategory, "subcategory")
+        except ValueError as e:
+            raise UserError(
+                f"entries[{idx}].{e}",
+                code=error_codes.TRANSACTION_INVALID_INPUT,
+            ) from e
+
         return {
             "account_id": account_id,
             "amount": amount,
@@ -1684,6 +1719,16 @@ class TransactionService:
         next ``ord`` as ``MAX(ord)+1`` for the parent (or 0 when first).
         """
         split_id = uuid.uuid4().hex[:12]
+        try:
+            if category is not None:
+                validate_category_text(category, "category")
+            if subcategory is not None:
+                validate_category_text(subcategory, "subcategory")
+            validate_category_hierarchy(category, subcategory, "subcategory")
+        except ValueError as exc:
+            raise UserError(
+                str(exc), code=error_codes.TRANSACTION_INVALID_INPUT
+            ) from exc
         self._db.begin()
         try:
             ord_row = self._db.conn.execute(
@@ -1764,18 +1809,35 @@ class TransactionService:
         """
         targets: list[_GranularSplitTarget] = []
         for idx, s in enumerate(splits):
+            # A malformed split is bad input to a write, so it carries the same
+            # code its MCP twin raises for the identical shape checks
+            # (`mcp.tools.curation._prepare_splits`) rather than falling
+            # through the classifier to an infra-shaped code.
             if "amount" not in s:
-                raise ValueError(f"splits[{idx}] missing required 'amount'")
+                raise UserError(
+                    f"splits[{idx}] missing required 'amount'",
+                    code=error_codes.TRANSACTION_INVALID_INPUT,
+                )
             amount = s["amount"]
             if not isinstance(amount, Decimal):
-                raise ValueError(
-                    f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}"
+                raise UserError(
+                    f"splits[{idx}].amount must be Decimal, got {type(amount).__name__}",
+                    code=error_codes.TRANSACTION_INVALID_INPUT,
                 )
+            category = s.get("category")
+            subcategory = s.get("subcategory")
+            for field, value in (("category", category), ("subcategory", subcategory)):
+                if value is not None and not isinstance(value, str):
+                    raise UserError(
+                        f"splits[{idx}].{field} must be str, "
+                        f"got {type(value).__name__}",
+                        code=error_codes.TRANSACTION_INVALID_INPUT,
+                    )
             targets.append(
                 _GranularSplitTarget(
                     amount=amount,
-                    category=s.get("category"),
-                    subcategory=s.get("subcategory"),
+                    category=category,
+                    subcategory=subcategory,
                     note=s.get("note"),
                 )
             )
@@ -1812,7 +1874,23 @@ class TransactionService:
         """Validate and resolve one declarative split sequence."""
         desired: list[_PreparedSplit] = []
         total = Decimal("0")
-        for split in splits:
+        for idx, split in enumerate(splits):
+            # The MCP arm reaches here already validated by SplitTarget; the
+            # granular `set_splits` arm takes untyped dicts and does not.
+            try:
+                if split.category is not None:
+                    validate_category_text(split.category, f"splits[{idx}].category")
+                if split.subcategory is not None:
+                    validate_category_text(
+                        split.subcategory, f"splits[{idx}].subcategory"
+                    )
+                validate_category_hierarchy(
+                    split.category, split.subcategory, f"splits[{idx}].subcategory"
+                )
+            except ValueError as exc:
+                raise UserError(
+                    str(exc), code=error_codes.TRANSACTION_INVALID_INPUT
+                ) from exc
             category_id = resolve_category_id(
                 self._db,
                 split.category,

@@ -13,13 +13,16 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.budget import (
     BudgetCategoryStatusRow,
     BudgetSetPayload,
     BudgetStatusPayload,
 )
 from moneybin.repositories.budgets_repo import BudgetsRepo
+from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditService
 from moneybin.services.categorization._shared import resolve_category_id
 from moneybin.tables import BUDGETS, FCT_TRANSACTIONS, TRANSACTION_CATEGORIES
@@ -84,6 +87,15 @@ class BudgetService:
             BudgetSetResult indicating whether the budget was created or
             updated.
         """
+        # A budget names a category, so it takes the same text rule the other
+        # writers take. resolve_category_id matches no dim row for a blank, so
+        # the budget would store the whitespace as its display snapshot beside
+        # a NULL category_id — an orphan reporting against nothing.
+        try:
+            validate_category_text(category, "category")
+        except ValueError as exc:
+            raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
+
         if start_month is None:
             start_month = date.today().strftime("%Y-%m")
 
