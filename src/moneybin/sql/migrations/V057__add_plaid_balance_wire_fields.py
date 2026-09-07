@@ -27,25 +27,31 @@ import logging
 logger = logging.getLogger(__name__)
 
 # (column, sql_type, comment) — applied in order; types match raw_plaid_balances.sql.
+#
+# Each comment is byte-identical to the one in raw_plaid_balances.sql.
+# `_apply_comments` re-runs that DDL's comments on every startup while this
+# migration runs once, so a divergent string here would be overwritten on the
+# next open and the catalog description would differ by which ran last. V050 and
+# V052 carry the same note; test_migration_v057 derives the DDL side and asserts
+# the pair rather than restating either literal.
 _COLUMNS: list[tuple[str, str, str]] = [
     (
         "balance_limit",
         "DECIMAL(18, 2)",
-        "Plaid limit: the credit limit on a credit account, the pre-arranged "
-        "overdraft limit on a depository one. Distinct from the user-asserted "
-        "app.account_settings.credit_limit.",
+        "Plaid limit: credit limit, or overdraft limit on depository; distinct "
+        "from the user-asserted app.account_settings.credit_limit",
     ),
     (
         "margin_loan_amount",
         "DECIMAL(18, 2)",
-        "Borrowed funds on a margin account, as the institution reports them. "
-        "Investment accounts only; NULL elsewhere. current_balance is the gross "
-        "value of assets, so core.fct_balances subtracts this to reach equity.",
+        "Borrowed funds on a margin account; investment accounts only, NULL "
+        "elsewhere. current_balance is the gross value of assets, so "
+        "core.fct_balances subtracts this",
     ),
     (
         "last_updated_datetime",
         "TIMESTAMP",
-        "Provider as-of time for the balance; populated only by some institutions.",
+        'Provider "as-of" time for the balance; populated only by some institutions',
     ),
 ]
 

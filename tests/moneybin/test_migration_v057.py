@@ -11,7 +11,18 @@ migration keeps NULL until ``moneybin sync pull --force`` re-fetches it.
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V057__add_plaid_balance_wire_fields import migrate
+
+# Private on both sides deliberately: the byte-identity test derives the DDL and
+# migration strings from the real sources, and restating either as a literal here
+# would be the drift it exists to catch. Neither has a public alias.
+from moneybin.schema import (
+    _all_schema_files,  # pyright: ignore[reportPrivateUsage]
+    _comment_plan,  # pyright: ignore[reportPrivateUsage]
+)
+from moneybin.sql.migrations.V057__add_plaid_balance_wire_fields import (
+    _COLUMNS,  # pyright: ignore[reportPrivateUsage]
+    migrate,
+)
 
 _NEW_COLUMNS = ["balance_limit", "margin_loan_amount", "last_updated_datetime"]
 
@@ -80,6 +91,28 @@ def test_v057_adds_the_dropped_wire_columns(db: Database) -> None:
         "FROM raw.plaid_balances WHERE account_id = 'acc_pre_001'"
     ).fetchone()
     assert row == (None, None, None)
+
+
+def test_v057_comments_match_the_schema_ddl_byte_for_byte() -> None:
+    """A comment that diverges from the DDL loses to it on the very next open.
+
+    ``_apply_comments`` re-runs ``raw_plaid_balances.sql``'s comments on every
+    startup while this migration runs once, so the catalog description would
+    read the migration's text in the upgrade session and the DDL's in every
+    session after — differing by which ran last. V050 and V052 record the same
+    requirement as a comment only; this asserts it. Both sides are derived, so
+    the check cannot be satisfied by restating either literal.
+    """
+    ddl = next(p for p in _all_schema_files() if p.name == "raw_plaid_balances.sql")
+    ddl_comments = {
+        column: comment
+        for table_plan in _comment_plan(ddl, ddl.read_text())
+        for column, comment in table_plan.column_comments
+    }
+
+    assert {name: comment for name, _, comment in _COLUMNS} == {
+        name: ddl_comments[name] for name, _, _ in _COLUMNS
+    }
 
 
 def test_v057_is_idempotent(db: Database) -> None:

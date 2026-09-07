@@ -164,10 +164,15 @@ CREATE TABLE IF NOT EXISTS raw.plaid_balances (
     balance_date DATE NOT NULL,        -- Date the balance was reported
     current_balance DECIMAL(18, 2),    -- Current balance including pending transactions
     available_balance DECIMAL(18, 2),  -- Available balance (current minus holds); NULL for credit accounts
+    balance_limit DECIMAL(18, 2),      -- Plaid `limit`, renamed: reserved word, and distinct from user-asserted app.account_settings.credit_limit
+    margin_loan_amount DECIMAL(18, 2), -- Borrowed funds; investment accounts only. current_balance is gross, so core nets this out
+    iso_currency_code VARCHAR,         -- ISO 4217; mutually exclusive with unofficial_currency_code
+    unofficial_currency_code VARCHAR,  -- Non-ISO (crypto) currency; core COALESCEs the pair
     source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
     source_type VARCHAR NOT NULL       -- Always 'plaid' for this table
         DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,    -- Plaid item_id; scopes dedup to the institution connection
+    last_updated_datetime TIMESTAMP,   -- Provider "as-of" time; populated only by some institutions. Naive UTC wall clock, as every raw Plaid wire datetime is
     extracted_at TIMESTAMP             -- When the server fetched this data from Plaid (from metadata.synced_at)
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                -- When this record was inserted into the local database
@@ -260,9 +265,14 @@ SELECT
   b.balance_date,
   b.current_balance,
   b.available_balance,
+  b.balance_limit,
+  b.margin_loan_amount,
+  b.iso_currency_code,
+  b.unofficial_currency_code,
   b.source_file,
   b.source_type,
   b.source_origin,
+  b.last_updated_datetime,
   b.extracted_at,
   b.loaded_at
 FROM raw.plaid_balances AS b
@@ -286,7 +296,7 @@ Add CTEs + `UNION ALL` to the relevant core models:
 |---|---|
 | `core.dim_accounts` | Add `plaid_accounts` CTE selecting from `prep.stg_plaid__accounts` with `source_type = 'plaid'`, `UNION ALL` into `all_accounts`; carries Plaid `official_name`/`account_subtype` through the merge as the base layer under the `app.account_settings` override |
 | `core.fct_transactions` | Add `plaid_transactions` CTE selecting from `prep.stg_plaid__transactions` with `source_type = 'plaid'`, `UNION ALL` into `all_transactions` |
-| `core.fct_balances` | Add `plaid_balances` CTE selecting from `prep.stg_plaid__balances` with `current_balance` → `balance`, `source_type = 'plaid'`, `source_origin` (Plaid item id) → `source_ref`, `loaded_at` → `updated_at`, `UNION ALL` into the balance union. `available_balance` has no column in `fct_balances` (dropped for every source, as OFX's is) |
+| `core.fct_balances` | Add `plaid_balances` CTE selecting from `prep.stg_plaid__balances` with `current_balance - COALESCE(margin_loan_amount, 0)` → `balance`, `source_type = 'plaid'`, `source_origin` (Plaid item id) → `source_ref`, `loaded_at` → `updated_at`, `UNION ALL` into the balance union. The subtraction is the surprising one: Plaid reports an investment account's `current_balance` as the gross value of *assets* and the funds borrowed against them separately, so without it a margin account contributes the broker's money to net worth as if it were the holder's. The `COALESCE` is load-bearing — `margin_loan_amount` is NULL on every non-investment account, and a bare subtraction would null the whole balance and drop the account out of net worth. `available_balance` has no column in `fct_balances` (dropped for every source, as OFX's is) |
 
 No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CSV is handled by the transaction matching pipeline (`matching-overview.md`). For balances, same-date observations from different sources (e.g. OFX + Plaid, both institution snapshots at equal precedence) are reduced to one deterministic winner in `core.fct_balances_daily` — highest precedence, then freshest `updated_at`, then `source_type` ascending.
 
