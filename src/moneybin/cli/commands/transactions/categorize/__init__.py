@@ -132,7 +132,7 @@ def categorize_pending(
         if not records:
             logger.info("No uncategorized transactions.")
             return
-        from moneybin.cli.render import Money, render_rows  # noqa: PLC0415 — defer
+        from moneybin.cli.render import Money, render_rows
 
         cols = list(records[0].keys())
         rows = [tuple(r.values()) for r in records]

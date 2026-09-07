@@ -242,12 +242,12 @@ def test_redacts_pydantic_nested_list() -> None:
 
 def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -> None:
     """Bridge prose stays usable while semantically typed account keys mask."""
-    from moneybin.privacy.introspection import derive_tier  # noqa: PLC0415
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415
+    from moneybin.privacy.introspection import derive_tier
+    from moneybin.privacy.payloads.imports import (
         ImportFilesPayload,
         ImportPerFileRow,
     )
-    from moneybin.privacy.taxonomy import Tier  # noqa: PLC0415
+    from moneybin.privacy.taxonomy import Tier
 
     payload = ImportFilesPayload(
         imported_count=0,
@@ -326,7 +326,7 @@ def test_account_proposal_ref_survives_the_mask_that_hides_its_key() -> None:
     does not declare, so this fails if the field is missing as well as if it
     is classified into a masking class.
     """
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415
+    from moneybin.privacy.payloads.imports import (
         ImportConfirmRequiredPayload,
     )
 
@@ -445,7 +445,7 @@ def test_transforms_covers_every_data_class() -> None:
     The redaction-module docstring promises "the unit tests will fail
     otherwise"; this test makes the promise enforceable.
     """
-    from moneybin.privacy.redaction import (  # noqa: PLC0415
+    from moneybin.privacy.redaction import (
         _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
     )
 
@@ -476,7 +476,7 @@ def test_every_masking_transform_returns_text_whatever_it_is_given() -> None:
     ``tests/moneybin/test_exports/test_redaction.py`` for the other half of
     this contract.
     """
-    from moneybin.privacy.redaction import (  # noqa: PLC0415
+    from moneybin.privacy.redaction import (
         _TRANSFORMS,  # pyright: ignore[reportPrivateUsage]
     )
 

@@ -90,7 +90,7 @@ def _sign_sidecar_actions(
     recipe can re-derive to either polarity, and the card framing would then name
     the wrong direction and leave no command that keeps the convention in force.
     """
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+    from moneybin.services.import_confirmation import (
         sign_convention_effect,
     )
 
@@ -466,10 +466,10 @@ class InboxService:
         is invoked once and the SQLMesh-step timing/error fields land in
         the result.
         """
-        from moneybin.orchestration.refresh import (  # noqa: PLC0415
+        from moneybin.orchestration.refresh import (
             refresh as run_refresh,
         )
-        from moneybin.orchestration.refresh import (  # noqa: PLC0415
+        from moneybin.orchestration.refresh import (
             step_outcome,
         )
 
@@ -945,11 +945,11 @@ class InboxService:
         (``sign_sample_rows``) so the flip is visible before anyone ratifies it.
         Mirrors the MCP ``_sign_confirm_actions`` treatment.
         """
-        from moneybin.privacy.payloads.imports import (  # noqa: PLC0415  # avoid an import cycle at module scope
+        from moneybin.privacy.payloads.imports import (
             ImportConfirmationAccountProposal,
         )
-        from moneybin.privacy.redaction import redact_typed  # noqa: PLC0415
-        from moneybin.services.import_confirmation import (  # noqa: PLC0415  # avoid an import cycle at module scope
+        from moneybin.privacy.redaction import redact_typed
+        from moneybin.services.import_confirmation import (
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )

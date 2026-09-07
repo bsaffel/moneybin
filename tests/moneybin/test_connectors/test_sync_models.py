@@ -1,12 +1,13 @@
 """Tests for investment extensions to the /sync/data wire models."""
 
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
 from moneybin.connectors.sync_models import (
     DeviceAuthorizationChallenge,
     SyncAccount,
+    SyncBalance,
     SyncDataResponse,
     SyncHolding,
     SyncInvestmentTransaction,
@@ -106,6 +107,49 @@ def test_account_blank_display_fields_normalise_to_none() -> None:
 
     assert account.official_name is None
     assert account.institution_name is None
+
+
+def test_balance_keeps_every_wire_field_the_broker_sends() -> None:
+    """The broker sends nine balance keys; an undeclared one is destroyed.
+
+    Same mechanism as ``persistent_account_id`` above. ``margin_loan_amount`` is
+    the one that costs money: Plaid documents ``current`` on an investment
+    account as the total value of *assets* and ``margin_loan_amount`` as the
+    *borrowed funds* held against them, so for as long as the client drops it a
+    margin account overstates net worth by the whole loan.
+
+    ``limit`` is declared as ``balance_limit`` because the wire name is a SQL
+    reserved word, and because ``credit_limit`` already means the *user-asserted*
+    limit on ``app.account_settings`` — a different fact from the one the
+    institution reports.
+    """
+    balance = SyncBalance.model_validate({
+        "account_id": "acc_1",
+        "balance_date": "2026-06-14",
+        "current_balance": 4321.00,
+        "available_balance": 1200.00,
+        "limit": 5000.00,
+        "iso_currency_code": "USD",
+        "unofficial_currency_code": None,
+        "last_updated_datetime": "2026-06-14T12:00:00+00:00",
+        "margin_loan_amount": 250.00,
+    })
+
+    assert balance.margin_loan_amount == Decimal("250.00")
+    assert balance.balance_limit == Decimal("5000.00")
+    assert balance.last_updated_datetime == datetime(2026, 6, 14, 12, 0, tzinfo=UTC)
+
+
+def test_balance_without_the_new_fields_still_validates() -> None:
+    """A broker predating the fields must not start failing validation."""
+    balance = SyncBalance.model_validate({
+        "account_id": "acc_1",
+        "balance_date": "2026-06-14",
+    })
+
+    assert balance.margin_loan_amount is None
+    assert balance.balance_limit is None
+    assert balance.last_updated_datetime is None
 
 
 def test_payload_without_investment_arrays_validates() -> None:

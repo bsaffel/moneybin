@@ -80,7 +80,7 @@ class SyntheticWriter:
 
     def _create_synthetic_schema(self) -> None:
         """Create the synthetic schema and ground_truth table on demand."""
-        global _ground_truth_ddl  # noqa: PLW0603 — module-level cache, read once
+        global _ground_truth_ddl  # module-level cache, read once
         if _ground_truth_ddl is None:
             _ground_truth_ddl = _GROUND_TRUTH_DDL_PATH.read_text()
         self._db.execute(_ground_truth_ddl)

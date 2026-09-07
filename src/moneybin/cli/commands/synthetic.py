@@ -61,10 +61,10 @@ def _run_generate(
     try:
         with handle_cli_errors():
             from moneybin.database import (
-                get_database,  # noqa: PLC0415 — deferred import
+                get_database,
             )
             from moneybin.tables import (
-                OFX_TRANSACTIONS,  # noqa: PLC0415 — deferred import
+                OFX_TRANSACTIONS,
                 TABULAR_TRANSACTIONS,
             )
 
@@ -200,7 +200,7 @@ def synthetic_reset(
     try:
         with handle_cli_errors():
             from moneybin.database import (
-                get_database,  # noqa: PLC0415 — deferred import
+                get_database,
             )
 
             with get_database(read_only=False) as db:

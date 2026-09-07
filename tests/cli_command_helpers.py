@@ -45,7 +45,7 @@ def assert_published_commands_resolve(text: str) -> None:
     failure, not a pass — a guard whose predicate never ran is indistinguishable
     from one that held.
     """
-    from moneybin.cli.main import app  # noqa: PLC0415 — keep collection-time light
+    from moneybin.cli.main import app  # keep collection-time light
 
     invocations = moneybin_invocations(text)
     assert invocations, f"no `moneybin ...` command published in {text!r}"

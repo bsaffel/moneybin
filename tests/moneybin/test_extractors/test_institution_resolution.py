@@ -124,7 +124,7 @@ class TestSharedInstitutionRegistry:
     def test_every_registry_fid_resolves(self) -> None:
         """Each FID in the shared CSV resolves via the FID branch of the chain."""
         from moneybin.extractors.institution_resolution import (
-            _fid_to_slug,  # noqa: PLC0415  # pyright: ignore[reportPrivateUsage]
+            _fid_to_slug,  # pyright: ignore[reportPrivateUsage]
         )
 
         registry = _fid_to_slug()
@@ -141,9 +141,9 @@ class TestSharedInstitutionRegistry:
 
     def test_registry_carries_a_display_name_for_every_slug(self) -> None:
         """seeds.institutions is also the display-name source; no row may lack one."""
-        import csv  # noqa: PLC0415
-        import io  # noqa: PLC0415
-        from importlib import resources  # noqa: PLC0415
+        import csv
+        import io
+        from importlib import resources
 
         raw = (
             resources
@@ -168,7 +168,7 @@ class TestSharedInstitutionRegistry:
         lookup — from the same CSV, so the two cannot disagree about a bank's
         name.
         """
-        from moneybin.extractors.institution_resolution import (  # noqa: PLC0415
+        from moneybin.extractors.institution_resolution import (
             _fid_to_slug,  # pyright: ignore[reportPrivateUsage]
             display_name_for_fid,
         )
@@ -181,9 +181,9 @@ class TestSharedInstitutionRegistry:
         assert display_name_for_fid(None) is None
 
     def _registry_rows(self) -> list[dict[str, str]]:
-        import csv  # noqa: PLC0415
-        import io  # noqa: PLC0415
-        from importlib import resources  # noqa: PLC0415
+        import csv
+        import io
+        from importlib import resources
 
         raw = (
             resources
@@ -211,9 +211,9 @@ class TestSharedInstitutionRegistry:
         round-trip lossless. If an institution ever needs a non-numeric fid,
         this guard must be replaced by forcing the column's dtype, not relaxed.
         """
-        import csv  # noqa: PLC0415
-        import io  # noqa: PLC0415
-        from importlib import resources  # noqa: PLC0415
+        import csv
+        import io
+        from importlib import resources
 
         raw = (
             resources

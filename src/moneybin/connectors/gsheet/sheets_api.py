@@ -413,10 +413,10 @@ class SheetsClient:
         Reuses the cached service while the access token is unchanged;
         a token rotation invalidates the cache and rebuilds.
         """
-        import google_auth_httplib2  # noqa: PLC0415
-        import httplib2  # noqa: PLC0415
-        from google.oauth2.credentials import Credentials  # noqa: PLC0415
-        from googleapiclient.discovery import build  # noqa: PLC0415
+        import google_auth_httplib2
+        import httplib2
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
 
         token = self._oauth.get_access_token(require_write=require_write)
         cached = self._cached_services.get(require_write)
@@ -426,7 +426,7 @@ class SheetsClient:
         creds = Credentials(token=token)
         timeout = self._timeout_seconds
         if timeout is None:
-            from moneybin.config import get_settings  # noqa: PLC0415
+            from moneybin.config import get_settings
 
             timeout = get_settings().gsheet.api_timeout_seconds
         # Wrap httplib2.Http with the timeout, then bind credentials via

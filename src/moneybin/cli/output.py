@@ -147,7 +147,7 @@ class OutputFormat(StrEnum):
 
 def _set_output_flag(value: OutputFormat) -> OutputFormat:
     from moneybin.cli.utils import (
-        set_output_flag,  # noqa: PLC0415 — defer to break import cycle
+        set_output_flag,  # deferred: module-scope import would cycle
     )
 
     return set_output_flag(value)

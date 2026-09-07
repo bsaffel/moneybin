@@ -2078,7 +2078,8 @@ class InvestmentService:
             return amount, code, ()
         # Deferred: currency_service imports polars, and this module is on the
         # CLI's eager import chain (tests/moneybin/test_cli/test_cold_start.py).
-        from moneybin.services.currency_service import (  # noqa: PLC0415 — defer to avoid cold-start cost
+        # defer to avoid cold-start cost
+        from moneybin.services.currency_service import (
             RateUnavailableError,
             build_cache_only_currency_service,
             require_currency,

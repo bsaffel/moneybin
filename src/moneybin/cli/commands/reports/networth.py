@@ -44,7 +44,7 @@ def reports_networth(
 ) -> None:
     """Show current or as-of net worth + per-account breakdown."""
     with handle_cli_errors():
-        from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
+        from moneybin.reports._framework.catalog import (
             get_report_catalog,
             profile_home_currency,
         )
@@ -136,7 +136,7 @@ def reports_networth_history(
 ) -> None:
     """Net worth time series with period-over-period change."""
     with handle_cli_errors():
-        from moneybin.reports._framework.catalog import (  # noqa: PLC0415 — defer catalog import
+        from moneybin.reports._framework.catalog import (
             get_report_catalog,
             profile_home_currency,
         )

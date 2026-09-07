@@ -358,7 +358,7 @@ async def test_sync_disconnect_refuses_confirmation_after_live_target_changes(
 @pytest.mark.unit
 def test_sync_review_prompt_content_includes_required_elements() -> None:
     """The sync_review prompt must guide an agent through a sync health check."""
-    from moneybin.mcp.prompts import sync_review  # noqa: PLC0415
+    from moneybin.mcp.prompts import sync_review
 
     text = sync_review()
     assert "sync_status" in text

@@ -109,7 +109,7 @@ class MerchantLinksService:
         ``count_pending_merchant_link_decisions`` (imported lazily — the
         resolver must not import this service back).
         """
-        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+        from moneybin.services.merchant_resolver import (
             count_pending_merchant_link_decisions,
         )
 
@@ -290,7 +290,7 @@ class MerchantLinksService:
         """
         # Import here to avoid a circular-import at module level
         # (the resolver pulls in the categorization stack, which reaches back here).
-        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+        from moneybin.services.merchant_resolver import (
             MerchantResolver,
             refresh_merchant_link_pending_gauge,
         )
@@ -307,7 +307,7 @@ class MerchantLinksService:
         """Record metrics after an enclosing transaction commits."""
         for outcome in outcomes:
             MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
-        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+        from moneybin.services.merchant_resolver import (
             refresh_merchant_link_pending_gauge,
         )
 
@@ -474,7 +474,7 @@ class MerchantLinksService:
 
         # Accept/reject changed the pending count — refresh the gauge.
         MERCHANT_LINK_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
-        from moneybin.services.merchant_resolver import (  # noqa: PLC0415
+        from moneybin.services.merchant_resolver import (
             refresh_merchant_link_pending_gauge,
         )
 

@@ -113,7 +113,7 @@ def _parse_kv(
     # not every issuer's numbering. Harmless for --override, whose keys are field
     # names with no digit run to find. Same mask the service-layer refusals use,
     # so a key is never disclosed to two different depths.
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         mask_embedded_account_number,
     )
 
@@ -456,7 +456,7 @@ def import_files_command(
             "envelopes, then ratify with `moneybin import confirm <file>`."
         )
 
-    from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.database import get_database
 
     files_list: list[dict[str, Any]] = []
     data: dict[str, Any] = {}
@@ -600,12 +600,12 @@ def import_files_command(
                         files_list, data = _batch_payload(batch_result)
                         refresh_steps = batch_result.refresh_steps
     except Exception as _exc:  # noqa: BLE001 — dispatch on type below
-        from moneybin.services.import_confirmation import (  # noqa: PLC0415
+        from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
-        from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+        from moneybin.services.import_service import (
             ImportRefreshError,
         )
 
@@ -793,10 +793,13 @@ def import_files_command(
 
     classes_returned: list[str] | None = None
     if any(_gates_an_account(f) for f in files_list):
-        from moneybin.privacy.classified_envelope import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+        # defer import to keep CLI cold-start light
+        from moneybin.privacy.classified_envelope import (
             classify,
         )
-        from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+
+        # defer import to keep CLI cold-start light
+        from moneybin.privacy.payloads.imports import (
             ImportConfirmationPayload,
         )
 
@@ -885,10 +888,13 @@ def _batch_payload(
     `confirmation_payload` would start arriving as `null` on every row. That is
     why the one field carrying a real account number is masked explicitly.
     """
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+    # defer import to keep CLI cold-start light
+    from moneybin.privacy.payloads.imports import (
         ImportConfirmationPayload,
     )
-    from moneybin.privacy.redaction import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+
+    # defer import to keep CLI cold-start light
+    from moneybin.privacy.redaction import (
         redact_typed,
     )
 
@@ -1020,7 +1026,7 @@ def _single_file_success(
     ``_batch_payload`` so `moneybin import files a.csv` and
     `moneybin import files a.csv b.csv` describe a file identically.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         BatchImportResult,
         PerFileResult,
     )
@@ -1057,7 +1063,7 @@ def _single_file_failure(file_path: Path, exc: Exception) -> BatchImportResult:
     identical whichever surface asked. ``per_file_failure`` is also what keeps
     raw ``str(e)`` off the wire for anything it cannot classify.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         BatchImportResult,
         PerFileResult,
         per_file_failure,
@@ -1107,10 +1113,13 @@ def _confirmation_envelope_data(
     classes for it. MoneyBin's own minted account ids stay readable through the
     same walk: they are RECORD_ID, and they are what an answer names.
     """
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+    # defer import to keep CLI cold-start light
+    from moneybin.privacy.payloads.imports import (
         CLIConfirmationRequiredPayload,
     )
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+
+    # defer import to keep CLI cold-start light
+    from moneybin.services.import_confirmation import (
         confirmation_payload_dict,
     )
 
@@ -1166,10 +1175,13 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
     disambiguator when one file proposes several accounts, and it is not
     typeable. ``proposal_ref`` is the answer, on every channel.
     """
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+    # defer import to keep CLI cold-start light
+    from moneybin.privacy.payloads.imports import (
         ImportConfirmationAccountProposal,
     )
-    from moneybin.privacy.redaction import (  # noqa: PLC0415 — defer import to keep CLI cold-start light
+
+    # defer import to keep CLI cold-start light
+    from moneybin.privacy.redaction import (
         redact_typed,
     )
 
@@ -1230,7 +1242,7 @@ def _import_files_account_args(
     Returns a leading-space-prefixed fragment (or ``""``) so callers can splice
     it into a sentence without emitting a double space when nothing is set.
     """
-    import shlex  # noqa: PLC0415
+    import shlex
 
     parts: list[str] = []
     if institution is not None:
@@ -1250,7 +1262,7 @@ def _import_files_account_args(
     # account and discloses nothing, a raw key cannot be printed, and
     # `_sign_recovery_note` tells the caller what to re-supply rather than
     # letting the pin vanish.
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         is_proposal_ref,
     )
 
@@ -1280,7 +1292,7 @@ def _sign_recovery_note(
     pastes a command that looks complete, the raw-keyed pin is gone, and the
     import binds whatever matching infers.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         is_proposal_ref,
     )
 
@@ -1329,7 +1341,7 @@ def _import_confirm_command(
     command refuses alongside it. The bridge takes ``--confirm``, not
     ``--accept``, so the two are mutually exclusive here as well.
     """
-    import shlex  # noqa: PLC0415
+    import shlex
 
     parts = ["moneybin", "import", "confirm", file_path_str]
     if bridge_response is not None:
@@ -1494,9 +1506,9 @@ def _sign_recovery_commands(
             f"Keep amounts exactly as printed: {native_command}",
         ]
 
-    import shlex  # noqa: PLC0415
+    import shlex
 
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+    from moneybin.services.import_confirmation import (
         sign_convention_effect,
     )
 
@@ -1562,7 +1574,8 @@ def _sign_direction(
     ``(None, None)`` when the outcome isn't a sign proposal, which keeps the
     default first-contact framing.
     """
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415  # module-scope import is TYPE_CHECKING-only (cold-start hygiene)
+    # module-scope import is TYPE_CHECKING-only (cold-start hygiene)
+    from moneybin.services.import_confirmation import (
         SignConventionProposal,
     )
 
@@ -1660,9 +1673,9 @@ def _render_confirmation_prompt(
     to a future task.  This v1 implementation shows the proposal and instructs
     the user to re-run with the appropriate flags.
     """
-    import shlex  # noqa: PLC0415
+    import shlex
 
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+    from moneybin.services.import_confirmation import (
         ProposedMapping,
         SignConventionProposal,
     )
@@ -1885,11 +1898,11 @@ def import_confirm_command(
         moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
         moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
     """
-    from moneybin.cli.output import render_or_json  # noqa: PLC0415
+    from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.protocol.envelope import build_envelope  # noqa: PLC0415
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.database import get_database
+    from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.import_service import ImportService
 
     if bridge_response is not None:
         if accept or mapping or confirm_sign or sign:
@@ -2167,7 +2180,7 @@ def import_confirm_command(
                 )
             raise typer.Exit(1)
 
-        from moneybin.services.inbox_service import InboxService  # noqa: PLC0415
+        from moneybin.services.inbox_service import InboxService
 
         InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
         data = {
@@ -2207,7 +2220,7 @@ def import_confirm_command(
     # drop the .pending.yml sidecar (no-op for a path that never entered the
     # inbox, e.g. a file passed directly to `import files`).
     from moneybin.services.inbox_service import (
-        InboxService,  # noqa: PLC0415 — defer import
+        InboxService,
     )
 
     InboxService.for_active_profile_no_db().archive_confirmed_file(file_path)
@@ -2306,7 +2319,7 @@ def import_history(
     """
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.database import get_database
     from moneybin.extractors.tabular import TabularExtractor
     from moneybin.protocol.envelope import build_envelope
 
@@ -2375,7 +2388,7 @@ def import_revert(
         moneybin import revert abc123-... --yes
     """
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.database import get_database
     from moneybin.services.import_service import ImportRevertPlan, ImportService
 
     with handle_cli_errors():
@@ -2434,16 +2447,16 @@ def _preview_pdf(source: Path) -> None:
     ``read_only=False`` matches the MCP path: a bridge escalation writes the
     Req 14 egress audit row before raising.
     """
-    from moneybin.database import (  # noqa: PLC0415
+    from moneybin.database import (
         DatabaseKeyError,
         database_key_error_hint,
         get_database,
     )
-    from moneybin.services.import_confirmation import (  # noqa: PLC0415
+    from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
         SignConventionProposal,
     )
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService
 
     try:
         with get_database(read_only=False) as db:
@@ -2613,7 +2626,7 @@ def import_preview(
 
         # Stage 3: Column mapping — load built-in + user-saved formats
         matched_format = None
-        from moneybin.database import (  # noqa: PLC0415
+        from moneybin.database import (
             DatabaseKeyError,
             DatabaseNotInitializedError,
             get_database,
@@ -2674,7 +2687,7 @@ def import_preview(
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
         else:
-            from moneybin.config import get_settings  # noqa: PLC0415
+            from moneybin.config import get_settings
 
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
@@ -2883,7 +2896,7 @@ def formats_show(
         moneybin import formats show chase_a1b2c3d4e5f6
     """
     from moneybin.database import get_database
-    from moneybin.privacy.payloads.imports import (  # noqa: PLC0415 — defer import
+    from moneybin.privacy.payloads.imports import (
         ImportPdfFormatDetail,
     )
     from moneybin.services.import_service import ImportService
@@ -3025,7 +3038,7 @@ def formats_delete(
     """
     from moneybin import error_codes
     from moneybin.cli.utils import handle_cli_errors
-    from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.database import get_database
     from moneybin.errors import UserError
     from moneybin.extractors.tabular.formats import load_builtin_formats
     from moneybin.services.import_service import ImportService
@@ -3076,13 +3089,13 @@ def import_status(
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.config import get_settings
-    from moneybin.database import get_database  # noqa: PLC0415 — deferred import
+    from moneybin.database import get_database
     from moneybin.privacy.payloads.imports import (
         ImportRawSummaryPayload,
         ImportRawTableRow,
     )
     from moneybin.protocol.envelope import build_envelope
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService
 
     db_path = get_settings().database.path
 

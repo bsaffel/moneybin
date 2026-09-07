@@ -42,7 +42,7 @@ _SECURITY_LINK_DECISIONS_COLUMNS = (
 
 def _refresh_security_link_pending_gauge(db: Database) -> None:
     """Avoid a repository-to-service import cycle until the gauge is needed."""
-    from moneybin.services.security_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+    from moneybin.services.security_resolver import (
         refresh_security_link_pending_gauge,
     )
 

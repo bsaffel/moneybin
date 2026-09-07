@@ -149,11 +149,15 @@ _BALANCES_SCHEMA = pl.Schema({
     "balance_date": pl.Date,
     "current_balance": pl.Decimal(18, 2),
     "available_balance": pl.Decimal(18, 2),
+    "balance_limit": pl.Decimal(18, 2),
+    "margin_loan_amount": pl.Decimal(18, 2),
     "iso_currency_code": pl.Utf8,
     "unofficial_currency_code": pl.Utf8,
     "source_file": pl.Utf8,
     "source_type": pl.Utf8,
     "source_origin": pl.Utf8,
+    # Naive on purpose — see _utc_naive() and _INVESTMENT_TRANSACTIONS_SCHEMA.
+    "last_updated_datetime": pl.Datetime("us"),
     "extracted_at": pl.Datetime(time_zone="UTC"),
     "loaded_at": pl.Datetime(time_zone="UTC"),
 })
@@ -584,6 +588,7 @@ class PlaidExtractor:
             [
                 {
                     **bal.model_dump(),
+                    "last_updated_datetime": _utc_naive(bal.last_updated_datetime),
                     "source_file": source_file,
                     "source_type": "plaid",
                     "source_origin": item_by_account[bal.account_id],

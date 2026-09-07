@@ -135,7 +135,7 @@ class BalanceService:
         # account_service.__init__. `services/__init__` eagerly re-exports this
         # module, so a repo-first import order (e.g. a repo test) would hit a
         # partially-initialized module on a module-level repo import here.
-        from moneybin.repositories.balance_assertions_repo import (  # noqa: PLC0415
+        from moneybin.repositories.balance_assertions_repo import (
             BalanceAssertionsRepo,
         )
 

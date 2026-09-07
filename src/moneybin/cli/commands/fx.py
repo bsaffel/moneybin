@@ -70,7 +70,8 @@ def fx_rate(
     # exits 2 (usage) rather than 1 (the command ran and failed).
     requested = parse_cli_date(rate_date, "RATE_DATE") if rate_date else date.today()  # noqa: DTZ011  # a calendar date, not an instant
     with handle_cli_errors(cli_actor="fx_rate", payload_type=FxRatePayload):
-        from moneybin.services.currency_service import (  # noqa: PLC0415  # polars is not cold-start cheap
+        # polars is not cold-start cheap
+        from moneybin.services.currency_service import (
             build_currency_service,
         )
 
@@ -120,7 +121,8 @@ def fx_list(
     """
     start = parse_cli_date(since, "--since") if since else None
     with handle_cli_errors(cli_actor="fx_list", payload_type=FxRatesPayload):
-        from moneybin.services.currency_service import (  # noqa: PLC0415  # polars is not cold-start cheap
+        # polars is not cold-start cheap
+        from moneybin.services.currency_service import (
             build_currency_service,
             canonical_currency,
         )
@@ -178,7 +180,8 @@ def fx_set(
     parsed_date = parse_cli_date(rate_date, "RATE_DATE")
     parsed_rate = parse_cli_decimal(rate, "RATE")
     with handle_cli_errors(cli_actor="fx_set", payload_type=FxOverridePayload):
-        from moneybin.services.currency_service import (  # noqa: PLC0415  # polars is not cold-start cheap
+        # polars is not cold-start cheap
+        from moneybin.services.currency_service import (
             build_currency_service,
             canonical_currency,
         )
@@ -228,7 +231,8 @@ def fx_delete(
     """
     parsed_date = parse_cli_date(rate_date, "RATE_DATE")
     with handle_cli_errors(cli_actor="fx_delete", payload_type=FxOverridePayload):
-        from moneybin.services.currency_service import (  # noqa: PLC0415  # polars is not cold-start cheap
+        # polars is not cold-start cheap
+        from moneybin.services.currency_service import (
             build_currency_service,
             canonical_currency,
         )

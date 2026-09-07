@@ -144,7 +144,7 @@ class MatchingService:
         ``base`` → ``services.audit_service`` chain re-enters that path; a
         module-top import would cycle.
         """
-        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+        from moneybin.repositories.match_decisions_repo import (
             MatchDecisionsRepo,
         )
 
