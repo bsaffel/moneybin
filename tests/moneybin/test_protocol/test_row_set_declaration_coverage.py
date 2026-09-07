@@ -62,7 +62,7 @@ def _list_field_names(cls: type) -> list[str]:
         names = [item.name for item in fields(cls)]
     elif issubclass(cls, BaseModel):
         names = list(cls.model_fields)
-    else:  # pragma: no cover - filtered out by _payload_classes_with_collections
+    else:  # pragma: no cover - filtered out by _payload_classes
         return []
     return [name for name in names if _is_list_hint(hints.get(name))]
 
@@ -115,20 +115,38 @@ _PAYLOADS_WITH_DECLARATIONS = [
 def test_the_scan_reaches_the_payloads_it_is_meant_to_guard() -> None:
     """A discovery bug would make every case below vacuously pass.
 
-    The three payloads the declaration was designed against must be in the
-    scanned set, one class from each non-package root must be too — a root
-    dropped from the list above is otherwise invisible — and the set must be
+    Both derived sets need this and for the same reason: each drives a
+    parametrization, and an empty parametrization is a green test that asserts
+    nothing. They fail independently, so checking one does not cover the other.
+    The declaration set is the easier one to empty by accident — it turns on
+    ``declared_row_set`` reading the right ``__dict__`` key, so a change to how
+    the declaration is stored would zero it while the collection set, which
+    reads annotations, stayed exactly as it is.
+
+    For each set: the payloads the contract was designed against must be
+    present, one class from each non-package root must be too — a root dropped
+    from ``_payload_module_names`` is otherwise invisible — and the set must be
     substantial rather than a handful the import walk happened to reach.
     """
-    names = {cls.__name__ for cls in _PAYLOADS_WITH_COLLECTIONS}
+    carrying = {cls.__name__ for cls in _PAYLOADS_WITH_COLLECTIONS}
     assert {
         "ReportResultPayload",
         "ImportInboxSyncPayload",
         "NetWorthSnapshotPayload",
         "ExportDestinationsOutput",
         "ReportResult",
-    } <= names
+    } <= carrying
     assert len(_PAYLOADS_WITH_COLLECTIONS) > 100
+
+    declaring = {cls.__name__ for cls in _PAYLOADS_WITH_DECLARATIONS}
+    assert {
+        "AccountListPayload",  # the payload package
+        "ExportDestinationsOutput",  # moneybin.cli.output
+        "ReportResult",  # moneybin.reports._framework.execute
+    } <= declaring
+    # 104 today. The floor catches a collapse to nothing, not ordinary churn:
+    # pinning it near the census would fail on any legitimate payload removal.
+    assert len(_PAYLOADS_WITH_DECLARATIONS) > 75
 
 
 @pytest.mark.unit
