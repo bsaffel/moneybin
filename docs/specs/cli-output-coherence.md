@@ -2,7 +2,7 @@
 
 ## Status
 <!-- draft | ready | in-progress | implemented -->
-in-progress
+implemented
 
 ## Milestone
 
@@ -629,6 +629,17 @@ Numbered, each independently testable.
 
 23. `stats` renders each metric with its distinguishing dimension, such that no
     two rendered lines share a label.
+    **The dimension is prose, not `key=value`.** `app.metrics` stores the label
+    set as JSON, so the obvious rendering is `(source_type=csv)` — which is the
+    fragment requirement 16 keeps away from a reader and requirement 1 calls a
+    table spelled badly. The split that resolves it: the label *name* is
+    renderer-authored copy and is spelled out (`source type: csv`), while the
+    label *value* prints as stored, the way a table cell does. A tool name that
+    is genuinely `sql_query` still reads as `sql_query`, because that is the
+    recorded dimension rather than a word this renderer chose.
+    Requirement 25's domain header and the metric line beneath it derive their
+    shared first word from one function, so an acronym cannot render `MCP` in
+    the header and `Mcp` in the row.
 24. Histogram metrics render an **explicitly declared** unit, carried as a `unit`
     field on the metric declaration in `src/moneybin/metrics/registry.py`. A
     metric that is not a duration does not render `s`.
@@ -641,6 +652,21 @@ Numbered, each independently testable.
     does not persist. Derivation would force `stats` to omit the unit or guess
     it. One declared field applied uniformly is also the coherent choice — a
     derive-here / declare-there split would be two mechanisms for one job.
+
+    **`prometheus_client`'s own `unit=` argument was rejected too, and it is
+    the trap this requirement most invites.** It is the obvious home for a
+    declared unit and it is already a dependency, but it does not merely record
+    the unit: `metrics.py:36-37` appends it to the metric name unless the name
+    already ends in it. Durations are unaffected — they end in `_seconds`
+    already — but the nine above would each be renamed, and `app.metrics`
+    partitions on `metric_name`. Every row recorded under the old name would
+    stay behind as a second series, so `stats` would print two lines per
+    renamed metric: one frozen at its last value, one starting from zero. That
+    is precisely the duplicate-label failure requirement 23 exists to remove,
+    introduced by the mechanism meant to satisfy 24. The unit therefore lives
+    in a `HISTOGRAM_UNITS` table beside the declarations, and two tests hold it
+    in step with them in both directions — a histogram with no unit, and a unit
+    whose histogram is gone, each fail their own assertion.
 25. `stats` groups metrics by domain with a header per group, rather than one
     alphabetical list.
 
@@ -742,10 +768,21 @@ Numbered, each independently testable.
     selects `WHERE category IS NULL`, so such a row is not in the queue, and
     counting it would advertise a gap `transactions categorize run` cannot act
     on: the same class of lie as the provider code requirement 29 removes from
-    this column. Making the two agree means normalizing blanks in staging
-    (`NULLIF(TRIM(category), '')` in `stg_tabular__` and `stg_manual__`), which
-    changes what the queue *contains* rather than how it renders, and is
+    this column. Making the two agree means normalizing blanks in staging,
+    which changes what the queue *contains* rather than how it renders, and was
     therefore not this requirement's to make.
+
+    **That normalization has since landed, and went further than this
+    paragraph proposed.** `stg_tabular__transactions.sql` and
+    `stg_manual__transactions.sql` both wrap the column in `NULLIF(REGEXP_REPLACE(…), '')`
+    rather than the `NULLIF(TRIM(category), '')` sketched above: `TRIM` strips
+    ASCII whitespace only, so a non-breaking space or a Unicode separator
+    survived it and left exactly the row this paragraph is about. The manual
+    model's header names `core.uncategorized_queue`'s `category IS NULL` as the
+    reason, and both models carry the same cascade onto `subcategory`, since a
+    subcategory orphaned from its category resolves to no `category_id`. The
+    renderer's half of the contract is unchanged — absent still means NULL, and
+    only NULL. What changed is that fewer rows lie about being absent.
 
     A declared column absent from the table is refused rather than skipped, for
     the reason `column_view` already gives: a disclosure that silently counts

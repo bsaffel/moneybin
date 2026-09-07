@@ -300,6 +300,52 @@ class ColumnView:
     total: int
 
 
+def _running_command() -> str | None:
+    """The command these counters label, or ``None`` when there is not one.
+
+    ``column_view`` and ``render_rows`` serve MCP and library callers too, and
+    a caller that pressed no flag has no command to attribute. A fallback label
+    would aggregate unrelated traffic into one bucket that reads like a
+    command, so the observation is dropped instead.
+
+    Deferred import: ``cli.output`` imports this module, so naming it at module
+    scope is a cycle.
+    """
+    from moneybin.cli.output import derive_cli_actor  # noqa: PLC0415 — see above
+
+    return derive_cli_actor()
+
+
+def count_wide_request() -> None:
+    """Record that the running command was asked for the whole projection.
+
+    Called from both column-narrowing paths — this module's for hand-written
+    commands, and the report framework's for generated ones and ``reports
+    run`` — because the ratio this feeds is meaningless if it counts one
+    family of commands and not the other.
+    """
+    # Deferred so the registry does not pull prometheus_client into the
+    # cold-start path of every command rather than of a render.
+    from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
+        CLI_WIDE_REQUESTED_TOTAL,
+    )
+
+    command = _running_command()
+    if command is not None:
+        CLI_WIDE_REQUESTED_TOTAL.labels(command=command).inc()
+
+
+def _count_columns_omitted() -> None:
+    """Record that a text render withheld part of the projection."""
+    from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
+        CLI_COLUMNS_OMITTED_TOTAL,
+    )
+
+    command = _running_command()
+    if command is not None:
+        CLI_COLUMNS_OMITTED_TOTAL.labels(command=command).inc()
+
+
 def column_view[T](
     columns: Sequence[tuple[str, Callable[[T], object]]],
     records: Iterable[T],
@@ -322,6 +368,8 @@ def column_view[T](
 
     Rows stay lazy so the non-fitting render path keeps streaming.
     """
+    if wide:
+        count_wide_request()
     extract = dict(columns)
     chosen = [name for name, _ in columns] if wide else list(default)
     unknown = [name for name in chosen if name not in extract]
@@ -537,6 +585,7 @@ def render_rows(
         # that fetches nothing is worse than no remedy at all.
         clauses.append("raise --limit for more")
     if whole > len(kept):
+        _count_columns_omitted()
         clauses.append(f"{len(kept)} of {whole} columns shown — --wide for all")
     if placeholder is not None and flagged:
         clauses.append(f"{flagged} {placeholder.value.lower()}")

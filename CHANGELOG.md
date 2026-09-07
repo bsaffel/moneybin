@@ -11,6 +11,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **`moneybin stats` says what it is counting.** Every measurement printed a
+  bare number under one alphabetical list, and every histogram printed its
+  total with an `s` appended whether or not it measured time — so
+  `Import Batch Size: 2 observations (sum=12.00s)` reported twelve seconds for
+  a figure that counts *files*. Measurements now group under a per-subsystem
+  header, each histogram renders a unit declared beside its definition, and a
+  measurement recorded under more than one dimension prints that dimension
+  rather than repeating one label against different numbers. The line also
+  stops calling stored snapshots "observations": it counts how many times the
+  metric was written, not how many things were measured.
 - **`moneybin refresh` says what each pipeline step did.** A run that changed
   nothing and a run that recategorized 400 transactions both printed a single
   `✅ Refresh complete in 4.2s`, because the counts each step computed went to

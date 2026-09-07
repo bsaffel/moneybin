@@ -948,3 +948,85 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
     # a backlog signal, not an abuse one.
     ["outcome"],
 )
+
+
+# ── CLI text rendering ───────────────────────────────────────────────────────
+
+# These three persist only on sessions that also write business data:
+# `flush_metrics()` returns without flushing when `database_was_written()` is
+# false (`observability.py`), so a read-only `reports` run or a stub invocation
+# discards its observations at exit. That is deliberate — turning a read-only
+# command into a write-lock holder is not a trade this project makes for
+# telemetry, and `--wide` is common enough that the lock would land on nearly
+# every read. The consequence is that the wide-versus-omitted ratio is a
+# directional signal from write-bearing sessions, not a census.
+
+CLI_WIDE_REQUESTED_TOTAL = Counter(
+    "moneybin_cli_wide_requested_total",
+    "Times --wide was passed, by command",
+    ["command"],
+)
+
+CLI_COLUMNS_OMITTED_TOTAL = Counter(
+    "moneybin_cli_columns_omitted_total",
+    "Times a text render omitted columns from the full projection, by command",
+    ["command"],
+)
+
+CLI_STUB_INVOKED_TOTAL = Counter(
+    "moneybin_cli_stub_invoked_total",
+    "Times an unimplemented command was invoked, by command",
+    ["command"],
+)
+
+
+# ── Histogram units ──────────────────────────────────────────────────────────
+
+# What `moneybin stats` prints after a histogram's sum (requirement 24 of
+# `cli-output-coherence.md`). The string renders verbatim, so `s` stays `s`.
+#
+# Declared here rather than derived from the metric name: nine of these end in
+# a suffix naming a *dimension* — `_batch_size`, `_score`, `_confidence`,
+# `_ratio`, `_rows_affected` — and what that dimension is counted in lives only
+# in the description string, which `app.metrics` does not persist. Deriving
+# would force `stats` to omit the unit or guess it.
+#
+# Not `prometheus_client`'s own `unit=` argument either, which looks like the
+# obvious home for this. It appends the unit to the metric name
+# (`prometheus_client/metrics.py:36-37`), so `moneybin_import_batch_size`
+# becomes `moneybin_import_batch_size_files` — renaming nine metrics and
+# splitting each one's persisted history into a frozen old-name row and a
+# new-name row starting from zero. `app.metrics` partitions on `metric_name`,
+# so `stats` would then print both: the duplicate-line problem requirement 23
+# exists to remove.
+#
+# Kept in step with the declarations above by `test_stats.py`, in both
+# directions — a histogram with no unit, and a unit whose histogram is gone,
+# each fail their own test.
+HISTOGRAM_UNITS: dict[str, str] = {
+    # Durations. The name already ends in `_seconds`; this is what prints, and
+    # `s` is what a reader scanning a column of them wants.
+    "moneybin_import_duration_seconds": "s",
+    "moneybin_inbox_sync_duration_seconds": "s",
+    "moneybin_sqlmesh_run_duration_seconds": "s",
+    "moneybin_export_duration_seconds": "s",
+    "moneybin_fx_rate_fetch_duration_seconds": "s",
+    "moneybin_categorize_duration_seconds": "s",
+    "moneybin_categorize_assist_duration_seconds": "s",
+    "moneybin_categorize_apply_post_commit_duration_seconds": "s",
+    "moneybin_mcp_tool_duration_seconds": "s",
+    "moneybin_synthetic_generation_duration_seconds": "s",
+    "moneybin_db_query_duration_seconds": "s",
+    "moneybin_sync_pull_duration_seconds": "s",
+    "moneybin_price_refresh_duration_seconds": "s",
+    # The nine that are not durations — the reason this table exists.
+    "moneybin_import_batch_size": "files",
+    "moneybin_categorize_apply_post_commit_rows_affected": "rows",
+    "moneybin_pdf_extraction_confidence": "score",
+    "moneybin_import_detection_score": "score",
+    "moneybin_dedup_match_confidence": "score",
+    "moneybin_transfer_match_confidence": "score",
+    "moneybin_account_link_confidence": "score",
+    "moneybin_merchant_link_confidence": "score",
+    "moneybin_account_link_overlap_ratio": "ratio",
+}

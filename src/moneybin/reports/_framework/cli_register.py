@@ -29,7 +29,7 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, render_note, render_rows
+from moneybin.cli.render import Money, count_wide_request, render_note, render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope
@@ -177,6 +177,12 @@ def column_view(
     the fit flag separately in each is two copies of one decision. They were,
     and the tested copy was not the one `run` used.
     """
+    if wide:
+        # Counted here rather than in the generated command body, for the same
+        # reason the narrowing itself is: `reports run` reaches this function
+        # and not that body, so counting there would report a rate for the
+        # built-ins alone and read as a rate for reports.
+        count_wide_request()
     return ColumnView(
         visible_columns(spec, result_columns, parameters=parameters, wide=wide),
         # Only a report that named no columns of its own. `--wide` is a request

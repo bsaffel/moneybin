@@ -458,6 +458,36 @@ def test_wide_restores_the_full_projection_on_run() -> None:
     assert "columns shown" not in result.output
 
 
+def test_run_counts_its_wide_request_and_its_omission() -> None:
+    """The report half of the two CLI counters (Observability).
+
+    ``reports run`` reaches the framework's own ``column_view`` and not the
+    generated command body, so a counter wired into that body would report a
+    rate for the built-ins alone while reading as a rate for reports. Both
+    counters are asserted here because the pair is the signal — one of them
+    alone says nothing about whether a default column set is wrong.
+    """
+    from prometheus_client import REGISTRY
+
+    def count(name: str) -> float:
+        return REGISTRY.get_sample_value(name, {"command": "reports_run"}) or 0.0
+
+    wide_before = count("moneybin_cli_wide_requested_total")
+    omitted_before = count("moneybin_cli_columns_omitted_total")
+
+    narrowed = _invoke_run(default_columns=("year_month", "net"))
+    assert narrowed.exit_code == 0, narrowed.output
+    assert count("moneybin_cli_columns_omitted_total") == omitted_before + 1
+    assert count("moneybin_cli_wide_requested_total") == wide_before
+
+    widened = _invoke_run("--wide", default_columns=("year_month", "net"))
+    assert widened.exit_code == 0, widened.output
+    assert count("moneybin_cli_wide_requested_total") == wide_before + 1
+    # Still one: `--wide` withheld nothing, so the omission counter must not
+    # move with it. A counter that rises on both makes the ratio a constant.
+    assert count("moneybin_cli_columns_omitted_total") == omitted_before + 1
+
+
 def test_run_fits_a_report_that_declares_no_columns_to_the_terminal() -> None:
     """Requirement 6 for the saved reports this command exists to run.
 
