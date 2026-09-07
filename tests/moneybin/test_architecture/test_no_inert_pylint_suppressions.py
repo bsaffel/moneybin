@@ -15,9 +15,9 @@ off. Correcting a wrong justification is a review question, not a test.
 
 import pathlib
 import re
-import tomllib
+import subprocess  # noqa: S404 — asks ruff for its own resolved rule set
+import sys
 from collections.abc import Iterator
-from typing import cast
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -39,20 +39,35 @@ def test_pylint_family_is_not_enabled() -> None:
     Without this, enabling `PL` would leave the guard below still passing while
     its stated reason had quietly become false — the exact failure mode MB-168
     exists to correct.
+
+    Ruff is asked for its *resolved* rule set rather than having `select`,
+    `extend-select` and `ignore` re-implemented here. Those interact by prefix
+    specificity — `select = ["ALL"]` with `ignore = ["PL"]` leaves the family
+    off, while `select = ["PLC0415"]` with `ignore = ["PL"]` leaves that one on
+    — and a hand-rolled model of that gets the answer wrong in both directions.
     """
-    config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    lint: dict[str, object] = config["tool"]["ruff"]["lint"]
+    ruff = pathlib.Path(sys.executable).parent / "ruff"
+    result = subprocess.run(  # noqa: S603  # fixed argv, no shell, no user input
+        [str(ruff), "check", "--show-settings", "src/moneybin/config.py"],
+        capture_output=True,
+        text=True,
+        cwd=REPO_ROOT,
+        timeout=120,
+    )
+    assert result.returncode == 0, f"ruff --show-settings failed: {result.stderr}"
 
-    # Both keys, because `extend-select` enables rules just as `select` does, and
-    # reading only one lets the premise go stale without this test noticing —
-    # which is the failure it exists to prevent. `ALL` sweeps in the family too.
-    enabled: list[str] = []
-    for key in ("select", "extend-select"):
-        value = lint.get(key)
-        if isinstance(value, list):
-            enabled.extend(str(code) for code in cast(list[object], value))
+    block = result.stdout.partition("linter.rules.enabled = [")[2].partition("]")[0]
+    codes = re.findall(r"\(([A-Z]+\d+)\)", block)
 
-    offenders = [c for c in enabled if c.startswith("PL") or c == "ALL"]
+    # Fail loudly if the output shape changed. Parsing nothing must never read as
+    # "no Pylint rule is enabled" — that is this guard's own failure mode.
+    assert codes, (
+        "could not read `linter.rules.enabled` out of `ruff check "
+        "--show-settings`; its output shape changed, so this premise check is "
+        "no longer measuring anything. Fix the parse before trusting it."
+    )
+
+    offenders = sorted({c for c in codes if c.startswith("PL")})
 
     assert not offenders, (
         f"ruff now enables a Pylint-family rule ({', '.join(offenders)}), so a "
