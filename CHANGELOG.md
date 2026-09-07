@@ -34,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   column or manual entry carried category text of its own, so the breakdown
   still sums to `categorized`. `transactions list --uncategorized` deliberately
   does not move: it means "MoneyBin never decided this one", which is the only
-  way to find those source-supplied labels.
+  way to find those source-supplied labels. (#563)
 - **`moneybin refresh` says what each pipeline step did.** A run that changed
   nothing and a run that recategorized 400 transactions both printed a single
   `✅ Refresh complete in 4.2s`, because the counts each step computed went to
