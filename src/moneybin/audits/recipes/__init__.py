@@ -15,6 +15,7 @@ from __future__ import annotations
 from moneybin.audits.recipes import (
     categorization_coverage,
     dedup_reconciliation,
+    investment_source_overlap,
     orphan_app_state,
 )
 from moneybin.audits.recipes.registry import (
@@ -27,6 +28,7 @@ from moneybin.audits.recipes.registry import (
 register("orphan_app_state", orphan_app_state.recipe)
 register("categorization_coverage", categorization_coverage.recipe)
 register("dedup_reconciliation", dedup_reconciliation.recipe)
+register("investment_source_overlap", investment_source_overlap.recipe)
 
 
 __all__ = ["Recipe", "RecipeContext", "get", "register"]

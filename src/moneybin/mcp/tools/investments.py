@@ -88,7 +88,10 @@ from moneybin.services.entity_reference import (
     MissingEntity,
     resolve_entity_reference,
 )
-from moneybin.services.investment_service import InvestmentService
+from moneybin.services.investment_service import (
+    SOURCE_OVERLAP_CODE,
+    InvestmentService,
+)
 from moneybin.services.security_links_service import (
     SecurityLinkAcceptImpact,
     SecurityLinksService,
@@ -167,10 +170,19 @@ def investments_holdings(
     cost), the `price_date` of the close used, and `days_since_observed`.
     `valuation_status` is one of `valued` (close is today's),
     `carried_forward` (the most recent close is older), `unpriced` (no close
-    resolved), or `withheld` (a known-wrong share count, or lots that
-    disagree on currency). The last two
+    resolved), `withheld` (a known-wrong share count, or lots that
+    disagree on currency), or `source_overlap` (the account's investment
+    ledger arrives from two sources at once, so every figure derived from it
+    would double-count). The last three
     report `market_value`/`unrealized_gain` as null, never zero, and
-    `data.warnings` names how many rows those are.
+    `data.warnings` names how many rows those are. A `source_overlap` row also
+    sets `summary.degraded_reason` to `investment_source_overlap: ...` — its
+    remedy is outside the pipeline (revert the redundant import batch with
+    `import_revert`), so no refresh or price pull will clear it, and
+    `sync_disconnect` does not either: it stops future pulls and keeps the rows
+    already pulled. `investments_lots` and `investments_gains` read the same
+    interleaved ledger and set the same `degraded_reason` for that account, so
+    neither is the place to recover the number withheld here.
 
     `data.max_days_since_observed` is the age in days of the stalest close any
     published figure rests on — the largest `days_since_observed` across the
@@ -192,10 +204,9 @@ def investments_holdings(
         result = InvestmentService(db).holdings(account_ref=account)
     return build_envelope(
         data=InvestmentHoldingsPayload.from_result(result),
-        actions=[
-            "Use investments(view='lots') for per-lot basis",
-            "Use investments(view='gains') for realized gain/loss",
-        ],
+        degraded=result.degraded_reason is not None,
+        degraded_reason=result.degraded_reason,
+        actions=_holdings_pointers(result.degraded_reason),
     )
 
 
@@ -218,6 +229,12 @@ def investments_lots(
     cost_basis_total/remaining are 0.00, not a real zero. When any row is
     incomplete, `data.warnings` names the count. Amounts are in the
     currency named by `summary.display_currency`.
+
+    `summary.degraded_reason` is set to `investment_source_overlap: ...` when
+    any returned lot belongs to an account whose investment ledger arrives from
+    two sources at once: the two ledgers interleave, so those lots double-count
+    and their basis mixes two accountings. Same code, same meaning, as the
+    holdings read.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).lots(
@@ -225,6 +242,8 @@ def investments_lots(
         )
     return build_envelope(
         data=InvestmentLotsPayload.from_result(result),
+        degraded=result.degraded_reason is not None,
+        degraded_reason=result.degraded_reason,
         actions=[
             "Use investments_lots_select to override FIFO for a disposal",
             "Use investments(view='gains') for realized gain/loss",
@@ -254,6 +273,11 @@ def investments_gains(
     computed from zero cost basis and is conservative, not authoritative.
     When any row is incomplete, `data.warnings` names the count. Amounts are
     in the currency named by `summary.display_currency`.
+
+    `summary.degraded_reason` is set to `investment_source_overlap: ...` when
+    any returned row belongs to an account whose investment ledger arrives from
+    two sources at once — proceeds, basis and gain all double-count until one
+    of the two feeds is removed. Same code, same meaning, as the holdings read.
     """
     with get_database(read_only=True) as db:
         result = InvestmentService(db).gains(
@@ -265,6 +289,8 @@ def investments_gains(
         )
     return build_envelope(
         data=InvestmentGainsPayload.from_result(result),
+        degraded=result.degraded_reason is not None,
+        degraded_reason=result.degraded_reason,
         actions=["Use investments(view='lots') for lot-level detail"],
     )
 
@@ -1239,6 +1265,28 @@ def _investment_period(start: _date | None, end: _date | None) -> str | None:
     return None
 
 
+def _holdings_pointers(degraded_reason: str | None) -> list[str]:
+    """The two views a holdings answer hands off to, caveated when they lie.
+
+    ``lots`` and ``gains`` read the same interleaved ledger a source-overlap
+    holdings row was withheld for, so while that state stands both carry the
+    double-count the withhold exists to contain. Recommending them bare would
+    walk the caller off a correctly-blank figure onto an uncaveated wrong one.
+    The caveat repeats the code from ``summary.degraded_reason`` so an agent
+    reading only ``actions`` still lands on one vocabulary.
+    """
+    caveat = (
+        f" — double-counted while {SOURCE_OVERLAP_CODE} stands"
+        if degraded_reason is not None
+        and degraded_reason.startswith(f"{SOURCE_OVERLAP_CODE}:")
+        else ""
+    )
+    return [
+        f"Use investments(view='lots') for per-lot basis{caveat}",
+        f"Use investments(view='gains') for realized gain/loss{caveat}",
+    ]
+
+
 def _investment_actions(
     view: Literal["events", "holdings", "lots", "gains", "securities"],
     *,
@@ -1249,6 +1297,7 @@ def _investment_actions(
     open_only: bool | None,
     limit: int,
     next_cursor: str | None,
+    degraded_reason: str | None = None,
 ) -> list[str]:
     """Return replacement-only hints with an executable continuation."""
     by_view = {
@@ -1256,10 +1305,7 @@ def _investment_actions(
             "Use investments(view='holdings') for current positions",
             "Use investments(view='gains') for realized gain/loss",
         ],
-        "holdings": [
-            "Use investments(view='lots') for per-lot basis",
-            "Use investments(view='gains') for realized gain/loss",
-        ],
+        "holdings": _holdings_pointers(degraded_reason),
         "lots": [
             "Use investments_lots_select to override FIFO for a disposal",
             "Use investments(view='gains') for realized gain/loss",
@@ -1294,6 +1340,7 @@ def _investment_coarse_envelope(
     next_cursor: str | None,
     period: str | None,
     actions: list[str],
+    degraded_reason: str | None = None,
 ) -> ResponseEnvelope[InvestmentsCoarsePayload]:
     """Build a runtime-classified investment envelope."""
     return build_classified_envelope(
@@ -1303,6 +1350,8 @@ def _investment_coarse_envelope(
         next_cursor=next_cursor,
         period=period,
         actions=actions,
+        degraded=degraded_reason is not None,
+        degraded_reason=degraded_reason,
         has_more=next_cursor is not None,
     )
 
@@ -1370,6 +1419,11 @@ def investments_coarse(
             else None
         )
 
+        # One reason across every view that can carry it. Holdings, lots and
+        # gains all derive from the ledger a source overlap corrupts, so all
+        # three degrade; events and securities describe the ledger and the
+        # catalog rather than a figure computed from them, and leave it None.
+        degraded_reason: str | None = None
         if view == "events":
             result = service.list_events(
                 account_ref=account_id,
@@ -1379,26 +1433,29 @@ def investments_coarse(
             )
             all_rows = InvestmentEventsPayload.from_result(result)
         elif view == "holdings":
-            result = service.holdings(
+            holdings_result = service.holdings(
                 account_ref=account_id,
                 security_ref=security_id,
             )
-            all_rows = InvestmentHoldingsPayload.from_result(result)
+            degraded_reason = holdings_result.degraded_reason
+            all_rows = InvestmentHoldingsPayload.from_result(holdings_result)
         elif view == "lots":
-            result = service.lots(
+            lots_result = service.lots(
                 account_ref=account_id,
                 security_ref=security_id,
                 open_only=True if open_only is None else bool(open_only),
             )
-            all_rows = InvestmentLotsPayload.from_result(result)
+            degraded_reason = lots_result.degraded_reason
+            all_rows = InvestmentLotsPayload.from_result(lots_result)
         elif view == "gains":
-            result = service.gains(
+            gains_result = service.gains(
                 account_ref=account_id,
                 security_ref=security_id,
                 date_from=start,
                 date_to=end,
             )
-            all_rows = InvestmentGainsPayload.from_result(result)
+            degraded_reason = gains_result.degraded_reason
+            all_rows = InvestmentGainsPayload.from_result(gains_result)
         else:
             result = service.list_securities()
             all_rows = InvestmentSecuritiesPayload.from_result(result)
@@ -1455,6 +1512,7 @@ def investments_coarse(
         total_count=total_count,
         next_cursor=next_cursor,
         period=_investment_period(start, end),
+        degraded_reason=degraded_reason,
         actions=_investment_actions(
             view,
             account=account,
@@ -1464,6 +1522,7 @@ def investments_coarse(
             open_only=open_only,
             limit=limit,
             next_cursor=next_cursor,
+            degraded_reason=degraded_reason,
         ),
     )
 
@@ -1474,24 +1533,25 @@ def register_investment_coarse_reads(mcp: FastMCP) -> None:
         mcp,
         investments_coarse,
         "investments",
-        # 895 of the 900-character budget. `data.applied_rates` cost 61 and was
-        # paid for by tightening the prose around it rather than by dropping a
-        # field: an agent that cannot read a field from the description never
-        # asks for it, so a converted total would stay unauditable in practice.
-        "Return investment events, holdings, open or full tax-lot history, "
-        "realized gains, or securities in one typed view. Amounts use the "
-        "investment ledger sign convention; currency is summary.display_currency "
-        "except holdings rows, which keep their own currency_code. For holdings, "
-        "valuation_status marks each row valued, carried_forward, unpriced, or "
-        "withheld; the last two null market_value/unrealized_gain (never zero) "
-        "and data.warnings counts them, withheld means a wrong share count "
-        "or currency. Do not sum market_value across rows: read "
-        "data.total_market_value, in data.total_market_value_currency — mixed "
-        "currencies price into home at each position's own close, both null when "
-        "no stored rate covers a pair; data.market_value_by_currency gives the "
-        "split in original units and data.applied_rates names each rate behind "
-        "the total. data.max_days_since_observed is the stalest close behind any "
-        "figure.",
+        # 896 of the 900-character budget. "lots and gains degrade too" cost 27
+        # and was paid for by trimming four phrases whose field names already
+        # carry them, not by dropping a fact: an agent that learns only at
+        # call time which views can degrade has already chosen the wrong one,
+        # and a realized-gain figure is the last place to find that out.
+        "Return investment events, holdings, tax lots (open or all), realized "
+        "gains, or securities. Amounts use the ledger sign convention; currency "
+        "is summary.display_currency except holdings rows, which keep their "
+        "currency_code. For holdings, valuation_status is valued, "
+        "carried_forward, unpriced, withheld (wrong share count or currency), "
+        "or source_overlap (two source ledgers on one account; lots and gains "
+        "degrade too — see summary.degraded_reason); the last three null "
+        "market_value/unrealized_gain (never zero), counted in data.warnings. "
+        "Never sum market_value across rows: read data.total_market_value in "
+        "data.total_market_value_currency — mixed currencies price into home at "
+        "each position's close, both null with no covering rate; "
+        "data.market_value_by_currency gives the original-unit split and "
+        "data.applied_rates names each rate. "
+        "data.max_days_since_observed is the stalest close behind a figure.",
         privacy_actor="investments",
     )
 

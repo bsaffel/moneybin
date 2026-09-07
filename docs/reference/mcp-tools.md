@@ -26,7 +26,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`import_preview`](#import_preview) | Persist an exact, expiring staged-import preview. | write, not idempotent | up to `critical` |
 | [`import_revert`](#import_revert) | Revert one completed import or delete one user-saved format. | write, destructive, not idempotent | at least `low` |
 | [`import_status`](#import_status) | Read import history, formats, and inbox state. | read-only, idempotent | up to `medium` |
-| [`investments`](#investments) | Return investment events, holdings, open or full tax-lot history, realized gains, or securities in one typed view. | read-only, idempotent | up to `high` |
+| [`investments`](#investments) | Return investment events, holdings, tax lots (open or all), realized gains, or securities. | read-only, idempotent | up to `high` |
 | [`investments_lots_select`](#investments_lots_select) | Select specific acquisition lots for one disposal. | write, idempotent | at least `high` |
 | [`investments_record`](#investments_record) | Record investment ledger events as one validated batch. | write, idempotent | at least `low` |
 | [`investments_securities_set`](#investments_securities_set) | Create or update securities in app.securities by stable ID or ticker. | write, idempotent | at least `low` |
@@ -415,7 +415,7 @@ Access: read-only, idempotent. Sensitivity: up to `medium`.
 
 ### investments
 
-Return investment events, holdings, open or full tax-lot history, realized gains, or securities in one typed view. Amounts use the investment ledger sign convention; currency is summary.display_currency except holdings rows, which keep their own currency_code. For holdings, valuation_status marks each row valued, carried_forward, unpriced, or withheld; the last two null market_value/unrealized_gain (never zero) and data.warnings counts them, withheld means a wrong share count or currency. Do not sum market_value across rows: read data.total_market_value, in data.total_market_value_currency — mixed currencies price into home at each position's own close, both null when no stored rate covers a pair; data.market_value_by_currency gives the split in original units and data.applied_rates names each rate behind the total. data.max_days_since_observed is the stalest close behind any figure.
+Return investment events, holdings, tax lots (open or all), realized gains, or securities. Amounts use the ledger sign convention; currency is summary.display_currency except holdings rows, which keep their currency_code. For holdings, valuation_status is valued, carried_forward, unpriced, withheld (wrong share count or currency), or source_overlap (two source ledgers on one account; lots and gains degrade too — see summary.degraded_reason); the last three null market_value/unrealized_gain (never zero), counted in data.warnings. Never sum market_value across rows: read data.total_market_value in data.total_market_value_currency — mixed currencies price into home at each position's close, both null with no covering rate; data.market_value_by_currency gives the original-unit split and data.applied_rates names each rate. data.max_days_since_observed is the stalest close behind a figure.
 
 Access: read-only, idempotent. Sensitivity: up to `high`.
 
