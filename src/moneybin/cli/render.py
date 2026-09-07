@@ -311,7 +311,7 @@ def _running_command() -> str | None:
     Deferred import: ``cli.output`` imports this module, so naming it at module
     scope is a cycle.
     """
-    from moneybin.cli.output import derive_cli_actor  # noqa: PLC0415 — see above
+    from moneybin.cli.output import derive_cli_actor
 
     return derive_cli_actor()
 
@@ -326,9 +326,7 @@ def count_wide_request() -> None:
     """
     # Deferred so the registry does not pull prometheus_client into the
     # cold-start path of every command rather than of a render.
-    from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
-        CLI_WIDE_REQUESTED_TOTAL,
-    )
+    from moneybin.metrics.registry import CLI_WIDE_REQUESTED_TOTAL
 
     command = _running_command()
     if command is not None:
@@ -337,9 +335,8 @@ def count_wide_request() -> None:
 
 def _count_columns_omitted() -> None:
     """Record that a text render withheld part of the projection."""
-    from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
-        CLI_COLUMNS_OMITTED_TOTAL,
-    )
+    # Deferred for the reason `count_wide_request` gives.
+    from moneybin.metrics.registry import CLI_COLUMNS_OMITTED_TOTAL
 
     command = _running_command()
     if command is not None:

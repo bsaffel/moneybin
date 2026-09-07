@@ -637,9 +637,8 @@ Numbered, each independently testable.
     label *value* prints as stored, the way a table cell does. A tool name that
     is genuinely `sql_query` still reads as `sql_query`, because that is the
     recorded dimension rather than a word this renderer chose.
-    Requirement 25's domain header and the metric line beneath it derive their
-    shared first word from one function, so an acronym cannot render `MCP` in
-    the header and `Mcp` in the row.
+    The row's leading word is cased through one acronym table, so a metric
+    under the MCP header cannot render `Mcp` beneath it.
 24. Histogram metrics render an **explicitly declared** unit, carried as a `unit`
     field on the metric declaration in `src/moneybin/metrics/registry.py`. A
     metric that is not a duration does not render `s`.
@@ -668,7 +667,26 @@ Numbered, each independently testable.
     in step with them in both directions — a histogram with no unit, and a unit
     whose histogram is gone, each fail their own assertion.
 25. `stats` groups metrics by domain with a header per group, rather than one
-    alphabetical list.
+    alphabetical list. The domain is **explicitly declared**, carried in a
+    `METRIC_DOMAINS` table beside the declarations in
+    `src/moneybin/metrics/registry.py`.
+    **Deriving it from the metric name was tried and rejected**, the same way
+    requirement 24 rejected deriving a unit from the name suffix. The leading
+    token looks like a subsystem and is not one: Categorization alone declares
+    metrics under `categorization_`, `categorize_`, `auto_rule_`, `rule_` and
+    `merchant_exemplar_count`, so splitting on the first underscore printed one
+    subsystem under four headers — which sorting by name then pushed apart —
+    and filed the exemplar gauge beside the unrelated merchant-identity block.
+    No prefix rule fixes this without being written down: `merchant_exemplar_*`
+    and `merchant_link_*` are two subsystems sharing a first word. Two tests
+    hold the table in step with the declarations in both directions, as
+    requirement 24's do — a metric with no domain, and a domain whose metric is
+    gone, each fail their own assertion. A name `app.metrics` kept from a
+    version that has since renamed the metric prints under `Other` rather than
+    disappearing, matching how an undeclared histogram keeps its sum.
+    Blocks print in the registry's declaration order — import through transform
+    to export — rather than alphabetically by whichever name each block starts
+    with.
 
 **Identity display (F7)**
 

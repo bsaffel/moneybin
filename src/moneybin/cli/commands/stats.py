@@ -22,10 +22,11 @@ from moneybin.utils.parsing import parse_duration
 logger = logging.getLogger(__name__)
 
 
-# The domains whose names `str.title()` gets wrong. AGENTS.md writes acronyms
-# in caps, and a header reading `Mcp` over the MCP metrics is the one place a
-# user sees this word.
-_DOMAIN_CASING = {
+# The leading words `str.title()` gets wrong. AGENTS.md writes acronyms in
+# caps, and a line reading `Mcp` under the MCP header is the one place a user
+# sees this word.
+_ACRONYM_CASING = {
+    "cli": "CLI",
     "db": "DB",
     "fx": "FX",
     "mcp": "MCP",
@@ -34,16 +35,25 @@ _DOMAIN_CASING = {
     "sqlmesh": "SQLMesh",
 }
 
+# Where a metric prints when the registry declares no domain for it: a name
+# `app.metrics` kept from a version that has since renamed or dropped it.
+_UNDECLARED_DOMAIN = "Other"
 
-def _domain(metric_name: str) -> str:
+
+def _leading_word(metric_name: str) -> str:
+    """The first word after the ``moneybin_`` namespace, cased for a reader."""
+    word = metric_name.removeprefix("moneybin_").split("_", 1)[0]
+    return _ACRONYM_CASING.get(word, word.title())
+
+
+def _domain(metric_name: str, domains: Mapping[str, str]) -> str:
     """The subsystem heading a metric groups under (requirement 25).
 
-    The first word after the ``moneybin_`` namespace — the same split the
-    registry organizes its declarations by and ``--metric`` already filters on,
-    so a reader who knows one knows the others.
+    Read from the registry's declaration rather than split off the name: a
+    subsystem declares metrics under several prefixes, so the leading word
+    fragments one of them across headers. `registry.py` carries the why.
     """
-    domain = metric_name.removeprefix("moneybin_").split("_", 1)[0]
-    return _DOMAIN_CASING.get(domain, domain.title())
+    return domains.get(metric_name, _UNDECLARED_DOMAIN)
 
 
 def _label(metric_name: str, labels_json: str) -> str:
@@ -54,11 +64,11 @@ def _label(metric_name: str, labels_json: str) -> str:
     same words repeated against different numbers, which reads as a display
     bug rather than as two dimensions of one measurement.
     """
-    # The leading word is the domain, so it takes its casing from `_domain`
-    # rather than from a second `.title()` — otherwise the header reads `MCP`
-    # and the line beneath it reads `Mcp`.
+    # The leading word takes its casing from `_ACRONYM_CASING` rather than
+    # from a second `.title()` — otherwise the MCP header sits above a line
+    # that reads `Mcp`.
     _, _, rest = metric_name.removeprefix("moneybin_").partition("_")
-    display = _domain(metric_name)
+    display = _leading_word(metric_name)
     if rest:
         display = f"{display} {rest.replace('_', ' ').title()}"
     try:
@@ -107,14 +117,30 @@ def _value(
 
 
 def _grouped(
-    rows: Sequence[Sequence[Any]], units: Mapping[str, str]
+    rows: Sequence[Sequence[Any]],
+    units: Mapping[str, str],
+    domains: Mapping[str, str],
 ) -> Iterable[tuple[str, list[tuple[str, str]]]]:
-    """Summary pairs per domain, in the order the query returned them.
+    """Summary pairs per domain, in the order the registry declares them.
 
-    The query orders by ``metric_name`` and every name starts with its domain,
-    so the rows arrive already clustered and a consecutive grouping is enough.
+    The rows arrive ordered by ``metric_name``, which no longer clusters them:
+    one subsystem's metrics carry several prefixes, so grouping the query's
+    order straight through would reopen the same header more than once. Sorting
+    by domain first also puts the blocks in the registry's own order — import
+    through transform to export — rather than alphabetically by whichever name
+    each block happens to start with.
     """
-    for domain, group in groupby(rows, key=lambda row: _domain(str(row[0]))):
+    order = {
+        domain: rank for rank, domain in enumerate(dict.fromkeys(domains.values()))
+    }
+    ranked = sorted(
+        rows,
+        key=lambda row: (
+            order.get(_domain(str(row[0]), domains), len(order)),
+            str(row[0]),
+        ),
+    )
+    for domain, group in groupby(ranked, key=lambda row: _domain(str(row[0]), domains)):
         yield (
             domain,
             [
@@ -238,9 +264,7 @@ def stats_command(
             # Deferred, matching every other CLI reference to the registry:
             # importing it at module scope pulls prometheus_client into the
             # startup path of every command, not just this one.
-            from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
-                HISTOGRAM_UNITS,
-            )
+            from moneybin.metrics.registry import HISTOGRAM_UNITS, METRIC_DOMAINS
 
-            for domain, pairs in _grouped(rows, HISTOGRAM_UNITS):
+            for domain, pairs in _grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS):
                 render_summary(pairs, title=domain)

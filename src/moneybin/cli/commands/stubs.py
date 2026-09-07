@@ -41,10 +41,8 @@ def _not_implemented(feature: str) -> None:
     # one — requirement 31 keeps them invocable while hiding them from `--help`,
     # so nothing else observes that a user tried. Deferred imports keep
     # prometheus_client off the startup path of every command.
-    from moneybin.cli.output import derive_cli_actor  # noqa: PLC0415 — see above
-    from moneybin.metrics.registry import (  # noqa: PLC0415 — see above
-        CLI_STUB_INVOKED_TOTAL,
-    )
+    from moneybin.cli.output import derive_cli_actor
+    from moneybin.metrics.registry import CLI_STUB_INVOKED_TOTAL
 
     command = derive_cli_actor()
     if command is not None:

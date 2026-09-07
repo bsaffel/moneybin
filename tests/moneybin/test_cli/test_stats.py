@@ -167,8 +167,11 @@ def test_metrics_are_grouped_under_a_domain_header(
     # the ungrouped list too, because the metric line already starts with the
     # word — the assertion has to be that the word appears *alone*.
     headers = [line.strip() for line in result.output.splitlines()]
-    assert "Export" in headers, result.output
-    assert "Import" in headers, result.output
+    assert "Export delivery" in headers, result.output
+    assert "Import pipeline" in headers, result.output
+    # The registry declares import before export, and the blocks follow it —
+    # alphabetical order by name would have reversed them.
+    assert headers.index("Import pipeline") < headers.index("Export delivery")
 
 
 def test_a_domain_header_and_its_metric_lines_agree_on_casing(
@@ -199,6 +202,144 @@ def test_a_domain_header_and_its_metric_lines_agree_on_casing(
     assert result.exit_code == 0, result.output
     assert "Mcp" not in result.output, result.output
     assert result.output.count("MCP") == 2, result.output
+
+
+def test_one_subsystem_declared_under_several_name_prefixes_gets_one_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requirement 25 groups by subsystem, and a name prefix is not one.
+
+    The Categorization section declares metrics under five literal prefixes —
+    `categorization_`, `categorize_`, `auto_rule_`, `rule_`, and
+    `merchant_exemplar_count`. Splitting on the first underscore scattered one
+    subsystem across four headers that alphabetical order then separated, and
+    filed the exemplar gauge under the unrelated Merchant block.
+    """
+    _patch_rows(
+        monkeypatch,
+        [
+            ("moneybin_auto_rule_broad_pending", "gauge", "{}", 2.0, 1, _RECORDED),
+            ("moneybin_categorization_auto_rate", "gauge", "{}", 0.8, 1, _RECORDED),
+            ("moneybin_categorize_items_total", "counter", "{}", 9.0, 1, _RECORDED),
+            ("moneybin_merchant_exemplar_count", "gauge", "{}", 5.0, 1, _RECORDED),
+            ("moneybin_rule_conflicts_pending", "gauge", "{}", 1.0, 1, _RECORDED),
+        ],
+    )
+
+    result = runner.invoke(_app(), [])
+
+    assert result.exit_code == 0, result.output
+    headers = [line.strip() for line in result.output.splitlines()]
+    assert headers.count("Categorization") == 1, result.output
+    # The four the first-underscore split used to produce, plus the block the
+    # exemplar gauge used to be filed under.
+    for fragment in ("Auto", "Categorize", "Rule", "Merchant"):
+        assert fragment not in headers, f"{fragment!r} still heads a block"
+
+
+def test_a_metric_heads_under_its_own_subsystem_not_a_name_alike(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two subsystems sharing a leading word stay apart.
+
+    `merchant_exemplar_count` is a categorization gauge and
+    `merchant_link_confidence` is identity resolution. Keyed on the shared
+    `merchant` token they read as one subsystem's health.
+    """
+    _patch_rows(
+        monkeypatch,
+        [
+            ("moneybin_merchant_exemplar_count", "gauge", "{}", 5.0, 1, _RECORDED),
+            (
+                "moneybin_merchant_link_confidence",
+                "histogram",
+                "{}",
+                0.9,
+                2,
+                _RECORDED,
+            ),
+        ],
+    )
+
+    result = runner.invoke(_app(), [])
+
+    assert result.exit_code == 0, result.output
+    headers = [line.strip() for line in result.output.splitlines()]
+    assert "Categorization" in headers, result.output
+    assert "Merchant identity resolution" in headers, result.output
+
+
+def test_an_undeclared_metric_still_prints_under_its_own_heading(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A name `app.metrics` kept from an older version has no declared domain.
+
+    It keeps its value rather than disappearing or raising, the way an
+    undeclared histogram keeps its sum.
+    """
+    _patch_rows(
+        monkeypatch,
+        [("moneybin_since_renamed_total", "counter", "{}", 3.0, 1, _RECORDED)],
+    )
+
+    result = runner.invoke(_app(), [])
+
+    assert result.exit_code == 0, result.output
+    headers = [line.strip() for line in result.output.splitlines()]
+    assert "Other" in headers, result.output
+    assert "3" in result.output, result.output
+
+
+def _registered_metrics() -> set[str]:
+    """Every MoneyBin metric the process has registered, read off the registry.
+
+    The registry rather than this module's declarations, for the reason
+    `_registered_histograms` gives: a metric declared beside its service still
+    renders through `stats` and still needs a domain.
+    """
+    from prometheus_client import REGISTRY
+
+    names: set[str] = set()
+    for metric in REGISTRY.collect():
+        if not metric.name.startswith("moneybin_"):
+            continue
+        # `collect()` reports a counter under its base name; `app.metrics`
+        # persists the `_total` the declaration spells.
+        names.add(f"{metric.name}_total" if metric.type == "counter" else metric.name)
+    return names
+
+
+def test_every_metric_declares_a_domain() -> None:
+    """Requirement 25's coverage guard, in the direction that matters most.
+
+    A metric added without a domain would print under `Other` — a silent
+    demotion no reviewer sees in the diff, since the declaration that omits it
+    looks complete on its own.
+    """
+    from moneybin.metrics.registry import METRIC_DOMAINS
+
+    registered = _registered_metrics()
+    assert registered, "no MoneyBin metrics registered — the scan proves nothing"
+    assert registered <= set(METRIC_DOMAINS), (
+        f"metrics with no declared domain: {sorted(registered - set(METRIC_DOMAINS))}"
+    )
+
+
+def test_no_domain_is_declared_for_a_metric_that_does_not_exist() -> None:
+    """The other direction: a renamed metric leaves its domain entry behind.
+
+    A stale entry is invisible — it matches nothing, so nothing misprints —
+    which is why it has to fail here rather than wait to mislead the next
+    reader of the table.
+    """
+    from moneybin.metrics.registry import METRIC_DOMAINS
+
+    registered = _registered_metrics()
+    assert registered, "no MoneyBin metrics registered — the scan proves nothing"
+    assert set(METRIC_DOMAINS) <= registered, (
+        "domains declared for metrics that no longer exist: "
+        f"{sorted(set(METRIC_DOMAINS) - registered)}"
+    )
 
 
 def _registered_histograms() -> set[str]:
