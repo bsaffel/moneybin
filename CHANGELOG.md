@@ -11,6 +11,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **Categorization coverage counts the work you can actually do.** `moneybin
+  transactions categorize stats`, MCP `transactions_categorize_stats`, and the
+  `categorization_coverage` doctor check each derived their own "uncategorized"
+  figure, and none of them matched the one `moneybin review` hands you. Stats
+  counted every transaction in the ledger against every row in
+  `app.transaction_categories` — including transfer legs nobody is asked to
+  categorize, archived accounts nobody maintains, and categorizations orphaned
+  from transactions that no longer exist. Doctor counted a third population,
+  excluding transfer legs but not archived accounts. All of them now read the
+  population `core.uncategorized_queue` is drawn from, so the percentage
+  measures a backlog you can act on and every surface reports the same size for
+  it.
+
+  **The numbers move.** A ledger whose transfer legs and closed accounts made up
+  much of its "uncategorized" count will report a smaller backlog and a higher
+  percentage than before — the same data, described as work rather than as rows.
+  `total_transactions` in the MCP payload is now the size of that population
+  rather than a count of all transactions; the field name is unchanged, and its
+  description says so. `by_source` moves with it and gains a `source_supplied`
+  bucket for transactions that count as categorized only because their CSV
+  column or manual entry carried category text of its own, so the breakdown
+  still sums to `categorized`. `transactions list --uncategorized` deliberately
+  does not move: it means "MoneyBin never decided this one", which is the only
+  way to find those source-supplied labels. (#563)
 - **`moneybin refresh` says what each pipeline step did.** A run that changed
   nothing and a run that recategorized 400 transactions both printed a single
   `✅ Refresh complete in 4.2s`, because the counts each step computed went to

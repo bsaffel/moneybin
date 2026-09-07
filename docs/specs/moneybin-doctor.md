@@ -101,7 +101,7 @@ The `account_id` scoping is load-bearing in both. A source-native id is unique o
 
 Remedy: `moneybin refresh --step match --step transform` proposes the pairs and reflects any auto-merges into the ledger; `moneybin review --type matches` decides the rest. An accepted account-link merge now re-runs matching automatically (`AccountLinksService.rematch_after_merge()`), so this check should only fire on ledgers whose merges predate that behavior, or where a match pass failed.
 
-**`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is the one `core.uncategorized_queue` is drawn from — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 ### Investment reconciliation (M1G.4)
 
@@ -274,7 +274,7 @@ moneybin system doctor [--verbose] [--output text|json]
 ✅ fct_transactions_sign_convention
 ❌ bridge_transfers_balanced — 2 violation(s)
    Run with --verbose for affected pair IDs
-⚠️  categorization_coverage — 43% of non-transfer transactions are uncategorized
+⚠️  categorization_coverage — 43% of the transactions needing a category are uncategorized
 ✅ dedup_reconciliation
 
 5 invariants checked across 14,203 transactions — 1 failing
@@ -300,7 +300,7 @@ With `--verbose`, affected IDs appear under each failing line:
       {"name": "fct_transactions_fk_integrity", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "fct_transactions_sign_convention", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 violation(s)", "affected_ids": []},
-      {"name": "categorization_coverage", "status": "warn", "detail": "43% of non-transfer transactions are uncategorized", "affected_ids": []},
+      {"name": "categorization_coverage", "status": "warn", "detail": "43% of the transactions needing a category are uncategorized", "affected_ids": []},
       {"name": "dedup_reconciliation", "status": "pass", "detail": null, "affected_ids": []}
     ]
   },
