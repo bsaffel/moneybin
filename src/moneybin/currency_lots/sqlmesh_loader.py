@@ -508,10 +508,10 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     missing = context.fetchdf(
         f"""
         WITH matched_ids AS (
-          SELECT source_transaction_id, source_type, account_id,
+          SELECT source_transaction_id, source_type, source_origin, account_id,
                  MAX(transaction_id) AS transaction_id
           FROM {matched}
-          GROUP BY source_transaction_id, source_type, account_id
+          GROUP BY source_transaction_id, source_type, source_origin, account_id
         )
         SELECT
           'linked_two_row' AS source_shape,
@@ -545,10 +545,12 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
         LEFT JOIN matched_ids AS debit_id
           ON md.source_transaction_id_a = debit_id.source_transaction_id
          AND md.source_type_a = debit_id.source_type
+         AND md.source_origin_a = debit_id.source_origin
          AND md.account_id = debit_id.account_id
         LEFT JOIN matched_ids AS credit_id
           ON md.source_transaction_id_b = credit_id.source_transaction_id
          AND md.source_type_b = credit_id.source_type
+         AND md.source_origin_b = credit_id.source_origin
          AND md.account_id_b = credit_id.account_id
         LEFT JOIN {merged} AS debit
           ON debit_id.transaction_id = debit.transaction_id
@@ -575,16 +577,17 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
     single = context.fetchdf(
         f"""
         WITH matched_ids AS (
-          SELECT source_transaction_id, source_type, account_id,
+          SELECT source_transaction_id, source_type, source_origin, account_id,
                  MAX(transaction_id) AS transaction_id
           FROM {matched}
-          GROUP BY source_transaction_id, source_type, account_id
+          GROUP BY source_transaction_id, source_type, source_origin, account_id
         ), active_decision_transactions AS (
           SELECT debit.transaction_id
           FROM {match_decisions} AS md
           JOIN matched_ids AS debit
             ON md.source_transaction_id_a = debit.source_transaction_id
            AND md.source_type_a = debit.source_type
+           AND md.source_origin_a = debit.source_origin
            AND md.account_id = debit.account_id
           WHERE md.match_type = 'transfer'
             AND md.match_status = 'accepted'
@@ -595,6 +598,7 @@ def _load_candidates(context: ExecutionContext) -> list[_Candidate]:
           JOIN matched_ids AS credit
             ON md.source_transaction_id_b = credit.source_transaction_id
            AND md.source_type_b = credit.source_type
+           AND md.source_origin_b = credit.source_origin
            AND md.account_id_b = credit.account_id
           WHERE md.match_type = 'transfer'
             AND md.match_status = 'accepted'
@@ -1619,11 +1623,17 @@ def _load_transfer_position_watermarks(
                    decision, '$.source_transaction_id_a'
                  ) AS source_transaction_id_a,
                  JSON_EXTRACT_STRING(decision, '$.source_type_a') AS source_type_a,
+                 JSON_EXTRACT_STRING(
+                   decision, '$.source_origin_a'
+                 ) AS source_origin_a,
                  JSON_EXTRACT_STRING(decision, '$.account_id') AS account_id,
                  JSON_EXTRACT_STRING(
                    decision, '$.source_transaction_id_b'
                  ) AS source_transaction_id_b,
                  JSON_EXTRACT_STRING(decision, '$.source_type_b') AS source_type_b,
+                 JSON_EXTRACT_STRING(
+                   decision, '$.source_origin_b'
+                 ) AS source_origin_b,
                  JSON_EXTRACT_STRING(decision, '$.account_id_b') AS account_id_b
           FROM decision_snapshots
           WHERE decision IS NOT NULL
@@ -1631,10 +1641,10 @@ def _load_transfer_position_watermarks(
             AND JSON_EXTRACT_STRING(decision, '$.match_status') = 'accepted'
             AND JSON_EXTRACT_STRING(decision, '$.reversed_at') IS NULL
         ), matched_ids AS (
-          SELECT source_transaction_id, source_type, account_id,
+          SELECT source_transaction_id, source_type, source_origin, account_id,
                  MAX(transaction_id) AS transaction_id
           FROM {matched}
-          GROUP BY source_transaction_id, source_type, account_id
+          GROUP BY source_transaction_id, source_type, source_origin, account_id
         ), resolved_decisions AS (
           SELECT active.occurred_at,
                  debit.account_id AS source_account_id,
@@ -1657,12 +1667,14 @@ def _load_transfer_position_watermarks(
           LEFT JOIN matched_ids AS debit_id
             ON active.source_transaction_id_a = debit_id.source_transaction_id
            AND active.source_type_a = debit_id.source_type
+           AND active.source_origin_a = debit_id.source_origin
            AND active.account_id = debit_id.account_id
           LEFT JOIN {transactions} AS debit
             ON debit_id.transaction_id = debit.transaction_id
           LEFT JOIN matched_ids AS credit_id
             ON active.source_transaction_id_b = credit_id.source_transaction_id
            AND active.source_type_b = credit_id.source_type
+           AND active.source_origin_b = credit_id.source_origin
            AND active.account_id_b = credit_id.account_id
           LEFT JOIN {transactions} AS credit
             ON credit_id.transaction_id = credit.transaction_id

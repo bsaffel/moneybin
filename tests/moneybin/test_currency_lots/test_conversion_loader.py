@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 import typing as t
 from collections.abc import Mapping
 from datetime import date, datetime
@@ -11,7 +12,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 
 pytestmark = pytest.mark.unit
 
@@ -211,6 +212,78 @@ def _load(context: _FakeContext) -> list[t.Any]:
     return module.load_conversion_rows(t.cast(t.Any, context))
 
 
+def _model_body(layer: str, name: str) -> str:
+    """Return one shipped SQLMesh model query without its header."""
+    raw = (SQLMESH_ROOT / "models" / layer / f"{name}.sql").read_text()
+    return re.sub(r"^.*?\bMODEL\s*\(.*?\)\s*;\s*", "", raw, flags=re.DOTALL).strip()
+
+
+def test_transfer_bridge_resolves_reused_source_ids_by_origin(db: Database) -> None:
+    """A provider-native ID is scoped by its source connection."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE prep.int_transactions__matched (
+            transaction_id VARCHAR,
+            source_transaction_id VARCHAR,
+            source_type VARCHAR,
+            source_origin VARCHAR,
+            account_id VARCHAR
+        )
+        """
+    )
+    db.execute(
+        """
+        CREATE OR REPLACE TABLE prep.int_transactions__merged (
+            transaction_id VARCHAR,
+            account_id VARCHAR,
+            transaction_date DATE,
+            amount DECIMAL(18, 2)
+        )
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__matched VALUES
+            ('txn-a-correct', 'reused-out', 'plaid', 'item-correct', 'acct-out'),
+            ('txn-z-wrong', 'reused-out', 'plaid', 'item-other', 'acct-out'),
+            ('txn-credit', 'credit-id', 'plaid', 'item-credit', 'acct-in')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__merged VALUES
+            ('txn-a-correct', 'acct-out', '2026-03-16'::DATE, -40.00),
+            ('txn-z-wrong', 'acct-out', '2026-03-17'::DATE, -99.00),
+            ('txn-credit', 'acct-in', '2026-03-16'::DATE, 50.00)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, match_type, match_status, decided_by,
+            decided_at
+        ) VALUES (
+            'decision-origin', 'reused-out', 'plaid', 'item-correct',
+            'credit-id', 'plaid', 'item-credit', 'acct-out', 'acct-in',
+            'transfer', 'accepted', 'user', CURRENT_TIMESTAMP
+        )
+        """
+    )
+
+    row = db.execute(_model_body("core", "bridge_transfers")).fetchone()
+
+    assert row == (
+        "decision-origin",
+        "txn-a-correct",
+        "txn-credit",
+        0,
+        Decimal("40.00"),
+    )
+
+
 def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     db: Database,
 ) -> None:
@@ -231,6 +304,7 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
             transaction_id VARCHAR,
             source_transaction_id VARCHAR,
             source_type VARCHAR,
+            source_origin VARCHAR,
             account_id VARCHAR
         )
         """
@@ -309,8 +383,8 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     db.execute(
         """
         INSERT INTO prep.int_transactions__matched VALUES
-            ('txn-missing-out', 'native-missing-out', 'manual', 'acct-eur'),
-            ('txn-missing-in', 'native-missing-in', 'manual', 'acct-gbp')
+            ('txn-missing-out', 'native-missing-out', 'manual', 'user', 'acct-eur'),
+            ('txn-missing-in', 'native-missing-in', 'manual', 'user', 'acct-gbp')
         """
     )
     db.execute(
@@ -565,6 +639,64 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     ]
     assert len(overlapping) == 1
     assert overlapping[0].source_shape == "linked_two_row"
+
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__merged VALUES
+            ('txn-a-collision', 'acct-eur', '2026-03-24'::DATE, -40.00,
+             'EUR', '2026-03-24'::DATE, -40.00, 'EUR', 50.00, 'USD',
+             'plaid', 'item-correct', 'native-collision-out',
+             '2026-03-24 09:00:00'::TIMESTAMP),
+            ('txn-z-collision', 'acct-eur', '2026-03-25'::DATE, -99.00,
+             'GBP', '2026-03-25'::DATE, -99.00, 'GBP', 120.00, 'USD',
+             'plaid', 'item-other', 'native-collision-out',
+             '2026-03-25 09:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO prep.int_transactions__matched VALUES
+            ('txn-a-collision', 'native-collision-out', 'plaid', 'item-correct',
+             'acct-eur'),
+            ('txn-z-collision', 'native-collision-out', 'plaid', 'item-other',
+             'acct-eur')
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions VALUES
+            ('txn-a-collision', 'EUR', '2026-03-24 09:00:00'::TIMESTAMP),
+            ('txn-z-collision', 'GBP', '2026-03-25 09:00:00'::TIMESTAMP)
+        """
+    )
+    db.execute(
+        """
+        INSERT INTO app.match_decisions (
+            match_id, source_transaction_id_a, source_type_a, source_origin_a,
+            source_transaction_id_b, source_type_b, source_origin_b,
+            account_id, account_id_b, match_type, match_status, decided_by,
+            decided_at
+        ) VALUES (
+            'decision-origin-missing', 'native-collision-out', 'plaid',
+            'item-correct', 'native-absent-origin-credit', 'plaid', 'item-credit',
+            'acct-eur', 'acct-absent', 'transfer', 'accepted', 'user',
+            '2026-03-24 10:00:00'::TIMESTAMP
+        )
+        """
+    )
+
+    collision_rows = [
+        row
+        for row in module.load_conversion_rows(t.cast(t.Any, _DatabaseContext(db)))
+        if row.from_source_transaction_id == "native-collision-out"
+    ]
+    assert {
+        (row.source_shape, row.from_transaction_id, row.from_source_origin)
+        for row in collision_rows
+    } == {
+        ("linked_two_row", "txn-a-collision", "item-correct"),
+        ("single_row", "txn-z-collision", "item-other"),
+    }
 
 
 def test_missing_home_currency_uses_profile_audit_freshness() -> None:

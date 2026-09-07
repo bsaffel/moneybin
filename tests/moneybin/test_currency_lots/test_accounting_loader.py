@@ -1283,6 +1283,7 @@ def test_transfer_position_watermarks_exclude_unequal_same_currency_decision(
             transaction_id VARCHAR,
             source_transaction_id VARCHAR,
             source_type VARCHAR,
+            source_origin VARCHAR,
             account_id VARCHAR
         )
         """
@@ -1301,23 +1302,29 @@ def test_transfer_position_watermarks_exclude_unequal_same_currency_decision(
     db.execute(
         """
         INSERT INTO prep.int_transactions__matched VALUES
-            ('txn-out', 'source-out', 'manual', 'acct-source'),
-            ('txn-in', 'source-in', 'manual', 'acct-destination')
+            ('txn-out', 'source-out', 'manual', 'origin-correct', 'acct-source'),
+            ('txn-z-out', 'source-out', 'manual', 'origin-other', 'acct-source'),
+            ('txn-in', 'source-in', 'manual', 'origin-correct', 'acct-destination'),
+            ('txn-z-in', 'source-in', 'manual', 'origin-other', 'acct-destination')
         """
     )
     db.execute(
         """
         INSERT INTO core.fct_transactions VALUES
             ('txn-out', 'acct-source', '2026-03-01'::DATE, -20.00, 'EUR'),
-            ('txn-in', 'acct-destination', '2026-03-01'::DATE, 25.00, 'EUR')
+            ('txn-z-out', 'acct-source', '2026-03-01'::DATE, -99.00, 'EUR'),
+            ('txn-in', 'acct-destination', '2026-03-01'::DATE, 25.00, 'EUR'),
+            ('txn-z-in', 'acct-destination', '2026-03-01'::DATE, 99.00, 'USD')
         """
     )
     before = {
         "source_transaction_id_a": "source-out",
         "source_type_a": "manual",
+        "source_origin_a": "origin-correct",
         "account_id": "acct-source",
         "source_transaction_id_b": "source-in",
         "source_type_b": "manual",
+        "source_origin_b": "origin-correct",
         "account_id_b": "acct-destination",
         "match_type": "transfer",
         "match_status": "accepted",
