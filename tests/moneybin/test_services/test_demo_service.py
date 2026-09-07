@@ -589,16 +589,19 @@ def test_raises_on_refresh_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker: Any
 ) -> None:
     # A real crash in matching/transform/categorize must abort demo, not ship a
-    # half-built profile. Covers the multi-field RefreshResult error check.
+    # half-built profile. Covers the scan across every stage's own error.
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     _mock_pipeline(mocker)
 
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     mocker.patch(
         "moneybin.orchestration.refresh.refresh",
         return_value=RefreshResult(
-            applied=False, duration_seconds=0.0, categorization_error="boom"
+            applied=False,
+            duration_seconds=0.0,
+            stages=(StageOutcome(step="categorize", ran=True, error="boom"),),
         ),
     )
     # A UserError subclass, not a bare RuntimeError: `refresh()` reports these as

@@ -274,37 +274,58 @@ and confirmation contracts.
   state even though it does not commit ledger rows.
 - `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
   is currently `gsheet`, `match`, `transform`, `categorize`, `identity`,
-  `rates`, executed in that canonical order. M1J.7 slice 2 inserts
-  `investment_match` after `match` and before `transform`; selecting only that
+  `rates`, executed in that canonical order. Each step reports its own error,
+  its own counts, and whether it ran in one `stages` entry —
+  `{"step": "match", "ran": true, "counts": {"auto_merged": 1,
+  "pending_review": 0, "pending_transfers": 0}, "error": null}` — so a caller
+  reads one place per step, and the payload's top-level `error` describes the
+  SQLMesh apply step alone, the only step that can hard-fail. Three states stay
+  distinct: no entry at all means the caller never requested that step,
+  `ran: false` means it was requested and declined (a missing-view
+  precondition), and `ran: true` with zero counts means it examined rows and
+  honestly found none. `transfers_retired` stays a top-level count rather than
+  joining the match stage's: a merge invalidates an accepted transfer either by
+  collapsing its two legs — the matcher's own reconciliation — or by collapsing
+  its two accounts, and the second happens inside `AccountLinksService.set`'s
+  transaction and reaches no matcher, so a match stage reporting it would claim
+  the matcher produced a number it did not. `identity_errors` stays top-level
+  for a different reason: it names *which* domains failed, and one stage `error`
+  string cannot carry two domains that failed independently. M1J.7 slice 2
+  inserts `investment_match` after `match` and before `transform`; selecting
+  only that
   value in `refresh_run.steps` plans pending investment reviews, while selecting
   `transform` runs that planner transitively and then invokes non-selectable
   membership reconciliation before rebuilding the Golden ledger. Slice 3 adds
-  `investment_matches_pending_unique`,
-  `investment_matches_pending_competing`, `investment_matches_suppressed`,
-  `investment_matches_stale`, `investment_matching_skipped`, and
-  `investment_matching_error` to `RefreshRunPayload` and every shared
-  embedded-refresh payload. The four counts are stable integer keys; the first
-  two plus an action directing `reviews` to status `pending` and the planned
-  M1J.7 kind value `investment_matches` are the pending summary. Callers read
-  the skipped flag and nullable sanitized error before interpreting zeros. If
+  no new payload fields: the planner reports as one `stages` entry keyed
+  `investment_match`, with stable integer `counts` keys `pending_unique`,
+  `pending_competing`, `suppressed`, and `stale`, plus that stage's own `ran`
+  and `error`. The two pending counts plus an action directing `reviews` to
+  status `pending` and the planned M1J.7 kind value `investment_matches` are
+  the pending summary. Callers read `ran` and the nullable sanitized `error`
+  before interpreting zeros, and an absent entry means the step was never
+  requested. If
   the expanded requested set contains `transform`, the failure retries
   `refresh_run` scoped to `transform`; otherwise it retries `refresh_run`
   scoped to the M1J.7 `investment_match` value, including when another
   non-transform step was requested alongside it. A failed transitive planner
   prerequisite prevents SQLMesh apply without overloading its `error` field or
-  cash matching's `matching_error`. `rates`
-  caches the reference rates the profile's own
-  transactions, balances and holdings imply; it runs last because nothing
-  downstream consumes it, and it reports `rates_written` plus any
+  the cash `match` stage's `error`. `rates` caches the reference rates the
+  profile's own transactions, balances and holdings imply; it runs last because
+  nothing downstream consumes it, and it reports `rates_written` in its
+  `stages` entry's `counts` plus any
   `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never
   retried; needs `moneybin fx set`), and `rate_pairs_discarded` (the provider
   answered and part of the answer was unusable, so coverage may be short on some
-  dates) rather than failing the call. A crash in the step itself reports
-  `rate_backfill_error`, the same `DESCRIPTION`-classified shape
-  `matching_error` and `categorization_error` use: `rates_written` is `null`
-  both when the step declined to run and when it ran and died, so the error is
-  the only field that separates them. `rate_pairs_failed` and
-  `rate_backfill_error` each earn a `recovery_actions` entry
+  dates) rather than failing the call. Those three lists stay top-level rather
+  than joining that stage's counts because they are not counts: they name the
+  pairs a retry will never fill, which is what routes the user to
+  `moneybin fx set` — a different question from how many rates were written.
+  A crash in the step itself sets `error` on that same `stages` entry, the
+  `DESCRIPTION`-classified field every step's stage error uses: the entry comes
+  back `ran: false` with no `rates_written` count both when the step declined to
+  run and when it ran and died, so the error is the only thing that separates
+  them. `rate_pairs_failed` and a `rates` stage error each earn a
+  `recovery_actions` entry
   (`refresh_run(steps=["rates"])`, emitted once even when both are set),
   matching the match and categorize steps; the other two pair lists name
   conditions a retry cannot change, so offering one would be a loop with no
@@ -313,7 +334,7 @@ and confirmation contracts.
   `import_inbox_sync` — carry that same step outcome on their own payloads,
   under the same field names, because each runs the full cascade on the user's
   behalf. `transforms_error` on those payloads reports only the SQLMesh apply;
-  `matching_error`, `categorization_error`, `identity_errors` and the
+  `stages`, `identity_errors` and the
   exchange-rate group report the four best-effort steps it cannot speak for.
   The names are deliberately identical to `refresh_run`'s so an agent reading
   two surfaces learns one vocabulary for one outcome. They carry its

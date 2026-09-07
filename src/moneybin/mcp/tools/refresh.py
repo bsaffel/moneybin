@@ -36,18 +36,22 @@ def refresh_run(
     domain: ``identity_errors`` contains only ``accounts`` and/or ``merchants``
     when proposal generation fails, while successful domains point to their
     ``reviews(kind=...)`` queue. Only a SQLMesh apply error sets the top-level
-    ``error``. (A first-load missing-view precondition is not a crash and
-    leaves matching/categorization fields unset.)
+    ``error``; every other step reports its own in its ``stages`` entry. (A
+    first-load missing-view precondition is not a crash: that step comes back
+    ``ran=false`` with no error.)
 
-    The match step acts without asking, so the response says what it decided:
-    ``matches_auto_merged`` (duplicates folded above the confidence threshold),
-    ``matches_pending_review`` / ``matches_pending_transfers`` (queued for the
-    user), and ``transfers_retired`` (transfers the user had accepted that a
-    dedup collapse invalidated, reversed — report these and point at
-    ``system_audit_undo``, since they undo a decision of the user's). Read all
-    four against ``matching_skipped``: when it is true the step could not run and
-    the counts are zero because nothing was examined, so "no duplicates found"
-    is not a claim they support.
+    ``stages`` holds one entry per step this run executed, each carrying that
+    step's own ``counts``, its ``error``, and whether it ``ran``. A step the
+    caller did not request has no entry at all, so three states stay apart:
+    never asked for, asked for and declined, and ran and found nothing. Read
+    the match step's counts against its ``ran``: on ``ran=false`` the zeros mean
+    nothing was examined, so "no duplicates found" is not a claim they support.
+
+    ``transfers_retired`` sits at the top level rather than in the match stage,
+    because a merge can reverse a transfer the user accepted two ways — the
+    matcher collapsing its legs, or ``accounts_links_set`` collapsing its two
+    accounts, which no matcher sees. Report it and point at
+    ``system_audit_undo``: it undoes a decision of the user's.
 
     Args:
         steps: Subset of ``["gsheet", "match", "transform", "categorize",

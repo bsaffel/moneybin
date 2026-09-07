@@ -114,13 +114,13 @@ def test_inbox_drain_reports_the_best_effort_steps_its_refresh_ran(
     watched folder, so this is the surface where a swallowed provider outage
     would sit longest.
     """
-    from moneybin.services.refresh_outcome import RefreshStepOutcome
+    from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
     patch_inbox.sync.return_value = InboxSyncResult(
         processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
         failed=[],
         refresh_steps=RefreshStepOutcome(
-            matching_error="matcher blew up",
+            stages=(StageOutcome(step="match", ran=True, error="matcher blew up"),),
             rate_pairs_unsupported=("EUR/XTS",),
         ),
     )

@@ -11,6 +11,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **`moneybin refresh` says what each pipeline step did.** A run that changed
+  nothing and a run that recategorized 400 transactions both printed a single
+  `✅ Refresh complete in 4.2s`, because the counts each step computed went to
+  the debug log and no further. Four of the six steps were discarding their
+  outcome outright — the sheet pull and the categorizer derived theirs for a log
+  line, and the identity pass called both of its services purely for the side
+  effect, keeping only the labels of the ones that raised. Refresh now reports
+  one line per step it ran, naming the step and what it observably did,
+  including the steps whose outcome was zero. A step that was reached but could
+  not run (views not yet built on a first load) says so rather than reporting
+  zeros, because "found nothing" and "examined nothing" send you to different
+  remedies. `--output json` carries the same outcomes as a `stages` array, and
+  `-q` suppresses the lines as it does every other status line. A step you did
+  not ask for is absent rather than reported empty, so `--step match` still
+  prints one line.
+
+  **Breaking:** the flat per-step fields that `stages` replaces are removed
+  rather than kept beside it, on every surface that carries them —
+  `refresh_run`, `sync_pull`, `import_files`, `import_inbox_sync`,
+  `gsheet_pull`, and the `--output json` of their CLI twins. Gone:
+  `matching_error`, `categorization_error`, `rate_backfill_error`,
+  `rates_written`, `matches_auto_merged`, `matches_pending_review`,
+  `matches_pending_transfers`, and `matching_skipped`. Each is now that step's
+  entry in `stages` — its `error`, its `counts`, and `ran` in place of
+  `matching_skipped`. Two shapes for one fact is how a reader ends up
+  believing the wrong one, and the flat set could not answer for a step it had
+  no field for. What stays top-level stays because it is not a per-step count:
+  `identity_errors` names *which* domains failed, the three `rate_pairs_*`
+  lists name currency pairs whose remedy is `moneybin fx set`, and
+  `transfers_retired` is an operation total that `accounts_links_set` adds to
+  with account-collapse reversals no matcher ever sees.
 - **An investment account fed by two sources at once no longer publishes wrong
   numbers.** A broker import and a connector sync covering one account leave two
   interleaved ledgers rather than one — every event exists twice, so lots

@@ -5148,7 +5148,7 @@ class TestEmbeddedRefreshRecoveryActions:
         """
         from moneybin.mcp.tools.import_tools import import_files
         from moneybin.services.import_service import BatchImportResult, PerFileResult
-        from moneybin.services.refresh_outcome import RefreshStepOutcome
+        from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
         first = tmp_path / "a.csv"
         second = tmp_path / "b.csv"
@@ -5174,9 +5174,12 @@ class TestEmbeddedRefreshRecoveryActions:
             transforms_duration_seconds=0.1,
             transfers_retired=0,
             refresh_steps=RefreshStepOutcome(
-                categorization_error="categorizer blew up",
-                rates_written=0,
-                rate_backfill_error="rates blew up",
+                stages=(
+                    StageOutcome(
+                        step="categorize", ran=True, error="categorizer blew up"
+                    ),
+                    StageOutcome(step="rates", ran=True, error="rates blew up"),
+                ),
             ),
         )
         with patch(
@@ -5205,7 +5208,7 @@ class TestEmbeddedRefreshRecoveryActions:
         """
         from moneybin.mcp.tools.import_tools import import_files
         from moneybin.services.import_service import BatchImportResult, PerFileResult
-        from moneybin.services.refresh_outcome import RefreshStepOutcome
+        from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
         # Two paths, matching the sibling test above: a single path routes
         # through a different envelope that never reaches the batch payload, so
@@ -5235,8 +5238,12 @@ class TestEmbeddedRefreshRecoveryActions:
             transforms_error="sqlmesh apply blew up",
             transfers_retired=0,
             refresh_steps=RefreshStepOutcome(
-                matching_error="matcher blew up",
-                categorization_error="categorizer blew up",
+                stages=(
+                    StageOutcome(step="match", ran=True, error="matcher blew up"),
+                    StageOutcome(
+                        step="categorize", ran=True, error="categorizer blew up"
+                    ),
+                ),
             ),
         )
         with patch(
@@ -5245,7 +5252,10 @@ class TestEmbeddedRefreshRecoveryActions:
         ):
             result = import_files(paths=[str(first), str(second)])
 
-        assert result.data.matching_error == "matcher blew up", (
+        match_stage = next(
+            (row for row in result.data.stages if row.step == "match"), None
+        )
+        assert match_stage is not None and match_stage.error == "matcher blew up", (
             "guard: the fixture must reach the batch payload, or the assertion "
             "below passes on an envelope that never saw the crashed step"
         )
@@ -5305,7 +5315,7 @@ class TestEmbeddedRefreshRecoveryActions:
         """Same suppression on the unattended surface."""
         from moneybin.mcp.tools.import_inbox import import_inbox_sync
         from moneybin.services.inbox_service import InboxSyncResult
-        from moneybin.services.refresh_outcome import RefreshStepOutcome
+        from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
         service = MagicMock()
         service.sync.return_value = InboxSyncResult(
@@ -5318,7 +5328,9 @@ class TestEmbeddedRefreshRecoveryActions:
             transforms_duration_seconds=0.1,
             transforms_error="sqlmesh apply blew up",
             transfers_retired=0,
-            refresh_steps=RefreshStepOutcome(matching_error="matcher blew up"),
+            refresh_steps=RefreshStepOutcome(
+                stages=(StageOutcome(step="match", ran=True, error="matcher blew up"),)
+            ),
         )
 
         def _fake_inbox_service(**_kw: object) -> MagicMock:
@@ -5384,7 +5396,7 @@ class TestEmbeddedRefreshRecoveryActions:
         """Same contract on the unattended surface, where nobody is watching."""
         from moneybin.mcp.tools.import_inbox import import_inbox_sync
         from moneybin.services.inbox_service import InboxSyncResult
-        from moneybin.services.refresh_outcome import RefreshStepOutcome
+        from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
         service = MagicMock()
         service.sync.return_value = InboxSyncResult(
@@ -5398,7 +5410,10 @@ class TestEmbeddedRefreshRecoveryActions:
             transforms_error=None,
             transfers_retired=0,
             refresh_steps=RefreshStepOutcome(
-                matching_error="matcher blew up", rates_written=0
+                stages=(
+                    StageOutcome(step="match", ran=True, error="matcher blew up"),
+                    StageOutcome(step="rates", ran=True),
+                )
             ),
         )
 

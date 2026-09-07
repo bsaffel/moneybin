@@ -137,9 +137,9 @@ def run_rate_backfill(
         #
         # The phase alone is not enough, though. A mature database with a
         # renamed column or a dropped model raises the same two types from the
-        # same call, and the quiet branch answers `rates_written=null` with no
-        # error and no recovery action — the same thing a profile with nothing
-        # to fetch answers. Only a core that is *wholly* unbuilt earns the
+        # same call, and the quiet branch answers `ran=False` with no error and
+        # no recovery action — the same thing a profile with no home currency
+        # answers. Only a core that is *wholly* unbuilt earns the
         # first-load excuse; anything else is drift the user has to be told
         # about, so it propagates to the step's error field.
         if _core_is_built(db):

@@ -27,6 +27,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.refresh_outcome import StageOutcome
 from tests.moneybin.db_helpers import create_core_tables
 
 # ---------------------------------------------------------------------------
@@ -1503,15 +1504,22 @@ def test_set_accept_returns_what_the_rematch_found(
     rematch.return_value = RefreshResult(
         applied=True,
         duration_seconds=0.0,
-        matches_auto_merged=2,
-        matches_pending_review=5,
+        stages=(
+            StageOutcome(
+                step="match",
+                ran=True,
+                counts={"auto_merged": 2, "pending_review": 5},
+            ),
+        ),
     )
 
     result = seeded.set(_DEC1, target_account_id=_CAND_A)
 
     assert result is not None
-    assert result.matches_auto_merged == 2
-    assert result.matches_pending_review == 5
+    stage = result.stage("match")
+    assert stage is not None
+    assert stage.count("auto_merged") == 2
+    assert stage.count("pending_review") == 5
 
 
 def test_set_standalone_returns_no_rematch_result(

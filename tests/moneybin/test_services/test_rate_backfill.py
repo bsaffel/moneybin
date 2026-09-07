@@ -575,9 +575,9 @@ def test_a_drifted_core_schema_is_reported_rather_than_silently_skipped(
     """A built-but-drifted `core.*` is a real failure, not a first-load precondition.
 
     The two states raise the same DuckDB types from the same call, and the quiet
-    branch answers `rates_written=null` with no error and no recovery action —
-    indistinguishable from a profile that had nothing to fetch. On a mature
-    database that is a renamed column or a dropped model going unreported
+    branch answers with a rates stage marked `ran=False` — no error and no
+    recovery action, the same answer a profile with no home currency gets. On a
+    mature database that is a renamed column or a dropped model going unreported
     forever, so the suppression has to prove the models are wholly unbuilt
     before claiming the first-load excuse.
     """

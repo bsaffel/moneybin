@@ -321,11 +321,11 @@ def gsheet_pull(
     quiet: bool = quiet_option,
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
-    from moneybin.orchestration.refresh import refresh as run_refresh  # noqa: PLC0415
-    from moneybin.orchestration.refresh import step_outcome  # noqa: PLC0415
-    from moneybin.services.refresh_outcome import (  # noqa: PLC0415
+    from moneybin.adapters.refresh_adapters import (  # noqa: PLC0415
         refresh_steps_fields,
     )
+    from moneybin.orchestration.refresh import refresh as run_refresh  # noqa: PLC0415
+    from moneybin.orchestration.refresh import step_outcome  # noqa: PLC0415
 
     refresh_error: str | None = None
     transfers_retired = 0

@@ -39,7 +39,7 @@ from fastmcp import FastMCP
 from pydantic import Field, StrictBool
 
 from moneybin import error_codes
-from moneybin.adapters.rematch_report import rematch_actions
+from moneybin.adapters.rematch_report import rematch_actions, rematch_count
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
@@ -864,15 +864,9 @@ async def accounts_links_set(
         data=AccountLinksSetPayload(
             decision_id=decision_id,
             status=status,
-            rematch_auto_merged=None
-            if rematch is None
-            else rematch.matches_auto_merged,
-            rematch_pending_review=(
-                None if rematch is None else rematch.matches_pending_review
-            ),
-            rematch_pending_transfers=(
-                None if rematch is None else rematch.matches_pending_transfers
-            ),
+            rematch_auto_merged=rematch_count(rematch, "auto_merged"),
+            rematch_pending_review=rematch_count(rematch, "pending_review"),
+            rematch_pending_transfers=rematch_count(rematch, "pending_transfers"),
             rematch_transfers_retired=(
                 None if rematch is None else rematch.transfers_retired
             ),
