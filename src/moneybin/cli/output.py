@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
 import click
 import typer
+from pydantic import BaseModel
 
 from moneybin.cli.render import render_note
 from moneybin.errors import UserError
@@ -42,12 +43,12 @@ from moneybin.privacy.log import build_tool_call_event, write_privacy_event
 from moneybin.privacy.redaction import has_active_transform, redact_typed
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import (
-    AUXILIARY_LIST_FIELDS,
     ResponseEnvelope,
     build_envelope,
     build_error_envelope,
     serialize_payload,
 )
+from moneybin.protocol.row_set import NO_ROW_SET, row_set, row_set_field
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -224,9 +225,14 @@ class ExportReceiptOutput:
     export_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ExportDestinationStatusOutput:
-    """One saved export destination without a Sheets source identity."""
+    """One saved export destination without a Sheets source identity.
+
+    ``reasons`` explains why this one destination is not ready; it is an
+    attribute of the destination, not a collection the payload returns.
+    """
 
     destination_id: Annotated[str | None, DataClass.RECORD_ID]
     name: Annotated[str, DataClass.USER_NOTE]
@@ -237,6 +243,7 @@ class ExportDestinationStatusOutput:
     reasons: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set("destinations")
 @dataclass(frozen=True, slots=True)
 class ExportDestinationsOutput:
     """Typed wrapper retaining destination privacy metadata in JSON mode."""
@@ -443,19 +450,15 @@ def _project_fields(data: Any, fields: set[str]) -> Any | None:
     counts — ``SyncStatusPayload(connections=[...])`` — which is what every
     command migrated off a hand-rolled JSON path now returns.
 
-    Descending into a typed payload is deliberately limited to the case where
-    exactly ONE field holds a row collection. With two there is no way to tell
-    which the caller meant, and projecting one of them would return a payload
-    that is narrowed in a place the caller cannot see; a payload with none has
-    nothing to narrow. Both no-op, matching the flag's documented "silently
-    ignored where it does not apply" behaviour.
-
-    ``AUXILIARY_LIST_FIELDS`` is excluded from that count for the same reason
-    ``_count_primary_lists`` excludes it — a refresh's diagnostic lists describe
-    the rows rather than being a second set of them. Sharing the one set is what
-    keeps "the payload's collection" from meaning one field to the counter and
-    another to the projection: ``GsheetPullPayload`` carries four diagnostics
-    beside its ``pulls``, and counting them made the flag a silent no-op there.
+    Which field that is comes from the payload's own declaration, the one
+    ``summary.returned_count`` reads (``moneybin.protocol.row_set``). Sharing
+    it is what keeps "the payload's collection" from meaning one field to the
+    counter and another to the projection. A payload declaring ``NO_ROW_SET``
+    has nothing the flag can narrow — projecting one of its peer collections
+    would return a payload narrowed in a place the caller cannot see — so it
+    no-ops, matching the flag's documented "silently ignored where it does not
+    apply" behaviour. An untyped ``dict`` payload carries no declaration and
+    no-ops for the same reason its count is 1.
 
     Runs on the *serialized* payload, after ``redact_typed`` has walked the
     original: a projection naming a CRITICAL field must hand back the mask, not
@@ -467,18 +470,15 @@ def _project_fields(data: Any, fields: set[str]) -> Any | None:
         return _project_rows(cast("list[Any]", data), fields)
     if data is None or isinstance(data, (str, bytes, int, float, bool)):
         return None
+    if not (dataclasses.is_dataclass(data) or isinstance(data, BaseModel)):
+        return None
+    key = row_set_field(data)
+    if key is None:
+        return None
     serialized = serialize_payload(data)
     if not isinstance(serialized, dict):
         return None
     body = cast("dict[str, Any]", serialized)
-    list_keys = [
-        key
-        for key, value in body.items()
-        if isinstance(value, list) and key not in AUXILIARY_LIST_FIELDS
-    ]
-    if len(list_keys) != 1:
-        return None
-    key = list_keys[0]
     projected = _project_rows(cast("list[Any]", body[key]), fields)
     return None if projected is None else {**body, key: projected}
 

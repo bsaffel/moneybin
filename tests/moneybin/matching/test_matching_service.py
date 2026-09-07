@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import pytest
+import logging
 
+import pytest
+from pytest_mock import MockerFixture
+
+import moneybin.services.matching_service as matching_service
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import AliasForwardResult
 from moneybin.matching.application import MatchApplicationEffects, MatchStatusChange
+from moneybin.matching.engine import MatchResult, MatchRunError
 from moneybin.matching.persistence import (
     MatchStatus,
     get_match_decision,
@@ -607,3 +613,82 @@ def test_get_pending_assigns_component_key(db: Database) -> None:
     # Members of the acct1 component: "csv|t1", "ofx|t2", "tiller|t3";
     # account-prefixed → "acct1|csv|t1".
     assert keys["m_ab"] == "acct1|csv|t1"
+
+
+class TestForwardingNeverMasksTheMatchersError:
+    """``run`` forwards in a ``finally``; a failure there must not eat the matcher's.
+
+    ``TransactionMatcher.run`` raises ``MatchRunError`` carrying the tiers it had
+    already committed, and the refresh, CLI and MCP callers catch precisely that
+    type to report those durable partial counts. An exception raised out of the
+    ``finally`` replaces the in-flight one, so a damaged app relation or a failed
+    audit write during forwarding would turn a reportable partial run into a
+    generic failure with the counts lost.
+    """
+
+    @pytest.mark.unit
+    def test_a_forwarding_failure_leaves_the_partial_match_error_in_flight(
+        self, db: Database, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The caller still sees ``MatchRunError`` and its committed counts."""
+        partial = MatchResult(auto_merged=3, pending_review=2)
+        mocker.patch.object(
+            matching_service.TransactionMatcher,
+            "run",
+            side_effect=MatchRunError(RuntimeError("tier 4 blew up"), partial=partial),
+        )
+        mocker.patch.object(
+            matching_service,
+            "forward_rekeyed_transaction_ids",
+            side_effect=RuntimeError("app.transaction_categories is damaged"),
+        )
+
+        with caplog.at_level(logging.WARNING), pytest.raises(MatchRunError) as excinfo:
+            MatchingService(db).run(actor="system")
+
+        assert excinfo.value.partial == partial
+        assert "forwarding" in caplog.text.lower(), (
+            "the secondary failure must still be reported somewhere"
+        )
+
+    @pytest.mark.unit
+    def test_the_forwarding_still_runs_when_the_matcher_raises(
+        self, db: Database, mocker: MockerFixture
+    ) -> None:
+        """Preserving the matcher's error must not stop the forwarding running.
+
+        The pass exists in a ``finally`` precisely because a raising run leaves
+        durable, already-re-keyed writes behind.
+        """
+        mocker.patch.object(
+            matching_service.TransactionMatcher,
+            "run",
+            side_effect=MatchRunError(RuntimeError("boom"), partial=MatchResult()),
+        )
+        forward = mocker.patch.object(
+            matching_service,
+            "forward_rekeyed_transaction_ids",
+            return_value=AliasForwardResult(),
+        )
+
+        with pytest.raises(MatchRunError):
+            MatchingService(db).run(actor="system")
+
+        forward.assert_called_once()
+
+    @pytest.mark.unit
+    def test_a_forwarding_failure_on_a_clean_run_still_reaches_the_caller(
+        self, db: Database, mocker: MockerFixture
+    ) -> None:
+        """With no matcher error to protect, the forwarding failure is the error."""
+        mocker.patch.object(
+            matching_service.TransactionMatcher, "run", return_value=MatchResult()
+        )
+        mocker.patch.object(
+            matching_service,
+            "forward_rekeyed_transaction_ids",
+            side_effect=RuntimeError("app.transaction_categories is damaged"),
+        )
+
+        with pytest.raises(RuntimeError, match="damaged"):
+            MatchingService(db).run(actor="system")

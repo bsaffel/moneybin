@@ -543,6 +543,33 @@ def test_padded_metadata_is_normalized_before_it_is_announced_or_stored(
     assert settings == ("Joint Checking", "savings")
 
 
+def test_account_metadata_rejects_the_reserved_label_before_any_write(
+    db: Database,
+) -> None:
+    """The import path enforces the same reservation `accounts set` does.
+
+    `_capture_new_account_metadata` writes straight through
+    `AccountSettingsRepo`, whose only validation is
+    `AccountSettings.__post_init__` -- lengths and shapes, not vocabulary. Left
+    unguarded this path stores the fold `AccountService.settings_update`
+    refuses, and re-running the same import re-creates it after any rename.
+    Case-folded here so the guard cannot narrow to a byte comparison.
+    """
+    svc = ImportService(db)
+    with pytest.raises(ValueError, match="reserved"):
+        svc.import_file(
+            _STANDARD_CSV,
+            account_name="WF Checking",
+            refresh=False,
+            confirm=True,
+            actor_kind="human",
+            account_bindings={"wf-checking": "new"},
+            account_metadata={"wf-checking": {"display_name": "unnamed  account"}},
+        )
+    n = db.execute("SELECT COUNT(*) FROM app.account_settings").fetchone()
+    assert n is not None and n[0] == 0
+
+
 def test_account_metadata_rejects_unknown_field_before_any_write(
     db: Database,
 ) -> None:

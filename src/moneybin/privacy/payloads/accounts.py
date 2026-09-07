@@ -25,6 +25,7 @@ from moneybin.privacy.payloads.balances import (
     BalanceObservationRow,
 )
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ class AccountSummary:
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class AccountListPayload:
     """Payload for accounts (list)."""
@@ -103,6 +105,7 @@ class AccountResolutionItem:
     confidence: Annotated[float, DataClass.AGGREGATE]
 
 
+@row_set("matches")
 @dataclass(frozen=True, slots=True)
 class AccountResolvePayload:
     """Payload for accounts_resolve."""
@@ -115,6 +118,7 @@ class AccountResolvePayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("rows")
 class AccountsListView(BaseModel):
     """Paginated account collection."""
 
@@ -142,6 +146,7 @@ class AccountsSummaryView(BaseModel):
     summary: AccountSummaryStats
 
 
+@row_set("matches")
 class AccountsResolveView(BaseModel):
     """Ranked fuzzy account-reference candidates."""
 
@@ -157,6 +162,7 @@ AccountsCoarsePayload = Annotated[
 ]
 
 
+@row_set("observations")
 class AccountsBalancesLatestView(BaseModel):
     """Most recent balance observations."""
 
@@ -166,6 +172,7 @@ class AccountsBalancesLatestView(BaseModel):
     observations: list[BalanceObservationRow]
 
 
+@row_set("observations")
 class AccountsBalancesHistoryView(BaseModel):
     """Daily balance history for one resolved account."""
 
@@ -175,6 +182,7 @@ class AccountsBalancesHistoryView(BaseModel):
     observations: list[BalanceObservationRow]
 
 
+@row_set("assertions")
 class AccountsBalancesAssertionsView(BaseModel):
     """Manual balance assertions, optionally filtered to one account."""
 
@@ -184,6 +192,7 @@ class AccountsBalancesAssertionsView(BaseModel):
     assertions: list[BalanceAssertionRow]
 
 
+@row_set("observations")
 class AccountsBalancesReconcileView(BaseModel):
     """Balance observations whose reconciliation delta exceeds a threshold."""
 
@@ -213,6 +222,7 @@ class BalanceAssertionStatePayload:
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class AccountSettingsPayload:
     """Result of accounts_set. Mirrors AccountSettings.to_dict() plus optional extras.
@@ -290,6 +300,7 @@ class LinkCandidateRow:
         )
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class LinkPendingGroup:
     """One provisional account with its candidate merge proposals."""
@@ -313,6 +324,7 @@ class LinkPendingGroup:
         )
 
 
+@row_set("groups")
 @dataclass(frozen=True, slots=True)
 class AccountLinksPendingPayload:
     """Payload for accounts_links_pending — pending review queue grouped by provisional account."""
@@ -400,6 +412,7 @@ class LinkHistoryRow:
         )
 
 
+@row_set("decisions")
 @dataclass(frozen=True, slots=True)
 class AccountLinksHistoryPayload:
     """Payload for accounts_links_history — decision log, newest first."""

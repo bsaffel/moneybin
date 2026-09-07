@@ -42,6 +42,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lists name currency pairs whose remedy is `moneybin fx set`, and
   `transfers_retired` is an operation total that `accounts_links_set` adds to
   with account-collapse reversals no matcher ever sees.
+- **An investment account fed by two sources at once no longer publishes wrong
+  numbers.** A broker import and a connector sync covering one account leave two
+  interleaved ledgers rather than one — every event exists twice, so lots
+  double-count and cost basis mixes two accountings — and investment dedup
+  across sources does not exist yet, so `core.dim_holdings` now withholds every
+  figure for such a position (`market_value`, `unrealized_gain`, `price_date`,
+  `price_source` and `days_since_observed` all NULL, never zero) under a new
+  `valuation_status` value, `source_overlap`. `system doctor`'s
+  `investment_source_overlap` check moves from `warn` to `fail` and names the
+  one remedy that clears it — reverting the imported batch, since a disconnect
+  keeps the rows already pulled — while the holdings, tax-lot and realized-gain
+  reads all disclose the state through a `warnings[]` entry and
+  `summary.degraded_reason` on the CLI and the `investments` MCP tool alike,
+  and a withheld holdings answer caveats the two views it points at. (#541)
+
 - **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
   says which.** A statically classified tool's declared tier could overwrite a
   higher tier the response had already derived, understating both the response
@@ -320,6 +335,56 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **Curation no longer disappears when a transaction is re-keyed.** A
+  transaction's canonical id is derived from its dedup group's most stable
+  member, so it changes when a steadier source backfills the same transaction —
+  or when a pending Plaid transaction posts under a fresh id. The forwarding map
+  that exists to keep the old id resolvable was built but never written to, so a
+  category, note, tag or split attached before the change was left pointing at an
+  id that no longer existed. On one profile, two merges orphaned 33 rows this
+  way. Accepting a merge, and the matcher run that follows a sync, now record the
+  old → new pointer and move the curation onto the surviving transaction, so the
+  annotation stays with the transaction it describes and `moneybin doctor` stops
+  reporting the orphans. Successive re-keys chain rather than collide, and an
+  already-annotated survivor keeps whichever categorization was authored with
+  more authority — a manual edit is never displaced by an automatic one. The
+  repair also runs from the other direction, for the case where the id changes
+  because rows *went away*: reverting the import that supplied a merged
+  transaction, or an ordinary Plaid sync removing one, hands the transaction back
+  to a surviving source and its annotations follow. Where the trail is genuinely
+  ambiguous — every id the transaction ever used is gone, or several are still in
+  use — the rows are left where they are and `moneybin doctor` reports them
+  rather than the guess being made for you. Undoing a merge
+  (`moneybin transactions matches undo`) puts every annotation back on the
+  transaction it was written against, including a category or a tag that the
+  merge had to delete because the two halves each carried one — so the merge
+  stays as reversible as it is advertised to be. The old → new pointer itself
+  stays: anything still holding the superseded id keeps resolving through it.
+  Splits get the same treatment for a
+  second reason: when both halves of a merge were already split, each allocation
+  stays where it is, because a survivor holding both would publish twice the
+  transaction's amount to every spending report and deleting either side would
+  discard a split you entered. `moneybin doctor` reports the splits left behind.
+  (#532)
+- **A total inflated by an undecided duplicate pair now says so.** Cross-source
+  dedup escalates a low-confidence duplicate to the review queue instead of
+  merging it silently — the right call — but both rows stay in
+  `core.fct_transactions` while the pair is undecided, so every total covering
+  them counted the payment twice and nothing marked the number provisional.
+  Every report downstream of the transactions fact — packaged, saved, or the
+  durable artifact an export writes — now carries the count of undecided
+  duplicate matches in `summary.degraded_reason` (prefixed
+  `pending_dedup_decisions:`, the same discriminator the stale-classification
+  warning uses) and names the review surface that clears it: `moneybin review
+  --type matches` in `actions` for the CLI, and a `reviews` recovery action an
+  agent can call from MCP. The count is profile-wide rather than scoped to the
+  rows on screen: a report returns aggregates, so which transactions it summed
+  is not recoverable from its result, and warning wider is the safe direction
+  of that imprecision. Deciding a pair rewrites `app.match_decisions` and
+  nothing else, so a report reading through a materialized model — net worth
+  and balance drift, both fed by the `kind="FULL"` `core.fct_balances_daily` —
+  keeps the doubled figure and the caveat until a refresh rebuilds it, and
+  points at `refresh_run` rather than the review queue. (#534)
 - **`reports merchants` and `reports large-transactions` run again.** Both
   failed on every profile with "The report's query could not run against the
   current schema", and the `reports` MCP tool failed the same way for
@@ -515,6 +580,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`MONEYBIN_MCP__MAX_CHARS` and `MONEYBIN_MCP__ALLOWED_TABLES` remain accepted but are inert compatibility settings.** `moneybin mcp config` no longer presents `max_chars` as an active limit. (#481)
 
 ### Added
+- **`system doctor` now reports an account name that collides with the reserved
+  `Unnamed account` placeholder.** MoneyBin shows that exact label for an
+  account nothing could name, so a second account wearing a fold of it — a
+  case, padding, or Unicode variant — hijacks every lookup for that label:
+  `app_account_settings_reserved_display_name` finds one you stored and
+  `dim_accounts_reserved_display_name` one a source supplied, each reporting
+  the affected account ids and the rename that clears them. `moneybin import
+  --account-metadata display_name=…` now refuses such a name as `moneybin
+  accounts set --display-name` already did, so a rename survives re-importing
+  the same file. (#533)
 - **A getting-started guide and a reports guide, built from real transcripts.**
   `docs/guides/getting-started.md` walks a clean machine to a first report
   and a first MCP question, and `docs/guides/reports.md` runs all eight

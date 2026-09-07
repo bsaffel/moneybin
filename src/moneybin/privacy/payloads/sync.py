@@ -26,6 +26,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import row_set
 
 # ---------------------------------------------------------------------------
 # sync_pull — per-institution result row
@@ -49,6 +50,7 @@ class SyncPullInstitutionRow:
 # ---------------------------------------------------------------------------
 
 
+@row_set("institutions")
 @dataclass(frozen=True, slots=True)
 class SyncPullPayload:
     """Payload for ``sync_pull`` — pull result envelope.
@@ -137,6 +139,7 @@ class SyncConnectionRow:
 # ---------------------------------------------------------------------------
 
 
+@row_set("connections")
 @dataclass(frozen=True, slots=True)
 class SyncStatusPayload:
     """Payload for ``sync_status`` — list of connected institutions."""
@@ -216,6 +219,7 @@ class SyncLinkStatusPayload:
     expiration: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set("connections")
 class SyncGlobalStatusView(BaseModel):
     """Global consolidated sync status."""
 

@@ -44,6 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # import_files — per-file result row
@@ -163,6 +164,7 @@ class ImportConfirmationPayload(TypedDict, total=False):
     account_proposals: list[ImportConfirmationAccountProposal]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class CLIConfirmationRequiredPayload:
     """The CLI's ``confirmation_required`` envelope ``data``.
@@ -208,6 +210,7 @@ class CLIConfirmationRequiredPayload:
     account_proposals: list[ImportConfirmationAccountProposal]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportPerFileRow:
     """Per-file outcome inside ImportFilesPayload.files."""
@@ -253,6 +256,7 @@ class ImportPerFileRow:
 # ---------------------------------------------------------------------------
 
 
+@row_set("files")
 @dataclass(frozen=True, slots=True)
 class ImportFilesPayload:
     """Payload for ``import_files`` — batch import result."""
@@ -301,6 +305,7 @@ class ImportFormatInfoPayload:
     file_size_bytes: Annotated[int | None, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportPreviewPayload:
     """Payload for ``import_preview`` — structure and sample of a file.
@@ -331,6 +336,7 @@ class ImportPreviewPayload:
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 class ImportTabularPreviewCoarsePayload(BaseModel):
     """Persisted tabular preview plus its confirmable trust-state handle."""
 
@@ -358,6 +364,7 @@ class ImportTabularPreviewCoarsePayload(BaseModel):
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
 
 
+@row_set("rows")
 class ImportBridgeTablePreview(BaseModel):
     """One bridge table whose cells remain usable for recipe generation."""
 
@@ -368,6 +375,7 @@ class ImportBridgeTablePreview(BaseModel):
     rows: list[list[Annotated[str, DataClass.DESCRIPTION]]]
 
 
+@row_set("tables_preview")
 class ImportBridgeStatementPayload(BaseModel):
     """Raw PDF bridge request whose statement content must remain usable."""
 
@@ -433,6 +441,7 @@ class ImportPdfSignSample(BaseModel):
     as_recorded: Annotated[str, DataClass.TXN_AMOUNT]
 
 
+@row_set(NO_ROW_SET)
 class ImportPdfSignPreviewPayload(BaseModel):
     """Human-confirmable credit-card sign inversion preview."""
 
@@ -467,6 +476,7 @@ ImportPreviewCoarsePayload = Annotated[
 # ---------------------------------------------------------------------------
 
 
+@row_set("records")
 @dataclass(frozen=True, slots=True)
 class ImportStatusPayload:
     """Payload for ``import_status`` — list of past import log records.
@@ -499,6 +509,7 @@ class ImportRawTableRow:
     date_max: Annotated[str | None, DataClass.AGGREGATE]
 
 
+@row_set("tables")
 @dataclass(frozen=True, slots=True)
 class ImportRawSummaryPayload:
     """Payload for ``moneybin import status`` — what has been ingested so far.
@@ -541,6 +552,7 @@ class ImportSavedFormatDeletePayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportFormatRow:
     """One tabular format entry in ``ImportFormatsPayload.formats``."""
@@ -576,6 +588,7 @@ ImportFormatEntry = ImportFormatRow | ImportPdfFormatRow
 """Either kind of format, told apart by its ``type`` field."""
 
 
+@row_set("formats")
 @dataclass(frozen=True, slots=True)
 class ImportFormatsPayload:
     """Payload for ``import_formats`` — every available format, tabular and PDF.
@@ -595,6 +608,7 @@ class ImportFormatsPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportFormatDetail:
     """Everything stored about one tabular format.
@@ -693,6 +707,7 @@ class ImportInboxPendingEntry(TypedDict, total=False):
     account_proposals: list[ImportConfirmationAccountProposal]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportInboxSyncPayload:
     """Payload for ``import_inbox_sync`` — drain result.
@@ -742,6 +757,7 @@ class ImportInboxSyncPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class ImportInboxPendingPayload:
     """Payload for ``import_inbox_pending`` — preview of pending inbox files.
@@ -759,6 +775,7 @@ class ImportInboxPendingPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("records")
 class ImportStatusImportsSection(BaseModel):
     """Paginated import-log rows inside the dormant consolidated status read."""
 
@@ -768,6 +785,7 @@ class ImportStatusImportsSection(BaseModel):
     records: Annotated[list[dict[str, Any]], DataClass.AGGREGATE]
 
 
+@row_set("formats")
 class ImportStatusFormatsSection(BaseModel):
     """Available tabular and PDF formats inside consolidated import status."""
 
@@ -778,6 +796,7 @@ class ImportStatusFormatsSection(BaseModel):
     formats: list[ImportFormatEntry] = Field(default_factory=list)
 
 
+@row_set(NO_ROW_SET)
 class ImportStatusInboxSection(BaseModel):
     """Pending inbox files inside consolidated import status."""
 
@@ -794,6 +813,7 @@ ImportStatusSection = Annotated[
 ]
 
 
+@row_set("sections")
 class ImportStatusCoarsePayload(BaseModel):
     """Selected import status sections in deterministic request order."""
 
@@ -808,6 +828,7 @@ class ImportStatusCoarsePayload(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@row_set("labels")
 @dataclass(frozen=True, slots=True)
 class ImportLabelsSetPayload:
     """Payload for ``import_labels_set`` — label update confirmation.
@@ -821,6 +842,7 @@ class ImportLabelsSetPayload:
     labels: Annotated[list[str], DataClass.USER_NOTE]
 
 
+@row_set("accounts_created")
 class ImportTabularConfirmCoarsePayload(BaseModel):
     """Successful tabular preview confirmation."""
 
@@ -839,6 +861,7 @@ class ImportTabularConfirmCoarsePayload(BaseModel):
     """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
+@row_set("accounts_created")
 class ImportPdfBridgeAppliedPayload(BaseModel):
     """Successful PDF bridge confirmation."""
 
@@ -857,6 +880,7 @@ class ImportPdfBridgeAppliedPayload(BaseModel):
     """Accounts this confirmed import minted; empty when it adopted existing ones."""
 
 
+@row_set("accounts_created")
 class ImportPdfSignAppliedPayload(BaseModel):
     """Successful human-confirmed PDF sign inversion."""
 
@@ -890,6 +914,7 @@ class ImportPdfBridgeInvalidPayload(BaseModel):
     rows_diverged: Annotated[bool, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 class ImportConfirmRequiredPayload(BaseModel):
     """A non-sign confirmation the confirm call could not resolve on its own.
 

@@ -1370,6 +1370,7 @@ async def import_revert(
         result = ImportService(db).revert_confirmed(
             import_id,
             verify=lambda live: grant.verify(_import_revert_binding(live)),
+            actor="mcp",
         )
     if result.get("status") != "reverted":
         return _revert_failure_envelope(result)

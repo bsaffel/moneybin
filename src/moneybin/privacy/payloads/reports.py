@@ -7,6 +7,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 
 class ReportSemanticsPayload(BaseModel):
@@ -46,6 +47,7 @@ class ReportOutputColumn(BaseModel):
     data_class: Annotated[str, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 class ReportCatalogEntry(BaseModel):
     """Complete static metadata for one registered report."""
 
@@ -94,6 +96,7 @@ class ReportCatalogEntry(BaseModel):
         return self
 
 
+@row_set("reports")
 class ReportCatalogPayload(BaseModel):
     """The aggregate-only listing of every registered report."""
 
@@ -101,6 +104,7 @@ class ReportCatalogPayload(BaseModel):
     reports: Annotated[list[ReportCatalogEntry], DataClass.AGGREGATE]
 
 
+@row_set("rows")
 class ReportResultPayload(BaseModel):
     """One redacted report result with its actual runtime classification."""
 

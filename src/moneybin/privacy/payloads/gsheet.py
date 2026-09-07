@@ -38,6 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # Shared connection row — mirrors GSheetConnection.to_dict()
@@ -69,6 +70,7 @@ class GsheetConnectionRow:
 # ---------------------------------------------------------------------------
 
 
+@row_set("connections")
 @dataclass(frozen=True, slots=True)
 class GsheetConnectionsPayload:
     """Payload for ``gsheet`` and ``gsheet_status`` — list of connections."""
@@ -76,6 +78,7 @@ class GsheetConnectionsPayload:
     connections: list[GsheetConnectionRow]
 
 
+@row_set("connections")
 class GsheetConnectionsView(BaseModel):
     """Default Google Sheets connection collection projection."""
 
@@ -85,6 +88,7 @@ class GsheetConnectionsView(BaseModel):
     connections: list[GsheetConnectionRow]
 
 
+@row_set("connections")
 class GsheetStatusView(BaseModel):
     """Connection-health projection for one or every Google Sheet."""
 
@@ -105,6 +109,7 @@ GsheetCoarsePayload = Annotated[
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class GsheetDetection:
     """Column-detection sub-object inside a connect/reconnect result.
@@ -205,6 +210,7 @@ class GsheetPullRow:
     error_message: Annotated[str | None, DataClass.DESCRIPTION]
 
 
+@row_set("pulls")
 @dataclass(frozen=True, slots=True)
 class GsheetPullPayload:
     """Payload for ``gsheet_pull`` — per-connection pull results.
