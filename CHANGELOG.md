@@ -304,6 +304,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A categorization rule can no longer be created into a shadow.** Two rules
+  sharing a matcher fire on exactly the same transactions, so when they
+  disagreed about the category, priority and creation order silently picked a
+  winner while creation still reported success — sameness is now decided once by
+  a canonical matcher key shared by every activation path, and a same-matcher
+  proposal assigning a different category activates nothing and fails with
+  `taxonomy_rule_conflict` instead. The proposal is recorded in the new
+  `app.rule_conflicts` table and resolved explicitly — `replace`,
+  `reprioritize`, or `cancel` — through `reviews`/`reviews_decide` or
+  `moneybin transactions categorize rules list-conflicts`/`resolve`. Amount
+  bounds now reach DuckDB as `Decimal` on every write path, so a bound stores at
+  one grain no matter which surface wrote it and the matcher key can name the
+  value the row actually holds. **Behavior change:** a bound carrying more than
+  two decimal places now rounds half-up, so `5.015` stores `5.02` where the
+  float path previously stored `5.01`. (#540)
 - **Curation no longer disappears when a transaction is re-keyed.** A
   transaction's canonical id is derived from its dedup group's most stable
   member, so it changes when a steadier source backfills the same transaction —

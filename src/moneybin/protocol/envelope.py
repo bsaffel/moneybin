@@ -228,7 +228,7 @@ class ResponseEnvelope[T]:
     error: ErrorDetail | None = None
     next_cursor: str | None = None
     recovery_actions: list[RecoveryAction] | None = None
-    # Derived in __post_init__, never caller-supplied — see the method's docstring.
+    # Derived in __post_init__ from `error`; never set by a caller.
     status: Literal["ok", "error"] = "ok"
     # Internal observability only: per-call DataClass names for dynamic-SQL
     # tools, read by the @mcp_tool decorator to log accurate classes_returned.
@@ -241,8 +241,7 @@ class ResponseEnvelope[T]:
 
         `status` is a real field rather than a `to_dict()` computation so that
         every consumer of the envelope — the wire, direct dataclass readers,
-        and tests — sees one value from one source. Any caller-supplied value
-        is overwritten on purpose.
+        and tests — sees one value from one source.
         """
         self.status = "error" if self.error is not None else "ok"
 

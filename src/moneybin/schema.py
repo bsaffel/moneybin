@@ -101,6 +101,7 @@ _NON_PROVIDER_SCHEMA_FILES: list[str] = [
     "app_transaction_id_aliases.sql",
     "app_seed_source_priority.sql",
     "app_proposed_rules.sql",
+    "app_rule_conflicts.sql",
     "app_account_settings.sql",
     "app_profile_settings.sql",
     "app_balance_assertions.sql",

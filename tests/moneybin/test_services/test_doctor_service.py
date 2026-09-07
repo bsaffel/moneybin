@@ -781,10 +781,13 @@ def test_run_all_returns_expected_invariants(
     # pairs on account_id) + unproposed_cross_source_duplicates (the same two
     # sources *after* the link is accepted, which is where the overlap check
     # stops applying and dedup_reconciliation never applied)
+    # + rule_conflicts audit coverage (MB-124: the rule-conflict queue is a
+    # protected app.* table, so its writes carry the same coverage check)
     # + dim_accounts_reserved_label (the same fold reached through a source's
     # own account_label, which never touches app.*).
-    assert len(report.invariants) == 61
+    assert len(report.invariants) == 62
     names = [r.name for r in report.invariants]
+    assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names

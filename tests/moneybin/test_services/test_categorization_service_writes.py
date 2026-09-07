@@ -431,12 +431,13 @@ class TestCreateRules:
         assert row == (1,)
 
     @pytest.mark.unit
-    def test_different_category_output_is_new_rule(self, db: Database) -> None:
-        """Same matcher with a different category is currently treated as a new rule.
+    def test_different_category_output_is_a_conflict(self, db: Database) -> None:
+        """Same matcher, different category: refused rather than shadowed.
 
-        Conflict detection (same matcher, divergent output) is a deferred
-        follow-up — see docs/specs/moneybin-mcp.md "Rule-conflict
-        detection (follow-up)".
+        Before MB-124 this created a second active rule that priority and
+        creation order silently decided between, so one of the two had no
+        effect. Full conflict coverage lives in
+        ``test_categorization_rule_conflicts.py``.
         """
         svc = CategorizationService(db)
         first = svc.create_rules([
@@ -455,10 +456,10 @@ class TestCreateRules:
         ])
 
         assert first.created == 1
-        assert second.created == 1
-        assert first.rule_ids != second.rule_ids
+        assert second.created == 0
+        assert second.conflicts == 1
         row = db.execute("SELECT COUNT(*) FROM app.categorization_rules").fetchone()
-        assert row == (2,)
+        assert row == (1,)
 
     @pytest.mark.unit
     def test_deactivated_rule_does_not_dedup(self, db: Database) -> None:

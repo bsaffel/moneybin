@@ -16,6 +16,7 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+from moneybin.limits import to_amount_grain
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import CATEGORIZATION_RULES
@@ -88,8 +89,10 @@ class CategorizationRulesRepo(BaseRepo):
                     name,
                     merchant_pattern,
                     match_type,
-                    min_amount,
-                    max_amount,
+                    # Bound at the column's own grain so DuckDB never rounds:
+                    # its DOUBLE and DECIMAL casts disagree at a half cent.
+                    to_amount_grain(min_amount),
+                    to_amount_grain(max_amount),
                     account_id,
                     category,
                     subcategory,
@@ -183,8 +186,8 @@ class CategorizationRulesRepo(BaseRepo):
                     name,
                     merchant_pattern,
                     match_type,
-                    min_amount,
-                    max_amount,
+                    to_amount_grain(min_amount),
+                    to_amount_grain(max_amount),
                     account_id,
                     category,
                     subcategory,

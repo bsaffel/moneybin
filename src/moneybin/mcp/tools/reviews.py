@@ -1,9 +1,10 @@
-"""Normalized boundaries across MoneyBin's six review queues."""
+"""Normalized boundaries across MoneyBin's seven review queues."""
 
 from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Annotated, Any, Literal, cast
@@ -75,9 +76,15 @@ from moneybin.privacy.payloads.reviews import (
     ReviewsDecidePayload,
     ReviewsMatchesView,
     ReviewsMerchantLinksView,
+    ReviewsRuleConflictsView,
     ReviewsSecurityLinksView,
     ReviewsSummaryView,
     ReviewStatus,
+    RuleConflictHistoryDetails,
+    RuleConflictImpact,
+    RuleConflictMatcher,
+    RuleConflictPendingDetails,
+    RuleConflictReviewRow,
     SecurityLinkHistoryDetails,
     SecurityLinkPendingDetails,
     SecurityLinkReviewRow,
@@ -103,11 +110,15 @@ from moneybin.protocol.write_contracts import (
     IdentityDecisionRequest,
     OrdinaryReviewDecisionRequest,
     ReviewDecisionRequest,
+    RuleConflictDecisionRequest,
 )
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
-from moneybin.services.categorization import CategorizationService
+from moneybin.services.categorization import (
+    CategorizationService,
+    ConflictDecision,
+)
 from moneybin.services.identity_confirmation import (
     AccountMergeFacts,
     identity_confirm_message,
@@ -127,6 +138,7 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "categorization",
     "auto_rules",
     "matches",
+    "rule_conflicts",
     "account_links",
     "merchant_links",
     "security_links",
@@ -179,7 +191,7 @@ def _canonical_review_position(
     would match nothing at all rather than mis-order — which is why the shape
     is declared per queue here rather than guessed from the value.
     """
-    if status == "history":
+    if status == "history" or kind == "rule_conflicts":
         canonicalize = canonical_iso_timestamp
     elif kind == "categorization":
         canonicalize = canonical_iso_date
@@ -486,6 +498,112 @@ def _match_history_rows(service: MatchingService) -> list[MatchReviewRow]:
     return result
 
 
+def _conflict_matcher(row: Mapping[str, Any]) -> RuleConflictMatcher:
+    """Project the matcher both rules in a conflict share."""
+    return RuleConflictMatcher(
+        merchant_pattern=str(row["proposed_merchant_pattern"]),
+        match_type=str(row["proposed_match_type"]),
+        min_amount=(
+            float(row["proposed_min_amount"])
+            if row["proposed_min_amount"] is not None
+            else None
+        ),
+        max_amount=(
+            float(row["proposed_max_amount"])
+            if row["proposed_max_amount"] is not None
+            else None
+        ),
+        account_id=(
+            str(row["proposed_account_id"])
+            if row["proposed_account_id"] is not None
+            else None
+        ),
+    )
+
+
+def _conflict_label(category: str, subcategory: object) -> str:
+    """Render a category pair the way both surfaces show it."""
+    return f"{category} / {subcategory}" if subcategory else category
+
+
+def _pending_rule_conflict_rows(
+    service: CategorizationService,
+) -> list[RuleConflictReviewRow]:
+    """Project rule conflicts still describing live rule state."""
+    rows: list[RuleConflictReviewRow] = []
+    for row in service.list_rule_conflicts():
+        existing = _conflict_label(
+            str(row["existing_category"]), row["existing_subcategory"]
+        )
+        proposed = _conflict_label(
+            str(row["proposed_category"]), row["proposed_subcategory"]
+        )
+        rows.append(
+            RuleConflictReviewRow(
+                decision_id=str(row["conflict_id"]),
+                status="pending",
+                created_at=_text(row["detected_at"]),
+                summary=(
+                    f"{row['proposed_merchant_pattern']}: {existing} vs {proposed}"
+                ),
+                details=RuleConflictPendingDetails(
+                    matcher=_conflict_matcher(row),
+                    existing_rule_id=str(row["existing_rule_id"]),
+                    existing_name=str(row["existing_name"]),
+                    existing_category=str(row["existing_category"]),
+                    existing_subcategory=row["existing_subcategory"],
+                    existing_priority=int(row["existing_priority"]),
+                    proposed_name=str(row["proposed_name"]),
+                    proposed_category=str(row["proposed_category"]),
+                    proposed_subcategory=row["proposed_subcategory"],
+                    proposed_priority=int(row["proposed_priority"]),
+                    winner_rule_id=str(row["existing_rule_id"]),
+                    reason=(
+                        f"Rule {row['existing_rule_id']} already matches this "
+                        f"pattern and assigns {existing}; the proposal assigns "
+                        f"{proposed}."
+                    ),
+                ),
+            )
+        )
+    return rows
+
+
+def _rule_conflict_history_rows(
+    service: CategorizationService,
+) -> list[RuleConflictReviewRow]:
+    """Project settled rule conflicts."""
+    rows: list[RuleConflictReviewRow] = []
+    for row in service.list_rule_conflict_history():
+        resolution = cast(
+            Literal["replace", "reprioritize", "cancel"], row["resolution"]
+        )
+        rows.append(
+            RuleConflictReviewRow(
+                decision_id=str(row["conflict_id"]),
+                status="resolved",
+                created_at=_text(row["resolved_at"]),
+                summary=(f"{row['proposed_merchant_pattern']}: {resolution}"),
+                details=RuleConflictHistoryDetails(
+                    matcher=_conflict_matcher(row),
+                    existing_rule_id=str(row["existing_rule_id"]),
+                    existing_category=str(row["existing_category"]),
+                    existing_subcategory=row["existing_subcategory"],
+                    proposed_name=str(row["proposed_name"]),
+                    proposed_category=str(row["proposed_category"]),
+                    proposed_subcategory=row["proposed_subcategory"],
+                    resolution=resolution,
+                    resolved_rule_id=(
+                        str(row["resolved_rule_id"])
+                        if row["resolved_rule_id"] is not None
+                        else None
+                    ),
+                ),
+            )
+        )
+    return rows
+
+
 def _pending_account_link_rows(
     service: AccountLinksService,
 ) -> list[AccountLinkReviewRow]:
@@ -667,6 +785,14 @@ def _load_review_view(
             else _match_history_rows(match_service)
         )
         return ReviewsMatchesView(status=status, rows=rows)
+    if kind == "rule_conflicts":
+        conflict_service = CategorizationService(db)
+        rows = (
+            _pending_rule_conflict_rows(conflict_service)
+            if status == "pending"
+            else _rule_conflict_history_rows(conflict_service)
+        )
+        return ReviewsRuleConflictsView(status=status, rows=rows)
     if kind == "account_links":
         account_service = AccountLinksService(db, actor="mcp")
         rows = (
@@ -712,6 +838,8 @@ def _review_key_contract(
         return ((str,), ("asc",))
     if kind == "matches":
         return ((float, str), ("desc", "asc"))
+    if kind == "rule_conflicts":
+        return ((str, str), ("asc", "asc"))
     if kind == "account_links":
         return ((str, str), ("asc", "asc"))
     return ((str, str, str), ("asc", "asc", "asc"))
@@ -748,6 +876,11 @@ def _review_ordering(
                 float(row.details.match.confidence_score or 0.0),
                 str(row.decision_id),
             ),
+            directions,
+        )
+    if kind == "rule_conflicts":
+        return (
+            (_text(row.created_at) or "", str(row.decision_id)),
             directions,
         )
     if kind == "account_links":
@@ -819,6 +952,13 @@ def _review_count(
             if status == "pending"
             else service.count_proposal_history()
         )
+    if kind == "rule_conflicts":
+        categorization = CategorizationService(db)
+        return (
+            categorization.count_rule_conflicts()
+            if status == "pending"
+            else categorization.count_rule_conflict_history()
+        )
     return len(_view_rows(_load_review_view(db, kind=kind, status=status)))
 
 
@@ -837,7 +977,7 @@ def _review_actions(
     else:
         decision_tool = (
             "reviews_decide"
-            if kind in {"categorization", "auto_rules", "matches"}
+            if kind in {"categorization", "auto_rules", "matches", "rule_conflicts"}
             else "identity_links_decide"
         )
         actions = [f"Use {decision_tool} to decide a row from this queue"]
@@ -865,6 +1005,7 @@ def reviews_coarse(
         "categorization",
         "auto_rules",
         "matches",
+        "rule_conflicts",
         "account_links",
         "merchant_links",
         "security_links",
@@ -963,7 +1104,10 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
         reviews_coarse,
         "reviews",
         "Return exact review counts or one normalized pending/history queue "
-        "with deterministic cursor pagination.",
+        "with deterministic cursor pagination. kind='rule_conflicts' holds "
+        "categorization rules refused because an active rule already matches "
+        "the same transactions under a different category; each row names the "
+        "rule deciding today and the category the refused rule wanted.",
         privacy_actor="reviews",
     )
 
@@ -972,9 +1116,10 @@ def register_review_coarse_reads(mcp: FastMCP) -> None:
 def reviews_decide_coarse(
     decisions: list[ReviewDecisionRequest],
 ) -> ResponseEnvelope[ReviewsDecidePayload]:
-    """Accept or reject one atomic ordinary or auto-rule decision batch."""
+    """Accept or reject one atomic ordinary, auto-rule, or conflict batch."""
     operation_id = current_operation_id()
     auto_rule_impact: AutoAcceptPayload | None = None
+    rule_conflict_impact: RuleConflictImpact | None = None
     # Stays None on the auto-rule branch, which folds no match edge and so
     # runs no reconciliation — distinct from a pass that reversed nothing.
     transfers_retired: int | None = None
@@ -984,7 +1129,52 @@ def reviews_decide_coarse(
             for decision in decisions
             if isinstance(decision, AutoRuleDecisionRequest)
         ]
-        if auto_rule_decisions:
+        conflict_decisions = [
+            decision
+            for decision in decisions
+            if isinstance(decision, RuleConflictDecisionRequest)
+        ]
+        if conflict_decisions:
+            if len(conflict_decisions) != len(decisions):
+                raise UserError(
+                    "Rule-conflict and other decisions require separate "
+                    "atomic batches.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
+            resolutions = CategorizationService(db).resolve_rule_conflicts(
+                [
+                    ConflictDecision(
+                        conflict_id=decision.decision_id,
+                        resolution=decision.decision,
+                        priority=decision.priority,
+                    )
+                    for decision in conflict_decisions
+                ],
+                actor="mcp",
+            )
+            rule_conflict_impact = RuleConflictImpact(
+                resolved=len(resolutions),
+                activated_rule_ids=[
+                    item.rule_id for item in resolutions if item.rule_id is not None
+                ],
+                superseded_rule_ids=[
+                    rule_id
+                    for item in resolutions
+                    for rule_id in item.superseded_rule_ids
+                ],
+            )
+            outcomes = [
+                ReviewDecisionOutcome(
+                    kind="rule_conflict",
+                    decision_id=item.conflict_id,
+                    decision=item.resolution,
+                    status="resolved",
+                    changed=True,
+                    operation_id=operation_id,
+                )
+                for item in resolutions
+            ]
+        elif auto_rule_decisions:
             if len(auto_rule_decisions) != len(decisions):
                 raise UserError(
                     "Auto-rule and ordinary decisions require separate atomic batches.",
@@ -1072,6 +1262,7 @@ def reviews_decide_coarse(
             applied_count=sum(item.changed for item in outcomes),
             operation_id=operation_id,
             auto_rule_impact=auto_rule_impact,
+            rule_conflict_impact=rule_conflict_impact,
             transfers_retired=transfers_retired,
         ),
         actions=actions,
@@ -1334,13 +1525,17 @@ def register_review_coarse_writes(mcp: FastMCP) -> None:
         mcp,
         reviews_decide_coarse,
         "reviews_decide",
-        "Accept or reject an atomic batch of transaction, match, or auto-rule "
-        "review decisions. Auto-rule decisions use kind='auto_rule' and may set "
-        "allow_broad after inspecting estimated_match_count; keep auto-rule and "
-        "ordinary decisions in separate calls. Accepting a match can reverse a "
-        "transfer the user already accepted, once one component holds both its "
-        "legs: `transfers_retired` counts those, and each result's `status` is "
-        "what committed — an accept that loses that tiebreak reads 'reversed'.",
+        "Accept or reject an atomic batch of transaction, match, auto-rule, or "
+        "rule-conflict review decisions. Auto-rule decisions use "
+        "kind='auto_rule' and may set allow_broad after inspecting "
+        "estimated_match_count; kind='rule_conflict' takes replace (supersede "
+        "the existing rule), reprioritize (activate beside it at an explicit "
+        "priority), or cancel, writing app.categorization_rules and "
+        "app.rule_conflicts — reverse either with system_audit_undo. Keep each "
+        "kind in its own call. Accepting a match can reverse a transfer the "
+        "user already accepted, once one component holds both its legs: "
+        "`transfers_retired` counts those, and each result's `status` is what "
+        "committed — an accept that loses that tiebreak reads 'reversed'.",
         privacy_actor="reviews_decide",
     )
     register(
