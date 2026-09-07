@@ -808,7 +808,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Transaction annotations** | Tags, notes, cash breakdowns as metadata on existing transactions |
 | **Privacy middleware** | Shared classification, critical-field masking, and response filtering; global consent enforcement remains deferred |
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
-| **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
+| **Response envelope** | Consistent `{status, summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
 | **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Optional host-native deferral uses the same registry — see §3. |
 
