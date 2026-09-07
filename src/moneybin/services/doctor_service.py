@@ -24,6 +24,7 @@ from moneybin.services.account_resolution_types import (
     UNNAMED_ACCOUNT_LABEL,
     is_reserved_account_name,
 )
+from moneybin.services.categorization import CategorizationService
 from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
@@ -3173,17 +3174,15 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_categorization_coverage(self) -> InvariantResult:
-        """Warn (not fail) when <50% of non-transfer transactions are categorized."""
+        """Warn (not fail) when <50% of the transactions needing a category have one.
+
+        Delegates the counting so this check and ``categorize stats`` cannot
+        report different coverage for the same database: one query, scoped to
+        the population ``core.uncategorized_queue`` is drawn from, so the
+        percentage describes work ``moneybin review`` will actually offer.
+        """
         try:
-            row = self._db.execute(
-                f"""
-                SELECT
-                    COUNT(*) FILTER (WHERE category IS NULL) AS uncategorized,
-                    COUNT(*) AS total
-                FROM {FCT_TRANSACTIONS.full_name}
-                WHERE NOT COALESCE(is_transfer, FALSE)
-                """  # noqa: S608 — TableRef constant, not user input
-            ).fetchone()
+            coverage = CategorizationService(self._db).coverage()
         except Exception:  # noqa: BLE001 — core schema may not exist before first transform
             return InvariantResult(
                 name="categorization_coverage",
@@ -3191,23 +3190,27 @@ class DoctorService:
                 detail="fct_transactions not available",
                 affected_ids=[],
             )
-        if not row or row[1] == 0:
+        if coverage.categorizable == 0:
             return InvariantResult(
                 name="categorization_coverage",
                 status="pass",
                 detail=None,
                 affected_ids=[],
             )
-        uncategorized, total = int(row[0]), int(row[1])
         # Use unrounded ratio for the threshold so values like 49.6% categorized
         # correctly trigger the warning instead of rounding up to 50 and passing.
-        pct_categorized = (total - uncategorized) / total * 100
+        pct_categorized = coverage.categorized / coverage.categorizable * 100
         if pct_categorized < 50:
-            pct_uncategorized = round(uncategorized / total * 100)
+            pct_uncategorized = round(
+                coverage.uncategorized / coverage.categorizable * 100
+            )
             return InvariantResult(
                 name="categorization_coverage",
                 status="warn",
-                detail=f"{pct_uncategorized}% of non-transfer transactions are uncategorized",
+                detail=(
+                    f"{pct_uncategorized}% of the transactions needing a "
+                    "category are uncategorized"
+                ),
                 affected_ids=[],
             )
         return InvariantResult(

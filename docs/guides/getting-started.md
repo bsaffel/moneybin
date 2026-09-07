@@ -144,7 +144,7 @@ The display name is institution, account type, and last four. The account-number
 ```console
 $ uv run moneybin system doctor
 Using profile: personal
-⚠️  categorization_coverage — 100% of non-transfer transactions are uncategorized
+⚠️  categorization_coverage — 100% of the transactions needing a category are uncategorized
    💡 [suggested] transactions_categorize_run(methods=['rules', 'merchants']) — Run the deterministic categorization cascade (rules + merchants) to raise coverage above the 50% threshold. Suggested (not certain) because the cascade applies 0 rows when no active rules or merchant mappings match the remaining uncategorized transactions — re-run the doctor after to verify.
 
 61 invariants checked across 20 transactions — 60 passing, 1 warn, 0 skipped

@@ -155,7 +155,13 @@ CategorizationRulesCoarsePayload = (
 
 @dataclass(frozen=True, slots=True)
 class CategorizeStatsPayload:
-    """Payload for transactions_categorize_stats — aggregate counts only."""
+    """Payload for transactions_categorize_stats — aggregate counts only.
+
+    Every count covers the population core.uncategorized_queue is drawn from,
+    so ``total_transactions`` is how many transactions need a category, not how
+    many exist. The three counts reconcile and ``by_source`` sums to
+    ``categorized``.
+    """
 
     total_transactions: Annotated[int, DataClass.AGGREGATE]
     categorized: Annotated[int, DataClass.AGGREGATE]
