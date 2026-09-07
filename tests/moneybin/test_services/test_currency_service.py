@@ -212,6 +212,62 @@ def test_a_fetched_rate_is_stored_so_the_next_call_reads_the_cache(
     assert row == (Decimal("0.92000000"), "frankfurter")
 
 
+def test_a_newly_fetched_rate_restates_fx_accounting(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    restated: list[tuple[Database, str]] = []
+
+    def record_restatement(
+        called_db: Database, *, committed_change: str = "setting"
+    ) -> None:
+        restated.append((called_db, committed_change))
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        record_restatement,
+    )
+    adapter = _StubAdapter(
+        RateObservation("USD", "EUR", _MON, Decimal("0.92"), "frankfurter")
+    )
+    service = CurrencyService(db, adapter=adapter)
+
+    service.resolve_rate("USD", "EUR", _MON)
+    service.resolve_rate("USD", "EUR", _MON)
+
+    assert restated == [(db, "exchange rate")]
+
+
+def test_a_fetched_rate_remains_cached_when_fx_restatement_fails(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failure = UserError(
+        "The exchange rate was saved, but derived FX accounting could not be rebuilt.",
+        code=error_codes.REFRESH_MODEL_FAILED,
+    )
+
+    def fail_restatement(_db: Database, *, committed_change: str = "setting") -> None:
+        raise failure
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        fail_restatement,
+    )
+    service = CurrencyService(
+        db,
+        adapter=_StubAdapter(
+            RateObservation("USD", "EUR", _MON, Decimal("0.92"), "frankfurter")
+        ),
+    )
+
+    with pytest.raises(UserError) as caught:
+        service.resolve_rate("USD", "EUR", _MON)
+
+    assert caught.value.code == error_codes.REFRESH_MODEL_FAILED
+    assert db.execute(
+        "SELECT rate FROM raw.exchange_rates WHERE rate_date = ?", [_MON]
+    ).fetchone() == (Decimal("0.92000000"),)
+
+
 def test_a_weekend_resolves_to_the_recorded_business_day(db: Database) -> None:
     """2026-03-15 is a Sunday. The Friday rate answers, and the result says so."""
     adapter = _StubAdapter(

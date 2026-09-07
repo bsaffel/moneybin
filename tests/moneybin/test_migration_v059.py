@@ -1,4 +1,4 @@
-"""V058: reserve the received leg for single-row currency conversions."""
+"""V059: reserve the received leg for single-row currency conversions."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from decimal import Decimal
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V058__add_currency_conversion_shape import migrate
+from moneybin.sql.migrations.V059__add_currency_conversion_shape import migrate
 from tests.moneybin.migration_helpers import run_migration
 
 _TABLES = (
@@ -19,41 +19,41 @@ _TABLES = (
 
 
 @pytest.fixture
-def pre_v058_db(db: Database) -> Database:
-    """Four populated pre-V058 tables without the received-leg columns."""
+def pre_v059_db(db: Database) -> Database:
+    """Four populated pre-V059 tables without the received-leg columns."""
     for table in _TABLES:
         db.execute(f"DROP TABLE {table}")  # noqa: S608  # closed internal table set
         db.execute(  # noqa: S608  # closed internal table set
             f"CREATE TABLE {table} (source_transaction_id VARCHAR, amount DECIMAL(18, 2))"
         )
         db.execute(
-            f"INSERT INTO {table} VALUES ('txn-before-v058', 125.50)"  # noqa: S608  # closed internal table set
+            f"INSERT INTO {table} VALUES ('txn-before-v059', 125.50)"  # noqa: S608  # closed internal table set
         )
     return db
 
 
 @pytest.mark.parametrize("table", _TABLES)
-def test_v058_adds_nullable_received_leg_without_rewriting_rows(
-    pre_v058_db: Database, table: str
+def test_v059_adds_nullable_received_leg_without_rewriting_rows(
+    pre_v059_db: Database, table: str
 ) -> None:
-    run_migration(pre_v058_db, migrate)
-    run_migration(pre_v058_db, migrate)
+    run_migration(pre_v059_db, migrate)
+    run_migration(pre_v059_db, migrate)
 
     columns = {
         row[1]
-        for row in pre_v058_db.execute(
+        for row in pre_v059_db.execute(
             f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
         ).fetchall()
     }
     assert {"to_amount", "to_currency"} <= columns
-    assert pre_v058_db.execute(
+    assert pre_v059_db.execute(
         f"SELECT source_transaction_id, amount, to_amount, to_currency FROM {table}"  # noqa: S608  # closed internal table set
-    ).fetchall() == [("txn-before-v058", Decimal("125.50"), None, None)]
+    ).fetchall() == [("txn-before-v059", Decimal("125.50"), None, None)]
 
 
 @pytest.mark.fresh_db
 @pytest.mark.parametrize("table", _TABLES)
-def test_v058_upgrade_column_order_matches_fresh_schema(
+def test_v059_upgrade_column_order_matches_fresh_schema(
     db: Database, table: str
 ) -> None:
     """An upgraded table has the same ordered schema as a fresh install."""
@@ -64,16 +64,16 @@ def test_v058_upgrade_column_order_matches_fresh_schema(
         ).fetchall()
     ]
     schema, table_name = table.split(".")
-    pre_v058_table = f"{schema}._pre_v058_{table_name}"
+    pre_v059_table = f"{schema}._pre_v059_{table_name}"
     db.execute(
-        f"CREATE TABLE {pre_v058_table} AS "  # noqa: S608  # closed internal table set
+        f"CREATE TABLE {pre_v059_table} AS "  # noqa: S608  # closed internal table set
         f"SELECT * EXCLUDE (to_amount, to_currency) FROM {table} LIMIT 0"
     )
     db.execute(
         f"DROP TABLE {table} CASCADE"  # noqa: S608  # isolated test database
     )
     db.execute(
-        f"ALTER TABLE {pre_v058_table} RENAME TO {table_name}"  # noqa: S608  # closed internal table set
+        f"ALTER TABLE {pre_v059_table} RENAME TO {table_name}"  # noqa: S608  # closed internal table set
     )
 
     run_migration(db, migrate)

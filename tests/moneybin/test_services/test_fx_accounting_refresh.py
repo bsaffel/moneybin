@@ -215,6 +215,7 @@ def test_restate_failure_reports_that_an_undo_was_committed(
     [
         ("setting", "setting was saved"),
         ("match decision", "match decision was committed"),
+        ("exchange rate", "exchange rate was saved"),
         ("undo", "undo was committed"),
     ],
 )

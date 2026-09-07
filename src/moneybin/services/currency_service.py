@@ -399,7 +399,14 @@ class CurrencyService:
 
     def _store(self, observation: RateObservation) -> int:
         """Append one observation to the cache, returning rows actually written."""
-        return self.store_observations((observation,))
+        written = self.store_observations((observation,))
+        if written:
+            from moneybin.services.fx_accounting_refresh import (
+                restate_fx_accounting,
+            )
+
+            restate_fx_accounting(self._db, committed_change="exchange rate")
+        return written
 
     def store_observations(self, observations: Sequence[RateObservation]) -> int:
         """Append observations to the cache, returning rows actually written.

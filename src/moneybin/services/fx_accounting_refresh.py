@@ -19,11 +19,15 @@ _FX_ACCOUNTING_ROOT_MODEL = "core.bridge_currency_conversions"
 _ACCOUNT_ROOT_MODEL = "core.dim_accounts"
 
 
-CommittedChange = Literal["setting", "match decision", "undo"]
+CommittedChange = Literal["setting", "exchange rate", "match decision", "undo"]
 
 
 def _committed_refresh_error(*, committed_change: CommittedChange) -> UserError:
-    verb = "was saved" if committed_change == "setting" else "was committed"
+    verb = (
+        "was saved"
+        if committed_change in ("setting", "exchange rate")
+        else "was committed"
+    )
     return UserError(
         f"The {committed_change} {verb}, but derived FX accounting could not be rebuilt.",
         code=error_codes.REFRESH_MODEL_FAILED,
