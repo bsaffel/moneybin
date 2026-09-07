@@ -413,7 +413,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account's net worth steps down by the loan on the first sync after
   upgrading, and the history before that date stays overstated. Plaid returns
   current balances only, so those amounts were never sent and cannot be
-  reconstructed.
+  reconstructed. (#565)
 - **A categorization rule can no longer be created into a shadow.** Two rules
   sharing a matcher fire on exactly the same transactions, so when they
   disagreed about the category, priority and creation order silently picked a
