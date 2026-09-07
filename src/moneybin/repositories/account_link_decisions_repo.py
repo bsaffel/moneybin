@@ -49,7 +49,7 @@ _PRE_V051_COLS = ", ".join(
 
 def _refresh_account_link_pending_gauge(db: Database) -> None:
     """Avoid a repository-to-service import cycle until the gauge is needed."""
-    from moneybin.services.account_resolver import (  # noqa: PLC0415 — repo→service import must stay lazy
+    from moneybin.services.account_resolver import (
         refresh_account_link_pending_gauge,
     )
 

@@ -141,10 +141,10 @@ def categories_delete(
     --force is passed. Default (seeded) categories cannot be deleted — disable
     them with `moneybin categories set <id> --inactive` instead.
     """
-    from moneybin.privacy.payloads.categories import (  # noqa: PLC0415
+    from moneybin.privacy.payloads.categories import (
         CategoryDeletePayload,
     )
-    from moneybin.services.categorization import (  # noqa: PLC0415
+    from moneybin.services.categorization import (
         CategorizationService,
     )
 

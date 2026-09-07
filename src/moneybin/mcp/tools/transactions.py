@@ -824,7 +824,7 @@ def transactions_matches_run() -> ResponseEnvelope[MatchRunPayload]:
     not read `auto_merged=0` as "nothing changed". A non-zero count undoes a
     decision the user made: report it and point at `system_audit_undo`.
     """
-    from moneybin.matching.engine import MatchRunError  # noqa: PLC0415 — cycle
+    from moneybin.matching.engine import MatchRunError
 
     with get_database(read_only=False) as db:
         try:

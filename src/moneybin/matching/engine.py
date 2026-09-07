@@ -160,7 +160,7 @@ class TransactionMatcher:
         # Deferred import: engine is loaded via services.__init__ →
         # matching_service → engine, and the repo's base → services.audit_service
         # chain re-enters that path; a module-top import here would cycle.
-        from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415
+        from moneybin.repositories.match_decisions_repo import (
             MatchDecisionsRepo,
         )
 

@@ -144,8 +144,8 @@ def investments_prices_pull(
     ):
         # Deferred: the adapters pull in httpx, which every CLI invocation would
         # otherwise pay for at import time (cli.md cold-start hygiene).
-        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
-        from moneybin.services.price_service import build_price_service  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module
+        from moneybin.services.price_service import build_price_service
 
         start = parse_cli_date(since, "--since") if since else None
         with get_database(read_only=False) as db:
@@ -261,8 +261,8 @@ def investments_prices_set(
         cli_actor="investments_prices_set",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
-        from moneybin.services.price_service import build_price_service  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module
+        from moneybin.services.price_service import build_price_service
 
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_set")
@@ -340,8 +340,8 @@ def investments_prices_delete(
         cli_actor="investments_prices_delete",
         payload_type=InvestmentPriceMarkPayload,
     ):
-        from moneybin.orchestration import refresh as refresh_module  # noqa: PLC0415
-        from moneybin.services.price_service import build_price_service  # noqa: PLC0415
+        from moneybin.orchestration import refresh as refresh_module
+        from moneybin.services.price_service import build_price_service
 
         with get_database(read_only=False) as db:
             service = build_price_service(db, actor="investments_prices_delete")
@@ -414,7 +414,7 @@ def investments_prices_list(
         cli_actor="investments_prices_list",
         payload_type=InvestmentPricesPayload,
     ):
-        from moneybin.services.price_service import build_price_service  # noqa: PLC0415
+        from moneybin.services.price_service import build_price_service
 
         with get_database(read_only=True) as db:
             service = build_price_service(db, actor="investments_prices_list")
@@ -476,7 +476,7 @@ def investments_prices_token(
         typer.echo("error: token must not be empty", err=True)
         raise typer.Exit(2)
     with handle_cli_errors(cli_actor="investments_prices_token"):
-        from moneybin.secrets import (  # noqa: PLC0415  # keyring import is not cold-start cheap
+        from moneybin.secrets import (  # keyring import is not cold-start cheap
             TIINGO_API_TOKEN_KEY,
             SecretStore,
         )

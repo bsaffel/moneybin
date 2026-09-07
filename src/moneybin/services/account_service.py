@@ -406,7 +406,7 @@ class AccountService:
         # account_service → repo, still mid-init), a module-level import here fails
         # with "partially initialized module". budget_service can import its repo
         # at module level only because it is NOT re-exported by services/__init__.
-        from moneybin.repositories.account_settings_repo import (  # noqa: PLC0415
+        from moneybin.repositories.account_settings_repo import (
             AccountSettingsRepo,
         )
 

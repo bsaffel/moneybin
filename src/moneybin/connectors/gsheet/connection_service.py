@@ -365,7 +365,7 @@ class GSheetConnectionService:
         resolved_account_id: str | None = req.account_id
         if target_adapter == "transactions" and not resolved_account_id:
             if req.account_name:
-                from moneybin.services.account_service import (  # noqa: PLC0415
+                from moneybin.services.account_service import (
                     AccountService,
                 )
 

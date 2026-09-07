@@ -175,7 +175,8 @@ class CategorizationOrchestrator:
             # mirrors the apply_merchant_categories tail call). Runs
             # unconditionally — even a precedence-skipped row's rung-3
             # proposal must not leave the gauge stale until the next batch op.
-            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+            # deferred: module-scope import would cycle
+            from moneybin.services.merchant_resolver import (
                 refresh_merchant_link_pending_gauge,
             )
 
@@ -269,7 +270,7 @@ class CategorizationOrchestrator:
         txn_ids = [item.transaction_id for item in items]
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
-        from moneybin.services.auto_rule_service import (  # noqa: PLC0415 — deferred to avoid circular import
+        from moneybin.services.auto_rule_service import (
             AutoRuleService,
             RecordingContext,
             TxnRow,
@@ -546,7 +547,7 @@ class CategorizationOrchestrator:
         MerchantResolver imports back into this package's applier, so a
         top-level import cycles.
         """
-        from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+        from moneybin.services.merchant_resolver import (
             MerchantResolver,
         )
 
@@ -857,7 +858,8 @@ class CategorizationOrchestrator:
         # when nothing changed — a single COUNT(*) that degrades to 0 when the
         # decisions table is absent.
         if resolver is not None:
-            from moneybin.services.merchant_resolver import (  # noqa: PLC0415 — deferred to avoid circular import
+            # deferred: module-scope import would cycle
+            from moneybin.services.merchant_resolver import (
                 refresh_merchant_link_pending_gauge,
             )
 

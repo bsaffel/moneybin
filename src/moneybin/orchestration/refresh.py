@@ -499,18 +499,18 @@ def _run_gsheet_step(db: Database) -> list[Any]:
     """Best-effort GSheet pull step. Failures log-only — never propagated."""
     # Deferred as one block: GSheetPullService reaches polars (+252 modules on
     # this module's import), and this module is on the CLI cold-start path.
-    from moneybin.config import get_settings  # noqa: PLC0415
+    from moneybin.config import get_settings
     from moneybin.connectors.gsheet.oauth_client import (
-        GoogleOAuthClient,  # noqa: PLC0415
+        GoogleOAuthClient,
     )
     from moneybin.connectors.gsheet.pull_service import (
-        GSheetPullService,  # noqa: PLC0415
+        GSheetPullService,
     )
-    from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-    from moneybin.repositories.gsheet_connections_repo import (  # noqa: PLC0415
+    from moneybin.connectors.gsheet.sheets_api import SheetsClient
+    from moneybin.repositories.gsheet_connections_repo import (
         GSheetConnectionsRepo,
     )
-    from moneybin.secrets import SecretStore  # noqa: PLC0415
+    from moneybin.secrets import SecretStore
 
     gsheet_start = time.monotonic()
     try:
@@ -561,8 +561,8 @@ def _run_categorize_step(db: Database) -> StageOutcome:
     """
     # Deferred: the categorization stack costs +77 modules on this module's
     # import, and this module is on the CLI cold-start path.
-    from moneybin.services.auto_rule_service import AutoRuleService  # noqa: PLC0415
-    from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
+    from moneybin.services.auto_rule_service import AutoRuleService
+    from moneybin.services.categorization import CategorizationService
 
     cat_start = time.monotonic()
     # Only the categorization write itself decides this stage's error. The
@@ -635,13 +635,13 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     # currency_service (+348 modules on this module's import) and the
     # Frankfurter adapter pulls httpx (+121); this module is on the CLI
     # cold-start path.
-    from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415
+    from moneybin.connectors.rates.frankfurter import (
         FrankfurterRateAdapter,
     )
-    from moneybin.repositories.profile_settings_repo import (  # noqa: PLC0415
+    from moneybin.repositories.profile_settings_repo import (
         ProfileSettingsRepo,
     )
-    from moneybin.services.rate_backfill import (  # noqa: PLC0415
+    from moneybin.services.rate_backfill import (
         RateBackfillNotReadyError,
         run_rate_backfill,
     )
@@ -691,10 +691,10 @@ def _run_identity_step(db: Database) -> tuple[StageOutcome, tuple[str, ...]]:
     """
     # Deferred: the two link services cost +44…49 modules on this module's
     # import, and this module is on the CLI cold-start path.
-    from moneybin.services.account_links_service import (  # noqa: PLC0415
+    from moneybin.services.account_links_service import (
         AccountLinksService,
     )
-    from moneybin.services.merchant_links_service import (  # noqa: PLC0415
+    from moneybin.services.merchant_links_service import (
         MerchantLinksService,
     )
 

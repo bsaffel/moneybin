@@ -391,6 +391,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A margin account no longer overstates net worth by the size of its loan.**
+  moneybin-sync sends nine fields in each `balances[]` record; the client
+  declared six. Pydantic's default `extra='ignore'` destroyed the other three at
+  validation with no error and no log line, so `margin_loan_amount`, `limit`,
+  and `last_updated_datetime` reached nothing downstream — the same mechanism
+  that stranded `persistent_account_id`. Plaid reports an investment account's
+  `current_balance` as the total value of *assets*, carrying the funds borrowed
+  against them separately, so summing the balance alone booked the broker's
+  money as the holder's: a brokerage holding $10,000 of assets against a $250
+  margin loan contributed $10,000 to net worth instead of $9,750.
+  `core.fct_balances` now subtracts the loan, and leaves every non-investment
+  account — where the field is always NULL — unchanged. All three fields are
+  captured in `raw.plaid_balances` (`limit` as `balance_limit`, since the wire
+  name is a SQL reserved word and `credit_limit` already means the
+  user-asserted figure); `last_updated_datetime` holds a UTC wall clock, the
+  convention both other Plaid wire datetimes already use, so it reads the same
+  on every machine. Migration V058 is additive and idempotent, and does
+  not backfill: `raw.plaid_balances` keeps one row per account per balance
+  date and a pull writes only the current snapshot's, so every balance date
+  recorded before the upgrade keeps `margin_loan_amount` NULL. A margin
+  account's net worth steps down by the loan on the first sync after
+  upgrading, and the history before that date stays overstated. Plaid returns
+  current balances only, so those amounts were never sent and cannot be
+  reconstructed. (#565)
 - **A categorization rule can no longer be created into a shadow.** Two rules
   sharing a matcher fire on exactly the same transactions, so when they
   disagreed about the category, priority and creation order silently picked a

@@ -39,7 +39,7 @@ class ProfileSettingsService:
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Initialize with an open Database; composes the audited settings repo."""
-        from moneybin.repositories.profile_settings_repo import (  # noqa: PLC0415 — mirrors AccountService: avoids a services/__init__ import cycle
+        from moneybin.repositories.profile_settings_repo import (
             ProfileSettingsRepo,
         )
 

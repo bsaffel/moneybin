@@ -89,7 +89,7 @@ class MerchantResolver:
 
     def load_bindings(self) -> dict[tuple[str, str], str]:
         """(source_type, ref_value) -> merchant_id for all accepted bindings (batch cache)."""
-        from moneybin.tables import MERCHANT_LINKS  # noqa: PLC0415
+        from moneybin.tables import MERCHANT_LINKS
 
         rows = self._db.execute(
             f"SELECT source_type, ref_value, merchant_id FROM {MERCHANT_LINKS.full_name} "  # noqa: S608  # TableRef constant

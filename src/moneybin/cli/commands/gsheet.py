@@ -249,7 +249,7 @@ def gsheet_connect(
     signature, and (by default) runs the initial pull. Use --adapter=seed
     --alias=<name> to land arbitrary tabular data into raw.gsheet_<alias>.
     """
-    from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
+    from moneybin.connectors.gsheet.connection_service import (
         ConnectionRequest,
     )
 
@@ -321,11 +321,11 @@ def gsheet_pull(
     quiet: bool = quiet_option,
 ) -> None:
     """Pull a single connection by ID, or every healthy connection."""
-    from moneybin.adapters.refresh_adapters import (  # noqa: PLC0415
+    from moneybin.adapters.refresh_adapters import (
         refresh_steps_fields,
     )
-    from moneybin.orchestration.refresh import refresh as run_refresh  # noqa: PLC0415
-    from moneybin.orchestration.refresh import step_outcome  # noqa: PLC0415
+    from moneybin.orchestration.refresh import refresh as run_refresh
+    from moneybin.orchestration.refresh import step_outcome
 
     refresh_error: str | None = None
     transfers_retired = 0

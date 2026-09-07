@@ -614,7 +614,7 @@ def build_currency_service(db: Database, *, actor: str = "system") -> CurrencySe
     Frankfurter is keyless, so unlike the price feeds there is nothing here that
     can fail because a token is missing.
     """
-    from moneybin.connectors.rates.frankfurter import (  # noqa: PLC0415  # httpx is not cold-start cheap
+    from moneybin.connectors.rates.frankfurter import (  # httpx is not cold-start cheap
         FrankfurterRateAdapter,
     )
 

@@ -68,7 +68,7 @@ def links_pending(
     payload = SecurityLinksPendingPayload.from_service(groups, n_pending)
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+        from moneybin.cli.output import render_or_json
 
         render_or_json(
             build_envelope(data=payload),
@@ -214,7 +214,7 @@ def links_history(
     payload = SecurityLinksHistoryPayload.from_rows(rows)
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+        from moneybin.cli.output import render_or_json
 
         render_or_json(
             build_envelope(data=payload),

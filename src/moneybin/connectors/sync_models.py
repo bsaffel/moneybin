@@ -208,14 +208,31 @@ class SyncTransaction(BaseModel):
 
 
 class SyncBalance(BaseModel):
-    """One balance snapshot in GET /sync/data response."""
+    """One balance snapshot in GET /sync/data response.
+
+    Every field the broker sends must be declared here, for the reason
+    :class:`SyncAccount` states above. ``margin_loan_amount`` is the one that
+    carries money: Plaid reports an investment account's ``current_balance`` as
+    the total value of *assets*, with the funds borrowed against them in a
+    separate field, so ``core.fct_balances`` has to net the two. While the field
+    went undeclared a margin account overstated net worth by its whole loan.
+
+    ``balance_limit`` renames the wire's ``limit`` — a SQL reserved word, and a
+    different fact from ``app.account_settings.credit_limit``, which is the
+    limit the *user* asserted rather than the one the institution reports.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
 
     account_id: str
     balance_date: date
     current_balance: Decimal | None = None
     available_balance: Decimal | None = None
+    balance_limit: Decimal | None = Field(default=None, alias="limit")
+    margin_loan_amount: Decimal | None = None
     iso_currency_code: CurrencyCode = None
     unofficial_currency_code: CurrencyCode = None
+    last_updated_datetime: datetime | None = None
 
 
 class SyncSecurity(BaseModel):

@@ -67,7 +67,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # Deferred: import_cmd imports this module at its own module level, so a
     # top-level import here would close the cycle. Reused rather than re-rendered
     # because one wrong-account recovery hint is hard enough to keep correct.
-    from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415
+    from moneybin.cli.commands.import_cmd import (
         echo_accounts_created,
         format_account_candidate,
     )
@@ -167,9 +167,9 @@ def inbox_default(
     """Default action: drain the inbox."""
     if ctx.invoked_subcommand is not None:
         return
-    from moneybin.cli.utils import handle_cli_errors  # noqa: PLC0415
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.database import get_database  # noqa: PLC0415
+    from moneybin.cli.utils import handle_cli_errors
+    from moneybin.config import get_settings
+    from moneybin.database import get_database
 
     with handle_cli_errors(cli_actor="inbox_default"):
         with get_database(read_only=False) as db:
@@ -180,14 +180,14 @@ def inbox_default(
     # user's own decision is neither. The drain is the least supervised surface
     # reaching the reconciliation, so this is the one it can least afford to
     # swallow — and --output json is the mode an unattended caller actually uses.
-    from moneybin.adapters.refresh_adapters import (  # noqa: PLC0415
+    from moneybin.adapters.refresh_adapters import (
         refresh_steps_fields,
     )
-    from moneybin.cli.utils import (  # noqa: PLC0415
+    from moneybin.cli.utils import (
         warn_refresh_steps,
         warn_transfers_retired,
     )
-    from moneybin.matching.reconciliation import (  # noqa: PLC0415
+    from moneybin.matching.reconciliation import (
         RETIRED_SIDES_COLLAPSED,
     )
 

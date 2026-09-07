@@ -294,7 +294,7 @@ def _key_not_already_owned(label: str, taken: set[str]) -> str:
     collide with a stored account. Two *live* labels that slugify alike still
     share a key, which is a separate known defect and not this one.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+    from moneybin.services.import_service import (
         label_account_key,
     )
 
@@ -454,13 +454,13 @@ def _link_sheet_accounts(
     for the account-link review queue. Accepting that decision later re-points
     the link, so rows already loaded follow rather than stranding.
     """
-    from moneybin.services.account_display_name import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+    from moneybin.services.account_display_name import (
         AccountNameFacts,
     )
     from moneybin.services.account_resolution_types import (
-        SourceAccount,  # noqa: PLC0415
+        SourceAccount,
     )
-    from moneybin.services.account_resolver import AccountResolver  # noqa: PLC0415
+    from moneybin.services.account_resolver import AccountResolver
 
     resolver = AccountResolver(db)
     for key, (display, clean_name, last_four) in parsed.items():
@@ -498,7 +498,7 @@ def _register_sheet_accounts(
     every pull rather than written once: a sheet is live, and an account renamed
     in it re-labels the row already on that key rather than minting a second.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415  # avoids an import cycle: services imports connectors
+    from moneybin.services.import_service import (
         authored_label_parts,
     )
 

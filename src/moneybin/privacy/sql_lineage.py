@@ -2039,9 +2039,9 @@ def reports_class_map() -> dict[tuple[str, str], dict[str, DataClass]]:
     Backstop: ``test_reports_classification.py`` fails if any *deployed*
     ``reports.*`` view is uncovered here.
     """
-    from moneybin.reports._framework.registry import spec_of  # noqa: PLC0415
-    from moneybin.reports.definitions import ALL_REPORTS  # noqa: PLC0415
-    from moneybin.reports.definitions._derived_classes import (  # noqa: PLC0415
+    from moneybin.reports._framework.registry import spec_of
+    from moneybin.reports.definitions import ALL_REPORTS
+    from moneybin.reports.definitions._derived_classes import (
         DERIVED_REPORT_CLASSES,
     )
 

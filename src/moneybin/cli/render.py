@@ -218,8 +218,8 @@ class Placeholder:
 
 
 def _cell_width(cell: RenderableType) -> int:
-    from rich.cells import cell_len  # noqa: PLC0415 — defer heavy import
-    from rich.text import Text  # noqa: PLC0415 — defer heavy import
+    from rich.cells import cell_len  # defer heavy import
+    from rich.text import Text  # defer heavy import
 
     return cell_len(cell.plain if isinstance(cell, Text) else str(cell))
 
@@ -405,8 +405,8 @@ def render_rows(
     repeated rows; collapsing them here would make the output look right while
     the total stayed wrong, removing the symptom that finds the defect.
     """
-    from rich.console import Console  # noqa: PLC0415 — defer heavy import
-    from rich.table import Table  # noqa: PLC0415 — defer heavy import
+    from rich.console import Console  # defer heavy import
+    from rich.table import Table  # defer heavy import
 
     declared = money or {}
     # Formatting and atomicity are separate declarations. A per-unit price is
@@ -579,7 +579,7 @@ def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> Non
     if quiet:
         return
     if warn and color_enabled(sys.stderr, os.environ):
-        from rich.console import Console  # noqa: PLC0415 — defer heavy import
+        from rich.console import Console  # defer heavy import
 
         Console(stderr=True, markup=False, highlight=False).print(
             message, style=Style.WARNING
@@ -608,7 +608,7 @@ def _cells(
     happens to equal the placeholder — which is the distinction ``--output
     json`` preserves by carrying the NULL through untouched.
     """
-    from rich.text import Text  # noqa: PLC0415 — defer heavy import
+    from rich.text import Text  # defer heavy import
 
     cells: list[RenderableType] = []
     # strict: a row and its header are built together at every call site, so a

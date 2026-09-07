@@ -580,7 +580,7 @@ class Database:
 
         store = secret_store or SecretStore()
 
-        global _cached_encryption_key  # noqa: PLW0603
+        global _cached_encryption_key
         # An explicitly-passed secret_store is authoritative: read its key and
         # neither consult nor populate the process cache. The cache only spares
         # the default (secret_store=None) path repeat keyring lookups; letting it
@@ -1118,7 +1118,7 @@ class Database:
         nulled before invocation so a re-entrant close raised from an
         exception handler cannot double-release.
         """
-        global _active_write_conn  # noqa: PLW0603
+        global _active_write_conn
 
         release = self._lock_release
         self._lock_release = None
@@ -1181,7 +1181,7 @@ def invalidate_encryption_key_cache() -> None:
     Called by key rotation so subsequent Database() calls fetch the new key
     from the keychain instead of reusing the pre-rotation cached value.
     """
-    global _cached_encryption_key  # noqa: PLW0603
+    global _cached_encryption_key
     _cached_encryption_key = None
 
 
@@ -1308,7 +1308,7 @@ def get_database(
     acquiring the writer lock so a concurrent deletion cannot turn maintenance
     into implicit database creation.
     """
-    global _database_written, _active_write_conn  # noqa: PLW0603
+    global _database_written, _active_write_conn
 
     # Lazy import: db_lock.lock imports DatabaseLockError from this module,
     # so deferring the import past module-load time breaks the cycle.

@@ -982,7 +982,7 @@ def label_account_key(account_name: str) -> str:
     key across files and across pinned and unpinned imports — the property the
     slug already had for names the slug survives.
     """
-    from moneybin.utils import slugify  # noqa: PLC0415 — matches the call sites
+    from moneybin.utils import slugify
 
     slug = slugify(account_name)
     if slug:
@@ -1034,7 +1034,7 @@ def _bare_account_key(
     confirm round-trip (same bytes → same key) and idempotent on an exact
     re-import. The digest is a disambiguator, NOT an identity claim.
     """
-    from moneybin.utils import slugify  # noqa: PLC0415 — matches _pdf_alias
+    from moneybin.utils import slugify
 
     content = file_path.read_bytes() if source_bytes is None else source_bytes
     digest = hashlib.sha256(content).hexdigest()[:12]
@@ -2050,7 +2050,7 @@ class ImportService:
         ``"transaction"``) additionally report a date range, read from
         ``date_posted`` for OFX tables and ``transaction_date`` otherwise.
         """
-        from sqlglot import exp  # noqa: PLC0415
+        from sqlglot import exp
 
         tables = self._db.execute("""
             SELECT table_schema, table_name
@@ -6335,7 +6335,7 @@ class ImportService:
         list["PdfFormat"],
     ]:
         """Return the complete tabular/PDF format catalog for either surface."""
-        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+        from moneybin.extractors.tabular.formats import (
             load_builtin_formats,
             load_formats_from_db,
             merge_formats,
@@ -6352,10 +6352,10 @@ class ImportService:
 
     def plan_saved_format_delete(self, format_name: str) -> SavedFormatDeletePlan:
         """Return the exact current saved-format state for confirmation binding."""
-        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+        from moneybin.extractors.tabular.formats import (
             load_builtin_formats,
         )
-        from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415
+        from moneybin.repositories.tabular_formats_repo import (
             TabularFormatsRepo,
         )
 
@@ -6389,7 +6389,7 @@ class ImportService:
         verify: Callable[[SavedFormatDeletePlan], None],
     ) -> str:
         """Revalidate and audit-delete one saved format in the same transaction."""
-        from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415
+        from moneybin.repositories.tabular_formats_repo import (
             TabularFormatsRepo,
         )
 
@@ -6423,8 +6423,8 @@ class ImportService:
             import_id: UUID of the import batch in ``raw.import_log``.
         """
         # REVERT_TABLES is owned by import_log because begin_import also consults it.
-        from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
-        from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
+        from moneybin.loaders.import_log import REVERT_TABLES
+        from moneybin.tables import IMPORT_LOG
 
         row = self._db.execute(
             f"SELECT source_type, status, source_file, started_at, source_origin "
@@ -6525,13 +6525,13 @@ class ImportService:
         """
         # Deferred with the rest: `matching.aliasing` reaches back into the
         # repositories, whose base -> audit chain re-enters this package.
-        from moneybin.loaders.import_log import REVERT_TABLES  # noqa: PLC0415
-        from moneybin.matching.aliasing import (  # noqa: PLC0415
+        from moneybin.loaders.import_log import REVERT_TABLES
+        from moneybin.matching.aliasing import (
             AliasForwardResult,
             forward_rekeyed_transaction_ids,
             record_committed_alias_forwarding,
         )
-        from moneybin.tables import IMPORT_LOG  # noqa: PLC0415
+        from moneybin.tables import IMPORT_LOG
 
         forwarding = AliasForwardResult()
         self._db.begin()
@@ -6585,7 +6585,7 @@ class ImportService:
                 [live.source_origin, import_id],
             ).fetchone()
             if other_row is not None and other_row[0] == 0:
-                from sqlglot import exp  # noqa: PLC0415
+                from sqlglot import exp
 
                 safe_view = exp.to_identifier(
                     f"pdf_{live.source_origin}", quoted=True

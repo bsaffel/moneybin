@@ -1,6 +1,6 @@
 """Integration tests for the Plaid branch of core.fct_balances.
 
-Covers two transforms unique to the plaid_balances CTE that the golden-fixture
+Covers the transforms unique to the plaid_balances CTE that the golden-fixture
 tests (test_stg_plaid.py) don't exercise:
 
 - **Liability sign** — Plaid reports credit/loan balances as a positive amount
@@ -10,6 +10,10 @@ tests (test_stg_plaid.py) don't exercise:
 - **Null current balance** — SyncBalance.current_balance is nullable; a NULL
   would become a false $0 anchor once fct_balances_daily._to_decimal() coerces
   it, so such rows must be dropped.
+- **Margin loan** — Plaid reports an investment account's current_balance as the
+  total value of *assets*, carrying the borrowed funds held against them
+  separately in margin_loan_amount. The CTE must subtract it, and must not let
+  its NULL (every non-investment account) null out the whole balance.
 
 Seeds raw.* + app.account_links directly (mirrors test_dim_accounts_merge.py) to
 isolate the CTE SQL from the extractor/resolver path.
@@ -57,16 +61,18 @@ def _insert_plaid_balance(
     current: str | None,
     available: str = "0.00",
     balance_date: str = "2026-04-08",
+    margin: str | None = None,
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.plaid_balances
             (account_id, balance_date, current_balance, available_balance,
-             source_file, source_type, source_origin, extracted_at, loaded_at)
-        VALUES (?, ?::DATE, ?, ?, 'sync_test', 'plaid', ?,
+             margin_loan_amount, source_file, source_type, source_origin,
+             extracted_at, loaded_at)
+        VALUES (?, ?::DATE, ?, ?, ?, 'sync_test', 'plaid', ?,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,  # noqa: S608  # test fixture, not executing user SQL
-        [native_key, balance_date, current, available, _ITEM],
+        [native_key, balance_date, current, available, margin, _ITEM],
     )
 
 
@@ -182,4 +188,71 @@ def test_plaid_null_account_type_dropped(db: Database) -> None:
     assert count is not None
     assert count[0] == 0, (
         "unresolved account_type must drop the row, not sign it as an asset"
+    )
+
+
+@pytest.mark.slow
+def test_plaid_margin_loan_reduces_the_investment_balance(db: Database) -> None:
+    """A margin loan is the broker's money, so it must leave the holder's balance.
+
+    Plaid documents an investment account's ``current`` as the total value of
+    assets and ``margin_loan_amount`` as the borrowed funds held against them —
+    two complementary figures, not one net one. Summing ``current`` alone books
+    the loan as the holder's equity and overstates net worth by its full size.
+    """
+    _insert_plaid_account(
+        db,
+        native_key="p_margin",
+        account_type="investment",
+        subtype="brokerage",
+        official_name="Brokerage",
+        mask="4321",
+    )
+    _insert_plaid_balance(
+        db, native_key="p_margin", current="10000.00", margin="250.00"
+    )
+    _accept_link(db, native_key="p_margin", canonical_id="canonmargin0001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT balance FROM core.fct_balances WHERE account_id = ?",
+        ["canonmargin0001"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == Decimal("9750.00"), (
+        "the borrowed 250.00 must be netted out of the 10000.00 of assets"
+    )
+
+
+@pytest.mark.slow
+def test_plaid_null_margin_loan_leaves_the_balance_unchanged(db: Database) -> None:
+    """A NULL margin must subtract nothing, not annul the balance.
+
+    ``margin_loan_amount`` is declared only on Plaid's INVESTMENT balance model,
+    so it is NULL for every cash account. Subtracting it without COALESCE makes
+    the whole expression NULL, and the account drops out of net worth entirely —
+    a far larger error than the one this column exists to fix.
+    """
+    _insert_plaid_account(
+        db,
+        native_key="p_cash",
+        account_type="depository",
+        official_name="Checking",
+        mask="1234",
+    )
+    _insert_plaid_balance(db, native_key="p_cash", current="1500.00", margin=None)
+    _accept_link(db, native_key="p_cash", canonical_id="canoncash000001")
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        "SELECT balance FROM core.fct_balances WHERE account_id = ?",
+        ["canoncash000001"],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == Decimal("1500.00"), (
+        "a NULL margin must leave the balance intact, not null it out"
     )

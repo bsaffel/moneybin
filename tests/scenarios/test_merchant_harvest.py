@@ -334,7 +334,7 @@ def test_harvest_routes_conflict_to_review() -> None:
         # Reject the pending conflict the real way (user picks "new"), then
         # re-harvest: the rejected (non-reversed) decision must suppress
         # re-proposal so the queue drains instead of re-filling every run.
-        from moneybin.services.merchant_links_service import (  # noqa: PLC0415
+        from moneybin.services.merchant_links_service import (
             MerchantLinksService,
         )
 

@@ -269,10 +269,10 @@ def classify_user_error(exc: BaseException) -> UserError | None:
     # Classification runs on the failure path, where a one-time module load
     # costs nothing and the module that raised is already loaded.
     # Guarded by tests/moneybin/test_architecture/test_errors_is_import_light.py.
-    from moneybin.connectors.sync_errors import (  # noqa: PLC0415 — keeps errors.py import-light
+    from moneybin.connectors.sync_errors import (  # keeps errors.py import-light
         SyncError,
     )
-    from moneybin.database import (  # noqa: PLC0415 — keeps errors.py import-light
+    from moneybin.database import (  # keeps errors.py import-light
         DatabaseCryptoError,
         DatabaseKeyError,
         DatabaseLockError,
@@ -280,7 +280,7 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         SchemaDriftError,
         database_key_error_hint,
     )
-    from moneybin.secrets import (  # noqa: PLC0415 — keeps errors.py import-light
+    from moneybin.secrets import (  # keeps errors.py import-light
         SecretNotFoundError,
         SecretStorageUnavailableError,
         SecretUnavailableError,
@@ -468,7 +468,7 @@ def _is_match_run_error(exc: BaseException) -> bool:
     Kept in its own function rather than joining that block so only an exception
     that matched no branch above pays the import.
     """
-    from moneybin.matching.engine import (  # noqa: PLC0415 — keeps errors.py import-light
+    from moneybin.matching.engine import (  # keeps errors.py import-light
         MatchRunError,
     )
 
