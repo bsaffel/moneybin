@@ -485,6 +485,7 @@ class RuleConflictReviewRow(BaseModel):
     details: RuleConflictDetails
 
 
+@row_set("rows")
 class ReviewsRuleConflictsView(BaseModel):
     """Rule-conflict pending or history collection."""
 

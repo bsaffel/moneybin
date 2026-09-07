@@ -240,7 +240,6 @@ class CategorizeCommitPayload:
 # ---------------------------------------------------------------------------
 
 
-@row_set("rule_ids")
 @dataclass(frozen=True, slots=True)
 class RuleConflictDetail:
     """One refused proposal, explained where the caller submitted it.
@@ -257,6 +256,7 @@ class RuleConflictDetail:
     reason: Annotated[str, DataClass.CATEGORY]
 
 
+@row_set("rule_ids")
 @dataclass(frozen=True, slots=True)
 class RulesCreatePayload:
     """Payload for transactions_categorize_rules_create — creation result."""
