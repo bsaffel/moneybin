@@ -528,14 +528,14 @@ The same pre-publication transaction handles every affected standalone
 membership. When the proposed identity change still yields one complete event
 with unambiguous one-to-one semantic leg correspondence, it replaces the
 identity-bound membership revision, records `projection_changed_at`, preserves
-the Golden event and leg ids, and applies the same audited complete-selection
-remap before exposing the new identity mapping. Any ambiguous or incomplete
-curation mapping blocks the entire identity operation before publication. If
-the new identity is unresolved or changes that structure, the transaction
-retires the standalone membership first. Later registration may reactivate the
-prior Golden ids only when the same event and semantic leg correspondence is
-unambiguous; otherwise it mints new ids and the Core resolvers report the prior
-ids as terminally retired or forwarded as appropriate. Live alias routing never
+the Golden event and leg ids, and runs the shared dependent-curation preflight
+before exposing the new identity mapping. Any ambiguous or incomplete curation
+mapping blocks the entire identity operation before publication. If the new
+identity is unresolved or changes that structure, the transaction retires the
+standalone membership first. Later registration may reactivate the prior Golden
+ids only when the same event and semantic leg correspondence is unambiguous;
+otherwise it mints new ids and the Core resolvers report the prior ids as
+terminally retired or forwarded as appropriate. Live alias routing never
 silently changes a standalone Golden projection.
 
 ## Durable state
@@ -675,9 +675,12 @@ superseded reconstruction continues to project. A surviving stable Golden leg
 preserves its derived lot id across reconstruction-evidence revisions while its
 canonical Account, Security, and acquisition inputs remain unchanged. A
 canonical-identity rekey may rotate that existing content-derived lot id and
-uses the same audited complete-selection remap as an accepted Match. A retired
-reconstruction or impossible stored lot selection keeps dependent output
-non-current until resolved rather than retaining a phantom lot.
+uses the shared dependent-curation preflight. Every reconstruction advance or
+retirement treats the current and proposed derived ledger rows as affected
+inputs to that preflight, even when the source correction that changed the gap
+sorts later. A retired reconstruction or impossible stored lot selection keeps
+dependent output non-current until resolved rather than retaining a phantom
+lot.
 
 There is no separate mutable `app.investment_events` registry or App state
 observation snapshot. An active Golden event exists because it has active
@@ -829,6 +832,48 @@ representative. Source-scoped Core reads mean representative source.
 Any-contributor and reconciliation reads use source-row provenance, which
 exposes every member's source tuple and exact observation version.
 
+### Dependent curation preflight
+
+Every operation that would change the active Golden investment ledger runs one
+shared dependent-curation preflight before any membership, field-resolution, or
+lot-selection write. This includes standalone advancement or retirement,
+opening-lot-reconstruction advancement or retirement, initial or replacement
+acceptance, reversal, undo, and canonical-identity successor transitions. A
+stale transition that retains the last-reviewed projection does not run it
+because its active ledger is unchanged.
+
+The preflight constructs the complete proposed Golden ledger and every proposed
+complete `app.lot_selections` collection after semantic-id remapping. For each
+current or proposed `(account_id, security_id)` position touched by a ledger-row
+change, the affected boundary is the earliest current-or-proposed ordering key
+among rows removed from, changed within, or inserted into that position. The key
+is the engine's `(trade_date, same-day type order,
+investment_transaction_id)` tuple. Current and proposed opening-lot
+reconstruction rows participate exactly like source-backed rows, so a derived
+opening-lot change may set a boundary earlier than the source correction that
+caused it.
+
+The proposed replay starts at the beginning of each touched position to
+reconstruct its prior lot state and validates every complete selection at or
+after the affected boundary. This includes an unchanged selection between an
+event's old and new ordering keys when a correction moves the event later, and
+every later selection whose available quantity changes even though its disposal
+and selected lot ids do not. An unchanged `lot_id` remains selected. A selected
+acquisition leg with exactly one semantic successor uses the successor's
+derived lot id. Collections converging on one disposal must have identical
+complete remapped sets. The transaction collection-replaces each changed set
+once through `LotSelectionsRepo`, preserving every before-image in the parent
+operation's audit chain.
+
+A missing or ambiguous successor, disagreeing converged collection, or proposed
+replay that would skip or consume less than a stored selected quantity blocks
+the entire operation before a write. The current projection remains active,
+`projection_changed_at` does not advance, and the dependent transform remains
+non-current. The cost-basis engine's unknown-lot or unavailable-quantity FIFO
+fallback never decides a membership transition. The user may correct or clear
+the existing selection and retry. This preflight derives proposed state only;
+it adds no table, snapshot, or parallel curation workflow.
+
 ### Source correction lifecycle
 
 Golden projection reads the exact observation versions and canonical dependency
@@ -857,32 +902,8 @@ When a source row receives a new revision:
   Source event or events through the normal identity rules. A structurally
   changed event or leg mints new ids; prior ids remain resolver-visible as
   retired or forwarded only when an active successor exists. Before activating
-  any successor, the transaction derives the proposed ledger for every current
-  or successor `(account_id, security_id)` position touched by the correction
-  and preflights its downstream cost-basis replay. For each touched position,
-  the affected boundary is the earliest current-or-proposed ordering key among
-  the corrected events removed from or inserted into that position, using the
-  engine's `(trade_date, same-day type order, investment_transaction_id)`
-  tuple. The proposed replay starts at the beginning of the position to
-  reconstruct its prior lot state and validates every complete
-  `app.lot_selections` collection at or after that boundary. This includes a
-  selection between an event's old and new ordering keys when a correction
-  moves the event later, even when neither the disposal id nor a selected
-  `lot_id` changes. An earlier acquisition or disposal may change what remains
-  available to a later selection. An unchanged `lot_id` remains selected. If a
-  selected acquisition leg has exactly one semantic successor, the transaction
-  derives the successor lot first and collection-replaces the complete remapped
-  set through `LotSelectionsRepo`, preserving the before-image in the same audit
-  chain.
-  Collections converging on one disposal follow the acceptance rule: their
-  complete remapped sets must be identical or the transition blocks. A missing
-  or ambiguous successor, or any proposed replay that would skip or consume less
-  than a stored selected quantity, blocks before any membership or curation
-  write, retains the current projection without advancing
-  `projection_changed_at`, and keeps the dependent transform non-current. The
-  cost-basis engine's unknown-lot or unavailable-quantity FIFO fallback never
-  decides this lifecycle transition. The user may correct or clear the existing
-  selection and retry;
+  or retiring any membership, the transaction runs the shared
+  dependent-curation preflight over the complete proposed successor ledger;
 - any accepted or multi-source membership becomes stale and untrusted, but
   continues to project the last-reviewed exact revisions until a person accepts
   a replacement or reverses the Match. Its stable source-row identities remain
@@ -898,11 +919,13 @@ later planning pass may issue a replacement over its new revision. Historical
 membership retains the prior exact revision.
 
 Acceptance of the replacement atomically installs the new exact membership and
-field resolutions. Reversal never restores a historical membership row
-verbatim. It reconstructs every separated Source event from current exact
-revisions and canonical dependencies. Complete one-to-one semantic
-correspondence and curation remapping activate successor standalone memberships
-with the former Golden ids and current bindings. Changed event shape or leg
+field resolutions only after the shared dependent-curation preflight validates
+the complete proposed ledger. Reversal never restores a historical membership
+row verbatim. It reconstructs every separated Source event from current exact
+revisions and canonical dependencies, then runs the same preflight before
+changing active membership. Complete one-to-one semantic correspondence and
+curation remapping activate successor standalone memberships with the former
+Golden ids and current bindings. Changed event shape or leg
 correspondence does not by itself block reversal: the same transaction retires
 the accepted membership and its stable-row reservations, registers every
 current reconstructed Source event through the normal standalone identity
@@ -1078,7 +1101,9 @@ overwriting one another. The same audited transaction collection-replaces an
 agreeing target set once through `LotSelectionsRepo`, preserving every source
 before-image and linking the child audit events to the Match decision's parent
 operation. Any ambiguous or incomplete id mapping blocks acceptance before a
-write.
+write. After constructing those proposed complete sets, initial and replacement
+acceptance run the shared dependent-curation preflight so unchanged downstream
+selections are also validated against the complete proposed Golden ledger.
 
 Accept and reject operate on a whole Proposal. The confirmation copy states
 that acceptance rebuilds the investment ledger and its dependent lots,
@@ -1112,7 +1137,8 @@ source's appropriate standalone component, not three unrelated standalones.
 Every prior component, decision linkage, semantic leg, current dependency, and
 curation remap must be complete and unambiguous. Otherwise the entire undo blocks
 and leaves the current accepted topology unchanged; obsolete membership rows are
-never republished verbatim.
+never republished verbatim. The complete proposed successor topology also runs
+the shared dependent-curation preflight before undo changes any active state.
 
 The same transaction restores field resolutions and reverses each child
 lot-selection audit event against those successor ids, recovering the exact
@@ -1281,7 +1307,7 @@ fixtures and expected Golden-ledger outcomes.
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
-| Curation | Explicit field and lot-selection curation survives acceptance, added observations, standalone source correction, rebuild, and undo; a standalone correction replays every current or successor position it touches and validates every downstream complete selection, including unchanged ids whose available quantity changes; one unambiguous semantic successor remaps a rotated lot id atomically before successor membership activates, while missing, ambiguous, skipped, or quantity-capped selection replay blocks the revision so FIFO fallback is never observed; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
+| Curation | Explicit field and lot-selection curation survives acceptance, added observations, source correction, opening-lot reconstruction, rebuild, reversal, and undo; every active-ledger change replays each current or proposed position it touches from the earliest old-or-new changed ordering key and validates every downstream complete selection, including unchanged ids whose available quantity changes; current and proposed opening-lot rows participate in that boundary; one unambiguous semantic successor remaps a rotated lot id atomically before successor membership activates, while missing, ambiguous, skipped, or quantity-capped selection replay blocks the operation so FIFO fallback is never observed; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
 | Field choices | Candidate date bands do not become silent tax-lot field tolerances: any two present unequal explicit `trade_date` values require a choice, while an explicit date outranks a posting fallback within the candidate threshold and two fallbacks retain the ordinary threshold rule; an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; any two present unequal `original_acquisition_date` values require a choice while present still outranks missing; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; if individually within-tolerance accounting-field defaults combine incoherently, the participating fields expose observed-value choices and a pending Proposal exists only when at least one complete choice combination validates; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; CLI rejects `field-choice` outside one investment-match confirmation and rejects `confirm-all` for investment matches or all queues with exit 2; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, an explicit trade date outranks a posting fallback, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL`, a manual actual trade date is not displaced by Plaid's posting fallback, and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment; a singleton retains exact source/provider metadata, while manual-plus-Plaid and two-aggregator-origin Matches copy all four representative-source fields from one deterministic member regardless of field choices or input order and source-row provenance recovers every contributor |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
@@ -1452,7 +1478,11 @@ fixtures and expected Golden-ledger outcomes.
   A correction that moves an acquisition later uses the earlier current
   ordering key as the affected boundary, so an unchanged selected disposal
   between the old and new keys also blocks when its selected quantity becomes
-  unavailable.
+  unavailable. Replacement acceptance and reversal fixtures prove the same
+  downstream validation applies when reviewed membership changes. An
+  opening-lot fixture proves that its changed current or proposed derived row,
+  rather than only the later source correction that changed its gap, sets the
+  replay boundary and blocks an intervening invalid selection.
   Undo also blocks atomically when a current-dependency successor membership or
   its complete curation remap cannot be constructed.
 - Undo-topology tests proving acceptance over an existing two-source Match plus
@@ -1577,12 +1607,14 @@ accepted contract and must be reconciled to it before delivery begins.
    operations from `system_audit_undo` through the domain-aware reversal handler;
    never fall back to generic row-image undo. Reconstruct affected Source events
    before an unreviewed aggregator revision advances; preflight and atomically
-   remap complete lot-selection collections, validate the full downstream replay
-   of every current or successor position touched by the correction, and block
-   the revision before membership changes if any stored selection would be
-   skipped or capped. Preserve Golden ids only when the stable source-event key
-   and complete semantic membership survive, otherwise retire and register the
-   rebuilt events normally. Make
+   remap complete lot-selection collections through one shared rule for every
+   active-ledger change, including replacement acceptance, reversal, undo,
+   identity successors, and opening-lot reconstruction advancement or
+   retirement. Validate the full downstream replay of every current or proposed
+   position touched by the transition and block before membership changes if
+   any stored selection would be skipped or capped. Preserve Golden ids only
+   when the stable source-event key and complete semantic membership survive,
+   otherwise retire and register the rebuilt events normally. Make
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
    accepted or multi-source Matches before publishing the new mapping.
