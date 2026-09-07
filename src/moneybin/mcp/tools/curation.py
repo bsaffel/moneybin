@@ -4,7 +4,7 @@ Thin MCP wrappers over ``TransactionService``, ``ImportService``, and
 ``AuditService``. Every mutation passes through the service layer, which
 owns transactional integrity and audit emission. The MCP wrapper only
 projects service results into JSON-safe dicts and the standard
-``{summary, data, actions}`` envelope.
+``{status, summary, data, actions}`` envelope.
 
 Sensitivity tiers (per ``.claude/rules/mcp.md``):
 
