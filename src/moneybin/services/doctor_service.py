@@ -3187,7 +3187,11 @@ class DoctorService:
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",
-                detail="fct_transactions not available",
+                # Names both models the delegated count reads: it joins
+                # dim_accounts to match the queue's population, so either being
+                # absent lands here and a reader sent to the wrong one looks
+                # for a table that is already there.
+                detail="fct_transactions or dim_accounts not available",
                 affected_ids=[],
             )
         if coverage.categorizable == 0:
