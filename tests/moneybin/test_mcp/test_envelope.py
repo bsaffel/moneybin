@@ -201,7 +201,14 @@ class TestResponseEnvelope:
         """No caller may declare a third outcome; `error` alone decides."""
         from typing import get_args, get_type_hints
 
-        assert set(get_args(get_type_hints(ResponseEnvelope)["status"])) == {
+        # `ResponseEnvelope[T]` is a PEP 695 generic, so `T` is in neither the
+        # module globals nor the class dict. `get_type_hints` only started
+        # consulting `__type_params__` itself in 3.12.4, and this package
+        # supports >=3.12 — so hand it the params or `data: T` raises NameError
+        # on a supported interpreter (CI runs 3.12.3).
+        type_params = {p.__name__: p for p in ResponseEnvelope.__type_params__}
+        hints = get_type_hints(ResponseEnvelope, localns=type_params)
+        assert set(get_args(hints["status"])) == {
             "ok",
             "error",
         }
