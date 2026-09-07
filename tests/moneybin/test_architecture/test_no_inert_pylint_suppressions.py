@@ -11,6 +11,12 @@ face value and had to be retracted. This guard stops the next one appearing.
 `scripts/`. It deliberately does not reason about whether a deferred import is
 justified — only that it is not justified by citing a rule that is switched
 off. Correcting a wrong justification is a review question, not a test.
+
+The flake8-compatible file-level spelling is out of scope on purpose, not by
+oversight: ruff treats it as a blanket suppression and discards the codes
+after it, so it cannot cite a Pylint rule the way this guard polices. A blanket
+file-level suppression is a larger problem that belongs to review. None exist
+in this repo today.
 """
 
 import pathlib
@@ -23,7 +29,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 # Any Pylint-family code, not just PLC0415: the whole `PL` prefix is disabled,
 # so a marker naming PLR/PLW/PLE is equally inert.
-MARKER = re.compile(r"#\s*noqa:[^\n]*\bPL[CREW]\d+", re.IGNORECASE)
+#
+# Two spellings, both of which ruff honours: the line-level directive, and the
+# file-level variant that puts `ruff:` ahead of it. The repo already uses the
+# file-level variant for other codes, so omitting it would leave a way back in.
+MARKER = re.compile(r"#\s*(?:ruff:\s*)?noqa:[^\n]*\bPL[CREW]\d+", re.IGNORECASE)
 
 SCANNED_TREES = ("src", "tests", "scripts")
 
