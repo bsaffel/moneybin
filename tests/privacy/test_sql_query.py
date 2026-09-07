@@ -1787,6 +1787,104 @@ def test_unresolvable_expression_does_not_over_mask(populated_db: Database) -> N
     assert result.tier is Tier.LOW
 
 
+def test_count_of_null_last_fours_returns_the_integer(
+    populated_db: Database,
+) -> None:
+    """MB-102's reported symptom, at the boundary the agent actually calls.
+
+    The lineage tests pin the class; this pins the VALUE. What came back was
+    ``'*****'`` where the number is 1 — an integer count that cannot carry a
+    digit of ``last_four``, withheld because lineage saw the column name.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT SUM(CASE WHEN last_four IS NULL THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert result.records[0]["n"] == 1
+    assert result.tier is Tier.LOW
+
+
+def test_a_relocated_predicate_returns_what_its_where_clause_twin_returns(
+    populated_db: Database,
+) -> None:
+    """Both spellings of one question must return one answer.
+
+    ``COUNT(*) FILTER (WHERE …)`` and ``COUNT(*) … WHERE …`` are the same count
+    over the same rows. The WHERE form has always returned it; the FILTER form
+    returning ``'*****'`` is what made the surface answer differently depending
+    on how the agent phrased itself.
+    """
+    _seed_account(populated_db, last_four="1234")
+    relocated = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS n FROM core.dim_accounts",
+        max_rows=100,
+    )
+    in_where = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) AS n FROM core.dim_accounts WHERE last_four IS NULL",
+        max_rows=100,
+    )
+    assert relocated.records == in_where.records == [{"n": 0}]
+    assert relocated.tier is in_where.tier is Tier.LOW
+
+
+def test_a_critical_column_returned_by_a_case_branch_is_still_masked(
+    populated_db: Database,
+) -> None:
+    """The value-position boundary, at the same boundary — masked, not counted.
+
+    One CASE, one slot over from the test above, and the account number itself
+    is the result. A rule that exempted the whole CASE would publish it.
+    """
+    _seed_account(populated_db)
+    result = execute_sql_query(
+        populated_db,
+        "SELECT MAX(CASE WHEN account_type = 'checking' THEN routing_number END) AS m "
+        "FROM core.dim_accounts",
+        max_rows=100,
+    )
+    assert result.records[0]["m"] == "*****"
+    assert result.tier is Tier.CRITICAL
+
+
+def test_a_null_test_on_an_aliased_expression_cannot_reconstruct_a_value(
+    populated_db: Database,
+) -> None:
+    """The reconstruction attempt itself, at the boundary that has to stop it.
+
+    `NULLIF(substr(routing_number, n, 1), 'd')` is NULL exactly when digit `n`
+    is `d`, so a null test on the alias is an equality oracle wearing nullity's
+    spelling. Ten arms identify one character and nine such groups recover the
+    whole number — the exact shape the nullity narrowing was meant to close,
+    reached one alias indirection away.
+
+    Asserting the tier alone would not catch a regression here, because the
+    leak's whole point is that the ARMS come back true or false individually.
+    So this asserts on what the caller actually receives.
+    """
+    _seed_account(populated_db)
+    arms = ", ".join(
+        f"NULLIF(substr(routing_number, 1, 1), '{digit}') AS d{digit}"
+        for digit in range(10)
+    )
+    probes = ", ".join(
+        f"CASE WHEN d{digit} IS NULL THEN 1 ELSE 0 END AS is{digit}"
+        for digit in range(10)
+    )
+    result = execute_sql_query(
+        populated_db,
+        f"WITH t AS (SELECT {arms} FROM core.dim_accounts) SELECT {probes} FROM t",  # noqa: S608  # test input string, not executing SQL
+        max_rows=100,
+    )
+
+    assert result.tier is Tier.CRITICAL
+    assert set(result.records[0].values()) == {"*****"}
+
+
 # --------------------------------------------------------------------------
 # CRITICAL transforms are not interchangeable
 #

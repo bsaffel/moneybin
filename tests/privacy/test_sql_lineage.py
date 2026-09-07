@@ -1051,6 +1051,457 @@ def test_scalar_subquery_count_does_not_downgrade(populated_db: Database) -> Non
 
 
 # ---------------------------------------------------------------------------
+# A column only ever asked whether it is NULL
+#
+# `COUNT(col)` has collapsed to AGGREGATE since this classifier shipped, so
+# `COUNT(*) - COUNT(last_four)` already returns the number of NULL last-fours
+# unmasked. Two other spellings of that same number did not — the ones MB-102
+# reported — and these pin the rule that makes them agree.
+#
+# The cap is what makes nullity safe, not its being a condition: `IS NULL` has
+# one answer per row per column. The block further down holds the
+# counterexamples that bound it, and the value positions it must never reach.
+# ---------------------------------------------------------------------------
+
+
+def test_sum_over_a_case_condition_on_a_critical_column_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """MB-102's first reported spelling: a count of NULL last-fours.
+
+    The projection returns a row count, and `last_four` reaches it only as the
+    operand of an `IS NULL` test — one answer per row, no part of the value.
+    `COUNT(*) - COUNT(last_four)` already published this exact number, so
+    classifying this spelling INSTITUTION_ACCOUNT_NUMBER masked an integer the
+    surface hands over when asked differently.
+    """
+    out = _classes(
+        "SELECT SUM(CASE WHEN last_four IS NULL THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_count_filtered_on_a_critical_column_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """MB-102's second reported spelling, which the first fix must also cover.
+
+    A different aggregate and a different clause, the same null test. The
+    ticket's follow-up rejects an allowlist of aggregate spellings, so the rule
+    keys on the predicate and its slot, never on which aggregate wraps them.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_a_relocated_predicate_classifies_as_its_where_clause_twin(
+    populated_db: Database,
+) -> None:
+    """The invariant behind the rule: one question, one answer, either spelling.
+
+    These two queries return the identical integer. The WHERE form has always
+    been AGGREGATE because only the projection is classified;
+    the FILTER form differing from it was the defect, not the WHERE form's
+    permissiveness.
+    """
+    relocated = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    in_where = _classes(
+        "SELECT COUNT(*) AS n FROM core.dim_accounts WHERE last_four IS NULL",
+        populated_db,
+    )
+    assert relocated == in_where
+
+
+def test_a_case_condition_is_exempt_inside_a_window_frame(
+    populated_db: Database,
+) -> None:
+    """The rule is positional, so the surrounding aggregate is irrelevant.
+
+    A windowed `SUM(CASE …) OVER ()` is a third spelling of the same count.
+    Anything keyed on the aggregate function would have to enumerate it.
+    """
+    out = _classes(
+        "SELECT SUM(CASE WHEN last_four IS NULL THEN 1 ELSE 0 END) OVER () AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_a_simple_case_operand_equality_still_masks(
+    populated_db: Database,
+) -> None:
+    """`CASE <col> WHEN v` is an equality probe wearing different syntax.
+
+    The operand is only ever compared, but each `WHEN` asks about a different
+    value, so the branches compose exactly as the searched-CASE form does — see
+    ``test_a_simple_case_mapping_values_to_literals_still_masks``. Being
+    "compared, never returned" is not sufficient; being capped at one answer is.
+    """
+    out = _classes(
+        "SELECT SUM(CASE last_four WHEN '5678' THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_null_test_sitting_in_the_simple_case_operand_is_exempt(
+    populated_db: Database,
+) -> None:
+    """The one shape `(exp.Case, "this")` actually reaches, pinned.
+
+    Read beside the test above, which is the same slot and the opposite answer.
+    The slot does NOT exempt a simple-CASE operand — `_only_null_tested`
+    requires the column's own parent to be the `Is` node, so `CASE last_four
+    WHEN …` stays classified. It exempts a NULL TEST placed in that slot, where
+    the operand is the one-bit boolean and the `WHEN` arms match against it.
+
+    Without this the entry is dead weight: removing it from `_CONDITION_SLOTS`
+    leaves every other test in this file green, which is how an unused rule in
+    security-critical code survives a rename or a refactor unnoticed.
+    """
+    out = _classes(
+        "SELECT SUM(CASE (last_four IS NULL) WHEN TRUE THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_a_critical_column_in_a_case_result_still_masks(
+    populated_db: Database,
+) -> None:
+    """THE boundary: a `THEN` branch returns the column's VALUE.
+
+    Same CASE, same aggregate, one slot over — and the digits reach the output.
+    A rule that read "appears anywhere under a CASE" would publish them.
+    """
+    out = _classes(
+        "SELECT MAX(CASE WHEN account_type = 'checking' THEN last_four ELSE NULL END) "
+        "AS m FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"m": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_a_critical_column_in_a_case_default_still_masks(
+    populated_db: Database,
+) -> None:
+    """The `ELSE` branch is a value position too, and reached by a different arg."""
+    out = _classes(
+        "SELECT MAX(CASE WHEN account_type = 'checking' THEN 'x' ELSE routing_number END) "
+        "AS m FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"m": DataClass.ROUTING_NUMBER}
+
+
+def test_a_filter_exempts_its_predicate_not_the_aggregate_argument(
+    populated_db: Database,
+) -> None:
+    """`FILTER` narrows which rows an aggregate sees; it does not launder them.
+
+    The predicate here is harmless and the aggregate argument is the CRITICAL
+    column — the inverse of the reported shape, and the case a rule that
+    exempted the whole `Filter` node would leak.
+    """
+    out = _classes(
+        "SELECT MAX(routing_number) FILTER (WHERE account_type = 'checking') AS m "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"m": DataClass.ROUTING_NUMBER}
+
+
+def test_a_column_in_both_a_condition_and_a_value_position_still_masks(
+    populated_db: Database,
+) -> None:
+    """The exemption is per OCCURRENCE, not per column name.
+
+    `routing_number` is asked a question in the FILTER and returned by the
+    aggregate. Deciding "this column is only ever a predicate" by name would
+    take the exemption from the first occurrence and publish the second.
+    """
+    out = _classes(
+        "SELECT MAX(routing_number) FILTER (WHERE routing_number IS NOT NULL) AS m "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"m": DataClass.ROUTING_NUMBER}
+
+
+def test_a_bare_projected_comparison_still_masks(populated_db: Database) -> None:
+    """The deliberate outer edge: a condition slot must lie between.
+
+    The `Is` node here IS the projection, so nothing separates the test from
+    the output and `_only_null_tested`'s walk finds no condition slot. The bit
+    is the same one `COUNT(last_four)` already publishes, so this edge is
+    conservatism rather than a claim that the bit differs — moving it is a
+    decision to take on its own, not a gap to close by accident.
+    """
+    out = _classes("SELECT last_four IS NULL AS n FROM core.dim_accounts", populated_db)
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_an_opaque_node_inside_a_condition_still_takes_the_floor(
+    populated_db: Database,
+) -> None:
+    """The opaque-node veto outranks the condition exemption, as it does the count.
+
+    `COLUMNS(…)` DISTRIBUTES: this projection becomes one sibling per matched
+    column at runtime, so a single confident class certifies output columns
+    lineage never named — true whatever the class is.
+    """
+    out = _classes(
+        "SELECT SUM(CASE WHEN COLUMNS('routing.*') IS NULL THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": FAIL_CLOSED_CLASS}
+
+
+def test_a_parameter_confined_to_a_condition_stays_aggregate(
+    populated_db: Database,
+) -> None:
+    """A bound parameter null-tested in a predicate is tested, not returned.
+
+    The twin of ``test_a_parameter_confined_inside_a_count_stays_aggregate``:
+    without the exemption, `COUNT(*) FILTER (WHERE $acct IS NULL)` masks a row
+    count because a placeholder was seen. Placeholders take the identical
+    nullity rule columns do — an equality probe against one is not exempt, so
+    `WHERE last_four = $acct` still classifies from `last_four`.
+    """
+    out = _classes_bound(
+        "SELECT COUNT(*) FILTER (WHERE $acct IS NULL) AS n FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.INSTITUTION_ACCOUNT_NUMBER},
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_a_parameter_equality_probe_is_not_exempt(populated_db: Database) -> None:
+    """`WHERE <col> = $p` probes the column, so the column still classifies."""
+    out = _classes_bound(
+        "SELECT COUNT(*) FILTER (WHERE last_four = $acct) AS n FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.INSTITUTION_ACCOUNT_NUMBER},
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_parameter_in_a_case_result_still_surfaces(
+    populated_db: Database,
+) -> None:
+    """Guards the boundary of the placeholder half: a `THEN` returns the binding."""
+    out = _classes_bound(
+        "SELECT MAX(CASE WHEN account_type = 'checking' THEN $acct ELSE '' END) AS m "
+        "FROM core.dim_accounts",
+        populated_db,
+        {"acct": DataClass.ROUTING_NUMBER},
+    )
+    assert out == {"m": DataClass.ROUTING_NUMBER}
+
+
+# ---------------------------------------------------------------------------
+# A branch can map a predicate's answer back to the value
+#
+# These are the counterexamples that bound the rule above. A `CASE`/`IF` branch
+# chooses a LITERAL, and nothing stops that literal from being the very digit
+# the condition just tested — so "only compared" does not imply "cannot reach
+# the output". Ten branches recover one character; nine such projections
+# concatenated recover a routing number from a single query, at LOW.
+#
+# Nullity is the exception, and the reason is arithmetic rather than taste:
+# `IS NULL` has ONE answer per row per column, so N projections of it return N
+# copies of one bit and compose into nothing. `substr(col, i, 1) = 'd'` tests a
+# different piece of the value each time, which is what makes it amplify.
+# ---------------------------------------------------------------------------
+
+
+def _reconstructing_case(column: str, position: int) -> str:
+    """A CASE whose branches return the digit each branch just matched."""
+    branches = " ".join(
+        f"WHEN substr({column}, {position}, 1) = '{digit}' THEN '{digit}'"
+        for digit in range(10)
+    )
+    return f"CASE {branches} ELSE '?' END"  # noqa: S608  # test input string, not executing SQL
+
+
+def test_a_case_branch_returning_the_tested_literal_still_masks(
+    populated_db: Database,
+) -> None:
+    """The counterexample that bounds the exemption to nullity.
+
+    Every occurrence of `routing_number` sits in a `WHEN` condition, so a rule
+    keyed on position alone empties the column list and answers AGGREGATE — and
+    this projection returns the routing number's first digit in the clear.
+    """
+    out = _classes(
+        f"SELECT {_reconstructing_case('routing_number', 1)} AS d FROM core.dim_accounts",  # noqa: S608  # test input string, not executing SQL
+        populated_db,
+    )
+    assert out == {"d": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_a_filtered_aggregate_over_a_literal_still_masks(
+    populated_db: Database,
+) -> None:
+    """The same reconstruction through `FILTER`, with no CASE and no count.
+
+    `MAX('0') FILTER (WHERE …= '0')` is a predicate-to-literal map too, so
+    exempting the FILTER predicate alone reopens the hole a CASE-only fix
+    would close.
+    """
+    arms = ", ".join(
+        f"MAX('{digit}') FILTER (WHERE substr(routing_number, 1, 1) = '{digit}')"
+        for digit in range(10)
+    )
+    out = _classes(
+        f"SELECT account_id, COALESCE({arms}) AS d FROM core.dim_accounts "  # noqa: S608  # test input string, not executing SQL
+        "GROUP BY account_id",
+        populated_db,
+    )
+    assert out["d"] is DataClass.ROUTING_NUMBER
+
+
+def test_a_simple_case_mapping_values_to_literals_still_masks(
+    populated_db: Database,
+) -> None:
+    """The simple-CASE spelling of the same map, through the operand slot."""
+    branches = " ".join(f"WHEN '{digit}' THEN '{digit}'" for digit in range(10))
+    out = _classes(
+        f"SELECT CASE substr(routing_number, 1, 1) {branches} END AS d "  # noqa: S608  # test input string, not executing SQL
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"d": DataClass.ROUTING_NUMBER}
+
+
+def test_an_equality_condition_does_not_exempt_its_column(
+    populated_db: Database,
+) -> None:
+    """The general boundary, in its smallest form.
+
+    An equality probe answers "is it THIS value" — a different question per
+    literal, so a caller can walk the space. Only a nullity test is capped at
+    one answer, and only nullity is exempt.
+    """
+    out = _classes(
+        "SELECT SUM(CASE WHEN last_four = '5678' THEN 1 ELSE 0 END) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_null_test_wrapped_in_a_function_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """The exemption reads the column's OWN parent, not the enclosing condition.
+
+    `COALESCE(routing_number, '') IS NULL` is a nullity test on an expression
+    over the column, not on the column. Its sibling argument can carry the
+    value, so the occurrence stays classified.
+    """
+    out = _classes(
+        "SELECT SUM(CASE WHEN COALESCE(routing_number, '') IS NULL THEN 1 ELSE 0 END) "
+        "AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.ROUTING_NUMBER}
+
+
+def test_is_not_null_is_exempt_like_is_null(populated_db: Database) -> None:
+    """`IS NOT NULL` is the same single bit, negated — and the same count.
+
+    `COUNT(col)` already returns it, so the two spellings must agree.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NOT NULL) AS n "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_a_null_test_on_a_derived_alias_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """An alias can name an EXPRESSION, and then `IS NULL` is not a nullity test.
+
+    `NULLIF(substr(routing_number, 1, 1), '0')` is NULL exactly when the first
+    digit is '0', so testing the alias asks an EQUALITY wearing nullity's
+    clothes. The cap the exemption rests on is one answer per row per *column*;
+    an alias over an expression has one answer per row per *literal the author
+    chose*, and ninety such projections recover the whole number from one query.
+
+    So the exemption additionally requires the tested occurrence to resolve
+    against the catalog. A CTE or derived-table alias never does — it resolves
+    inside its source scope, where this projection is `ROUTING_NUMBER`.
+    """
+    out = _classes(
+        "WITH t AS (SELECT NULLIF(substr(routing_number, 1, 1), '0') AS d "
+        "FROM core.dim_accounts) "
+        "SELECT SUM(CASE WHEN d IS NULL THEN 1 ELSE 0 END) AS n FROM t",
+        populated_db,
+    )
+    assert out == {"n": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_a_null_test_on_a_derived_table_alias_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """The same smuggling without a WITH — the alias arrives from a subquery.
+
+    Pins that the rule keys on "this occurrence resolves against the catalog",
+    not on the syntax that introduced the name.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE d IS NULL) AS n FROM "
+        "(SELECT NULLIF(substr(routing_number, 1, 1), '0') AS d "
+        "FROM core.dim_accounts)",
+        populated_db,
+    )
+    assert out == {"n": DataClass.ROUTING_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_a_null_test_on_an_unresolvable_alias_takes_the_floor(
+    populated_db: Database,
+) -> None:
+    """An occurrence lineage cannot resolve must reach the floor, not AGGREGATE.
+
+    The twin of the leak above, in the form that bites hardest: dropping the
+    column before resolving it empties the column list, and the empty-list
+    branch reads that emptiness as a positive finding. It is only positive when
+    the occurrence was checked and found to be a base column — here the chain
+    exhausts ``_MAX_SCOPE_DEPTH`` and nothing was established at all, so the
+    plain projection's UNRESOLVED must survive the null test being applied to it.
+    """
+    sql = _with_query(
+        _routing_chain_ctes(_MAX_SCOPE_DEPTH + 4),
+        f"SELECT SUM(CASE WHEN v IS NULL THEN 1 ELSE 0 END) AS n FROM c{_MAX_SCOPE_DEPTH + 4}",  # noqa: S608  # test input string, not executing SQL
+    )
+
+    out = _classes(sql, populated_db)
+
+    assert out["n"] is DataClass.UNRESOLVED
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+# ---------------------------------------------------------------------------
 # The counting aggregate must not outrank the opaque-node veto
 #
 # The counting-aggregate collapse governs a projection only when EVERY column
