@@ -11,6 +11,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- **An investment account fed by two sources at once no longer publishes wrong
+  numbers.** A broker import and a connector sync covering one account leave two
+  interleaved ledgers rather than one — every event exists twice, so lots
+  double-count and cost basis mixes two accountings — and investment dedup
+  across sources does not exist yet, so `core.dim_holdings` now withholds every
+  figure for such a position (`market_value`, `unrealized_gain`, `price_date`,
+  `price_source` and `days_since_observed` all NULL, never zero) under a new
+  `valuation_status` value, `source_overlap`. `system doctor`'s
+  `investment_source_overlap` check moves from `warn` to `fail` and names the
+  one remedy that clears it — reverting the imported batch, since a disconnect
+  keeps the rows already pulled — while the holdings, tax-lot and realized-gain
+  reads all disclose the state through a `warnings[]` entry and
+  `summary.degraded_reason` on the CLI and the `investments` MCP tool alike,
+  and a withheld holdings answer caveats the two views it points at. (#541)
+
 - **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
   says which.** A statically classified tool's declared tier could overwrite a
   higher tier the response had already derived, understating both the response
