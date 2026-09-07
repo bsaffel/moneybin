@@ -267,14 +267,14 @@ and confirmation contracts.
   value in `refresh_run.steps` plans pending investment reviews, while selecting
   `transform` runs that planner transitively and then invokes non-selectable
   membership reconciliation before rebuilding the Golden ledger. Slice 3 adds
-  `investment_matches_pending_unique`,
-  `investment_matches_pending_competing`, `investment_matches_suppressed`,
-  `investment_matches_stale`, `investment_matching_skipped`, and
-  `investment_matching_error` to `RefreshRunPayload` and every shared
-  embedded-refresh payload. The four counts are stable integer keys; the first
-  two plus an action directing `reviews` to status `pending` and the planned
-  M1J.7 kind value `investment_matches` are the pending summary. Callers read
-  the skipped flag and nullable sanitized error before interpreting zeros. If
+  no new payload fields: the planner reports as one `stages` entry keyed
+  `investment_match`, with stable integer `counts` keys `pending_unique`,
+  `pending_competing`, `suppressed`, and `stale`, plus that stage's own `ran`
+  and `error`. The two pending counts plus an action directing `reviews` to
+  status `pending` and the planned M1J.7 kind value `investment_matches` are
+  the pending summary. Callers read `ran` and the nullable sanitized `error`
+  before interpreting zeros, and an absent entry means the step was never
+  requested. If
   the expanded requested set contains `transform`, the failure retries
   `refresh_run` scoped to `transform`; otherwise it retries `refresh_run`
   scoped to the M1J.7 `investment_match` value, including when another

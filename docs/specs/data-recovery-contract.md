@@ -279,16 +279,15 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     where no matcher sees it — are the disclosable half and are unaffected.
 
     **M1J.7 extension.** Investment-event planning follows the same explicit
-    per-stage result rule without overloading the cash `match` stage's `error`.
-    It adds
-    integer `investment_matches_pending_unique`,
-    `investment_matches_pending_competing`, `investment_matches_suppressed`,
-    and `investment_matches_stale` counts, boolean
-    `investment_matching_skipped`, and nullable DESCRIPTION-classified
-    `investment_matching_error` to `RefreshResult`, `RefreshRunPayload`, and
-    the shared embedded-refresh outcome. Counts are zero when unrequested,
-    skipped, failed, or clean with no results; the requested steps, skipped
-    flag, and sanitized error distinguish those states. A pending result links
+    per-stage result rule without overloading the cash `match` stage's `error`,
+    and needs no fields of its own to do it: it is a step, so it reports as one
+    `stages` entry keyed `investment_match`, carrying integer `pending_unique`,
+    `pending_competing`, `suppressed`, and `stale` counts alongside that
+    stage's own `ran` and nullable DESCRIPTION-classified `error`. Counts are
+    zero when the step ran clean with no results; a declined step carries none
+    at all, an absent entry means it was never requested, and `ran` plus the
+    sanitized error distinguish those states without a caller cross-checking
+    the requested steps. A pending result links
     to `reviews` with status `pending` and the planned M1J.7 kind value
     `investment_matches`. On skip or error, an expanded requested set containing
     `transform` retries `refresh_run` scoped to `transform`; every other set

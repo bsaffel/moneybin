@@ -909,24 +909,30 @@ Proposal-issued conflict id and the allowed choice ids. `history` shows
 accepted, rejected, stale, and reversed decisions.
 
 The CLI `run` command and MCP `refresh_run` with its M1J.7 `steps` value
-`investment_match` invoke the same bounded planner step. M1J.7 extends
-`RefreshResult`, `RefreshRunPayload`, and the shared embedded-refresh outcome
-with these stable fields:
+`investment_match` invoke the same bounded planner step. M1J.7 adds **no new
+top-level fields**. The planner is a refresh step, so it reports the way every
+other step reports: one `stages` entry keyed `investment_match`, carrying its
+own counts, its own `error`, and its own `ran`.
 
-| Field | Contract |
+| Stage field | Contract |
 |---|---|
-| `investment_matches_pending_unique` | Integer count of newly persisted or still-current unique pending Proposals observed by this run |
-| `investment_matches_pending_competing` | Integer count of newly persisted or still-current competing pending Proposals observed by this run |
-| `investment_matches_suppressed` | Integer count of otherwise-feasible relationships excluded by current rejection constraints during this run |
-| `investment_matches_stale` | Integer count of Proposals transitioned to `stale` during this run |
-| `investment_matching_skipped` | `true` only when the step was requested but comparison inputs were unavailable, so no candidate set was examined |
-| `investment_matching_error` | Nullable sanitized description of a real planner/bootstrap crash; `null` on a clean run or expected input-unavailable skip |
+| `counts.pending_unique` | Integer count of newly persisted or still-current unique pending Proposals observed by this run |
+| `counts.pending_competing` | Integer count of newly persisted or still-current competing pending Proposals observed by this run |
+| `counts.suppressed` | Integer count of otherwise-feasible relationships excluded by current rejection constraints during this run |
+| `counts.stale` | Integer count of Proposals transitioned to `stale` during this run |
+| `ran` | `false` only when the step was requested but comparison inputs were unavailable, so no candidate set was examined |
+| `error` | Nullable sanitized description of a real planner/bootstrap crash; `null` on a clean run or expected input-unavailable skip |
 
-All four counts are zero when the step was not requested, was skipped, or
-failed. A requested clean run that finds nothing also returns zero, so callers
-must read `investment_matching_skipped` and `investment_matching_error` before
-claiming that no candidate exists; the requested `steps` distinguish a clean
-zero from a step that was not selected. Any nonzero pending count adds an action
+The count keys drop the `investment_matches_` prefix a flat field needed. The
+stage they sit in already names the step, and a prefix is only how a flattened
+namespace implies what a key belongs to.
+
+The entry is **absent** when the step was not requested, which is what separates
+a clean zero from a step nobody selected — the flat fields had to be read
+against the requested `steps` to draw that line. All four counts are zero when
+the step ran and found nothing, and a step that declined to run carries no
+counts at all, so `ran` is what a caller reads before claiming no candidate
+exists. Any nonzero pending count adds an action
 directing the client to `reviews` with status `pending` and the planned M1J.7
 kind value `investment_matches`; the two pending counts plus that action are the
 public pending-review summary, with no parallel summary object.
@@ -940,11 +946,14 @@ scoped to only the planned M1J.7 `investment_match` step, even when another
 non-transform step was requested alongside it. A requested planner
 failure prevents reconciliation and transform, returns `applied=false` and
 `duration_seconds=null` when SQLMesh was not attempted, and does not overload
-the SQLMesh-only `error` or cash-only `matching_error` fields. The shared
-adapter carries the six fields and recovery action unchanged through
+the SQLMesh-only top-level `error` or the cash `match` stage's own `error`. The
+shared adapter carries the stage and recovery action unchanged through
 `sync_pull`, `import_files`, and `import_inbox_sync`.
-Counts, the skipped flag, and pending action are Tier LOW; the sanitized error
-is DESCRIPTION-classified Tier MEDIUM.
+
+Privacy classification is inherited rather than declared: `RefreshStageRow`
+already classifies `step` and `ran` as TXN_TYPE, `counts` as AGGREGATE, and
+`error` as DESCRIPTION, so the planner adds no new annotated field and cannot
+drift from the tier the other steps carry. The pending action stays Tier LOW.
 
 Selecting `transform` still runs that planner transitively, then invokes the
 non-selectable membership-reconciliation prerequisite before rebuilding the
@@ -1469,13 +1478,14 @@ fixtures and expected Golden-ledger outcomes.
   and unchanged-superset suppression scope; a mixed atomic batch prompts for
   every item together and cannot partially apply. Schema and privacy tests
   declare the prompt's dynamic disclosure up to Tier HIGH.
-- Refresh-result tests proving every investment planner field above is emitted
-  on direct and embedded refresh surfaces with identical names and zero/null
-  semantics; skip and sanitized-error states never masquerade as a clean zero,
-  a pending result links to `reviews`, and investment-match-only,
+- Refresh-result tests proving the `investment_match` stage above is emitted on
+  direct and embedded refresh surfaces with identical count keys and zero/null
+  semantics; a declined step (`ran=false`) and a sanitized error never
+  masquerade as a clean zero, an absent entry never masquerades as either, a
+  pending result links to `reviews`, and investment-match-only,
   investment-match-plus-non-transform, and transform-containing failures
-  receive the correct single-step retry without overloading `error` or
-  `matching_error`.
+  receive the correct single-step retry without overloading the top-level
+  `error` or the cash `match` stage's `error`.
 - Property or invariant tests proving a source event has at most one active
   Golden membership and every accepted multi-leg event is complete.
 - Real mixed-history validation before any guard or auto-accept promotion.
