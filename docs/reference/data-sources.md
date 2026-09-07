@@ -208,7 +208,7 @@ Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybi
 
 - **Accounts** (`raw.plaid_accounts`): `account_id`, `persistent_account_id`, `account_type`, `account_subtype`, `institution_name`, `name`, `official_name`, `mask` (last-4). `persistent_account_id` is the id that survives a relink where `account_id` does not; Plaid populates it only for depository accounts at institutions using tokenized account numbers (Chase, PNC, US Bank), so it is NULL elsewhere — and on every row synced before MoneyBin captured it.
 - **Transactions** (`raw.plaid_transactions`): `transaction_id`, `account_id`, `transaction_date`, `amount`, `description`, `merchant_name`, `category`, `pending`, `iso_currency_code`. Transactions carry the ISO field only — `unofficial_currency_code` is captured for balances, securities, investment transactions, and holdings, but not here.
-- **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`, `iso_currency_code` / `unofficial_currency_code`.
+- **Balances** (`raw.plaid_balances`): `account_id`, `balance_date`, `current_balance`, `available_balance`, `balance_limit`, `margin_loan_amount`, `iso_currency_code` / `unofficial_currency_code`, `last_updated_datetime`. `balance_limit` is the wire's `limit` — a SQL reserved word — and holds the institution-reported credit or overdraft limit, distinct from the user-asserted `app.account_settings.credit_limit`. `margin_loan_amount` is populated on investment accounts only, and `core.fct_balances` subtracts it because Plaid reports `current_balance` as the gross value of assets.
 - **Removed transactions:** Plaid's incremental sync emits a separate `removed_transactions` list; corresponding rows are deleted from `raw.plaid_transactions` and surfaced as `transactions_removed` in the `PullResult`.
 
 **Sign convention.** `raw.plaid_transactions.amount` preserves Plaid's native convention (positive = expense). The sign flip happens exactly once, in `prep.stg_plaid__transactions`, so downstream `core.*` rows match the canonical MoneyBin convention (negative = expense).
@@ -223,7 +223,7 @@ Live banking sync brokered through `moneybin-sync`. Implementation: `src/moneybi
 | Loans / mortgages (`loan`) | Rows land if exposed; no first-class treatment |
 | HSA (`depository.hsa`) | Rows land if exposed; no first-class treatment |
 
-**Incremental sync.** Plaid uses cursor-based incremental sync — each `sync pull` resumes from the last cursor stored server-side. `--force` resets the cursor and re-fetches full history; cross-source dedup collapses the overlap downstream.
+**Incremental sync.** Plaid uses cursor-based incremental sync — each `sync pull` resumes from the last cursor stored server-side. `--force` resets the cursor and re-fetches full history; cross-source dedup collapses the overlap downstream. Transactions only: balances are point-in-time snapshots with no cursor, so a pull writes the current `balance_date` and never revises an earlier one.
 
 ### Investments
 

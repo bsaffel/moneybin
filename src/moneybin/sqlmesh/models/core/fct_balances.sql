@@ -56,7 +56,11 @@ WITH ofx_balances AS (
      balance was signed. The COALESCE is load-bearing — the field is declared
      only on Plaid's investment balance model, so it is NULL on every cash
      account, and a bare subtraction would null the whole balance and drop the
-     account out of net worth entirely. */
+     account out of net worth entirely. That NULL is not only the cash-account
+     case: a brokerage carrying no loan reports it too, and so does a field the
+     payload omits, so the three reach us as one wire value and no rule here can
+     separate them. Dropping or flagging a NULL-margin investment row would take
+     every ordinary brokerage account with it. */
   SELECT
     b.account_id,
     b.balance_date,

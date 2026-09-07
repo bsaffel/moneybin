@@ -305,8 +305,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   name is a SQL reserved word and `credit_limit` already means the
   user-asserted figure); `last_updated_datetime` holds a UTC wall clock, the
   convention both other Plaid wire datetimes already use, so it reads the same
-  on every machine. Migration V057 is additive and idempotent; rows loaded
-  before it read NULL until `moneybin sync pull --force` re-fetches them.
+  on every machine. Migration V058 is additive and idempotent, and does
+  not backfill: `raw.plaid_balances` keeps one row per account per balance
+  date and a pull writes only the current snapshot's, so every balance date
+  recorded before the upgrade keeps `margin_loan_amount` NULL. A margin
+  account's net worth steps down by the loan on the first sync after
+  upgrading, and the history before that date stays overstated. Plaid returns
+  current balances only, so those amounts were never sent and cannot be
+  reconstructed.
 - **Curation no longer disappears when a transaction is re-keyed.** A
   transaction's canonical id is derived from its dedup group's most stable
   member, so it changes when a steadier source backfills the same transaction —
