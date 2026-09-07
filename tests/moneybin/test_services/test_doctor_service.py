@@ -785,7 +785,7 @@ def test_run_all_returns_expected_invariants(
     # protected app.* table, so its writes carry the same coverage check)
     # + dim_accounts_reserved_label (the same fold reached through a source's
     # own account_label, which never touches app.*).
-    assert len(report.invariants) == 61
+    assert len(report.invariants) == 62
     names = [r.name for r in report.invariants]
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
