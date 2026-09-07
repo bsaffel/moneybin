@@ -133,3 +133,52 @@ class TransactionNotesRepo(BaseRepo):
                 actor=actor,
                 parent_audit_id=parent_audit_id,
             )
+
+    def repoint_transaction(
+        self,
+        *,
+        old_transaction_id: str,
+        new_transaction_id: str,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> tuple[AuditEvent, ...]:
+        """Move every note off a superseded ``transaction_id`` onto its successor.
+
+        Called when a dedup merge or a Plaid pending→posted transition re-keys the
+        canonical transaction (ADR-015); without it the notes reference an id that
+        no longer exists in ``core.fct_transactions``. ``note_id`` is the primary
+        key, so a note never collides with one already on the destination.
+
+        One audit per note, like every other method here — the undo engine replays
+        rows individually, and a single event covering N updates could not restore
+        them one at a time.
+        """
+        with self._transaction(in_outer_txn=in_outer_txn):
+            note_ids = [
+                str(row[0])
+                for row in self._db.execute(
+                    f"SELECT note_id FROM {TRANSACTION_NOTES.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    f"WHERE transaction_id = ? ORDER BY note_id",
+                    [old_transaction_id],
+                ).fetchall()
+            ]
+            events: list[AuditEvent] = []
+            for note_id in note_ids:
+                before = self._require(self._fetch_row(note_id), "note_id", note_id)
+                self._db.execute(
+                    f"UPDATE {TRANSACTION_NOTES.full_name} "  # noqa: S608  # TableRef + parameterized values
+                    f"SET transaction_id = ? WHERE note_id = ?",
+                    [new_transaction_id, note_id],
+                )
+                events.append(
+                    self._emit_audit(
+                        action="note.repoint_transaction",
+                        target=(*self._audit_target, note_id),
+                        before=self._serialize_for_audit(before),
+                        after=self._serialize_for_audit(self._fetch_row(note_id)),
+                        actor=actor,
+                        parent_audit_id=parent_audit_id,
+                    )
+                )
+            return tuple(events)

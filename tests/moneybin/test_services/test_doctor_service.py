@@ -759,6 +759,7 @@ def test_run_all_returns_expected_invariants(
     # exchange_rate_overrides (M1K.2, composite pk_expr) /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
+    # transaction_splits->fct FK +
     # account_settings->dim_accounts FK + account_settings reserved-label fold
     # (a stored display_name that normalizes onto UNNAMED_ACCOUNT_LABEL) +
     # balance_assertions->dim_accounts FK +
@@ -782,7 +783,7 @@ def test_run_all_returns_expected_invariants(
     # stops applying and dedup_reconciliation never applied)
     # + dim_accounts_reserved_label (the same fold reached through a source's
     # own account_label, which never touches app.*).
-    assert len(report.invariants) == 60
+    assert len(report.invariants) == 61
     names = [r.name for r in report.invariants]
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -813,6 +814,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
+    assert "app_transaction_splits_fk" in names
     assert "orphan_app_state" in names
 
 

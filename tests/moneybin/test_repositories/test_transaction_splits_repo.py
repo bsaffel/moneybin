@@ -19,13 +19,14 @@ def _insert(
     repo: TransactionSplitsRepo,
     *,
     split_id: str,
+    txn: str = "txn_1",
     ord: int = 0,
     amount: str = "10.00",
     category: str | None = "Food",
 ) -> None:
     repo.insert(
         split_id=split_id,
-        transaction_id="txn_1",
+        transaction_id=txn,
         amount=Decimal(amount),
         category=category,
         subcategory=None,
@@ -123,3 +124,64 @@ class TestClear:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# ---------------------------------------------------------------------------
+# repoint_transaction — an allocation is never merged into another
+# ---------------------------------------------------------------------------
+
+
+def test_repoint_moves_splits_onto_an_unsplit_destination(db: Database) -> None:
+    repo = TransactionSplitsRepo(db)
+    _insert(repo, split_id="split0000001", txn="txn_old")
+
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    assert [e.target_id for e in events] == ["split0000001"]
+    assert db.execute(
+        "SELECT transaction_id FROM app.transaction_splits"
+    ).fetchall() == [("txn_new",)]
+
+
+def test_repoint_moves_nothing_onto_an_already_split_destination(
+    db: Database,
+) -> None:
+    """Two complete allocations must never become one transaction's union.
+
+    ``core.fct_transaction_lines`` drops the whole-transaction line once a
+    transaction has any split, so the union would publish double the real
+    amount. Neither side is deleted either — both are curation the user entered.
+    """
+    repo = TransactionSplitsRepo(db)
+    _insert(repo, split_id="split0000001", txn="txn_old")
+    _insert(repo, split_id="split0000002", txn="txn_new")
+
+    events = repo.repoint_transaction(
+        old_transaction_id="txn_old",
+        new_transaction_id="txn_new",
+        actor="system",
+    )
+
+    assert events == ()
+    assert db.execute(
+        "SELECT split_id, transaction_id FROM app.transaction_splits ORDER BY split_id"
+    ).fetchall() == [("split0000001", "txn_old"), ("split0000002", "txn_new")]
+
+
+def test_repoint_of_an_unsplit_source_is_a_no_op(db: Database) -> None:
+    """Nothing to move and nothing to refuse."""
+    repo = TransactionSplitsRepo(db)
+    _insert(repo, split_id="split0000002", txn="txn_new")
+
+    assert (
+        repo.repoint_transaction(
+            old_transaction_id="txn_old",
+            new_transaction_id="txn_new",
+            actor="system",
+        )
+        == ()
+    )
