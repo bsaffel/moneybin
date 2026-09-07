@@ -209,15 +209,15 @@ def test_loader_writes_the_balance_fields_the_client_used_to_drop(
     worth is covered by ``test_fct_balances_plaid.py``; this test covers only
     whether the column survives the loader.
 
-    ``last_updated_datetime`` is read back through ``::TIMESTAMPTZ`` rather than
-    compared to a wall-clock literal. The column is a naive TIMESTAMP, matching
-    its two siblings (``raw.plaid_investment_transactions.transaction_datetime``
-    and ``raw.plaid_investment_holding_lots.original_purchase_datetime``), so a
-    UTC instant lands shifted into the writing machine's zone and a literal here
-    would pass locally and fail on a UTC runner. The cast resolves in the
-    reading session's zone — the writing zone, for one machine — which is the
-    guarantee this layer currently offers. ``transform_service`` records the
-    same limitation on the landing columns and names TIMESTAMPTZ as the fix.
+    ``last_updated_datetime`` is compared to a naive UTC wall clock, the
+    convention its two siblings already use
+    (``raw.plaid_investment_transactions.transaction_datetime`` and
+    ``raw.plaid_investment_holding_lots.original_purchase_datetime``). That the
+    convention actually holds on a machine outside UTC is a separate question
+    from whether the column survives the loader, and
+    ``test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session``
+    owns it — this assertion cannot tell the two conventions apart, because they
+    agree wherever the session zone is UTC.
     """
     payload = sync_data.model_copy(deep=True)
     payload.balances = [
@@ -238,14 +238,52 @@ def test_loader_writes_the_balance_fields_the_client_used_to_drop(
 
     row = db.execute(
         """
-        SELECT balance_limit, margin_loan_amount, last_updated_datetime::TIMESTAMPTZ
+        SELECT balance_limit, margin_loan_amount, last_updated_datetime
         FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'
         """
     ).fetchone()
-    assert row is not None
-    assert row[0] == Decimal("5000.00")
-    assert row[1] == Decimal("250.00")
-    assert row[2] == datetime(2026, 4, 8, 12, 0, tzinfo=UTC)
+    assert row == (Decimal("5000.00"), Decimal("250.00"), datetime(2026, 4, 8, 12, 0))
+
+
+def test_balance_as_of_time_lands_as_a_utc_wall_clock_in_a_non_utc_session(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """A provider wire datetime stores the UTC wall clock, whatever the zone.
+
+    ``raw.plaid_balances.last_updated_datetime`` is a naive TIMESTAMP, and
+    DuckDB rebases a tz-AWARE value into the session zone on insert. The two
+    other Plaid wire datetimes dodge that by declaring a *naive* Polars dtype
+    and passing the value through ``_utc_naive`` first, so the column holds a
+    UTC wall clock on every machine — see ``test_plaid_investments_loader.py``
+    ``::test_event_timestamps_land_as_utc_wall_clocks_in_a_non_utc_session``.
+    Declaring this one tz-aware instead stores the *writing* machine's local
+    clock, which puts two conventions in one database and would date any later
+    ``::DATE`` derivation a day early west of UTC.
+
+    The session zone is pinned because the defect is invisible under UTC: both
+    conventions store the same wall clock there, so an unpinned assertion would
+    pass on a UTC runner with the bug still in place.
+    """
+    db.execute("SET TimeZone = 'America/Los_Angeles'")
+    instant = datetime(2026, 3, 10, 1, 30, tzinfo=UTC)  # 2026-03-09 18:30 in LA
+    payload = sync_data.model_copy(deep=True)
+    payload.balances = [
+        balance.model_copy(update={"last_updated_datetime": instant})
+        if balance.account_id == "acc_chase_check"
+        else balance
+        for balance in payload.balances
+    ]
+
+    loader = PlaidExtractor(db)
+    loader.load(payload, job_id=payload.metadata.job_id)
+
+    row = db.execute(
+        """
+        SELECT last_updated_datetime
+        FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'
+        """
+    ).fetchone()
+    assert row == (datetime(2026, 3, 10, 1, 30),)
 
 
 def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:

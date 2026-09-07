@@ -303,7 +303,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   account — where the field is always NULL — unchanged. All three fields are
   captured in `raw.plaid_balances` (`limit` as `balance_limit`, since the wire
   name is a SQL reserved word and `credit_limit` already means the
-  user-asserted figure). Migration V057 is additive and idempotent; rows loaded
+  user-asserted figure); `last_updated_datetime` holds a UTC wall clock, the
+  convention both other Plaid wire datetimes already use, so it reads the same
+  on every machine. Migration V057 is additive and idempotent; rows loaded
   before it read NULL until `moneybin sync pull --force` re-fetches them.
 - **Curation no longer disappears when a transaction is re-keyed.** A
   transaction's canonical id is derived from its dedup group's most stable
