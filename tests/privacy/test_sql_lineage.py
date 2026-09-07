@@ -1501,6 +1501,62 @@ def test_a_null_test_on_an_unresolvable_alias_takes_the_floor(
     assert derive_query_tier(out) is Tier.CRITICAL
 
 
+def test_a_null_test_on_an_unpivot_value_column_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """An UNPIVOT names its generated value column, and the author picks its input.
+
+    A third door into the same reconstruction, found in review. A pivot's output
+    columns are computed by DuckDB at execution time, so a generated column
+    NAMED after a catalog column is not that column: here every arm but the
+    first holds ``NULLIF(substr(routing_number, 1, 1), <digit>)``, so
+    ``last_four IS NULL`` is once again one bit per literal the author chose.
+
+    Listing the real ``last_four`` among the arms is what makes the bare name
+    available. Without it DuckDB suffixes the collision to ``last_four_1``, the
+    bare name keeps binding to the base column, and the query is the honest
+    one-bit-per-row question the exemption exists for.
+    """
+    arms = ", ".join(
+        f"NULLIF(substr(routing_number, 1, 1), '{digit}') AS d{digit}"
+        for digit in range(10)
+    )
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c "  # noqa: S608  # test input string, not executing SQL
+        "FROM core.dim_accounts "
+        f"UNPIVOT INCLUDE NULLS (last_four FOR arm IN (last_four, {arms})) "
+        "GROUP BY arm",
+        populated_db,
+    )
+
+    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
+def test_a_null_test_is_not_exempt_anywhere_a_pivot_is_in_scope(
+    populated_db: Database,
+) -> None:
+    """The guard is the pivot's presence, not a pattern in the arm list.
+
+    Deliberately conservative, and this pins the conservatism so it cannot be
+    narrowed back to the exploit's shape. Nothing here is generated — the value
+    column is ``last_four`` fed by real catalog columns, and the count really is
+    one bit per row per column. It still masks, because deciding otherwise means
+    re-deriving each pivot output's provenance, and every wrong answer there is
+    a value leak rather than an over-mask.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c "
+        "FROM core.dim_accounts "
+        "UNPIVOT INCLUDE NULLS (last_four FOR arm IN (last_four, account_id)) "
+        "GROUP BY arm",
+        populated_db,
+    )
+
+    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+    assert derive_query_tier(out) is Tier.CRITICAL
+
+
 # ---------------------------------------------------------------------------
 # The counting aggregate must not outrank the opaque-node veto
 #

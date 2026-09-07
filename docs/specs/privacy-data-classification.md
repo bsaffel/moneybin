@@ -375,7 +375,7 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)` | `AGGREGATE` (LOW) — counts destroy individual values |
 | `SUM`, `AVG`, `STDDEV`, `VARIANCE` over `col` | Source column's class — numerically derived from individuals |
 | `MIN`, `MAX`, `FIRST`, `LAST`, `ANY_VALUE` over `col` | Source column's class — surfaces an individual value |
-| `col IS NULL` / `col IS NOT NULL` inside a condition slot — the `FILTER (WHERE …)` predicate, a `CASE`/`IF` branch condition, or a simple-`CASE` operand — where `col` resolves to a **base catalog column** | `AGGREGATE` (LOW) — one bit per row, capped except on an outer join's optional side (see "Null tests inside a condition" below) |
+| `col IS NULL` / `col IS NOT NULL` inside a condition slot — the `FILTER (WHERE …)` predicate, a `CASE`/`IF` branch condition, or a simple-`CASE` operand — where `col` resolves to a **base catalog column** and no `PIVOT` / `UNPIVOT` is in its scope | `AGGREGATE` (LOW) — one bit per row, capped except on an outer join's optional side (see "Null tests inside a condition" below) |
 | Multi-column expression (`CONCAT`, `+`, `\|\|`) | `max(tier)` over all referenced columns; highest-tier class |
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
 | `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
@@ -432,9 +432,26 @@ SELECT SUM(CASE WHEN d IS NULL THEN 1 ELSE 0 END) AS n FROM t
 
 `d IS NULL` is spelled as nullity and means `substr(routing_number,1,1) = '0'`. The cap becomes one bit per *literal the author chose* rather than one per column, and ninety such projections recover a routing number from a single query — the same reconstruction, one indirection away. A second pre-push review round caught this; the position test alone cannot see it.
 
-So an occurrence is exempt only when it resolves, at that point, to a catalog column carrying a known class. Three failures are treated alike, because each leaves the identity unestablished rather than establishing a safe one: it resolves inside a CTE or derived-table scope; `_column_key` cannot name it (an unresolvable reference must keep reaching the conservative fallback, not be quietly dropped — a `routing_number` alias past `_MAX_SCOPE_DEPTH` answered `AGGREGATE` while the same projection without the null test answered `UNRESOLVED`); or the key resolves with no class, which is a coverage gap.
+So an occurrence is exempt only when it resolves, at that point, to a catalog column carrying a known class. Four failures are treated alike, because each leaves the identity unestablished rather than establishing a safe one: it resolves inside a CTE or derived-table scope; its scope draws from a `PIVOT` / `UNPIVOT` source (see below); `_column_key` cannot name it (an unresolvable reference must keep reaching the conservative fallback, not be quietly dropped — a `routing_number` alias past `_MAX_SCOPE_DEPTH` answered `AGGREGATE` while the same projection without the null test answered `UNRESOLVED`); or the key resolves with no class, which is a coverage gap.
 
 This is deliberately conservative in one honest case: `WITH t AS (SELECT routing_number AS d …)` really is a base column and its null test really is capped, but proving that means classifying the CTE's own projection first. It masks instead — which is what it did before this rule existed, so nothing regresses.
+
+#### A pivot generates the name as well as the value
+
+A `PIVOT` / `UNPIVOT` source's output columns are computed by DuckDB at execution time, so the catalog cannot say what one holds — only what its name *would* mean if the name were the catalog's. `UNPIVOT` lets the author name the generated value column and choose every arm feeding it:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c
+FROM core.dim_accounts
+UNPIVOT INCLUDE NULLS (
+    last_four FOR arm IN (
+        last_four, NULLIF(substr(routing_number,1,1),'0') AS d0, … AS d9))
+GROUP BY arm ORDER BY arm
+```
+
+Listing the real `last_four` among the arms is what frees the bare name: the pivot consumes that column, so DuckDB stops disambiguating the collision to `last_four_1` and the generated column answers to `last_four`. It then resolves against the catalog, its scope is no CTE, and every check above passes — while each row's value is whichever arm the author wrote. Ten arms recover a digit and nine groups a routing number. This is the alias exploit with a pivot for the indirection; a third review round caught it, and it returned a real routing digit at LOW before the fix.
+
+Deciding case by case would mean re-deriving each pivot output's provenance through the pivot's field list. Every wrong answer there is a value leak and every wrong answer the other way is an over-mask, so a pivot anywhere in the occurrence's scope declines the exemption — including the honest `IN (last_four, account_id)` form, whose count really is one bit per row. The conservative-fallback section below already takes this position for the `Star` a pivot source stops `qualify()` from expanding; this is the same reasoning reaching the one name that survives expansion.
 
 Three further properties bound what shipped:
 

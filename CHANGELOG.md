@@ -35,7 +35,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alias: `NULLIF(substr(col, 1, 1), '0') AS d` makes `d IS NULL` an equality
   probe in nullity's spelling, so an occurrence is exempt only if it resolves
   to a catalog column — a CTE or derived-table alias, or a reference lineage
-  cannot resolve at all, keeps masking. (MB-102)
+  cannot resolve at all, keeps masking. Neither does a name a `PIVOT` /
+  `UNPIVOT` generated: those output columns are computed at execution time, so
+  one can answer to a catalog name while holding whichever expression the
+  author put in each arm, and a pivot anywhere in the occurrence's scope keeps
+  masking too. (MB-102)
 
 ### Changed
 - **An investment account fed by two sources at once no longer publishes wrong

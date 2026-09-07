@@ -1885,6 +1885,43 @@ def test_a_null_test_on_an_aliased_expression_cannot_reconstruct_a_value(
     assert set(result.records[0].values()) == {"*****"}
 
 
+def test_an_unpivot_value_column_cannot_reconstruct_a_value(
+    populated_db: Database,
+) -> None:
+    """The same reconstruction reached through a pivot, at the caller's boundary.
+
+    An ``UNPIVOT`` generates its value column, and its name is the author's to
+    pick: listing the real ``last_four`` among the arms frees that name, so the
+    generated column both answers to a catalog name and holds whatever
+    expression each arm supplies. One row per arm then carries one bit about a
+    literal the author chose, and ``ORDER BY`` puts them in his order.
+
+    The tier alone would not catch a regression, because the leak's whole point
+    is that each arm comes back individually. So this asserts on the rows the
+    caller receives, and on the ground truth that makes them a leak: the base
+    profile's routing number starts with the digit the unmasked shape reports.
+    """
+    _seed_account(populated_db)
+    arms = ", ".join(
+        f"NULLIF(substr(routing_number, 1, 1), '{digit}') AS d{digit}"
+        for digit in range(10)
+    )
+    result = execute_sql_query(
+        populated_db,
+        "SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c "  # noqa: S608  # test input string, not executing SQL
+        "FROM core.dim_accounts "
+        f"UNPIVOT INCLUDE NULLS (last_four FOR arm IN (last_four, {arms})) "
+        "GROUP BY arm ORDER BY arm",
+        max_rows=100,
+    )
+
+    assert result.tier is Tier.CRITICAL
+    # The security property, not the mask's spelling: every arm must come back
+    # indistinguishable from every other, so no row carries a bit.
+    assert len(result.records) == 11
+    assert len({record["c"] for record in result.records}) == 1
+
+
 # --------------------------------------------------------------------------
 # CRITICAL transforms are not interchangeable
 #

@@ -1177,6 +1177,43 @@ def _has_uncounted_opaque(inner: exp.Expr) -> bool:
     )
 
 
+def _reads_a_pivot(col: exp.Column, col_scope: Scope | None) -> bool:
+    """True if ``col``'s scope draws from a ``PIVOT`` / ``UNPIVOT`` source.
+
+    A pivot's output columns are computed by DuckDB at execution time, so the
+    catalog cannot say what one holds — only what its name would mean if the
+    name were the catalog's. An ``UNPIVOT`` names its generated value column,
+    and the author picks both that name and every arm feeding it::
+
+        SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c
+        FROM core.dim_accounts
+        UNPIVOT INCLUDE NULLS (
+            last_four FOR arm IN (
+                last_four, NULLIF(substr(routing_number, 1, 1), '0') AS d0, …))
+        GROUP BY arm ORDER BY arm
+
+    Listing the real ``last_four`` among the arms is what frees the bare name:
+    the pivot consumes that column, so DuckDB stops suffixing the collision to
+    ``last_four_1`` and the generated column answers to ``last_four``. It
+    resolves against the catalog, its own scope is no CTE, and every check
+    ``_capped_null_test`` had passed — while each row's value is whichever arm
+    the author wrote. Ten arms recover a digit and nine such groups a routing
+    number, so this is the alias exploit again with a pivot for the
+    indirection.
+
+    Deciding case-by-case would mean re-deriving each pivot output's provenance
+    through ``exp.Pivot``'s field list; every wrong answer there is a value
+    leak, while every wrong answer here is an over-mask. So the presence of a
+    pivot anywhere in the column's scope declines the exemption, including for
+    the honest ``IN (last_four, account_id)`` form whose count really is one
+    bit per row. ``_OPAQUE_PROJECTION_NODES`` already takes this position for
+    the ``Star`` a pivot source stops ``qualify()`` from expanding; this is the
+    same reasoning reaching the one name that survives expansion.
+    """
+    root = col_scope.expression if col_scope is not None else col.root()
+    return root.find(exp.Pivot) is not None
+
+
 def _capped_null_test(
     col: exp.Column,
     inner: exp.Expr,
@@ -1202,11 +1239,15 @@ def _capped_null_test(
     indirection away. A review caught it; the position test alone cannot.
 
     So the occurrence must resolve, HERE, to a catalog column with a known
-    class. Three failures are all treated the same, because each leaves the
+    class. Four failures are all treated the same, because each leaves the
     identity unestablished rather than establishing a safe one:
 
       * it resolves inside a CTE or derived-table scope (``_source_scope_of``),
         where the projection behind the name may be any expression;
+      * its scope draws from a ``PIVOT`` / ``UNPIVOT`` source
+        (``_reads_a_pivot``), whose output columns DuckDB computes at execution
+        time — a generated column may ANSWER to a catalog name while holding
+        the author's expression;
       * ``_column_key`` cannot name it at all — an unresolvable reference must
         keep reaching ``_conservative_floor``, not be quietly dropped;
       * the key resolves but carries no class, which is a coverage gap and the
@@ -1225,10 +1266,10 @@ def _capped_null_test(
     predicate's answer — see :func:`_only_null_tested` for the worked example
     and for why it is not closed here.
     """
-    if (
-        _source_scope_of(col, _scope_of_column(col, inner, scope, subscopes))
-        is not None
-    ):
+    col_scope = _scope_of_column(col, inner, scope, subscopes)
+    if _source_scope_of(col, col_scope) is not None:
+        return False
+    if _reads_a_pivot(col, col_scope):
         return False
     key = _column_key(col, alias_map, ctx.snapshot, ctx.shadowed)
     return key is not None and _class_of_key(key) is not None
