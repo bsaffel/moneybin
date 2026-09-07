@@ -855,19 +855,32 @@ The heaviest view in this spec. In order:
    differently: the cost-basis engine reads a `split` event's `quantity` as the
    **multiplier** `M` (`2` for 2:1, `0.5` for a 1:2 reverse — `cost_basis.py`
    `_apply_split` scales every open lot by it), whereas Plaid's
-   `transfer/split` `quantity` is a **share delta** (units added/removed).
+   `transfer/split` `quantity` is **believed to be a share delta** (units
+   added/removed) — see the caveat below, which is why v1 derives nothing.
    Passing Plaid's value straight through would multiply every open lot by a
-   raw share count and destroy basis. Staging must convert: `M = (pre_split_qty
-   + delta) / pre_split_qty`, where `pre_split_qty` is the security's open
-   quantity immediately before the ex-date (derivable from the running
-   ledger position, since splits apply at the ex-date before same-day trades
-   per the foundation's same-day ordering). **When the pre-split quantity
-   can't be reconstructed** (e.g. the split predates the transaction window —
-   see Opening-lot bootstrap), the split row is **routed to review**, never
-   silently applied — a wrong multiplier is worse than a surfaced gap. This is
-   itself an open question for Sandbox-golden validation: confirm whether Plaid
-   reports split as a single delta row or a decomposed pair, which decides
-   whether `M` is derivable at all from the row alone.
+   raw share count and destroy basis. The conversion a future slice would apply
+   is `M = (pre_split_qty + delta) / pre_split_qty`, where `pre_split_qty` is
+   the security's open quantity immediately before the ex-date (derivable from
+   the running ledger position, since splits apply at the ex-date before
+   same-day trades per the foundation's same-day ordering). **When the pre-split
+   quantity can't be reconstructed** (e.g. the split predates the transaction
+   window — see Opening-lot bootstrap), the split row is **routed to review**,
+   never silently applied — a wrong multiplier is worse than a surfaced gap.
+
+   **The delta reading is unverified, and Plaid Sandbox cannot verify it.** An
+   earlier revision of this note deferred the question to "Sandbox-golden
+   validation." That gate cannot open, for two independently sufficient reasons
+   (both verified 2026-09-06): Plaid's default Sandbox investments payload
+   contains no `transfer/split` row at all, and the custom-Sandbox-user schema
+   (`override_accounts[].investment_transactions`) exposes only `type`
+   (`buy`/`sell`/`cash`/`fee`/`transfer`) with **no `subtype` key**, so a split
+   cannot be synthesized there either. Nor does the provider contract settle it:
+   the pinned `plaid-python` `InvestmentTransaction` model carries no
+   split-ratio field, and documents `quantity` only as "positive for buy
+   transactions; negative for sell transactions" — nothing subtype-specific.
+   Treat "Plaid's split quantity is a delta" as an assumption awaiting evidence,
+   never as a settled fact, and do not build a silent derivation on it alone.
+   The open question below records what evidence would actually settle it.
 
 4. **Map dates:** `trade_date = COALESCE(transaction_datetime::DATE,
    transaction_date)`; `settlement_date = transaction_date`; and
@@ -1283,7 +1296,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the first holdings-bearing snapshot per `(account_id, source_origin)`, ranked after the receipt-to-holdings join by `(extracted_at ASC, ingestion_sequence ASC)`; the selected receipt supplies the unique `source_file`. Draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
-| `tests/fixtures/plaid_investments_sync_response.json` | Golden file (captured from Sandbox) |
+| `tests/moneybin/test_extractors/fixtures/plaid_investments_sync_response.yaml` | Loader fixture, hand-authored to the server contract. Not a Sandbox capture: Sandbox investment payloads are captured on the moneybin-sync side, and none of them carries a `transfer/split` row |
 | Unit/SQL test modules | Per the testing strategy |
 
 ### Files to modify
@@ -1409,6 +1422,21 @@ contract above is its specification.
   pair, treats ordinary transfers as one-leg Source events, and leaves
   internal-transfer, merger, spin-off, and trade construction for a later
   atomic manual interface and comparison-adapter contract.
+- **Split-source symmetry (M1J.5) — deriving the multiplier.** Whether Plaid's `transfer/split`
+  `quantity` is a share delta, a post-split total, or something
+  institution-dependent is **unverified and not settleable in Sandbox** (staging
+  § step 3 records why). The evidence that *can* settle it is already collected
+  by this spec and needs no provider cooperation: `raw.plaid_investment_holdings`
+  keys its PK on `source_file`, so every pull is retained as a distinct
+  snapshot, and a snapshot pair straddling an ex-date yields a provider-reported
+  before/after quantity ratio independent of how the split row is encoded. A
+  derivation anchored there can carry the row's own `quantity` as a
+  corroborating second opinion and record every disagreement, which settles the
+  encoding from real accounts without betting on it. Until M1J.5 designs that
+  contract, every Plaid split stays `split_underivable` and the affected
+  positions publish `valuation_status = 'withheld'`; a user restores the correct
+  quantity with `moneybin investments add --type split`. Do not re-file this as
+  a Sandbox-capture task.
 - **Fee inclusion in Plaid `amount`.** Plaid's API reference does not state
   whether `InvestmentTransaction.amount` includes `fees`, and ships no worked
   sample (verified 2026-07-10). A Sandbox golden capture must assert `|amount|`

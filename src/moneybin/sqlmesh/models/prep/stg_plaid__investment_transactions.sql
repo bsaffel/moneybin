@@ -21,10 +21,11 @@ MODEL (
    guard and silently corrupts basis; NULL is honest and detectable. account_id
    keeps the source-native fallback (the accounts precedent, app_account_links.sql).
 
-   Three behaviors are GOLDEN-GATED — the Plaid Sandbox goldens that would settle
-   them do not exist yet, so v1 ships the conservative default and marks the branch
-   point (sync-plaid-investments.md, Open Questions). All three live in the
-   `reviewed` CTE. */
+   Three behaviors ship a conservative default and mark their branch point
+   (sync-plaid-investments.md, Open questions); all three live in the `reviewed`
+   CTE. Two are GOLDEN-GATED on a Plaid Sandbox capture. The third (split
+   routing) is NOT, and must not be re-filed as one: no Sandbox payload can
+   carry a `transfer/split` row at all -- see its own note below. */
 WITH classified AS (
   SELECT
     t.*,
@@ -159,23 +160,37 @@ WITH classified AS (
     END AS mapped_subtype
   FROM classified
 ), reviewed AS (
-  /* GOLDEN-GATED (1 of 3) -- split routing. Plaid reports a share DELTA;
-     cost_basis.py's _apply_split reads a MULTIPLIER and scales every open lot by
-     it, so a raw passthrough destroys the basis of the whole position. Whether M
-     is derivable from the row at all is exactly what the Sandbox goldens must
-     settle, so v1 derives nothing and routes EVERY split to review -- a wrong
-     multiplier is worse than a surfaced gap. Swap-in when the goldens land:
-     M = (pre_split_qty + delta) / pre_split_qty over strictly-earlier ledger rows
-     for the same (source_account_key, source_security_key, source_origin), still
-     routing to review when pre_split_qty <= 0 or the position predates the window.
+  /* NOT GOLDEN-GATED (M1J.5) -- split routing. cost_basis.py's _apply_split reads
+     a MULTIPLIER and scales every open lot by it, while Plaid's split quantity is
+     BELIEVED to be a share delta -- so a raw passthrough would multiply every lot
+     by a raw share count and destroy the basis of the whole position. v1 therefore
+     derives nothing and routes EVERY split to review: a wrong multiplier is worse
+     than a surfaced gap.
 
-     GOLDEN-GATED (2 of 3) -- event_group_id stays NULL. Pairing the two legs of a
+     Do not wait on Sandbox goldens to lift this, and do not re-file it as a
+     capture task. No Sandbox payload can carry a `transfer/split` row: the default
+     investments payload contains none, and the custom-Sandbox-user schema exposes
+     only `type` (buy/sell/cash/fee/transfer) with no `subtype` key (both verified
+     2026-09-06). The delta reading is therefore an ASSUMPTION, not a fact -- the
+     pinned plaid-python model has no split-ratio field and documents `quantity`
+     only as positive-for-buy / negative-for-sell.
+
+     So the obvious swap-in -- M = (pre_split_qty + delta) / pre_split_qty over
+     strictly-earlier ledger rows for the same (source_account_key,
+     source_security_key, source_origin) -- is NOT safe on its own: it silently
+     inherits the unverified delta reading. M1J.5 owns the real contract, anchored
+     instead on the retained holdings snapshots straddling the ex-date
+     (raw.plaid_investment_holdings keys its PK on source_file, so every pull is
+     kept), which yield a provider-reported before/after ratio no matter how the
+     split row is encoded.
+
+     GOLDEN-GATED (1 of 2) -- event_group_id stays NULL. Pairing the two legs of a
      reinvest / corporate action needs a key the goldens have not validated. NULL
      loses no correctness, only linkage: the acquisition still opens its lot and
      income still counts once. Swap-in: a content hash over the validated key,
      applied to reinvest / corporate-action rows only.
 
-     GOLDEN-GATED (3 of 3) -- fee inclusion in ledger_amount. The plain flip
+     GOLDEN-GATED (2 of 2) -- fee inclusion in ledger_amount. The plain flip
      assumes Plaid's amount is fee-INCLUSIVE (what the ledger contract requires);
      Plaid does not document it either way. The loader's drift guard surfaces rows
      that reconcile under neither convention. Swap-in if the goldens show
