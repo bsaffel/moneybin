@@ -107,6 +107,13 @@ TAXONOMY: frozenset[str] = frozenset({
     "other",
 })
 
+# The machine-readable code every investment read prefixes its degraded_reason
+# with when an account's ledger arrives from two sources at once. Exported so
+# the MCP and CLI surfaces branch on one token rather than re-spelling it: the
+# doctor invariant of the same name is what blocks on the state, and the same
+# string ties a degraded response back to the check that explains it.
+SOURCE_OVERLAP_CODE = "investment_source_overlap"
+
 # Closed vocabulary (Req 12) — mirrors the app.securities.security_type CHECK
 # constraint. Hard-validated in upsert_security(); the DB CHECK is the backstop,
 # not the primary contract (same pattern as account_service.COST_BASIS_METHODS).
@@ -310,8 +317,8 @@ class HoldingRow:
     """One current position — cost basis plus the Pillar-C valuation.
 
     ``market_value``/``unrealized_gain`` are NULL — never zero — whenever
-    ``valuation_status`` is ``unpriced`` or ``withheld``; a zero is
-    indistinguishable from a worthless position. ``unrealized_gain`` is
+    ``valuation_status`` is ``unpriced``, ``withheld`` or ``source_overlap``;
+    a zero is indistinguishable from a worthless position. ``unrealized_gain`` is
     signed (negative below cost); ``market_value`` is not.
     """
 
@@ -358,6 +365,12 @@ class HoldingsResult:
     ``summary.applied_rates``. Empty whenever nothing was converted, because
     "no conversion happened" and "converted at a rate nobody recorded" must not
     look alike to a reader.
+
+    ``degraded_reason`` is the machine-readable half of the warning above it:
+    set only when a ``source_overlap`` position is in the result, so the flag
+    means one thing and a consumer can branch on it. Both CLI and MCP put it on
+    ``summary.degraded_reason``, which is where an agent reads "this answer is
+    less than you asked for" without parsing prose.
     """
 
     rows: list[HoldingRow]
@@ -367,6 +380,7 @@ class HoldingsResult:
     total_market_value_currency: str | None = None
     market_value_by_currency: dict[str, Decimal] = field(default_factory=dict)
     applied_rates: tuple[ResolvedRate, ...] = ()
+    degraded_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,10 +404,18 @@ class LotRow:
 
 @dataclass(frozen=True, slots=True)
 class LotsResult:
-    """Result of :meth:`InvestmentService.lots`."""
+    """Result of :meth:`InvestmentService.lots`.
+
+    ``degraded_reason`` carries the same machine-readable code
+    ``HoldingsResult`` uses, set when any returned lot belongs to an account
+    whose investment ledger arrives from two sources at once. Lots are computed
+    from that interleaved ledger, so they hold exactly the double-counted
+    quantities and basis ``core.dim_holdings`` withholds a market value for.
+    """
 
     rows: list[LotRow]
     warnings: list[str]
+    degraded_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,10 +441,17 @@ class RealizedGainRow:
 
 @dataclass(frozen=True, slots=True)
 class GainsResult:
-    """Result of :meth:`InvestmentService.gains`."""
+    """Result of :meth:`InvestmentService.gains`.
+
+    ``degraded_reason`` carries the same machine-readable code
+    ``HoldingsResult`` uses, set when any returned row belongs to an account
+    whose investment ledger arrives from two sources at once. Proceeds, basis
+    and gain are all computed from that interleaved ledger.
+    """
 
     rows: list[RealizedGainRow]
     warnings: list[str]
+    degraded_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1702,8 +1731,81 @@ class InvestmentService:
 
     # Statuses that publish no market value. Mirrors dim_holdings.sql's
     # valuation_status vocabulary; 'valued'/'carried_forward' both carry a number.
-    _UNVALUED_STATUSES: frozenset[str] = frozenset({"unpriced", "withheld"})
+    _UNVALUED_STATUSES: frozenset[str] = frozenset({
+        "unpriced",
+        "withheld",
+        "source_overlap",
+    })
+    # The one status whose remedy is outside the pipeline: an account fed by two
+    # sources at once has two interleaved ledgers, and no refresh, price pull or
+    # reconciliation clears it — one of the feeds has to go. This is the value
+    # dim_holdings writes; SOURCE_OVERLAP_CODE above is what the reads report.
+    _SOURCE_OVERLAP_STATUS: str = "source_overlap"
     _VALID_TERMS: frozenset[str] = frozenset({"short", "long"})
+
+    def _source_overlap_accounts(self) -> frozenset[str]:
+        """Accounts whose investment ledger arrives from more than one source.
+
+        The same predicate ``core.dim_holdings``' ``source_overlap_accounts``
+        CTE applies, run here because ``core.fct_investment_lots`` and
+        ``core.fct_realized_gains`` carry no status column of their own — a
+        row-level trust marker across the three derived investment models is a
+        separate design decision, and this needs no new column.
+
+        Read from the LEDGER, not from ``dim_holdings``: that view is scoped to
+        OPEN lots, so an account whose positions are all closed has no row
+        there at all — and closed positions are precisely what the realized
+        gains surface reports. Sourcing the set from it would leave the gains
+        of a fully-liquidated overlapping account silently uncaveated.
+
+        ``opening_bootstrap`` is excluded for the reason ``dim_holdings.sql``
+        spells out at length: that subtype is MoneyBin's own reconstruction of
+        a pre-window position, not a second observation of an event another
+        source also reported, so it double-counts nothing.
+        """
+        rows = self._db.execute(
+            f"""
+            SELECT account_id
+              FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
+             WHERE COALESCE(subtype, '') <> 'opening_bootstrap'
+             GROUP BY account_id
+            HAVING COUNT(DISTINCT source_type) > 1
+            """  # noqa: S608  # TableRef constant, no interpolated values
+        ).fetchall()
+        return frozenset(str(r[0]) for r in rows)
+
+    def _source_overlap_reason(self, count: int, noun: str) -> str:
+        """The one degraded_reason vocabulary every investment read speaks.
+
+        Same leading code on holdings, lots and gains so an agent branches on
+        one token rather than parsing three prose variants; only the noun and
+        the count differ, because only they do.
+        """
+        return (
+            f"{SOURCE_OVERLAP_CODE}: {count} {noun} sit in an account "
+            "whose investment ledger arrives from two sources at once — the "
+            "two ledgers interleave, so these figures double-count and their "
+            "cost basis mixes two accountings. Revert the redundant import "
+            "batch, then run 'moneybin system doctor' to confirm."
+        )
+
+    def _source_overlap_degradation(
+        self, row_accounts: list[str], noun: str
+    ) -> str | None:
+        """Return the reason when the RETURNED rows touch an overlapping account.
+
+        Scoped to the rows actually returned, never to the database: the fault
+        is account-level, so a read filtered to a clean account must not
+        inherit another account's overlap. An empty result short-circuits
+        before the ledger scan.
+        """
+        if not row_accounts:
+            return None
+        overlapping = self._source_overlap_accounts()
+        affected = sum(1 for account_id in row_accounts if account_id in overlapping)
+        if not affected:
+            return None
+        return self._source_overlap_reason(affected, noun)
 
     def _resolve_filters(
         self, account_ref: str | None, security_ref: str | None
@@ -1813,9 +1915,11 @@ class InvestmentService:
 
         Each row carries cost basis and — when a close resolved — market value,
         unrealized gain, the date of the close used, and how many days old it
-        is. A position whose value is ``unpriced`` or ``withheld`` reports NULL
-        rather than zero; the count of those rows is named in a warning, the
-        same shape ``lots()`` uses for ``basis_incomplete``.
+        is. A position whose value is ``unpriced``, ``withheld`` or
+        ``source_overlap`` reports NULL rather than zero; the count of those
+        rows is named in a warning, the same shape ``lots()`` uses for
+        ``basis_incomplete``. ``source_overlap`` adds a second warning and sets
+        ``degraded_reason``, because its remedy is outside the pipeline.
 
         ``max_days_since_observed`` carries the age of the stalest close behind
         any published figure — always present, never a warning.
@@ -1874,9 +1978,24 @@ class InvestmentService:
         if unvalued:
             warnings.append(
                 f"{unvalued} position(s) report no market value — see each row's "
-                "valuation_status: 'unpriced' (no close resolved) or 'withheld' "
-                "(a known-wrong share count, or lots that disagree on currency)."
+                "valuation_status: 'unpriced' (no close resolved), 'withheld' "
+                "(a known-wrong share count, or lots that disagree on currency), "
+                "or 'source_overlap' (the account's investment ledger arrives "
+                "from two sources at once)."
             )
+        # A second warning rather than a third clause in the first: the count
+        # above says how many figures are missing, and this says which repair
+        # brings one class of them back. Folding them would send a reader whose
+        # only blank row is an unpriced one to revert a perfectly good import.
+        overlapping = sum(
+            1
+            for row in holding_rows
+            if row.valuation_status == self._SOURCE_OVERLAP_STATUS
+        )
+        degraded_reason: str | None = None
+        if overlapping:
+            degraded_reason = self._source_overlap_reason(overlapping, "position(s)")
+            warnings.append(degraded_reason)
         # Scope the age to the rows carrying a figure: it discloses how old the
         # published numbers are, not how old an absent one would have been.
         observed_ages = [
@@ -1925,6 +2044,7 @@ class InvestmentService:
             total_market_value_currency=total_currency,
             market_value_by_currency=by_currency,
             applied_rates=applied_rates,
+            degraded_reason=degraded_reason,
         )
 
     def _portfolio_total(
@@ -2027,6 +2147,11 @@ class InvestmentService:
         Pass ``open_only=False`` for the full open+closed history. Carries a
         warning naming the count of ``basis_incomplete`` rows (e.g. a
         ``transfer_in`` recorded with no supplied basis) when any are present.
+
+        Sets ``degraded_reason`` when any returned lot sits in an account whose
+        ledger arrives from two sources at once: those lots double-count, which
+        is a different claim from an incomplete basis (conservative, not wrong)
+        and gets its own warning for that reason.
         """
         account_id, security_id = self._resolve_filters(account_ref, security_ref)
 
@@ -2080,7 +2205,17 @@ class InvestmentService:
                 "(e.g. a transfer_in with no supplied basis) — figures are "
                 "conservative."
             )
-        return LotsResult(rows=lot_rows, warnings=warnings)
+        # A separate warning from the one above, and a separate degradation:
+        # an incomplete basis makes a figure conservative, while a source
+        # overlap makes it wrong. A reader must not confuse the two.
+        degraded_reason = self._source_overlap_degradation(
+            [row.account_id for row in lot_rows], "lot(s)"
+        )
+        if degraded_reason is not None:
+            warnings.append(degraded_reason)
+        return LotsResult(
+            rows=lot_rows, warnings=warnings, degraded_reason=degraded_reason
+        )
 
     def gains(
         self,
@@ -2095,6 +2230,10 @@ class InvestmentService:
 
         Carries a warning naming the count of ``basis_incomplete`` rows
         (oversold / missing acquisition) when any are present in the result.
+
+        Sets ``degraded_reason`` when any returned row sits in an account whose
+        ledger arrives from two sources at once — proceeds, basis and gain all
+        double-count until one of the two feeds is removed.
         """
         if term is not None and term not in self._VALID_TERMS:
             raise ValueError(
@@ -2161,7 +2300,14 @@ class InvestmentService:
                 "basis (oversold / missing acquisition) — figures are "
                 "conservative."
             )
-        return GainsResult(rows=gain_rows, warnings=warnings)
+        degraded_reason = self._source_overlap_degradation(
+            [row.account_id for row in gain_rows], "realized-gain row(s)"
+        )
+        if degraded_reason is not None:
+            warnings.append(degraded_reason)
+        return GainsResult(
+            rows=gain_rows, warnings=warnings, degraded_reason=degraded_reason
+        )
 
     def list_securities(self, *, security_type: str | None = None) -> SecuritiesResult:
         """List the securities catalog from ``core.dim_securities``.

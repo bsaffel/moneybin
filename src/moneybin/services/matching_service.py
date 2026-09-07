@@ -12,12 +12,17 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
-import duckdb
-
 from moneybin import error_codes
 from moneybin.config import MatchingSettings, get_settings
 from moneybin.database import Database
-from moneybin.errors import RecoveryAction, UserError
+from moneybin.errors import RecoveryAction, UserError, exception_origin
+from moneybin.matching.aliasing import (
+    forward_rekeyed_transaction_ids,
+    misdirected_alias_ids,
+    record_committed_alias_forwarding,
+    record_committed_curation_restore,
+    restore_forwarded_curation,
+)
 from moneybin.matching.application import (
     MatchDecisionApplication,
     MatchDecisionNotFoundError,
@@ -29,12 +34,12 @@ from moneybin.matching.assignment import NodeKey, connected_components
 from moneybin.matching.engine import MatchRunError, TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
+    count_pending_matches,
     get_active_dedup_edges,
     get_match_log,
     get_pending_matches,
 )
 from moneybin.matching.priority import seed_source_priority
-from moneybin.tables import MATCH_DECISIONS
 
 if TYPE_CHECKING:
     from moneybin.matching.engine import MatchResult
@@ -151,22 +156,7 @@ class MatchingService:
         ``match_type`` filters to a single type; None counts all pending. Used
         for the total_count an MCP read tool needs to report ``has_more``.
         """
-        where = "WHERE match_status = 'pending' AND reversed_at IS NULL"
-        params: list[Any] = []
-        if match_type is not None:
-            where += " AND match_type = ?"
-            params.append(match_type)
-        try:
-            row = self._db.execute(
-                f"""
-                SELECT COUNT(*) FROM {MATCH_DECISIONS.full_name}
-                {where}
-                """,  # noqa: S608  # TableRef constant + literal where; values parameterized
-                params,
-            ).fetchone()
-            return int(row[0]) if row else 0
-        except duckdb.CatalogException:
-            return 0  # table not created until the first matcher run
+        return count_pending_matches(self._db, match_type=match_type)
 
     def run(
         self, *, auto_accept_transfers: bool = False, actor: str = "system"
@@ -185,8 +175,51 @@ class MatchingService:
             restate_fx_accounting_after_match_run,
         )
 
+        # The run's own auto-accepted merges re-key transactions, and so does a
+        # sync that landed a posted row for a pending one Plaid has removed —
+        # neither passes through `MatchDecisionApplication`, so the forwarding is
+        # invoked here. It commits on its own; a matcher run opens no transaction.
+        #
+        # In `finally` because a matcher run that raises still leaves durable
+        # writes: it opens no transaction around itself, so each dedup tier's
+        # accepted decisions are committed by the time a later reconciliation or
+        # Tier-4 step raises `MatchRunError` (see `MatchRunError`'s docstring).
+        # Those decisions re-key immediately -- every model between them and
+        # `core.fct_transactions` is a VIEW -- and `refresh()` records the error
+        # as a step failure and carries on, so skipping the forwarding here
+        # leaves the user a red `app_transaction_categories_fk` and vanished
+        # notes, tags and splits until some later run happens to succeed. The
+        # pass is idempotent, so running it on the way out of a failure is safe.
+        #
+        # The `finally` must not become the *reporter* of a failure, though: an
+        # exception raised out of it replaces the one in flight, and `refresh`,
+        # the CLI and the MCP surface all catch `MatchRunError` specifically to
+        # report the counts it carries. A forwarding failure that displaced it
+        # would turn merges the user can already see in the ledger into a
+        # generic error with those counts lost, so it is logged instead. With no
+        # matcher error to protect, it is still the caller's to handle.
+        in_flight: BaseException | None = None
         try:
-            result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+            try:
+                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+            except BaseException as exc:
+                in_flight = exc
+                raise
+            finally:
+                try:
+                    record_committed_alias_forwarding(
+                        forward_rekeyed_transaction_ids(self._db, actor=actor)
+                    )
+                except Exception as forwarding_error:
+                    if in_flight is None:
+                        raise
+                    logger.warning(
+                        f"⚠️ Transaction-id alias forwarding failed at "
+                        f"{exception_origin(forwarding_error)} while a matching run "
+                        f"was already failing; reporting the run's own error. Any "
+                        f"curation left on a superseded id is repaired by the next "
+                        f"successful run."
+                    )
         except MatchRunError as exc:
             try:
                 restate_fx_accounting_after_match_run(self._db, exc.partial)
@@ -210,7 +243,7 @@ class MatchingService:
     def undo(
         self, match_id: str, *, reversed_by: str = "user", actor: str = "system"
     ) -> None:
-        """Reverse a match decision (audited via ``MatchDecisionsRepo``).
+        """Reverse a match decision and give each side its curation back.
 
         ``reversed_by`` is the domain column (``user``/``system``); ``actor`` is
         the audit *surface* (``cli``/``mcp``/``system``), defaulting to
@@ -218,8 +251,42 @@ class MatchingService:
         actor taxonomy (``user`` is a ``decided_by`` value, not a surface).
         Surfaces pass their own (``cli``/``mcp``). Raises ``ValueError`` when no
         match with this id exists.
+
+        Accepting a merge re-keys the group (ADR-015) and moves the superseded
+        id's curation onto the survivor, deleting one side outright where the
+        primary key cannot hold both. Reversing the decision alone would leave
+        that edit on a transaction the user never edited and the deleted half
+        gone for good — from the one operation the matcher advertises as
+        reversible. So the reversal and the restore are one transaction.
+        ``prep.int_transactions__matched`` reads ``app.match_decisions`` through
+        a view, so the members this reversal moved are simply the aliased ids
+        whose forwarding target was still theirs before it and is another live
+        transaction after. That is the whole far side of a split component, not
+        only the id that became canonical again: decisions are pairwise, so
+        reversing one edge of a 3+-member group re-homes members the decision
+        never named.
         """
-        self._match_repo().reverse(match_id, reversed_by=reversed_by, actor=actor)
+        self._db.begin()
+        try:
+            misdirected_before = misdirected_alias_ids(self._db)
+            self._match_repo().reverse(
+                match_id, reversed_by=reversed_by, actor=actor, in_outer_txn=True
+            )
+            restored = restore_forwarded_curation(
+                self._db,
+                revived_ids=misdirected_alias_ids(self._db) - misdirected_before,
+                actor=actor,
+            )
+        except BaseException:
+            self._db.rollback()
+            raise
+        self._db.commit()
+        if restored:
+            logger.info(
+                f"↩️  Returned {restored} curation row(s) to the transaction they "
+                f"were written on"
+            )
+        record_committed_curation_restore(restored)
         from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
             restate_fx_accounting_after_match_undo,
         )

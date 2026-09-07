@@ -32,6 +32,7 @@ from moneybin.services.account_links_service import AccountLinkAcceptImpact
 from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
+from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -45,15 +46,44 @@ runner = CliRunner()
 # ---------------------------------------------------------------------------
 
 
+def _match_stage(
+    *,
+    ran: bool = True,
+    auto_merged: int = 0,
+    pending_review: int = 0,
+    pending_transfers: int = 0,
+    error: str | None = None,
+) -> StageOutcome:
+    """The match step's entry, built real so no mock answers for it.
+
+    A declined step reports no counts at all, which is why ``ran=False`` drops
+    them rather than passing three zeros: zero found and zero examined route
+    the reader to different remedies.
+    """
+    counts = (
+        {}
+        if not ran
+        else {
+            "auto_merged": auto_merged,
+            "pending_review": pending_review,
+            "pending_transfers": pending_transfers,
+        }
+    )
+    return StageOutcome(step="match", ran=ran, counts=counts, error=error)
+
+
 def _clean_rematch() -> RefreshResult:
     """A post-merge pass that succeeded, for tests about something else.
 
     Never leave `AccountLinksService.set` returning a bare ``MagicMock`` here:
     its auto-created ``.error`` is a truthy Mock, so the command reads the
     rebuild as failed and exits 1, and ``transfers_retired`` renders as a repr
-    inside the retirement warning.
+    inside the retirement warning. The match stage is built for the same
+    reason and must stay present: a result with no stages at all reads as a
+    pass that never ran, and the command warns instead of reporting a clean
+    merge.
     """
-    return RefreshResult(applied=True, duration_seconds=0.0)
+    return RefreshResult(applied=True, duration_seconds=0.0, stages=(_match_stage(),))
 
 
 def _make_pending_group(
@@ -473,8 +503,7 @@ class TestLinksSet:
         mock_set.return_value = RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matches_auto_merged=2,
-            matches_pending_review=5,
+            stages=(_match_stage(auto_merged=2, pending_review=5),),
         )
 
         with caplog.at_level(logging.INFO):
@@ -496,9 +525,11 @@ class TestLinksSet:
         """Nothing examined is not the same as nothing found.
 
         ``refresh()`` treats a missing or stale matching view as a precondition
-        rather than a crash, so it returns zero counts with no error. Reading
-        those zeros as a clean pass would tell the user their merge exposed no
-        duplicates when the rows were never looked at.
+        rather than a crash, so the match stage comes back ``ran=False`` with no
+        counts and no error. Reading that as a clean pass would tell the user
+        their merge exposed no duplicates when the rows were never looked at.
+        The stage is present, not absent: this caller always asks for the match
+        step, so ``ran=False`` is the state under test here.
         """
         from moneybin.orchestration.refresh import RefreshResult
 
@@ -506,7 +537,7 @@ class TestLinksSet:
         mock_set.return_value = RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matching_skipped=True,
+            stages=(_match_stage(ran=False),),
         )
 
         with caplog.at_level(logging.INFO):
@@ -536,7 +567,7 @@ class TestLinksSet:
         mock_set.return_value = RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matches_pending_transfers=3,
+            stages=(_match_stage(pending_transfers=3),),
         )
 
         with caplog.at_level(logging.INFO):
@@ -587,8 +618,7 @@ class TestLinksSet:
             applied=False,
             duration_seconds=1.0,
             error="sqlmesh apply failed",
-            matches_auto_merged=2,
-            matches_pending_review=5,
+            stages=(_match_stage(auto_merged=2, pending_review=5),),
         )
 
         with caplog.at_level(logging.INFO):
@@ -628,7 +658,7 @@ class TestLinksSet:
         mock_set.return_value = RefreshResult(
             applied=True,
             duration_seconds=1.0,
-            matches_auto_merged=1,
+            stages=(_match_stage(auto_merged=1),),
             transfers_retired=2,
         )
 
@@ -665,7 +695,7 @@ class TestLinksSet:
             applied=False,
             duration_seconds=1.0,
             error="sqlmesh apply failed",
-            matching_error="matcher blew up",
+            stages=(_match_stage(error="matcher blew up"),),
         )
 
         with caplog.at_level(logging.INFO):

@@ -73,6 +73,16 @@ All `updated_at` columns are `TIMESTAMP` and may be `NULL` only where the row's 
 
 Closing this gap requires either (a) adding an `updated_at` column to each curation table and refreshing it on UPDATE in `transaction_service.py`, or (b) introducing a count-based signal alongside `MAX(...)` so deletes can be detected. Both are real follow-up work, scoped out of this spec and tracked separately. Until then, consumers needing strict edit/delete sensitivity on transactions must consult `app.audit_log` rather than relying on `fct_transactions.updated_at` alone.
 
+### Known limitation: `dim_holdings` can rewind when a source overlap clears
+
+`core.dim_holdings.updated_at` folds an account-scoped `source_overlap_at` term (`MAX(updated_at)` over the account's ledger rows in `core.fct_investment_transactions`, wherever more than one `source_type` is present) so the watermark correctly advances the moment a mixed-source overlap appears — a second source's rows land with a fresh timestamp and the fold picks it up.
+
+Clearing the overlap is not symmetric. The only remedy, `import_revert`, deletes the redundant batch's raw rows outright, so once the delete lands the account no longer has more than one distinct `source_type` and the overlap term stops contributing to any of the account's rows. A surviving row's `updated_at` then falls back to its own position-scoped inputs (open lots, price freshness, snapshot receipt), which can be *older* than the overlap timestamp an incremental reader already observed — a rewind, not an advance.
+
+This is the same class of gap as the transaction-delete case above: `core.dim_holdings` is a stateless SQLMesh `VIEW` recomputed from the live raw/core tables on every read, so it has no memory of a value it reported before the delete. Closing it needs a persisted, account-scoped signal that survives the revert — e.g. `raw.import_log.reverted_at` folded in by account. `import_log` has no typed `account_id` today (only a free-text `account_names` JSON list), and by the time such a join could run, the raw rows that would supply the real `account_id` are already gone — the revert deletes exactly the rows that would have identified the account. Folding in `reverted_at` therefore first needs the revert path to persist the affected account ids somewhere durable and typed, which is schema and service work, not a query change. It is scoped out here and tracked separately.
+
+No current consumer polls `dim_holdings.updated_at` as an incremental cursor, so this does not bite in practice today. A future incremental consumer of `dim_holdings` must not treat a decrease in `updated_at` as impossible until this is closed.
+
 ## Model-level freshness: `meta.model_freshness`
 
 `meta.model_freshness` is a SQLMesh view that wraps SQLMesh's internal state schema and exposes a stable public contract:

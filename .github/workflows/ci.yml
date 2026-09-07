@@ -145,7 +145,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Restore CI test durations
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .test_durations
           key: ci-test-durations-v1-${{ github.run_id }}
@@ -266,7 +266,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Restore CI test durations
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .test_durations
           key: ci-test-durations-v1-${{ github.run_id }}
@@ -314,7 +314,7 @@ jobs:
           echo "$HOME/.duckdb/cli/latest" >> $GITHUB_PATH
 
       - name: Restore CI test durations
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: .test_durations
           key: ci-test-durations-v1-${{ github.run_id }}
@@ -367,7 +367,7 @@ jobs:
             -n logical --store-durations
 
       - name: Save CI test durations
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: .test_durations
           key: ci-test-durations-v1-${{ github.run_id }}

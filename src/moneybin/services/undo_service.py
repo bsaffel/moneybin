@@ -16,6 +16,7 @@ service silently reversing unrelated later work.
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -585,6 +586,32 @@ class UndoService:
             [operation_id],
         ).fetchone()
         return row is not None
+
+    def undone_operation_ids(self, operation_ids: Iterable[str]) -> frozenset[str]:
+        """Which of ``operation_ids`` are *currently* reversed (net liveness).
+
+        One scan of the undo edges answers the whole batch, so a caller holding
+        many candidates pays one query rather than one each. Public because
+        "was this operation undone" is a question outside this service too —
+        the stranded-curation heal asks it of each alias re-key — and the
+        answer must come from the same definition ``can_undo`` uses, not a
+        parallel one.
+        """
+        liveness = self._build_undo_liveness()
+        return frozenset(op for op in operation_ids if liveness.is_undone(op))
+
+    def cascade_blockers(self, operation_id: str) -> list[str]:
+        """Live operations that touched ``operation_id``'s rows afterward.
+
+        Public for the same reason as :meth:`undone_operation_ids`: "would a
+        normal undo of this operation be blocked" is a question outside this
+        service too. The re-key repoint an alias forward carries is never run
+        through :meth:`undo` — the alias row itself refuses to undo — so
+        ``restore_forwarded_curation`` replays its rows by hand and must apply
+        this exact check first, or a later edit on the survivor is silently
+        overwritten by the stale pre-merge image.
+        """
+        return self._cascade_blockers(operation_id, self._build_undo_liveness())
 
     def _build_undo_liveness(self) -> _UndoLiveness:
         """Load every undo edge once and index it for net-liveness queries.

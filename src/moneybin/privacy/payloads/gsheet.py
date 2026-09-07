@@ -36,7 +36,9 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # Shared connection row — mirrors GSheetConnection.to_dict()
@@ -68,6 +70,7 @@ class GsheetConnectionRow:
 # ---------------------------------------------------------------------------
 
 
+@row_set("connections")
 @dataclass(frozen=True, slots=True)
 class GsheetConnectionsPayload:
     """Payload for ``gsheet`` and ``gsheet_status`` — list of connections."""
@@ -75,6 +78,7 @@ class GsheetConnectionsPayload:
     connections: list[GsheetConnectionRow]
 
 
+@row_set("connections")
 class GsheetConnectionsView(BaseModel):
     """Default Google Sheets connection collection projection."""
 
@@ -84,6 +88,7 @@ class GsheetConnectionsView(BaseModel):
     connections: list[GsheetConnectionRow]
 
 
+@row_set("connections")
 class GsheetStatusView(BaseModel):
     """Connection-health projection for one or every Google Sheet."""
 
@@ -104,6 +109,7 @@ GsheetCoarsePayload = Annotated[
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class GsheetDetection:
     """Column-detection sub-object inside a connect/reconnect result.
@@ -204,28 +210,27 @@ class GsheetPullRow:
     error_message: Annotated[str | None, DataClass.DESCRIPTION]
 
 
+@row_set("pulls")
 @dataclass(frozen=True, slots=True)
 class GsheetPullPayload:
     """Payload for ``gsheet_pull`` — per-connection pull results.
 
     The refresh fields below describe the post-load pipeline the CLI runs after
     a pull, spelled exactly as ``RefreshStepOutcome`` and ``SyncPullPayload``
-    spell them so one vocabulary covers every surface that refreshes. They are
-    ``None`` rather than ``0`` when no refresh ran at all — "the matcher found
-    nothing" and "the matcher never ran" are different answers, and the MCP
-    pull is the caller that never runs one.
+    spell them so one vocabulary covers every surface that refreshes.
+    ``stages`` is empty when no refresh ran at all — a step that never ran has
+    no entry, which is how "the matcher found nothing" stays distinct from "the
+    matcher never ran". The MCP pull is the caller that never runs one.
     """
 
     pulls: list[GsheetPullRow]
     # Accepted transfers this pull's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
     refresh_error: Annotated[str | None, DataClass.DESCRIPTION] = None
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    stages: list[RefreshStageRow] = field(default_factory=list)
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
         default_factory=list
     )
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -235,7 +240,6 @@ class GsheetPullPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

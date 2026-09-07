@@ -203,19 +203,27 @@ def warn_refresh_steps(outcome: RefreshStepOutcome | None) -> None:
     """
     if outcome is None:
         return
-    if outcome.matching_error is not None:
-        logger.warning(f"⚠️  Matching step failed: {outcome.matching_error}")
-    if outcome.categorization_error is not None:
-        logger.warning(f"⚠️  Categorization step failed: {outcome.categorization_error}")
+    # Named one at a time rather than looped over `stages`, because the
+    # sentences are not interchangeable: each names the remedy for its own step,
+    # the rates line has to precede its pair lines below, and the transform
+    # stage is deliberately absent — every embedded caller reports the SQLMesh
+    # apply through its own `transforms_error`, so warning on it here would
+    # print the same failure twice.
+    for step, label in (
+        ("match", "Matching step failed"),
+        ("categorize", "Categorization step failed"),
+    ):
+        stage = outcome.stage(step)
+        if stage is not None and stage.error is not None:
+            logger.warning(f"⚠️  {label}: {stage.error}")
     for domain in outcome.identity_errors:
         logger.warning(f"⚠️  {domain.title()} identity backfill failed")
-    if outcome.rate_backfill_error is not None:
+    rates = outcome.stage("rates")
+    if rates is not None and rates.error is not None:
         # Ahead of the three pair warnings below, and never instead of them: a
         # crash names no pair, so those lines stay silent and this is the only
         # signal the step failed at all.
-        logger.warning(
-            f"⚠️  Exchange rate backfill failed: {outcome.rate_backfill_error}"
-        )
+        logger.warning(f"⚠️  Exchange rate backfill failed: {rates.error}")
     if outcome.rate_pairs_failed:
         logger.warning(
             f"⚠️  Exchange rates unavailable for {', '.join(outcome.rate_pairs_failed)}"

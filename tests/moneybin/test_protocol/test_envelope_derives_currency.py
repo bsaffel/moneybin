@@ -21,6 +21,7 @@ from typing import Annotated
 
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import build_envelope
+from moneybin.protocol.row_set import row_set
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,7 @@ class _Row:
     currency_code: Annotated[str | None, DataClass.CURRENCY]
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class _RowsPayload:
     """The shape every list-returning money tool uses."""
@@ -106,6 +108,7 @@ def test_derives_through_a_pydantic_view_model() -> None:
     """
     from pydantic import BaseModel
 
+    @row_set("rows")
     class _View(BaseModel):
         rows: list[_Row]
 
@@ -116,9 +119,15 @@ def test_derives_through_a_pydantic_view_model() -> None:
     assert build_envelope(data=view).summary.display_currency == "CHF"
 
 
-def test_ignores_auxiliary_lists_when_finding_the_rows() -> None:
-    """A payload's warnings list must not be mistaken for its row collection."""
+def test_derives_from_the_declared_rows_beside_a_second_list() -> None:
+    """The currency comes from the declared row set, not a sibling list.
 
+    The derivation reads the same declaration ``returned_count`` reads, so a
+    payload carrying warnings beside its rows can no longer answer "several,
+    so neither" and report an unknown currency for a priced read.
+    """
+
+    @row_set("rows")
     @dataclass(frozen=True, slots=True)
     class _WithWarnings:
         rows: list[_Row]

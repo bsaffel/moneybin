@@ -197,6 +197,81 @@ class TestResponseEnvelope:
         assert d["error"]["code"] == error_codes.INFRA_DATABASE_LOCKED
 
     @pytest.mark.unit
+    def test_status_has_only_two_values(self) -> None:
+        """No caller may declare a third outcome; `error` alone decides."""
+        from typing import get_args, get_type_hints
+
+        # `ResponseEnvelope[T]` is a PEP 695 generic, so `T` is in neither the
+        # module globals nor the class dict. `get_type_hints` only started
+        # consulting `__type_params__` itself in 3.12.4, and this package
+        # supports >=3.12 — so hand it the params or `data: T` raises NameError
+        # on a supported interpreter (CI runs 3.12.3).
+        type_params = {p.__name__: p for p in ResponseEnvelope.__type_params__}
+        hints = get_type_hints(ResponseEnvelope, localns=type_params)
+        assert set(get_args(hints["status"])) == {
+            "ok",
+            "error",
+        }
+
+    @pytest.mark.unit
+    def test_a_declared_status_never_survives_construction(self) -> None:
+        """`status` is derived, so passing one cannot desync it from `error`."""
+        envelope = ResponseEnvelope(
+            summary=SummaryMeta(total_count=0, returned_count=0),
+            data={"conflicts": 1},
+            status="error",
+        )
+        assert envelope.status == "ok"
+        assert envelope.error is None
+        assert envelope.to_dict()["status"] == "ok"
+
+    @pytest.mark.unit
+    def test_build_envelope_defaults_to_ok(self) -> None:
+        assert build_envelope(data={"n": 1}).status == "ok"
+
+    @pytest.mark.unit
+    def test_rules_set_counts_every_declared_target_state(self) -> None:
+        """`results` is the payload's only list, so it is the returned set.
+
+        Not an auxiliary-field test: this payload used to carry a second
+        `conflicts` list, and the counter reported `returned_count=1` for a
+        batch that declared N target states until that list was declared
+        auxiliary. The refusal is an error now and the list is gone, so what
+        survives here is the count contract itself.
+        """
+        from moneybin.privacy.payloads.categorize import (
+            CategorizationRulesSetPayload,
+            CategorizationRuleStateResult,
+        )
+
+        payload = CategorizationRulesSetPayload(
+            results=[
+                CategorizationRuleStateResult(
+                    rule_id=f"rule_{n:012d}", state="present", changed=True
+                )
+                for n in range(5)
+            ],
+            operation_id="op_111122223333",
+        )
+
+        assert build_envelope(data=payload).summary.returned_count == 5
+
+    @pytest.mark.unit
+    def test_rules_create_counts_rule_ids_not_its_conflict_diagnostics(self) -> None:
+        """Same root cause with three lists: `rule_ids` is the written set."""
+        from moneybin.privacy.payloads.categorize import RulesCreatePayload
+
+        payload = RulesCreatePayload(
+            created=3,
+            existing=0,
+            skipped=0,
+            rule_ids=["rule_111122223333", "rule_444455556666", "rule_777788889999"],
+            error_details=[],
+        )
+
+        assert build_envelope(data=payload).summary.returned_count == 3
+
+    @pytest.mark.unit
     def test_to_json_includes_status(self) -> None:
         import json
 

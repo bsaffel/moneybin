@@ -228,28 +228,32 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # whether or not the match step raised, so one call can carry both — and
     # they say different things: nothing was proposed, *and* the merge itself
     # is not visible yet. Neither may short-circuit the other.
-    if rematch.matching_skipped:
+    match = rematch.stage("match")
+    if match is None or not match.ran:
         # Zero counts here mean nothing was examined, not that nothing was
-        # found — so the clean-run line below would be inventing a result.
+        # found — so the clean-run line below would be inventing a result. An
+        # absent stage lands here for the same reason: this caller always asks
+        # for the match step, so a missing entry is no more evidence of a clean
+        # pass than a declined one is.
         logger.warning(
             "⚠️  Re-match after the merge could not run — its matching views "
             "were missing or stale, so the newly co-resident rows were never "
             "examined; re-run 'moneybin refresh'"
         )
-    elif rematch.matching_error is not None:
+    elif match.error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # wraps no transaction around the run, so a crash mid-pass leaves
         # earlier tiers' decisions durable. `MatchRunError` carries those counts
-        # and `refresh` copies them onto the result, so this branch can name
+        # and `refresh` copies them into the stage, so this branch can name
         # them exactly instead of hedging — and zero is trustworthy too, because
         # a run that committed nothing raises unwrapped and never reaches the
         # branch that would populate them.
         landed = ", ".join(
             f"{count} {noun}"
             for count, noun in (
-                (rematch.matches_auto_merged, "auto-merged"),
-                (rematch.matches_pending_review, "new proposal(s)"),
-                (rematch.matches_pending_transfers, "possible transfer(s)"),
+                (match.count("auto_merged"), "auto-merged"),
+                (match.count("pending_review"), "new proposal(s)"),
+                (match.count("pending_transfers"), "possible transfer(s)"),
             )
             if count
         )
@@ -265,12 +269,12 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
             "'moneybin system audit list'"
         )
     else:
-        merged = rematch.matches_auto_merged
-        pending = rematch.matches_pending_review
+        merged = match.count("auto_merged")
+        pending = match.count("pending_review")
         # The pass is a full match run, so it raises Tier 4 transfer candidates
         # too. Judging it clean on the dedup counters alone would report "no new
         # duplicates" over a merge that just queued transfers for review.
-        transfers = rematch.matches_pending_transfers
+        transfers = match.count("pending_transfers")
         if not merged and not pending and not transfers:
             logger.info("Re-matched after the merge: no new duplicates found")
         else:

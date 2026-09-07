@@ -330,6 +330,29 @@ DEDUP_MATCH_CONFIDENCE = Histogram(
     "Distribution of match confidence scores",
 )
 
+TRANSACTION_ID_ALIASES_WRITTEN_TOTAL = Counter(
+    "moneybin_transaction_id_aliases_written_total",
+    "Superseded transaction ids appended to the alias forwarding map",
+)
+
+# Separate from the alias count because they answer different questions: the
+# aliases say how often the canonical id moved, this says how much of the user's
+# own curation rode along. A re-key that silently stopped carrying curation shows
+# up only here.
+TRANSACTION_CURATION_FORWARDED_TOTAL = Counter(
+    "moneybin_transaction_curation_forwarded_total",
+    "Curation rows moved onto a transaction's new canonical id after a re-key",
+)
+
+# The inverse of the counter above, and its own metric rather than a decrement:
+# a re-key that carries curation and a reversal that hands it back are different
+# events, and netting them to zero would hide a merge/undo loop that is losing
+# rows on one of the two legs.
+TRANSACTION_CURATION_RESTORED_TOTAL = Counter(
+    "moneybin_transaction_curation_restored_total",
+    "Curation rows returned to their own transaction when a merge was reversed",
+)
+
 # The only counter here that measures an *undo* of something the user decided,
 # which is why it exists separately from DEDUP_MATCHES_TOTAL: a regression that
 # starts retiring more often is invisible in the match counts and shows up only
@@ -521,6 +544,29 @@ RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL = Counter(
     "Direct rule-creation attempts refused because a 'contains' pattern was "
     "too short to discriminate — it would match unrelated merchants. Blocked "
     "unless the caller passes allow_broad.",
+)
+
+RULE_CREATE_CONFLICT_BLOCKED_TOTAL = Counter(
+    "moneybin_rule_create_conflict_blocked_total",
+    "Rule-creation attempts refused because an active rule already owns the "
+    "same canonical matcher and assigns a different category. The proposal is "
+    "recorded in app.rule_conflicts rather than activated. surface names the "
+    "creation path that was refused.",
+    ["surface"],
+)
+
+RULE_CONFLICTS_PENDING = Gauge(
+    "moneybin_rule_conflicts_pending",
+    "Rule conflicts awaiting a user decision. Set on each review() call and "
+    "after any resolution or undo.",
+)
+
+RULE_CONFLICT_RESOLVED_TOTAL = Counter(
+    "moneybin_rule_conflict_resolved_total",
+    "Rule conflicts settled by an explicit user decision, by resolution: "
+    "replace supersedes the existing rule, reprioritize activates the proposal "
+    "beside it, cancel keeps live state.",
+    ["resolution"],
 )
 
 CATEGORIZE_SKIPPED_CONFIDENCE_TOTAL = Counter(
@@ -850,7 +896,7 @@ PRICE_RESOLUTION_STATUS_TOTAL = Counter(
     # securities. Recorded per full holdings read, so read it as a ratio between
     # statuses over a window, not as an absolute count of positions.
     "Holdings valuation outcomes by status (valued / carried_forward / "
-    "unpriced / unreconstructable / withheld)",
+    "unpriced / unreconstructable / withheld / source_overlap)",
     ["status"],
 )
 

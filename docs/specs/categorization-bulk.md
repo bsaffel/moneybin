@@ -121,7 +121,7 @@ Exit code: `0` if every item applied cleanly, `1` if any item failed parse, vali
 `transactions_categorize_commit` tool. Internally:
 
 - Same `validate_items()` helper as the CLI; validation failures accumulate to `error_details`.
-- Result envelope: `{summary, data, actions}` with the `CategorizationResult` fields under `data`.
+- Result envelope: `{status, summary, data, actions}` with the `CategorizationResult` fields under `data`.
 - Sensitivity tier `medium`.
 
 ## Testing Strategy

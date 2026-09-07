@@ -6,6 +6,7 @@ import string
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NotRequired, TypedDict, TypeGuard
 
+from moneybin.services.entity_reference import normalize_reference
 from moneybin.services.ledger_overlap import LedgerOverlap
 
 if TYPE_CHECKING:  # import-time cycle: account_display_name reads the
@@ -43,6 +44,31 @@ Lives here rather than beside either consumer because both the merge matcher
 and the free-text resolver must agree on it, and they import nothing from each
 other.
 """
+
+_RESERVED_ACCOUNT_NAME_FOLD = normalize_reference(UNNAMED_ACCOUNT_LABEL)
+
+
+def is_reserved_account_name(value: object) -> bool:
+    """Whether a proposed account name folds onto ``UNNAMED_ACCOUNT_LABEL``.
+
+    Folded with the resolver's own ``normalize_reference``, not a weaker
+    comparison. Its third rung matches on that fold, so anything it collapses
+    onto the label -- a case variant, padding, a doubled space, an
+    NFKC-equivalent character -- would otherwise be accepted as a name and then
+    answer a request for the label another account displays: with generated
+    placeholders filtered out of the candidate-name slot, such a row is the
+    unique hit. Reserving on a narrower fold than the matcher uses leaves
+    exactly that difference as a hole.
+
+    One predicate rather than the comparison spelled at each site, because
+    every write path that accepts an account name has to reject the same set,
+    and a second spelling is how one of them ends up narrower. ``system
+    doctor`` asks it too, of rows that were stored before a guard existed.
+    """
+    return (
+        isinstance(value, str)
+        and normalize_reference(value) == _RESERVED_ACCOUNT_NAME_FOLD
+    )
 
 
 def is_a_name(display_name: str | None) -> TypeGuard[str]:

@@ -45,6 +45,7 @@ from moneybin.metrics.registry import (
 from moneybin.reports._framework.catalog import (
     ReportCatalog,
     get_report_catalog,
+    merged_degraded_reason,
     report_tier,
 )
 from moneybin.reports._framework.contract import ReportSpec
@@ -739,13 +740,16 @@ class ExportService:
             semantics=cast(dict[str, object], asdict(execution.semantics)),
             # Drift, unlike freshness, is already in hand: the catalog carries
             # R4's verdict for every user-tier row it built.
-            degraded=status.degraded,
+            degraded=status.degraded or execution.degraded_reason is not None,
             # The drift sentence names the columns that moved, and those are the
             # author's own — the same text the header rename and the withheld SQL
             # keep out of a redacted artifact. The code says a stale class map
-            # from an unreadable row without repeating any of them.
-            degraded_reason=(
-                status.degraded_code if withhold_authored else status.degraded_reason
+            # from an unreadable row without repeating any of them. The caveat
+            # the catalog attached beneath this call (#409) names no author text,
+            # so a durable artifact of an inflated total carries it either way.
+            degraded_reason=merged_degraded_reason(
+                status.degraded_code if withhold_authored else status.degraded_reason,
+                execution.degraded_reason,
             ),
         )
         tables = (table,)

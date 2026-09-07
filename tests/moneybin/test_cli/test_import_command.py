@@ -222,7 +222,7 @@ def test_import_files_reports_the_best_effort_steps_its_refresh_ran(
     SQLMesh apply, so a provider outage mid-import read as a clean import — and
     each of these outcomes carries a remedy the others do not.
     """
-    from moneybin.services.refresh_outcome import RefreshStepOutcome
+    from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
     def fake_run_import(**kwargs: Any) -> ImportResult:
         return ImportResult(
@@ -230,7 +230,11 @@ def test_import_files_reports_the_best_effort_steps_its_refresh_ran(
             file_type="tabular",
             core_tables_rebuilt=True,
             refresh_steps=RefreshStepOutcome(
-                categorization_error="categorizer blew up",
+                stages=(
+                    StageOutcome(
+                        step="categorize", ran=True, error="categorizer blew up"
+                    ),
+                ),
                 rate_pairs_unsupported=("EUR/XTS",),
             ),
         )

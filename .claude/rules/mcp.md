@@ -81,15 +81,37 @@ Every tool returns this shape:
 
 ```json
 {
+  "status": "ok",
   "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "EUR"},
   "data": [ ... ],
   "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
 }
 ```
 
+- **`status`** — always emitted, and always exactly `"ok"` or `"error"`.
 - **`summary`** — metadata for the AI: counts, truncation, sensitivity, currency.
 - **`data`** — structured objects, never pre-formatted strings.
 - **`actions`** — contextual next-step hints for composability.
+
+Three further keys are conditional, omitted when unset: **`error`** (`message`,
+`code`, optional `hint` and `details`), **`recovery_actions`** (structured
+actions an agent can execute to fix the failure — the envelope's top-level field
+is their only canonical wire location), and **`next_cursor`** (see Pagination).
+An `error` does not imply an empty `data`: `import_files` keeps its per-file
+results on an all-failed batch.
+
+**`status` is derived from `error`, never set by a caller.** `__post_init__`
+computes it so the two cannot disagree; attach a failure with `with_error()`,
+not `dataclasses.replace`. **Do not add a third value.** Agents branch on
+`status` before reading `data`, so a new outcome costs every existing consumer a
+branch — a tool that needs to say more says it in `error.code`.
+
+**A requested mutation that did not happen is an `error`.** A refused write — a
+conflict, a failed precondition, a target that cannot be created — raises its
+coded `UserError` and reports `status="error"`. Returning `status="ok"` with a
+payload explaining the refusal in prose reads as success to an agent, which then
+proceeds as though the write landed. A *partial* batch is not this case: some
+items did apply, so it stays `ok` with the per-item outcomes in `data`.
 
 Currency lives in `summary.display_currency`, not per-row. It is `null` — never a
 guessed default — when the rows span more than one currency or none is known, and

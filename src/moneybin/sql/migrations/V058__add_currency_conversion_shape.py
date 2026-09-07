@@ -1,4 +1,4 @@
-"""V057: reserve received-leg fields for single-row currency conversions."""
+"""V058: reserve received-leg fields for single-row currency conversions."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ _STEPS = (
 def migrate(conn: object) -> None:
     """Add nullable received-leg fields without rewriting existing rows."""
     for table, column, column_type in _STEPS:
-        logger.debug(f"V057: ADD COLUMN {table}.{column}")
+        logger.debug(f"V058: ADD COLUMN {table}.{column}")
         conn.execute(  # type: ignore[union-attr]
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"  # noqa: S608  # closed internal migration plan
         )

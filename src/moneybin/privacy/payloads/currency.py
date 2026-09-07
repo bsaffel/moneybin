@@ -21,6 +21,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Annotated
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import row_set
 
 if TYPE_CHECKING:
     # Type-only: `currency_service` imports polars, and this module is reached
@@ -72,6 +73,7 @@ class FxRateRow:
     source: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set("rows")
 @dataclass(frozen=True, slots=True)
 class FxRatesPayload:
     """Payload for ``fx list`` — the resolved series for one pair, newest first."""

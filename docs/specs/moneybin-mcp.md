@@ -19,6 +19,21 @@ catalog is archived at
 Future MCP capabilities remain unnamed until admission through the bounded
 registry.
 
+> **M1J.7 staged amendment:** investment-event matching reuses this registry;
+> it adds no tool. Delivery slice 2 adds `investment_match` to the
+> `refresh_run.steps` enum and `investment_matches` to the `reviews.kind` enum.
+> Delivery slice 3 adds the `investment_match` discriminator to the
+> `reviews_decide.decisions` item union and requires prompt-only human
+> Elicitation bound to the exact complete batch for both accept and reject. It
+> accepts and issues no fallback token, refuses non-eliciting clients with
+> `mutation_confirmation_required` naming the CLI, and declares the prompt's
+> dynamic disclosure up to Tier HIGH. A mixed batch containing any
+> investment-Match decision ratifies or rejects the entire atomic batch. Slice
+> 4 enables acceptance through that same gate. Slice 3 also adds the six stable
+> investment-planner result fields and recovery behavior defined in the owning
+> matching spec to direct and embedded refresh payloads. Until those slices
+> land, these are planned extensions, not claims about the live 50-tool schema.
+
 ## Standard registry
 
 The 13 user-facing domains below group 17 literal tool-name prefixes. A prefix
@@ -72,9 +87,9 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_commit` | `items` | Commit reviewed categorizations | Confirmed write / at least low |
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / at least low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
-| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state | Confirmed write / at least low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows | Read / dynamic / up to high / queue-derived |
-| `reviews_decide` | `decisions` | Resolve ordinary or auto-rule review items; `kind='auto_rule'` carries proposal-scoped `allow_broad` | Confirmed write / at least low |
+| `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to high / queue-derived |
+| `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |
 | `taxonomy_set` | `confirmation_token`, `items` | Taxonomy target state | Audited write / at least low |
@@ -134,7 +149,10 @@ resumable `accounts_balances` views retain immutable-key cursors.
 ## Response contract
 
 Every tool returns canonical JSON text and equivalent structured content with a
-`summary`, `data`, and `actions` envelope. Amounts use the accounting
+`summary`, `data`, and `actions` envelope. `status` is `"ok"` or `"error"`,
+derived from `error` alone so the two can never disagree: an operation that
+refuses to change anything raises a classified error rather than reporting a
+third outcome. Amounts use the accounting
 convention (negative expense, positive income) unless the tool explicitly
 states a presentation override; currency-bearing responses name their currency
 in `summary.display_currency`. Current registry tools advertise zero output
@@ -206,6 +224,32 @@ and confirmation contracts.
   and `gsheet` expose typed views or filters under one domain identity. Their
   paired `_set`, `_decide`, or domain verb tools retain material write and
   confirmation boundaries.
+- **Rule conflicts are refused, queued, and decided.** Two categorization rules
+  whose *canonical matcher* is equal fire on exactly the same transactions;
+  when they also disagree about the category, priority and creation order pick
+  the winner and the loser has no effect. The canonical matcher normalizes
+  exactly what the runtime matcher normalizes and no more — the pattern's case
+  (except for `regex`, where lower-casing would rewrite `\D` into `\d`) and the
+  amount bounds at the rule column's grain — alongside the match type and the
+  account scope; `name` and `priority` are metadata, not identity. Surrounding
+  whitespace is significant, because `matches_pattern` compares the stored
+  pattern as written. Same matcher **and** same category is still
+  idempotent and returns the existing rule. Same matcher, different category is
+  refused: no rule is activated, the proposal is recorded in
+  `app.rule_conflicts`, and the call fails with `taxonomy_rule_conflict`,
+  whose `details.conflict_ids` names each refusal — from
+  `transactions_categorize_rules_set` the whole batch is refused, because an
+  atomic target-state declaration that dropped only the conflicting member
+  would report a state that was never applied. `reviews(kind='rule_conflicts')`
+  reads the queue with both rules, the shared matcher, the category each
+  assigns, and which rule decides today; `reviews_decide` with
+  `kind='rule_conflict'` takes `replace` (supersede every active rule sharing
+  the matcher, revalidated at resolution time because a prior `reprioritize`
+  can have left more than one), `reprioritize` (activate the proposal beside it
+  at an explicit `priority`), or `cancel` (change nothing). A conflict binds to the existing rule's
+  `updated_at`: editing that rule invalidates the recorded conflict, which then
+  leaves the queue, and a resolution quoting it is refused as stale. Every
+  mutation is audited and reversible with `system_audit_undo`.
 - **An account merge is confirmed by prompt only.** `identity_links_decide`
   accepting an `account_link`, and `accounts_links_set` with `action="accept"`,
   are the one exception to the opaque-token fallback: they refuse a supplied
@@ -229,19 +273,59 @@ and confirmation contracts.
   configured TTL. Its `readOnlyHint=false` annotation reflects that retained
   state even though it does not commit ledger rows.
 - `refresh_run` owns the bounded derived-state workflow. Its `steps` vocabulary
-  is `gsheet`, `match`, `transform`, `categorize`, `identity`, `rates`, executed
-  in that canonical order. `rates` caches the reference rates the profile's own
-  transactions, balances and holdings imply; it runs last because nothing
-  downstream consumes it, and it reports `rates_written` plus any
+  is currently `gsheet`, `match`, `transform`, `categorize`, `identity`,
+  `rates`, executed in that canonical order. Each step reports its own error,
+  its own counts, and whether it ran in one `stages` entry —
+  `{"step": "match", "ran": true, "counts": {"auto_merged": 1,
+  "pending_review": 0, "pending_transfers": 0}, "error": null}` — so a caller
+  reads one place per step, and the payload's top-level `error` describes the
+  SQLMesh apply step alone, the only step that can hard-fail. Three states stay
+  distinct: no entry at all means the caller never requested that step,
+  `ran: false` means it was requested and declined (a missing-view
+  precondition), and `ran: true` with zero counts means it examined rows and
+  honestly found none. `transfers_retired` stays a top-level count rather than
+  joining the match stage's: a merge invalidates an accepted transfer either by
+  collapsing its two legs — the matcher's own reconciliation — or by collapsing
+  its two accounts, and the second happens inside `AccountLinksService.set`'s
+  transaction and reaches no matcher, so a match stage reporting it would claim
+  the matcher produced a number it did not. `identity_errors` stays top-level
+  for a different reason: it names *which* domains failed, and one stage `error`
+  string cannot carry two domains that failed independently. M1J.7 slice 2
+  inserts `investment_match` after `match` and before `transform`; selecting
+  only that
+  value in `refresh_run.steps` plans pending investment reviews, while selecting
+  `transform` runs that planner transitively and then invokes non-selectable
+  membership reconciliation before rebuilding the Golden ledger. Slice 3 adds
+  no new payload fields: the planner reports as one `stages` entry keyed
+  `investment_match`, with stable integer `counts` keys `pending_unique`,
+  `pending_competing`, `suppressed`, and `stale`, plus that stage's own `ran`
+  and `error`. The two pending counts plus an action directing `reviews` to
+  status `pending` and the planned M1J.7 kind value `investment_matches` are
+  the pending summary. Callers read `ran` and the nullable sanitized `error`
+  before interpreting zeros, and an absent entry means the step was never
+  requested. If
+  the expanded requested set contains `transform`, the failure retries
+  `refresh_run` scoped to `transform`; otherwise it retries `refresh_run`
+  scoped to the M1J.7 `investment_match` value, including when another
+  non-transform step was requested alongside it. A failed transitive planner
+  prerequisite prevents SQLMesh apply without overloading its `error` field or
+  the cash `match` stage's `error`. `rates` caches the reference rates the
+  profile's own transactions, balances and holdings imply; it runs last because
+  nothing downstream consumes it, and it reports `rates_written` in its
+  `stages` entry's `counts` plus any
   `rate_pairs_failed` (retried next run), `rate_pairs_unsupported` (never
   retried; needs `moneybin fx set`), and `rate_pairs_discarded` (the provider
   answered and part of the answer was unusable, so coverage may be short on some
-  dates) rather than failing the call. A crash in the step itself reports
-  `rate_backfill_error`, the same `DESCRIPTION`-classified shape
-  `matching_error` and `categorization_error` use: `rates_written` is `null`
-  both when the step declined to run and when it ran and died, so the error is
-  the only field that separates them. `rate_pairs_failed` and
-  `rate_backfill_error` each earn a `recovery_actions` entry
+  dates) rather than failing the call. Those three lists stay top-level rather
+  than joining that stage's counts because they are not counts: they name the
+  pairs a retry will never fill, which is what routes the user to
+  `moneybin fx set` — a different question from how many rates were written.
+  A crash in the step itself sets `error` on that same `stages` entry, the
+  `DESCRIPTION`-classified field every step's stage error uses: the entry comes
+  back `ran: false` with no `rates_written` count both when the step declined to
+  run and when it ran and died, so the error is the only thing that separates
+  them. `rate_pairs_failed` and a `rates` stage error each earn a
+  `recovery_actions` entry
   (`refresh_run(steps=["rates"])`, emitted once even when both are set),
   matching the match and categorize steps; the other two pair lists name
   conditions a retry cannot change, so offering one would be a loop with no
@@ -250,7 +334,7 @@ and confirmation contracts.
   `import_inbox_sync` — carry that same step outcome on their own payloads,
   under the same field names, because each runs the full cascade on the user's
   behalf. `transforms_error` on those payloads reports only the SQLMesh apply;
-  `matching_error`, `categorization_error`, `identity_errors` and the
+  `stages`, `identity_errors` and the
   exchange-rate group report the four best-effort steps it cannot speak for.
   The names are deliberately identical to `refresh_run`'s so an agent reading
   two surfaces learns one vocabulary for one outcome. They carry its

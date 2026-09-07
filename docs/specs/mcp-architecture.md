@@ -322,6 +322,7 @@ Three sections:
 
 - **`summary`** — Metadata the AI needs to frame its response: counts, whether results are truncated, the time period covered, the sensitivity tier of the data returned, the currency amounts are denominated in. Always present, even on empty results.
   - **`total_count` means every row matching the request**, not the number returned — `returned_count` already carries the page size. A caller sizing a backlog reads `total_count`, so a surface that reports its own page length there is wrong, not merely terse. This holds for the CLI's `--output json` as much as for MCP: both build the envelope through `moneybin.protocol.envelope`, and the same query must produce the same number on either surface. Where a bounded execution cannot know the true total (`reports`, `sql_query` — see Pagination), it is a lower bound paired with `has_more`.
+  - **`returned_count` counts the payload's declared row set.** A typed payload names the field that IS the collection it returned — `@row_set("rows")` — or declares `@row_set(NO_ROW_SET)` when no single field is that collection (a snapshot, a multi-bucket sync run, a write result), in which case the count is 1. The CLI's `--json-fields` projection reads the same declaration, so the field the count describes is the field the flag narrows. A payload that carries a collection and declares nothing raises rather than falling back to a guess: see `moneybin.protocol.row_set`.
 - **`data`** — The payload. Structured objects, never pre-formatted strings. Shape is tool-specific but consistent within a namespace (all `spending.*` tools return amounts in the same format with the same field names).
 - **`actions`** — Contextual next steps. Not prescriptive — the AI decides whether to surface them. Helps the AI discover composable follow-up tools without scanning the full tool catalog. Empty list when no follow-ups are relevant.
 
@@ -807,7 +808,7 @@ These decisions and their rationale should be documented in the 12-month plan.
 | **Transaction annotations** | Tags, notes, cash breakdowns as metadata on existing transactions |
 | **Privacy middleware** | Shared classification, critical-field masking, and response filtering; global consent enforcement remains deferred |
 | **Service layer formalization** | Explicit shared services consumed by both MCP and CLI, returning typed Python objects |
-| **Response envelope** | Consistent `{summary, data, actions}` shape across all tools |
+| **Response envelope** | Consistent `{status, summary, data, actions}` shape across all tools |
 | **Sensitivity declarations** | Static per-tool sensitivity tier driving automatic privacy enforcement |
 | **Tool disclosure** | Full registered surface visible at connect; orientation via FastMCP `instructions` field and prefix-grouped taxonomy. Optional host-native deferral uses the same registry — see §3. |
 

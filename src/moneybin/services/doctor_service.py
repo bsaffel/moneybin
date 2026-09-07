@@ -20,6 +20,11 @@ from moneybin.metrics.registry import (
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
+from moneybin.services.account_resolution_types import (
+    UNNAMED_ACCOUNT_LABEL,
+    is_reserved_account_name,
+)
+from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -57,15 +62,24 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
+    RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
     SECURITY_PRICES,
+    STG_OFX_ACCOUNTS,
+    STG_PLAID_ACCOUNTS,
+    STG_PLAID_INVESTMENT_HOLDINGS,
+    STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    STG_PLAID_INVESTMENT_TRANSACTIONS,
+    STG_PLAID_OPENING_LOT_REVIEW,
     STG_SECURITY_PRICES,
+    STG_TABULAR_ACCOUNTS,
     TABULAR_FORMATS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
     TRANSACTION_NOTES,
+    TRANSACTION_SPLITS,
     TRANSACTION_TAGS,
     USER_CATEGORIES,
     USER_MERCHANTS,
@@ -105,7 +119,10 @@ _EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
 # hard-coded constant from these sets — a runtime guard that enforces the
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
-_ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
+_ALLOWED_UPDATED_EXPRS = frozenset({
+    "GREATEST(decided_at, reversed_at)",
+    "GREATEST(detected_at, resolved_at)",
+})
 _ALLOWED_PK_EXPRS = frozenset({
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
@@ -131,7 +148,7 @@ _FINGERPRINT_KEYS = frozenset({"issuer", "headers", "page_bucket"})
 # reported nothing has an EMPTY newest snapshot (its positions are phantoms) and
 # an item that never reported has NO newest snapshot (its positions are out of
 # scope) — the distinction the raw holdings rows cannot express.
-_NEWEST_HOLDINGS_SNAPSHOT_CTE = """
+_NEWEST_HOLDINGS_SNAPSHOT_CTE = f"""
 newest_snapshot AS (
     SELECT source_origin, source_file
     FROM (
@@ -142,7 +159,7 @@ newest_snapshot AS (
                 PARTITION BY source_origin
                 ORDER BY extracted_at DESC, source_file DESC
             ) AS snapshot_rank
-        FROM prep.stg_plaid__investment_holdings_snapshots
+        FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
     )
     WHERE snapshot_rank = 1
 )
@@ -280,6 +297,7 @@ class DoctorService:
             unproposed_duplicates,
             categorization,
             currency_integrity,
+            self._run_dim_accounts_reserved_display_name(),
             *app_integrity,
             orphan_app_state,
             *investment_checks,
@@ -375,6 +393,7 @@ class DoctorService:
 
         Covers ``user_categories``, ``category_overrides``, ``gsheet_connections``,
         ``user_merchants``, ``categorization_rules``, ``proposed_rules``,
+        ``rule_conflicts``,
         ``transaction_categories``, ``account_settings``, ``balance_assertions``,
         ``budgets``, ``profile_settings``, plus the edge writers
         ``tabular_formats``, ``match_decisions``, ``imports``, the
@@ -393,7 +412,8 @@ class DoctorService:
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``, ``match_decisions`` →
+        ``categorized_at``, ``rule_conflicts`` →
+        ``GREATEST(detected_at, resolved_at)``, ``match_decisions`` →
         ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
         bypass insert, status update, *or* reversal is caught) — the
         ``account_links`` / ``account_link_decisions`` link tables use the same
@@ -417,6 +437,12 @@ class DoctorService:
                 PROPOSED_RULES,
                 "proposed_rule_id",
                 updated_col="proposed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                RULE_CONFLICTS,
+                "conflict_id",
+                updated_expr="GREATEST(detected_at, resolved_at)",
                 full=full,
             ),
             self._run_app_audit_coverage(
@@ -499,7 +525,9 @@ class DoctorService:
             self._run_user_merchants_orphans(),
             self._run_proposed_rules_rule_fk(),
             self._run_transaction_categories_fk(),
+            self._run_transaction_splits_fk(),
             self._run_account_settings_account_fk(),
+            self._run_account_settings_reserved_display_name(),
             self._run_balance_assertions_account_fk(),
             self._run_budgets_category_fk(),
             self._run_match_decisions_account_fk(),
@@ -830,12 +858,12 @@ class DoctorService:
         name = "investment_staging_rejects"
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT investment_transaction_id, review_reason
-                FROM prep.stg_plaid__investment_transactions
+                FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name}
                 WHERE review_reason IS NOT NULL
                 ORDER BY investment_transaction_id
-                """  # noqa: S608  # fixed view name, no user input
+                """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — view absent before first transform
             return InvariantResult(
@@ -874,13 +902,13 @@ class DoctorService:
         name = "investment_opening_lot_review"
         try:
             rows = self._db.execute(
-                """
+                f"""
                 SELECT account_id,
                        COALESCE(security_id, source_security_key) AS security_key,
                        reason
-                FROM prep.stg_plaid__opening_lot_review
+                FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name}
                 ORDER BY account_id, security_key
-                """  # noqa: S608  # fixed view name, no user input
+                """  # noqa: S608  # TableRef constant, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — view absent before first transform
             return InvariantResult(
@@ -1032,9 +1060,24 @@ class DoctorService:
     def _run_investment_source_overlap(self) -> InvariantResult:
         """Accounts carrying BOTH manual and Plaid investment history.
 
-        Lots and gains double-count until one source is chosen per account
-        (investment dedup across sources is a future matching child, unlike
-        transactions which already have ``prep.int_transactions__matched``).
+        ``fail``, not ``warn``: every position in such an account is derived
+        from two interleaved ledgers, so lots double-count and cost basis
+        mixes two accountings — numbers nobody should read. Investment dedup
+        across sources is a future matching child, unlike transactions which
+        already have ``prep.int_transactions__matched``, so nothing the
+        pipeline can re-run resolves it; one of the two feeds has to go.
+
+        ``core.dim_holdings`` already withholds every figure for these
+        positions (``valuation_status = 'source_overlap'``). This check is what
+        says so out loud and blocks the release gate, and it reads the RAW
+        tables rather than the ledger so it still fires before a first
+        transform — the point at which the withhold does not yet exist.
+
+        Reverting the imported batch is the only remedy MoneyBin can run
+        today. Disconnecting the connector is a remote operation that leaves
+        every row it already pulled — the rows this very query reads — so it
+        stops the feed growing without clearing the check. The recipe says so
+        rather than offering it (``audits/recipes/investment_source_overlap``).
         """
         name = "investment_source_overlap"
         try:
@@ -1061,13 +1104,18 @@ class DoctorService:
         if rows:
             return InvariantResult(
                 name=name,
-                status="warn",
+                status="fail",
                 detail=(
                     f"{len(rows)} account(s) have both manual and Plaid "
-                    "investment rows — lots and gains double-count until one "
-                    "source is chosen per account; delete or stop importing the "
-                    "redundant manual entries (investment dedup is a future "
-                    "matching child)"
+                    "investment rows — the two ledgers interleave, so lots and "
+                    "gains double-count and cost basis mixes two accountings; "
+                    "core.dim_holdings withholds every figure for these "
+                    "positions (valuation_status 'source_overlap') until one "
+                    "source is left. Revert the redundant import batch to "
+                    "clear it; disconnecting the connector stops future pulls "
+                    "but keeps the rows already pulled, so it does not "
+                    "(investment dedup across sources is a future matching "
+                    "child)"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )
@@ -1090,12 +1138,12 @@ class DoctorService:
                 f"""
                 SELECT c.investment_transaction_id
                 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} AS c
-                JOIN prep.stg_plaid__investment_transactions AS p
+                JOIN {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
                   ON p.investment_transaction_id = c.investment_transaction_id
                 WHERE c.security_id IS NULL
                   AND p.source_security_key IS NOT NULL
                 ORDER BY c.investment_transaction_id
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — core/staging view absent before first transform
             return InvariantResult(
@@ -1225,7 +1273,7 @@ class DoctorService:
                 WITH {_NEWEST_HOLDINGS_SNAPSHOT_CTE}
                 SELECT DISTINCT h.account_id,
                        COALESCE(h.security_id, h.source_security_key) AS security_key
-                FROM prep.stg_plaid__investment_holdings AS h
+                FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name} AS h
                 JOIN newest_snapshot AS ns
                   ON ns.source_file = h.source_file
                   AND ns.source_origin = h.source_origin
@@ -1234,7 +1282,7 @@ class DoctorService:
                 WHERE d.account_id IS NULL
                   AND COALESCE(h.quantity, 0) > 0
                 ORDER BY h.account_id, security_key
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
             return InvariantResult(
@@ -1297,7 +1345,7 @@ class DoctorService:
                 f"""
                 WITH ever_reported_positions AS (
                     SELECT DISTINCT account_id, security_id
-                    FROM prep.stg_plaid__investment_holdings
+                    FROM {STG_PLAID_INVESTMENT_HOLDINGS.full_name}
                     WHERE NOT security_id IS NULL
                 )
                 SELECT d.account_id, d.security_id
@@ -1307,7 +1355,7 @@ class DoctorService:
                   AND erp.security_id = d.security_id
                 WHERE d.provider_reported_quantity IS NULL
                 ORDER BY d.account_id, d.security_id
-                """  # noqa: S608  # TableRef constant + fixed view name, no user input
+                """  # noqa: S608  # TableRef constants, no user input
             ).fetchall()
         except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
             return InvariantResult(
@@ -1428,9 +1476,10 @@ class DoctorService:
         place users go to ask "is anything wrong with my data?". A position whose
         feed key never bound simply reads blank forever.
 
-        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
-        its remedy is reconciling a share count, not adding a price source, and
-        routing it here would send the user to fix something that was never
+        Scoped to ``unpriced`` alone. ``withheld`` and ``source_overlap`` also
+        publish no value, but their remedies are reconciling a share count and
+        removing one of two source ledgers — not adding a price source — and
+        routing either here would send the user to fix something that was never
         broken. ``carried_forward`` has a usable price whose age the staleness
         surface carries.
 
@@ -1484,8 +1533,9 @@ class DoctorService:
         so that reporting an age is not mistaken for judging one.
 
         Scoped to ``carried_forward``. ``valued`` means the close is dated today
-        and can never be stale; ``unpriced`` and ``withheld`` publish no value,
-        and their remedies — a price source, a reconciled share count — are owned
+        and can never be stale; ``unpriced``, ``withheld`` and ``source_overlap``
+        publish no value, and their remedies — a price source, a reconciled
+        share count, one fewer source ledger — are owned
         by their own checks.
 
         The threshold resolves per security type rather than globally: markets
@@ -1713,6 +1763,54 @@ class DoctorService:
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
+    def _run_transaction_splits_fk(self) -> InvariantResult:
+        """Flag ``transaction_splits`` rows with no ``core.fct_transactions`` row.
+
+        Same anti-join as ``app_transaction_categories_fk``, and it exists for
+        the same reason plus one of its own:
+        ``TransactionSplitsRepo.repoint_transaction`` deliberately leaves an
+        allocation on a superseded id when the surviving transaction is already
+        split, because moving it would publish double the real amount through
+        ``core.fct_transaction_lines``. That refusal is the right call and it is
+        invisible everywhere else — this is where the user is told the splits
+        exist. Skipped before the first transform builds ``core.fct_transactions``.
+        """
+        name = "app_transaction_splits_fk"
+        try:
+            rows = self._db.execute(
+                f"""
+                -- Anti-join against a once-materialized id set, NOT a correlated
+                -- NOT EXISTS — core.fct_transactions is an expensive view; see
+                -- _run_transaction_categories_fk for the full reasoning.
+                SELECT s.split_id
+                FROM {TRANSACTION_SPLITS.full_name} s
+                LEFT JOIN (
+                    SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+                ) t ON t.transaction_id = s.transaction_id
+                WHERE t.transaction_id IS NULL
+                ORDER BY s.split_id
+                """  # noqa: S608  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"FK check unavailable: {e}",
+                affected_ids=[],
+            )
+        if rows:
+            affected = [str(r[0]) for r in rows]
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} transaction_splits row(s) reference a "
+                    "transaction_id absent from core.fct_transactions"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
     def _run_match_decisions_account_fk(self) -> InvariantResult:
         """Flag ``match_decisions`` whose account references are absent from ``dim_accounts``.
 
@@ -1799,6 +1897,208 @@ class DoctorService:
                 detail=(
                     f"{len(affected)} account_settings row(s) reference an "
                     "account_id absent from core.dim_accounts"
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_account_settings_reserved_display_name(self) -> InvariantResult:
+        """Flag ``account_settings.display_name`` rows folding onto the reserved label.
+
+        Every write path refuses a ``display_name`` that
+        ``is_reserved_account_name`` folds onto ``UNNAMED_ACCOUNT_LABEL`` (a
+        case variant, padding, a doubled space, an NFKC-equivalent), because
+        ``core.dim_accounts`` shows that exact label for an account it could
+        not name and every resolver reads it that way. Those guards only bind
+        writes made through them: a row stored before either shipped still
+        holds whatever it holds, and ``is_a_name`` stays byte-exact by design
+        (normalizing it would silently drop a real user-set name that happens
+        to equal the label) — so such a row keeps reading as a name and can
+        resolve a request for the reserved label to it. Not auto-fixable:
+        MoneyBin cannot guess the account's real name, only tell the user to
+        pick one.
+        """
+        name = "app_account_settings_reserved_display_name"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT account_id, display_name
+                FROM {ACCOUNT_SETTINGS.full_name}
+                WHERE display_name IS NOT NULL
+                ORDER BY account_id
+                """  # noqa: S608  # TableRef constant, no user input
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"reserved-label check unavailable: {e}",
+                affected_ids=[],
+            )
+        affected = [
+            str(account_id)
+            for account_id, display_name in rows
+            if is_reserved_account_name(display_name)
+        ]
+        if affected:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) have a stored display_name that "
+                    f"folds onto the reserved {UNNAMED_ACCOUNT_LABEL!r} label. "
+                    "MoneyBin shows that label for an account it could not name, "
+                    "so a name-based lookup can resolve to this row instead of "
+                    "the account you mean; rename it with `moneybin accounts set "
+                    "<account> --display-name <new name>`."
+                ),
+                affected_ids=affected,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_dim_accounts_reserved_display_name(self) -> InvariantResult:
+        """Flag source-authored ``dim_accounts`` labels folding onto the reserved label.
+
+        The sibling check above covers the ``app.account_settings`` override.
+        The other human-authored rung is the source's own ``account_label`` — a
+        sheet's Account column, ``--account-name``, Plaid's per-account name —
+        and ``dim_accounts.sql`` filters that rung with a byte-exact
+        ``<> 'Unnamed account'``. SQL cannot NFKC-casefold, so a label reaching
+        it as ``unnamed account`` or ``Unnamed  account`` is promoted, arrives
+        with ``display_name_is_user_set = TRUE``, and collides with the label
+        MoneyBin displays for accounts it could not name — the same defect the
+        write-path guards reject, entered through a channel that never touches
+        ``app.*``. An export publishes that label as ``account_name`` and can be
+        re-imported, so this is an ordinary route, not a contrived one.
+
+        Scoped to rows with no settings override, so an account already
+        reported by the sibling check is not reported twice. Remediation is the
+        same rename: the override outranks the source label.
+
+        **The source label is read from ``prep``, never from the dim's own
+        snapshot.** ``core.dim_accounts`` is ``kind FULL`` — materialized, and
+        stale between refreshes — while ``app.account_settings`` is live, so
+        reading provenance from one and the override from the other reports a
+        state that never existed. ``--clear-display-name`` is the case that
+        proves it: ``AccountService.settings_update`` writes ``app.*`` alone, so
+        the moment a user clears a historically reserved override the dim row
+        still carries that override's text with ``display_name_is_user_set =
+        TRUE``, and the cleared row reads back as a source-authored collision.
+        The check the user just satisfied would fail them for satisfying it.
+        The two staging models that carry an ``account_label`` are views over
+        ``raw``, so the label they report is the one the next refresh will
+        promote, whatever ``app.*`` does in between.
+
+        ``ARG_MAX(account_label, extracted_at)`` mirrors the merge in
+        ``dim_accounts.sql`` rather than scanning every source row: an account
+        named twice keeps the newer spelling, so an older reserved label that
+        a later import already replaced is not a defect and must not be
+        reported as one. The byte-exact ``UNNAMED_ACCOUNT_LABEL`` is excluded
+        for the same reason the model excludes it — that rung is never
+        promoted, so it collides with nothing.
+
+        Detection only. Teaching the model to reject the fold would change
+        ``core.dim_accounts.display_name`` for rows that already have it, which
+        is a core-schema change, not a doctor check.
+        """
+        name = "dim_accounts_reserved_display_name"
+        try:
+            rows = self._db.execute(
+                f"""
+                WITH source_labels AS (
+                    SELECT
+                        account_id,
+                        account_label,
+                        extracted_at,
+                        LENGTH(
+                          REGEXP_REPLACE(
+                            COALESCE(account_number, account_number_masked),
+                            '[^0-9]', '', 'g'
+                          )
+                        ) >= 4 AS has_last_four
+                    FROM {STG_TABULAR_ACCOUNTS.full_name}
+                    UNION ALL
+                    SELECT
+                        account_id,
+                        account_label,
+                        extracted_at,
+                        LENGTH(REGEXP_REPLACE(mask, '[^0-9]', '', 'g')) >= 4
+                          AS has_last_four
+                    FROM {STG_PLAID_ACCOUNTS.full_name}
+                    UNION ALL
+                    SELECT
+                        account_id,
+                        NULL::TEXT AS account_label,
+                        extracted_at,
+                        LENGTH(
+                          REGEXP_REPLACE(source_account_key, '[^0-9]', '', 'g')
+                        ) >= 4 AS has_last_four
+                    FROM {STG_OFX_ACCOUNTS.full_name}
+                ), winning AS (
+                    SELECT
+                        account_id,
+                        ARG_MAX(account_label, extracted_at) FILTER(WHERE
+                          NOT account_label IS NULL) AS account_label,
+                        BOOL_OR(has_last_four) AS has_derived_last_four
+                    FROM source_labels
+                    GROUP BY account_id
+                )
+                SELECT
+                    w.account_id,
+                    w.account_label,
+                    COALESCE(w.has_derived_last_four, FALSE)
+                      OR NOT s.last_four IS NULL AS has_last_four
+                FROM winning AS w
+                LEFT JOIN {ACCOUNT_SETTINGS.full_name} AS s
+                  ON s.account_id = w.account_id
+                WHERE NOT w.account_label IS NULL
+                  AND w.account_label <> ?
+                  AND s.display_name IS NULL
+                ORDER BY w.account_id
+                """,  # noqa: S608  # TableRef constants; the label is a bound parameter
+                [UNNAMED_ACCOUNT_LABEL],
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001 — prep may not be built yet
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"reserved-label check unavailable: {e}",
+                affected_ids=[],
+            )
+        # `dim_accounts.sql`'s account_label arm only promotes a folded label
+        # bare when no last four is derivable for the account (`LENGTH(...) >=
+        # 4`, mirrored above for all three sources -- tabular, plaid, ofx --
+        # plus the `app.account_settings` override). When one is derivable the
+        # model instead renders "<label> …<four>", which no longer folds onto
+        # the reserved label, so flagging it here would be a false positive
+        # for a row `dim_accounts` never actually collides. `last_four_derived`
+        # merges across every source sharing one `account_id` (`ARG_MIN(...,
+        # (source_rank, -EPOCH_US(extracted_at)))`), so a linked OFX row's
+        # last four clears a tabular/plaid row's folded label on the same
+        # account -- the ordinary shape of an `accounts links run` merge.
+        #
+        # `account_id` is `COALESCE(links.account_id, a.account_id)` (mirrored
+        # in all three staging models) -- an unresolved account's source-native
+        # key, per .claude/rules/identifiers.md. Masked unconditionally before
+        # it leaves this method, the same way every other surface treats that
+        # field: never conditioned on what a particular value happens to look
+        # like.
+        affected = [
+            mask_embedded_account_number(str(account_id))
+            for account_id, account_label, has_last_four in rows
+            if is_reserved_account_name(account_label) and not has_last_four
+        ]
+        if affected:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(affected)} account(s) took their name from a source "
+                    f"label that folds onto the reserved {UNNAMED_ACCOUNT_LABEL!r} "
+                    "label. MoneyBin shows that label for an account it could not "
+                    "name, so a name-based lookup can resolve to one of these "
+                    "instead of the account you mean; override it with `moneybin "
+                    "accounts set <account> --display-name <new name>`."
                 ),
                 affected_ids=affected,
             )

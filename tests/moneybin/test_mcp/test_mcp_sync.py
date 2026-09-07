@@ -16,7 +16,7 @@ from moneybin.connectors.sync_models import (
     SyncConnectionView,
 )
 from moneybin.mcp.tools.sync import register_sync_tools
-from moneybin.services.refresh_outcome import RefreshStepOutcome
+from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
 
 @pytest.mark.unit
@@ -394,8 +394,10 @@ async def test_sync_pull_offers_the_embedded_refresh_its_own_retries(
         transactions_removed=0,
         institutions=[],
         refresh_steps=RefreshStepOutcome(
-            matching_error="matcher blew up",
-            rates_written=0,
+            stages=(
+                StageOutcome(step="match", ran=True, error="matcher blew up"),
+                StageOutcome(step="rates", ran=True),
+            ),
             rate_pairs_failed=("EUR/USD",),
         ),
     )
@@ -452,7 +454,9 @@ async def test_sync_pull_withholds_retries_when_the_apply_failed(
         institutions=[],
         transforms_applied=False,
         transforms_error="sqlmesh apply blew up",
-        refresh_steps=RefreshStepOutcome(matching_error="matcher blew up"),
+        refresh_steps=RefreshStepOutcome(
+            stages=(StageOutcome(step="match", ran=True, error="matcher blew up"),)
+        ),
     )
     mock_build.return_value.__enter__.return_value = service
     from moneybin.mcp.tools.sync import sync_pull

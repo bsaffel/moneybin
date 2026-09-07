@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, cast
 import typer
 
 from moneybin import error_codes
+from moneybin.adapters.refresh_adapters import refresh_steps_fields
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
@@ -34,10 +35,7 @@ from moneybin.cli.utils import (
 from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.services.refresh_outcome import (
-    RefreshStepOutcome,
-    refresh_steps_fields,
-)
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -2404,7 +2402,9 @@ def import_revert(
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            result = ImportService(db).revert_confirmed(import_id, verify=_verify)
+            result = ImportService(db).revert_confirmed(
+                import_id, verify=_verify, actor="cli"
+            )
 
     status = result.get("status")
     if status == "not_found":

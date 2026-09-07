@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any
 
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 from moneybin.utils.parsing import signal_from_match_signals
 
 if TYPE_CHECKING:
@@ -54,6 +55,7 @@ class MerchantLinkCandidateRow:
         )
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class MerchantLinkPendingGroup:
     """One provider entity id awaiting review + its candidate merchant proposals."""
@@ -83,6 +85,7 @@ class MerchantLinkPendingGroup:
 # ---------------------------------------------------------------------------
 
 
+@row_set("groups")
 @dataclass(frozen=True, slots=True)
 class MerchantLinksPendingPayload:
     """Payload for merchants_links_pending — pending review queue grouped by provider entity id."""
@@ -163,6 +166,7 @@ class MerchantLinkHistoryRow:
         )
 
 
+@row_set("decisions")
 @dataclass(frozen=True, slots=True)
 class MerchantLinksHistoryPayload:
     """Payload for merchants_links_history — decision log, newest first."""

@@ -46,6 +46,7 @@ from moneybin.adapters.imports_adapters import (
 from moneybin.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
     refresh_step_actions,
+    refresh_steps_fields,
 )
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.config import get_settings
@@ -106,10 +107,7 @@ from moneybin.protocol.pagination import (
     validate_keyset_shape,
 )
 from moneybin.services.import_confirmation import sign_convention_effect
-from moneybin.services.refresh_outcome import (
-    RefreshStepOutcome,
-    refresh_steps_fields,
-)
+from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.utils.file import file_sha256
 
 logger = logging.getLogger(__name__)
@@ -1372,6 +1370,7 @@ async def import_revert(
         result = ImportService(db).revert_confirmed(
             import_id,
             verify=lambda live: grant.verify(_import_revert_binding(live)),
+            actor="mcp",
         )
     if result.get("status") != "reverted":
         return _revert_failure_envelope(result)

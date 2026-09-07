@@ -752,7 +752,7 @@ def test_run_all_returns_expected_invariants(
     monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
     svc = DoctorService(doctor_db)
     report = svc.run_all()
-    # 3 sqlmesh audits + dedup_reconciliation + categorization + 30 app.* integrity
+    # 3 sqlmesh audits + dedup_reconciliation + categorization + 31 app.* integrity
     # checks (audit coverage for user_categories / category_overrides /
     # gsheet_connections / user_merchants / categorization_rules / proposed_rules /
     # transaction_categories / account_settings / balance_assertions / budgets /
@@ -761,7 +761,10 @@ def test_run_all_returns_expected_invariants(
     # exchange_rate_overrides (M1K.2, composite pk_expr) /
     # lot_selections + user_categories uniqueness + user_merchants orphans +
     # proposed_rules->rule FK + transaction_categories->fct FK +
-    # account_settings->dim_accounts FK + balance_assertions->dim_accounts FK +
+    # transaction_splits->fct FK +
+    # account_settings->dim_accounts FK + account_settings reserved-label fold
+    # (a stored display_name that normalizes onto UNNAMED_ACCOUNT_LABEL) +
+    # balance_assertions->dim_accounts FK +
     # budgets->dim_categories FK + match_decisions->dim_accounts FK +
     # pdf_formats recipe-validity / bounds / fingerprint-shape) +
     # orphan_app_state (PR4: scans transaction_notes / transaction_tags vs
@@ -779,9 +782,14 @@ def test_run_all_returns_expected_invariants(
     # under two identities — invisible to the matcher, which blocks candidate
     # pairs on account_id) + unproposed_cross_source_duplicates (the same two
     # sources *after* the link is accepted, which is where the overlap check
-    # stops applying and dedup_reconciliation never applied).
-    assert len(report.invariants) == 58
+    # stops applying and dedup_reconciliation never applied)
+    # + rule_conflicts audit coverage (MB-124: the rule-conflict queue is a
+    # protected app.* table, so its writes carry the same coverage check)
+    # + dim_accounts_reserved_label (the same fold reached through a source's
+    # own account_label, which never touches app.*).
+    assert len(report.invariants) == 62
     names = [r.name for r in report.invariants]
+    assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
@@ -806,9 +814,12 @@ def test_run_all_returns_expected_invariants(
     assert "app_audit_coverage_user_reports" in names
     assert "app_user_categories_uniqueness" in names
     assert "app_account_settings_account_fk" in names
+    assert "app_account_settings_reserved_display_name" in names
+    assert "dim_accounts_reserved_display_name" in names
     assert "app_balance_assertions_account_fk" in names
     assert "app_budgets_category_fk" in names
     assert "app_match_decisions_account_fk" in names
+    assert "app_transaction_splits_fk" in names
     assert "orphan_app_state" in names
 
 
@@ -1382,7 +1393,15 @@ def test_holdings_divergence_still_fires_beyond_relative_tolerance(
 
 
 @pytest.mark.unit
-def test_source_overlap_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mixed-source investment history is a release gate, not an advisory.
+
+    `fail`, not `warn`: the derived positions for such an account are wrong
+    (double-counted lots, a cost basis mixing two accountings), and
+    ``core.dim_holdings`` withholds every figure it would otherwise publish
+    for them. A `warn` would let the pipeline report healthy while producing
+    numbers nobody should read.
+    """
     db.execute(
         """
         INSERT INTO raw.plaid_investment_transactions (
@@ -1408,8 +1427,14 @@ def test_source_overlap_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> N
         """  # noqa: S608 — test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
-    assert result.status == "warn"
+    assert result.status == "fail"
     assert result.affected_ids == ["ACC1"]
+    assert result.recovery_actions is not None
+    # Only the action that can actually leave one ledger behind. A disconnect
+    # is a remote-only operation — the rows it already pulled stay local, and
+    # this check reads exactly those rows — so offering it would hand the user
+    # a permanent disconnection and an unchanged failure.
+    assert [a.tool for a in result.recovery_actions] == ["import_revert"]
 
 
 @pytest.mark.unit

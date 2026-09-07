@@ -99,6 +99,7 @@ def reports(
         display_currency=result.display_currency,
         degraded=result.degraded,
         degraded_reason=result.degraded_reason,
+        recovery_actions=list(result.recovery_actions) or None,
         applied_rates=[rate.as_provenance() for rate in result.applied_rates] or None,
     )
 

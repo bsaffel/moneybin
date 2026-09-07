@@ -1129,12 +1129,14 @@ def test_lifecycle_rows_excluded_entirely(plaid_investment_cases: Database) -> N
 
 @pytest.mark.slow
 def test_every_split_routes_to_review(plaid_investment_cases: Database) -> None:
-    """GOLDEN-GATED: EVERY split routes to review — no shape is exempt.
+    """EVERY split routes to review — no shape is exempt.
 
-    Plaid reports a share DELTA; the engine reads a MULTIPLIER. Whether the
-    multiplier is derivable at all is exactly what the Sandbox goldens must
-    settle, so v1 computes nothing. A wrong multiplier silently destroys the
-    basis of every open lot; a surfaced gap does not.
+    Plaid's split quantity is *believed* to be a share DELTA; the engine reads a
+    MULTIPLIER. That reading is unverified and Sandbox cannot verify it — no
+    Sandbox payload carries a ``transfer/split`` row — so v1 computes nothing.
+    A wrong multiplier silently destroys the basis of every open lot; a surfaced
+    gap does not. M1J.5 owns the derivation contract; see the staging view's
+    comment for why this is not a golden-capture task.
     """
     rows = plaid_investment_cases.execute(
         "SELECT type, ledger_include, review_reason "

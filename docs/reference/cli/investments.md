@@ -76,9 +76,10 @@ Usage: `moneybin investments list [OPTIONS]`
 Current positions: what you hold, what it is worth, and whether you are up.
 
 Market value and unrealized gain come from the most recent close at or
-before today. A position with no usable price, or one whose share count is
-known wrong, shows ``-`` rather than a zero, and the ``status`` column
-beside it says which — it prints by default, because the two cases have
+before today. A position with no usable price, one whose share count is
+known wrong, or one in an account whose investment ledger arrives from two
+sources at once shows ``-`` rather than a zero, and the ``status`` column
+beside it says which — it prints by default, because the three cases have
 different remedies. ``--wide`` adds the cost basis, the average cost, and
 the date the price was observed.
 
@@ -113,6 +114,10 @@ When any row's basis is incomplete the command says so on stderr, and
 ``-q`` does not silence it: the gain shown for such a row is a conservative
 figure rather than the whole one, which qualifies the answer rather than
 commenting on the run.
+
+Rows in an account whose investment ledger arrives from two sources at once
+double-count outright — proceeds, basis and gain alike. That is disclosed
+the same way, and under ``--output json`` in ``summary.degraded_reason``.
 
 Usage: `moneybin investments gains [OPTIONS]`
 
@@ -152,6 +157,13 @@ remaining basis, and a note marking any basis known to be incomplete.
 both. ``--wide`` shows every declared column: the currency, the cost-basis
 method, and ``state`` — which under the default ``--open`` reads ``open``
 on every row.
+
+Lots in an account whose investment ledger arrives from two sources at once
+double-count, because the two ledgers interleave rather than merge. The
+command says so on stderr and ``-q`` does not silence it — unlike the
+incomplete-basis note, which has a per-row marker to fall back on — and
+under ``--output json`` it rides ``summary.degraded_reason``, the same code
+the holdings read uses.
 
 Usage: `moneybin investments lots list [OPTIONS]`
 

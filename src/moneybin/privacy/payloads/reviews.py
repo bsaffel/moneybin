@@ -26,17 +26,24 @@ from moneybin.privacy.payloads.merchants import (
 )
 from moneybin.privacy.payloads.transactions import MatchHistoryRow, MatchPendingRow
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 ReviewQueueKind = Literal[
     "categorization",
     "auto_rules",
     "matches",
+    "rule_conflicts",
     "account_links",
     "merchant_links",
     "security_links",
 ]
 ReviewStatus = Literal["pending", "history"]
-ReviewDecisionKind = Literal["categorization", "auto_rule", "match"]
+ReviewDecisionKind = Literal["categorization", "auto_rule", "match", "rule_conflict"]
+#: Every verb a review decision can carry. The first two are the accept/reject
+#: axis every other queue uses; the last three are the rule-conflict
+#: resolutions, which are not accept/reject — a conflict has three outcomes and
+#: two of them activate a rule.
+ReviewDecisionVerb = Literal["accept", "reject", "replace", "reprioritize", "cancel"]
 IdentityDecisionKind = Literal["account_link", "merchant_link", "security_link"]
 
 
@@ -69,6 +76,7 @@ class QueueUnavailable(BaseModel):
     hint: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
+@row_set(NO_ROW_SET)
 class ReviewsSummaryView(BaseModel):
     """Exact counts for every normalized review collection.
 
@@ -136,6 +144,7 @@ class CategorizationReviewRow(BaseModel):
     details: CategorizationDetails
 
 
+@row_set("rows")
 class ReviewsCategorizationView(BaseModel):
     """Categorization pending or history collection."""
 
@@ -155,6 +164,7 @@ class AutoRulePendingDetails(BaseModel):
     proposal: AutoReviewProposalRow
 
 
+@row_set(NO_ROW_SET)
 class AutoRuleHistoryDetails(BaseModel):
     """One terminal auto-rule proposal decision."""
 
@@ -194,6 +204,7 @@ class AutoRuleReviewRow(BaseModel):
     details: AutoRuleDetails
 
 
+@row_set("rows")
 class ReviewsAutoRulesView(BaseModel):
     """Auto-rule pending or history collection."""
 
@@ -241,6 +252,7 @@ class MatchReviewRow(BaseModel):
     details: MatchDetails
 
 
+@row_set("rows")
 class ReviewsMatchesView(BaseModel):
     """Match pending or history collection."""
 
@@ -293,6 +305,7 @@ class AccountLinkReviewRow(BaseModel):
     details: AccountLinkDetails
 
 
+@row_set("rows")
 class ReviewsAccountLinksView(BaseModel):
     """Account-link pending or history collection."""
 
@@ -340,6 +353,7 @@ class MerchantLinkReviewRow(BaseModel):
     details: MerchantLinkDetails
 
 
+@row_set("rows")
 class ReviewsMerchantLinksView(BaseModel):
     """Merchant-link pending or history collection."""
 
@@ -387,6 +401,7 @@ class SecurityLinkReviewRow(BaseModel):
     details: SecurityLinkDetails
 
 
+@row_set("rows")
 class ReviewsSecurityLinksView(BaseModel):
     """Security-link pending or history collection."""
 
@@ -397,11 +412,96 @@ class ReviewsSecurityLinksView(BaseModel):
     rows: list[SecurityLinkReviewRow]
 
 
+class RuleConflictMatcher(BaseModel):
+    """The matcher both rules in a conflict share."""
+
+    model_config = ConfigDict(frozen=True)
+
+    merchant_pattern: Annotated[str, DataClass.MERCHANT_NAME]
+    match_type: Annotated[str, DataClass.TXN_TYPE]
+    min_amount: Annotated[float | None, DataClass.TXN_AMOUNT]
+    max_amount: Annotated[float | None, DataClass.TXN_AMOUNT]
+    # RECORD_ID (spec D6): opaque canonical surrogate, not PII.
+    account_id: Annotated[str | None, DataClass.RECORD_ID]
+
+
+class RuleConflictPendingDetails(BaseModel):
+    """One rule conflict awaiting a decision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["pending"], DataClass.TXN_TYPE] = "pending"
+    matcher: RuleConflictMatcher
+    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
+    existing_name: Annotated[str, DataClass.USER_NOTE]
+    existing_category: Annotated[str, DataClass.CATEGORY]
+    existing_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    existing_priority: Annotated[int, DataClass.AGGREGATE]
+    proposed_name: Annotated[str, DataClass.USER_NOTE]
+    proposed_category: Annotated[str, DataClass.CATEGORY]
+    proposed_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    proposed_priority: Annotated[int, DataClass.AGGREGATE]
+    # The rule deciding the category today, and why it wins — without it a
+    # caller cannot tell which of the two identical matchers is in effect.
+    winner_rule_id: Annotated[str, DataClass.RECORD_ID]
+    reason: Annotated[str, DataClass.CATEGORY]
+
+
+class RuleConflictHistoryDetails(BaseModel):
+    """One settled rule conflict."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Annotated[Literal["history"], DataClass.TXN_TYPE] = "history"
+    matcher: RuleConflictMatcher
+    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
+    existing_category: Annotated[str, DataClass.CATEGORY]
+    existing_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    proposed_name: Annotated[str, DataClass.USER_NOTE]
+    proposed_category: Annotated[str, DataClass.CATEGORY]
+    proposed_subcategory: Annotated[str | None, DataClass.CATEGORY]
+    resolution: Annotated[
+        Literal["replace", "reprioritize", "cancel"], DataClass.TXN_TYPE
+    ]
+    resolved_rule_id: Annotated[str | None, DataClass.RECORD_ID]
+
+
+RuleConflictDetails = Annotated[
+    RuleConflictPendingDetails | RuleConflictHistoryDetails,
+    Field(discriminator="state"),
+]
+
+
+class RuleConflictReviewRow(BaseModel):
+    """Normalized rule-conflict row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["rule_conflicts"], DataClass.TXN_TYPE] = "rule_conflicts"
+    status: Annotated[str, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    summary: Annotated[str, DataClass.MERCHANT_NAME]
+    details: RuleConflictDetails
+
+
+@row_set("rows")
+class ReviewsRuleConflictsView(BaseModel):
+    """Rule-conflict pending or history collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["rule_conflicts"], DataClass.TXN_TYPE] = "rule_conflicts"
+    status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
+    rows: list[RuleConflictReviewRow]
+
+
 ReviewsCoarsePayload = (
     ReviewsSummaryView
     | ReviewsCategorizationView
     | ReviewsAutoRulesView
     | ReviewsMatchesView
+    | ReviewsRuleConflictsView
     | ReviewsAccountLinksView
     | ReviewsMerchantLinksView
     | ReviewsSecurityLinksView
@@ -415,12 +515,27 @@ class ReviewDecisionOutcome(BaseModel):
 
     kind: Annotated[ReviewDecisionKind, DataClass.TXN_TYPE]
     decision_id: Annotated[str, DataClass.RECORD_ID]
-    decision: Annotated[Literal["accept", "reject"], DataClass.TXN_TYPE]
+    decision: Annotated[ReviewDecisionVerb, DataClass.TXN_TYPE]
     status: Annotated[str, DataClass.TXN_TYPE]
     changed: Annotated[bool, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+# Two id lists that qualify what one resolution batch did; neither is a
+# collection this payload returned, and it is only ever nested inside
+# ReviewsDecidePayload, whose row set is `results`.
+@row_set(NO_ROW_SET)
+class RuleConflictImpact(BaseModel):
+    """What one rule-conflict resolution batch did to the rule table."""
+
+    model_config = ConfigDict(frozen=True)
+
+    resolved: Annotated[int, DataClass.AGGREGATE]
+    activated_rule_ids: Annotated[list[str], DataClass.RECORD_ID]
+    superseded_rule_ids: Annotated[list[str], DataClass.RECORD_ID]
+
+
+@row_set("results")
 class ReviewsDecidePayload(BaseModel):
     """Ordered outcomes for one atomic ordinary-decision batch."""
 
@@ -430,6 +545,9 @@ class ReviewsDecidePayload(BaseModel):
     applied_count: Annotated[int, DataClass.AGGREGATE]
     operation_id: Annotated[str, DataClass.RECORD_ID]
     auto_rule_impact: AutoAcceptPayload | None = None
+    # None when the batch held no rule-conflict decision — a batch that ran and
+    # activated nothing is a different fact from one that never touched rules.
+    rule_conflict_impact: RuleConflictImpact | None = None
     # Standing transfers the batch's accepts reversed, because dedup made both
     # of their sides the same physical transaction. In `data`, not only in
     # `actions[]`, for the reason the identity payload carries its own: a
@@ -452,6 +570,7 @@ class IdentityDecisionOutcome(BaseModel):
     operation_id: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set("results")
 class IdentityLinksDecidePayload(BaseModel):
     """Ordered outcomes for one atomic identity-decision batch."""
 

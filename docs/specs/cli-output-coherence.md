@@ -511,9 +511,9 @@ Numbered, each independently testable.
     observable outcome, including stages whose outcome is zero. A run that changed
     nothing and a run that recategorized 400 transactions are distinguishable from
     stderr alone. This requires a **result-carrier change**, not a renderer-only
-    one: `RefreshResult` (`src/moneybin/orchestration/refresh.py:109`) carries
-    error-or-`None` per step, and `_run_categorize_step` (line 486) computes its
-    counts, logs them, and returns `str | None`, discarding them. The renderer
+    one: `RefreshResult` carried error-or-`None` per step, and
+    `_run_categorize_step` computed its
+    counts, logged them, and returned `str | None`, discarding them. The renderer
     cannot recover a count the service already dropped, and must not re-query for
     it. `RefreshResult` therefore gains a per-stage outcome carrying the counts the
     steps already compute. This is **one of the three** requirements in this
@@ -522,6 +522,65 @@ Numbered, each independently testable.
     Requirement 16's `merchant_links_run` leak and requirement 17's five
     service-layer modules are the others; both reach less far — a message
     rewrite rather than a carrier change.
+
+    **Delivered wider than specified: four steps were discarding, not one.**
+    The categorizer is the one this requirement named, but the sheet pull
+    derived its completed-connection and row counts inside `refresh()` purely
+    to log them, and the identity pass looped over `(label, callable)` pairs
+    calling each service for its side effect — `AccountLinksService.run()`
+    returns an `int` and `MerchantLinksService.run()` a `HarvestResult`, and
+    both return values were dropped, so a clean identity pass had no observable
+    outcome at all. The carrier is `StageOutcome`
+    (`services/refresh_outcome.py`), one entry per step that ran, keyed by that
+    step's own vocabulary rather than flattened into a shared namespace — the
+    six steps measure different things, and one namespace makes which step a
+    key belongs to depend on its prefix.
+
+    **Three states, not two.** Absent from `RefreshResult.stages` means the
+    caller never requested the step; `ran=False` means it was reached and
+    declined (a missing-view precondition on first load); `ran=True` with zero
+    counts means it examined rows and found none. Collapsing the last two would
+    report "no duplicates found" for a match step that examined nothing. A
+    sheet pull with no connections was recording no stage at all, because the
+    append sat inside an `if pull_results:` guard — precisely the zero case
+    this requirement exists to name.
+
+    **Not carried into the stage list: the three rate-pair lists.**
+    `rate_pairs_failed` / `_unsupported` / `_discarded` route *remedies* — a
+    failed pair retries itself, an unsupported one never will — which is a
+    different question from what the step did, and they are pair strings where
+    a stage's counts are integers. They stay on `RefreshStepOutcome`.
+
+    **The flat per-step fields are removed, not deprecated beside `stages`.**
+    Carrying both shapes would have left every public refresh envelope stating
+    each step's outcome twice, and two spellings of one fact is how a reader
+    ends up trusting the wrong one. Removed from `RefreshResult`,
+    `RefreshStepOutcome`, and all five payloads: `matching_error`,
+    `categorization_error`, `rate_backfill_error`, `rates_written`,
+    `matches_auto_merged`, `matches_pending_review`,
+    `matches_pending_transfers`, `matching_skipped`. The flat set could also
+    only ever answer for the steps it had a field for — `gsheet`, `identity`,
+    and `transform` had none — so it could not have carried this requirement
+    even with the fields kept. `ran` replaces `matching_skipped` for every
+    step rather than the match step alone.
+
+    **`transfers_retired` is the one count that stays top-level.** It is not a
+    match-step count: `AccountLinksService.set` adds transfers whose two
+    *accounts* the merge collapsed, which happen inside its own transaction and
+    reach no matcher (`services/account_links_service.py`). Putting it in
+    `stage("match").counts` would make the match stage report a number the
+    matcher did not produce; leaving it in both places would give one fact two
+    homes that disagree on exactly the path that matters. It is an operation
+    total, and it sits at the level where it is aggregated.
+
+    **The flattener moved with the shape.** `refresh_steps_fields()` and
+    `RefreshStepFields` are now in `adapters/refresh_adapters.py`, because the
+    TypedDict has to name `RefreshStageRow` and reaching that type from
+    `services/refresh_outcome.py` would import `moneybin.privacy`, pulling
+    duckdb and pydantic (81 → 418 modules, measured) into a module that is
+    stdlib-only precisely so `PullResult` can embed it on the CLI's cold-start
+    path. Carrier and payload row stay two types, following the
+    `SelfHealRecord` → `SelfHealActionRow` precedent beside them.
 19. The profile banner names the source that actually resolved, or says
     nothing. Two lines carry it, and only one was clean at spec time.
     `src/moneybin/cli/utils.py` logs a bare `Using profile: {profile_name}`,

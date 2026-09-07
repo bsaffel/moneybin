@@ -48,6 +48,7 @@ from moneybin.privacy.payloads.categorize import (
     CategorizeStatsWithAutoPayload,
 )
 from moneybin.privacy.taxonomy import DataClass
+from moneybin.protocol.row_set import NO_ROW_SET, row_set
 
 # ---------------------------------------------------------------------------
 # transform_status payload
@@ -70,6 +71,7 @@ class TransformStatusPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransformPlanPayload:
     """Payload for ``transform_plan`` — pending SQLMesh model change sets."""
@@ -94,6 +96,7 @@ class TransformValidationError:
     message: Annotated[str, DataClass.DESCRIPTION]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class TransformValidatePayload:
     """Payload for ``transform_validate`` — parse/resolve check result."""
@@ -116,6 +119,7 @@ class TransformAuditRow:
     detail: Annotated[str | None, DataClass.DESCRIPTION]
 
 
+@row_set("audits")
 @dataclass(frozen=True, slots=True)
 class TransformAuditPayload:
     """Payload for ``transform_audit`` — SQLMesh data-quality audit results."""
@@ -137,6 +141,7 @@ class SystemStatusAccountsInfo:
     count: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransactionsInfo:
     """Transaction count + range sub-object inside SystemStatusPayload."""
@@ -183,6 +188,7 @@ class SystemStatusCategorizationInfo:
     uncategorized: Annotated[int, DataClass.AGGREGATE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusTransformsInfo:
     """Transform freshness sub-object inside SystemStatusPayload.
@@ -198,6 +204,7 @@ class SystemStatusTransformsInfo:
     missing_models: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SchemaDriftTable:
     """One drifted table entry inside SystemStatusPayload.schema_drift."""
@@ -206,6 +213,7 @@ class SchemaDriftTable:
     missing_columns: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusSchemaDrift:
     """Schema drift info inside SystemStatusPayload, present only when drift detected."""
@@ -229,6 +237,7 @@ class SystemStatusGsheetRow:
     reason: Annotated[str | None, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusGsheetInfo:
     """Google Sheets connection-health sub-object inside SystemStatusPayload."""
@@ -261,6 +270,7 @@ class SystemStatusReader:
     command: Annotated[str, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusDatabaseConnectionsInfo:
     """Per-profile inventory of active database connections.
@@ -332,6 +342,7 @@ class SystemStatusPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class InvariantResultPayload:
     """One pipeline invariant check result inside SystemDoctorPayload.
@@ -349,6 +360,7 @@ class InvariantResultPayload:
     recovery_actions: list[RecoveryActionPayload]
 
 
+@row_set("invariants")
 @dataclass(frozen=True, slots=True)
 class SystemDoctorPayload:
     """Payload for ``system_doctor`` — pipeline integrity check results."""
@@ -393,6 +405,7 @@ class CategorizationStatus(BaseModel):
     statistics: CategorizeStatsPayload | CategorizeStatsWithAutoPayload
 
 
+@row_set(NO_ROW_SET)
 class SystemStatusExportDestination(BaseModel):
     """Privacy-safe readiness for one configured export destination."""
 
@@ -405,6 +418,7 @@ class SystemStatusExportDestination(BaseModel):
     reasons: Annotated[list[str], DataClass.TXN_TYPE]
 
 
+@row_set("destinations")
 class ExportsStatus(BaseModel):
     """Export destination readiness inside sectioned system status."""
 
@@ -414,6 +428,7 @@ class ExportsStatus(BaseModel):
     destinations: list[SystemStatusExportDestination]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemStatusCLIPayload:
     """Flat typed payload for the established ``system status`` CLI JSON shape."""
@@ -464,6 +479,7 @@ SystemStatusSection = Annotated[
 ]
 
 
+@row_set("sections")
 class SystemStatusCoarsePayload(BaseModel):
     """Selected status sections in deterministic request order."""
 
@@ -492,44 +508,72 @@ class SelfHealActionRow:
     timestamp: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
 
 
+@row_set(NO_ROW_SET)
+@dataclass(frozen=True, slots=True)
+class RefreshStageRow:
+    """What one pipeline step did inside RefreshRunPayload.
+
+    All operational metadata (Tier.LOW): ``step`` is a fixed label from the
+    canonical step list, ``counts`` holds plain decision and row counts naming
+    no transaction, and ``ran`` separates a step that examined rows and found
+    none from one that examined nothing. A step the caller never requested has
+    no row at all, so the three states stay distinct — the zero counts of a
+    step that declined to run cannot be read as "found nothing".
+
+    ``error`` is DESCRIPTION for the same reason the payload's other error
+    strings are: a step's error text can embed a model path.
+    """
+
+    step: Annotated[str, DataClass.TXN_TYPE]
+    ran: Annotated[bool, DataClass.TXN_TYPE]
+    counts: Annotated[dict[str, int], DataClass.AGGREGATE]
+    error: Annotated[str | None, DataClass.DESCRIPTION]
+
+
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class RefreshRunPayload:
     """Payload for ``refresh_run`` — pipeline execution result.
 
-    The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
-    type names are non-PII but we conservatively classify them as DESCRIPTION
-    since error strings in adjacent tooling sometimes embed model paths.
+    ``error`` is DESCRIPTION (Tier.MEDIUM): a SQLMesh error type name is
+    non-PII, but we conservatively classify it as DESCRIPTION since error
+    strings in adjacent tooling sometimes embed model paths. It describes the
+    apply step alone — the only step that can hard-fail. Every other step
+    reports its own error inside its ``stages`` entry, so a caller reads one
+    place per step rather than a flat field per step.
+
     ``identity_errors`` contains only fixed domain labels and is therefore
-    TXN_TYPE (Tier.LOW). These fields are emitted as stable keys so agents see a
-    consistent shape — matching the ``self_heal_actions`` stable-key intent.
+    TXN_TYPE (Tier.LOW). It stays a top-level list because it names *which*
+    domains failed, and one stage ``error`` string cannot carry two domains
+    that failed independently.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
     duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     error: Annotated[str | None, DataClass.DESCRIPTION]
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION]
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
-    # What the match step decided on its own. AGGREGATE (Tier.LOW) — plain
-    # counts of decisions, naming no transaction. Emitted because the step acts
-    # without asking: it auto-merges above the confidence threshold and reverses
-    # transfers a dedup collapse invalidated. ``matching_skipped`` is what
-    # separates an honest zero from an invented one — on a skipped step nothing
-    # was examined, so "no duplicates" is a claim the counts cannot support.
-    matches_auto_merged: Annotated[int, DataClass.AGGREGATE]
-    matches_pending_review: Annotated[int, DataClass.AGGREGATE]
-    matches_pending_transfers: Annotated[int, DataClass.AGGREGATE]
-    matching_skipped: Annotated[bool, DataClass.TXN_TYPE]
+    # Accepted transfers this operation reversed. AGGREGATE (Tier.LOW) — a
+    # count naming no transaction. Top-level rather than inside the match
+    # stage's counts because it is an operation total, not a match-step count:
+    # a merge invalidates an accepted transfer either by collapsing its two
+    # legs (the matcher's own reconciliation) or by collapsing its two
+    # accounts, and the second happens inside `AccountLinksService.set`'s
+    # transaction and reaches no matcher. One counter because the user is owed
+    # one fact — a transfer they accepted is gone.
     transfers_retired: Annotated[int, DataClass.AGGREGATE]
     self_heal_actions: list[SelfHealActionRow]
-    # Counts of rates gathered, and the pairs the provider could not answer. A
-    # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
-    # no amount. `rates_written` is None when the rates step did not run —
-    # distinct from 0, which means it ran and had nothing to fetch. It is the
-    # only did-it-run signal: an empty pair list is the same list either way.
+    # One entry per step this run actually executed, in pipeline order. A step
+    # the caller did not request is absent rather than present-and-zero, so a
+    # narrowed `steps=[...]` call reports only what it ran.
+    stages: list[RefreshStageRow]
+    # The currency pairs the provider could not answer. A pair is CURRENCY
+    # (Tier.LOW): it names no account and discloses no amount. These are not
+    # counts — how many rates were written is `stages`' business — they name
+    # the pairs a retry will never fill, which is what routes the user to
+    # `moneybin fx set`.
     #
-    # The three pair lists are separate because their remedies are: a failed
-    # pair retries itself on the next refresh, an unsupported one never will and
+    # The three lists are separate because their remedies are: a failed pair
+    # retries itself on the next refresh, an unsupported one never will and
     # only `moneybin fx set` can fill it, and a discarded one had its answer
     # thrown away by a MoneyBin gate rather than by the provider. Merging any
     # two would send a user to the wrong remedy — record rates by hand over a
@@ -538,7 +582,6 @@ class RefreshRunPayload:
     # `rate_pairs_discarded` is the only one that can carry a pair the run also
     # wrote rates for: it means part of the answer was unusable, so coverage may
     # be short on some dates rather than absent on all of them.
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -548,12 +591,6 @@ class RefreshRunPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    # The step ran and crashed. DESCRIPTION for the same reason the two errors
-    # above are, and required for a reason `rates_written` cannot cover: that
-    # field is null both when the step declined to run and when it died, and
-    # all three pair lists are empty on a crash because it never got far enough
-    # to name a pair. Without this the failure has no representation at all.
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------
@@ -586,6 +623,7 @@ class SystemAuditEventPayload:
     undoes_operation_id: Annotated[str | None, DataClass.RECORD_ID]
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class SystemAuditPayload:
     """Payload for ``system_audit`` — filtered audit log events."""
@@ -598,6 +636,7 @@ class SystemAuditPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("tables")
 @dataclass(frozen=True, slots=True)
 class SystemAuditUndoPayload:
     """Payload for ``system_audit_undo`` — outcome of reversing one operation.
@@ -634,6 +673,7 @@ class RecoveryActionPayload:
     idempotent: Annotated[bool, DataClass.TXN_TYPE]
 
 
+@row_set(NO_ROW_SET)
 @dataclass(frozen=True, slots=True)
 class SystemAuditHistoryEntryPayload:
     """One operation in ``system_audit_history``, grouped by ``operation_id``.
@@ -658,6 +698,7 @@ class SystemAuditHistoryEntryPayload:
     recovery_actions: list[RecoveryActionPayload]
 
 
+@row_set("operations")
 @dataclass(frozen=True, slots=True)
 class SystemAuditHistoryPayload:
     """Payload for ``system_audit_history`` — recent operations, newest first."""
@@ -665,6 +706,7 @@ class SystemAuditHistoryPayload:
     operations: list[SystemAuditHistoryEntryPayload]
 
 
+@row_set("events")
 @dataclass(frozen=True, slots=True)
 class SystemAuditGetPayload:
     """Payload for ``system_audit_get`` — full before/after for one operation.
@@ -685,6 +727,7 @@ class SystemAuditGetPayload:
 # ---------------------------------------------------------------------------
 
 
+@row_set("events")
 class AuditEvents(BaseModel):
     """Recent audit events."""
 
@@ -694,6 +737,7 @@ class AuditEvents(BaseModel):
     events: list[SystemAuditEventPayload]
 
 
+@row_set("operations")
 class AuditHistory(BaseModel):
     """Recent audited operations with undoability metadata."""
 
@@ -703,6 +747,7 @@ class AuditHistory(BaseModel):
     operations: list[SystemAuditHistoryEntryPayload]
 
 
+@row_set("events")
 class AuditDetail(BaseModel):
     """One operation or one parent audit event and its child chain."""
 
