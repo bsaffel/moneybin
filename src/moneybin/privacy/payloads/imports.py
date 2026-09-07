@@ -42,6 +42,7 @@ from typing import Annotated, Any, Literal, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
 
 # ---------------------------------------------------------------------------
@@ -265,16 +266,15 @@ class ImportFilesPayload:
     files: list[ImportPerFileRow]
     # Accepted transfers this import's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
-    # This import's own refresh, in its four best-effort steps. Named exactly as
-    # `RefreshRunPayload` names them — see that payload for why each stays a
-    # separate field and why `rates_written` is None rather than 0 when the
-    # step did not run.
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    # This import's own refresh, step by step. Named exactly as
+    # `RefreshRunPayload` names them, and built by the same flattener, so an
+    # agent reading import_files and refresh_run learns one vocabulary. See
+    # that payload for why each step's counts and error live in `stages` while
+    # these lists stay beside it.
+    stages: list[RefreshStageRow] = field(default_factory=list)
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
         default_factory=list
     )
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -284,7 +284,6 @@ class ImportFilesPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------
@@ -719,16 +718,14 @@ class ImportInboxSyncPayload:
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
     # Accepted transfers the drain's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
-    # The drain's own refresh, in its four best-effort steps. Named exactly as
-    # `RefreshRunPayload` names them — see that payload for why each stays a
-    # separate field and why `rates_written` is None rather than 0 when the
-    # step did not run.
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    # The drain's own refresh, step by step. Named exactly as
+    # `RefreshRunPayload` names them, and built by the same flattener — see
+    # that payload for why each step's counts and error live in `stages` while
+    # these lists stay beside it.
+    stages: list[RefreshStageRow] = field(default_factory=list)
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
         default_factory=list
     )
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -738,7 +735,6 @@ class ImportInboxSyncPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

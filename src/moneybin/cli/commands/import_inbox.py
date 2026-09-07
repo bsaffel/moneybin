@@ -180,15 +180,15 @@ def inbox_default(
     # user's own decision is neither. The drain is the least supervised surface
     # reaching the reconciliation, so this is the one it can least afford to
     # swallow — and --output json is the mode an unattended caller actually uses.
+    from moneybin.adapters.refresh_adapters import (  # noqa: PLC0415
+        refresh_steps_fields,
+    )
     from moneybin.cli.utils import (  # noqa: PLC0415
         warn_refresh_steps,
         warn_transfers_retired,
     )
     from moneybin.matching.reconciliation import (  # noqa: PLC0415
         RETIRED_SIDES_COLLAPSED,
-    )
-    from moneybin.services.refresh_outcome import (  # noqa: PLC0415
-        refresh_steps_fields,
     )
 
     warn_transfers_retired(result.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)

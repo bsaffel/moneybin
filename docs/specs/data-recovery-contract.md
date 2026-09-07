@@ -237,9 +237,15 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         matched_count: int
         categorized_count: int
         # new
-        matching_error: str | None
-        categorization_error: str | None
+        stages: tuple[StageOutcome, ...]
         self_heal_actions: list[SelfHealRecord]
+
+
+    class StageOutcome:
+        step: str  # gsheet | match | transform | categorize | identity | rates
+        ran: bool
+        counts: Mapping[str, int]
+        error: str | None
 
 
     class SelfHealRecord:
@@ -249,13 +255,14 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
         timestamp: str
     ```
 
-    Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `*_error` field. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and leaves `*_error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes the silent-refresh-crash gap 5 above; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any `*_error` is set, the response envelope's `recovery_actions` includes:
+    Each step reports its own error, its own counts, and whether it ran in one `stages` entry, so a caller reads one place per step and the result's top-level `error` describes the SQLMesh apply alone. Behavior change: a *real* crash in the matcher/categorizer moves from `logger.debug(...)` to `logger.error(...)` and populates the `error` on that step's entry. A missing-view precondition (`duckdb.CatalogException` / `BinderException` — e.g. first load before SQLMesh apply built the views) is NOT a crash: it stays a quiet `logger.debug(...)` and the entry comes back `ran=False` with `error` `None`, so a fresh database's first refresh never reports a false failure. (This precondition discrimination is what genuinely closes the silent-refresh-crash gap 5 above; a blind DEBUG→ERROR would trade silent failure for false-positive noise.) `ran` is what separates that decline from a step that ran and honestly found nothing, which reports `ran=True` with zero counts; a step the caller never requested has no entry at all. Refresh continues — one stage's failure doesn't abort the pipeline (same partial-failure-isolation pattern import already uses). If any stage carries an `error`, the response envelope's `recovery_actions` includes:
 
     - `refresh_run(steps=["match"])` for a matching-only retry, or `refresh_run(steps=["categorize"])` for a categorization-only retry, `confidence=suggested`.
     - `system_status(sections=["doctor"], detail="full")` for diagnosis, `confidence=suggested`.
 
-    **The `*_error` fields report a crash; they never repeat it.** Both are
-    `DataClass.DESCRIPTION` on `RefreshRunPayload`, so their text reaches the
+    **A stage's `error` reports a crash; it never repeats it.**
+    `RefreshStageRow.error` is `DataClass.DESCRIPTION` on
+    `RefreshRunPayload`, so its text reaches the
     model provider through `refresh_run` and lands in CLI JSON, while an
     exception's message is whatever raised it — DuckDB binder fragments, file
     paths, row values. `MatchRunError` is the sharpest case: it passes
@@ -265,12 +272,15 @@ Surfaced during the 2026-05-19 brainstorm and prior agent-experience reports:
     does not recognize returns a generic line naming the step. The log gets
     `exception_origin`'s frame chain rather than the message, because a
     traceback's last line is the message and AGENTS.md's no-financial-data rule
-    has no local-log carve-out. The counts travelling beside the error
-    (`matches_auto_merged`, `transfers_retired`) are the disclosable half and
-    are unaffected.
+    has no local-log carve-out. The counts travelling beside the error — the
+    match stage's own `auto_merged`, and `transfers_retired`, which stays a
+    top-level field because a merge can retire an accepted transfer by
+    collapsing its two accounts inside `AccountLinksService.set`'s transaction,
+    where no matcher sees it — are the disclosable half and are unaffected.
 
     **M1J.7 extension.** Investment-event planning follows the same explicit
-    per-stage result rule without overloading cash `matching_error`. It adds
+    per-stage result rule without overloading the cash `match` stage's `error`.
+    It adds
     integer `investment_matches_pending_unique`,
     `investment_matches_pending_competing`, `investment_matches_suppressed`,
     and `investment_matches_stale` counts, boolean
@@ -648,9 +658,9 @@ cross-surface tests assert equivalent JSON outcomes.
 ### PR 6 — `RefreshResult` error surfacing
 
 - Extend `RefreshResult` per Req 9. Update `refresh_run` to populate the new fields.
-- Move matcher/categorizer crash logging from DEBUG to ERROR; populate `*_error` fields.
-- Update `refresh_run`'s response envelope to include `recovery_actions` when `*_error` is non-None.
-- Tests: simulate matcher crash → `RefreshResult.matching_error` populated → envelope `recovery_actions` includes `refresh_run(steps=["match"])` and `system_status(sections=["doctor"], detail="full")`.
+- Move matcher/categorizer crash logging from DEBUG to ERROR; populate the `error` on each step's `stages` entry.
+- Update `refresh_run`'s response envelope to include `recovery_actions` when any stage's `error` is non-None.
+- Tests: simulate matcher crash → the match entry in `RefreshResult.stages` carries an `error` → envelope `recovery_actions` includes `refresh_run(steps=["match"])` and `system_status(sections=["doctor"], detail="full")`.
 
 ### PR 7 — Self-heal safelist recipes
 
@@ -705,7 +715,7 @@ Per `.claude/rules/testing.md` test layers.
 | Integration (undo) | `tests/integration/test_audit_undo.py` | Mutate → `system_audit_undo` → verify pre-mutation state; `is_undo` and `undoes_operation_id` set; undo's own row is undoable |
 | Integration (cascade) | `tests/integration/test_audit_undo_cascade.py` | op1 → op2 on same row → `system_audit_undo(operation_id="op1")` fails with blocker list = [op2]; undo op2 then op1 succeeds |
 | Integration (doctor recipe) | `tests/integration/test_doctor_recipes.py` | Seed audit-failing state → `system_status(sections=["doctor"], detail="full")` → `recovery_actions` non-empty; tools named exist in registry |
-| Integration (refresh) | `tests/integration/test_refresh_error_surfacing.py` | Inject matcher crash → `RefreshResult.matching_error` populated; envelope `recovery_actions` correct |
+| Integration (refresh) | `tests/integration/test_refresh_error_surfacing.py` | Inject matcher crash → the match entry in `RefreshResult.stages` carries an `error`; envelope `recovery_actions` correct |
 | Integration (matches MCP) | `tests/integration/test_matches_mcp.py` | Four matching workflow operations work through the three standard tools; parity with CLI JSON |
 | Property | `tests/moneybin/test_envelope_property.py` | For every registered MCP tool, every code path that raises `UserError` either populates `recovery_actions` or sets `error_code="recovery_no_path"`. Fails CI if a new error site forgets. |
 | Scenario | `tests/scenarios/test_scenario_recoverable_state.py` | End-to-end: import → categorize → split → tag → revert → verify orphans cleaned by self-heal; bad rule → undo via `system_audit_undo`; agent never reaches for `sql_query` |

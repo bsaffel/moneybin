@@ -629,9 +629,11 @@ def test_accepting_a_link_rematches_without_a_second_manual_step() -> None:
 
         # 6) No run_step("match") here. The accept is the only thing that ran.
         assert rematch is not None, "accept returned no re-match result"
-        assert rematch.matches_auto_merged + rematch.matches_pending_review > 0, (
-            "the accept re-ran matching but the pass found nothing"
-        )
+        match_stage = rematch.stage("match")
+        assert match_stage is not None, "the accept ran no match step"
+        assert (
+            match_stage.count("auto_merged") + match_stage.count("pending_review") > 0
+        ), "the accept re-ran matching but the pass found nothing"
         assert _account_count(db) == 1, "the merge left two accounts standing"
         assert _transaction_count(db) == 3, (
             "the twins did not collapse — the accept did not re-run the matcher"

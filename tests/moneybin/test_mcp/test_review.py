@@ -63,6 +63,7 @@ from moneybin.services.auto_rule_service import (
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
 from moneybin.services.merchant_links_service import MerchantLinksService
+from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.review_decisions_service import (
     IdentityDecisionPlan,
     IdentityDecisionPlanItem,
@@ -3103,14 +3104,21 @@ def test_identity_batch_carries_the_rematch_outcome_out() -> None:
         account_class.return_value.rematch_after_merge.return_value = RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matches_auto_merged=2,
-            matches_pending_review=5,
+            stages=(
+                StageOutcome(
+                    step="match",
+                    ran=True,
+                    counts={"auto_merged": 2, "pending_review": 5},
+                ),
+            ),
         )
         result = service.apply_identity(decisions, verify=lambda _: None)
 
     assert result.rematch is not None
-    assert result.rematch.matches_auto_merged == 2
-    assert result.rematch.matches_pending_review == 5
+    match = result.rematch.stage("match")
+    assert match is not None
+    assert match.count("auto_merged") == 2
+    assert match.count("pending_review") == 5
 
 
 def test_identity_batch_of_rejects_carries_no_rematch_outcome() -> None:
@@ -3184,9 +3192,17 @@ async def test_identity_links_decide_reports_the_rematch_counts(
         RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matches_auto_merged=2,
-            matches_pending_review=5,
-            matches_pending_transfers=3,
+            stages=(
+                StageOutcome(
+                    step="match",
+                    ran=True,
+                    counts={
+                        "auto_merged": 2,
+                        "pending_review": 5,
+                        "pending_transfers": 3,
+                    },
+                ),
+            ),
         ),
     )
 
@@ -3207,7 +3223,7 @@ async def test_identity_links_decide_flags_a_failed_rebuild(
             applied=False,
             duration_seconds=1.0,
             error="sqlmesh apply failed",
-            matching_error="matcher blew up",
+            stages=(StageOutcome(step="match", ran=True, error="matcher blew up"),),
         ),
     )
 

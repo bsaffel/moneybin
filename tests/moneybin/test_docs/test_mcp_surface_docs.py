@@ -3169,10 +3169,24 @@ def test_final_review_refresh_surface_semantics_match_runtime() -> None:
     cli_selectable = " → ".join(s for s in CANONICAL_STEPS if s in selectable)
     assert f"MCP default: `{mcp_default}`" in pipeline
     assert f"CLI selectable steps: `{cli_selectable}`" in pipeline
+    # Derived both ways, for the reason the steps above are: a literal list
+    # keeps passing when a field is deleted from the payload and left standing
+    # in the guide, which is a doc advertising a key no response carries.
+    from dataclasses import fields as dataclass_fields
+
+    from moneybin.privacy.payloads.system import RefreshRunPayload
+
+    returned = {f.name for f in dataclass_fields(RefreshRunPayload)}
+    cited = set(re.findall(r"`data\.(\w+)`", pipeline))
+    assert cited, "the guide stopped naming any refresh_run payload field"
+    assert cited <= returned, (
+        f"the guide names fields refresh_run does not return: {sorted(cited - returned)}"
+    )
     for field in (
         "`data.error`",
-        "`matching_error`",
-        "`categorization_error`",
+        # Per-step outcomes: each step's own error and counts live here, so the
+        # guide has to send a reader to the entry rather than to a flat field.
+        "`data.stages`",
         "`identity_errors`",
         "`recovery_actions`",
     ):

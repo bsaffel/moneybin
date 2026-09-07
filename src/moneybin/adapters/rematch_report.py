@@ -17,6 +17,24 @@ if TYPE_CHECKING:
     from moneybin.orchestration.refresh import RefreshResult
 
 
+def rematch_count(rematch: RefreshResult | None, key: str) -> int | None:
+    """One of the re-match's match-step counts, or ``None`` when no pass ran.
+
+    ``None`` means exactly one thing on the two accept payloads that carry these
+    fields: the decision was a reject, so nothing was re-matched. A pass that ran
+    always reports a number — including the 0 left by a step that declined to
+    run, which is why the payloads pair these counts with the caller's own
+    knowledge of what it asked for. That skipped-versus-clean ambiguity predates
+    ``stages`` and is not this field's to fix; letting an absent stage answer
+    ``None`` here would be worse, because it would make a refresh that ran
+    indistinguishable from a reject.
+    """
+    if rematch is None:
+        return None
+    stage = rematch.stage("match")
+    return 0 if stage is None else stage.count(key)
+
+
 def retired_transfers_action(count: int, *, operation: str) -> str | None:
     """Hint that ``operation``'s refresh reversed ``count`` accepted transfers.
 
@@ -51,28 +69,32 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     if rematch is None:
         return []
     actions: list[str] = []
-    if rematch.matching_skipped:
+    match = rematch.stage("match")
+    if match is None or not match.ran:
         # Zero counts here mean nothing was examined, not that nothing was
-        # found. Reporting "no duplicates" off them would invent a result.
+        # found. Reporting "no duplicates" off them would invent a result. An
+        # absent stage lands here for the same reason, and in step with the CLI
+        # twin: this caller always asks for the match step, so a missing entry
+        # is no more evidence of a clean pass than a declined one is.
         actions.append(
             "The merge's re-match could not run — its matching views were "
             "missing or stale, so the newly co-resident rows were never "
             "examined. Rerun refresh_run() and check reviews(kind='matches')"
         )
-    if rematch.matching_error is not None:
+    if match is not None and match.error is not None:
         # Not "still unproposed": the matcher commits each edge as it goes and
         # opens no transaction around the run, so a crash mid-pass leaves
         # earlier tiers' decisions durable. `MatchRunError` carries those counts
-        # and `refresh` copies them onto the result, so this names them instead
+        # and `refresh` copies them into the stage, so this names them instead
         # of calling the effects unknown. Zero is trustworthy too: a run that
         # committed nothing raises unwrapped and never populates them. Kept in
         # step with the CLI twin in cli/commands/accounts/links.py.
         landed = ", ".join(
             f"{count} {noun}"
             for count, noun in (
-                (rematch.matches_auto_merged, "auto-merged"),
-                (rematch.matches_pending_review, "new duplicate proposal(s)"),
-                (rematch.matches_pending_transfers, "possible transfer(s)"),
+                (match.count("auto_merged"), "auto-merged"),
+                (match.count("pending_review"), "new duplicate proposal(s)"),
+                (match.count("pending_transfers"), "possible transfer(s)"),
             )
             if count
         )
@@ -100,15 +122,17 @@ def rematch_actions(rematch: RefreshResult | None) -> list[str]:
     # saying the run's remaining counts are incomplete. The CLI twin gets this
     # from its if/elif/else; here the branches stay independent because a
     # failed match and a failed transform can both be true at once.
-    partial = rematch.matching_error is not None
-    if rematch.matches_pending_review and not partial:
+    partial = match is not None and match.error is not None
+    pending_review = match.count("pending_review") if match is not None else 0
+    pending_transfers = match.count("pending_transfers") if match is not None else 0
+    if pending_review and not partial:
         actions.append(
-            f"The merge exposed {rematch.matches_pending_review} new duplicate "
+            f"The merge exposed {pending_review} new duplicate "
             "proposal(s) — review with reviews(kind='matches')"
         )
-    if rematch.matches_pending_transfers and not partial:
+    if pending_transfers and not partial:
         actions.append(
-            f"The merge's pass raised {rematch.matches_pending_transfers} "
+            f"The merge's pass raised {pending_transfers} "
             "possible transfer(s) — review with reviews(kind='matches')"
         )
     if rematch.transfers_retired:

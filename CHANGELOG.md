@@ -26,6 +26,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `-q` suppresses the lines as it does every other status line. A step you did
   not ask for is absent rather than reported empty, so `--step match` still
   prints one line.
+
+  **Breaking:** the flat per-step fields that `stages` replaces are removed
+  rather than kept beside it, on every surface that carries them —
+  `refresh_run`, `sync_pull`, `import_files`, `import_inbox_sync`,
+  `gsheet_pull`, and the `--output json` of their CLI twins. Gone:
+  `matching_error`, `categorization_error`, `rate_backfill_error`,
+  `rates_written`, `matches_auto_merged`, `matches_pending_review`,
+  `matches_pending_transfers`, and `matching_skipped`. Each is now that step's
+  entry in `stages` — its `error`, its `counts`, and `ran` in place of
+  `matching_skipped`. Two shapes for one fact is how a reader ends up
+  believing the wrong one, and the flat set could not answer for a step it had
+  no field for. What stays top-level stays because it is not a per-step count:
+  `identity_errors` names *which* domains failed, the three `rate_pairs_*`
+  lists name currency pairs whose remedy is `moneybin fx set`, and
+  `transfers_retired` is an operation total that `accounts_links_set` adds to
+  with account-collapse reversals no matcher ever sees.
 - **MCP tools publish a sensitivity floor, not a ceiling, and the reference now
   says which.** A statically classified tool's declared tier could overwrite a
   higher tier the response had already derived, understating both the response

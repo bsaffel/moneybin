@@ -7,6 +7,8 @@ mapping so the two surfaces cannot drift.
 
 from __future__ import annotations
 
+from typing import TypedDict
+
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.errors import RecoveryAction
 from moneybin.orchestration.refresh import RefreshResult, step_outcome
@@ -41,6 +43,73 @@ REFRESH_SHORT_RATE_COVERAGE_HINT = (
     "Exchange rate coverage is short for at least one currency pair "
     "(see rate_pairs_discarded), so conversion may be incomplete on some dates."
 )
+
+
+def _stage_error(steps: RefreshStepOutcome, step: str) -> str | None:
+    """The error one step reported, or ``None`` when it did not run or crash.
+
+    A step the caller never asked for and a step that ran clean both answer
+    ``None`` here, which is what every caller of this wants: neither is a
+    failure to offer a retry for.
+    """
+    stage = steps.stage(step)
+    return stage.error if stage is not None else None
+
+
+def _stage_rows(steps: RefreshStepOutcome | None) -> list[RefreshStageRow]:
+    """Convert the carrier's stages into payload rows.
+
+    ``counts`` is copied rather than aliased: the carrier declares it a
+    ``Mapping`` but holds a real dict, so a payload sharing the reference would
+    let anything holding the carrier rewrite a stage this payload already
+    reported.
+    """
+    if steps is None:
+        return []
+    return [
+        RefreshStageRow(step=s.step, ran=s.ran, counts=dict(s.counts), error=s.error)
+        for s in steps.stages
+    ]
+
+
+class RefreshStepFields(TypedDict):
+    """The flattened field names, typed so ``**`` into a payload is checked.
+
+    A bare ``dict[str, object]`` would splat into every typed payload without
+    complaint and lose the one guarantee this shape exists to give: that each
+    surface spells these identically and carries the same types.
+    """
+
+    stages: list[RefreshStageRow]
+    identity_errors: list[str]
+    rate_pairs_failed: list[str]
+    rate_pairs_unsupported: list[str]
+    rate_pairs_discarded: list[str]
+
+
+def refresh_steps_fields(steps: RefreshStepOutcome | None) -> RefreshStepFields:
+    """Flatten the outcome into the field names every public surface uses.
+
+    One flattener rather than one per surface. It lives in the adapter layer
+    rather than beside the carrier because it names ``RefreshStageRow``, and
+    reaching that type from ``services.refresh_outcome`` would pull duckdb and
+    pydantic into a module that exists to stay stdlib-only for the CLI's
+    cold-start path. Names match ``RefreshRunPayload`` exactly so an agent
+    reading two surfaces learns one vocabulary for one outcome.
+
+    Emitted whole even when no refresh ran, so a missing key never has to be
+    told apart from a clean step. ``stages`` is empty in that case, which is
+    the same answer it gives for a refresh that ran no steps — correct either
+    way, since a step that did not run reports nothing.
+    """
+    outcome = steps if steps is not None else RefreshStepOutcome()
+    return {
+        "stages": _stage_rows(outcome),
+        "identity_errors": list(outcome.identity_errors),
+        "rate_pairs_failed": list(outcome.rate_pairs_failed),
+        "rate_pairs_unsupported": list(outcome.rate_pairs_unsupported),
+        "rate_pairs_discarded": list(outcome.rate_pairs_discarded),
+    }
 
 
 def _step_crash_recovery_actions(result: RefreshResult) -> list[RecoveryAction]:
@@ -104,7 +173,7 @@ def refresh_step_actions(
     if steps is None or apply_failed:
         return []
     actions: list[RecoveryAction] = []
-    if steps.matching_error is not None:
+    if _stage_error(steps, "match") is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -117,7 +186,7 @@ def refresh_step_actions(
                 idempotent=True,
             )
         )
-    if steps.categorization_error is not None:
+    if _stage_error(steps, "categorize") is not None:
         actions.append(
             RecoveryAction(
                 tool="refresh_run",
@@ -143,7 +212,7 @@ def refresh_step_actions(
                 idempotent=True,
             )
         )
-    if steps.rate_backfill_error is not None or steps.rate_pairs_failed:
+    if _stage_error(steps, "rates") is not None or steps.rate_pairs_failed:
         # `pairs_failed` and a step crash, matching the CLI's `retryable_error`.
         # The other two lists name pairs a retry cannot fill: the provider
         # publishes no series at all for an unsupported one, and it *answered*
@@ -198,12 +267,13 @@ def refresh_envelope(
     # Gate the follow-up on success: when transform was requested but failed,
     # categorize would run against stale outputs — direct the agent to resolve
     # the apply failure first rather than chain categorize after it. Also gate
-    # on matching_error being None: when the matcher crashed, recovery_actions
-    # already says "retry match", so a "run categorize next" hint would be a
-    # contradictory signal pointing the agent at the wrong next step.
+    # on the match step not having crashed: when the matcher crashed,
+    # recovery_actions already says "retry match", so a "run categorize next"
+    # hint would be a contradictory signal pointing the agent at the wrong step.
+    match_stage = result.stage("match")
     if (
         result.error is None
-        and result.matching_error is None
+        and (match_stage is None or match_stage.error is None)
         and "match" in requested
         and "categorize" not in requested
     ):
@@ -234,13 +304,6 @@ def refresh_envelope(
             applied=result.applied,
             duration_seconds=result.duration_seconds,
             error=result.error,
-            matching_error=result.matching_error,
-            categorization_error=result.categorization_error,
-            identity_errors=list(result.identity_errors),
-            matches_auto_merged=result.matches_auto_merged,
-            matches_pending_review=result.matches_pending_review,
-            matches_pending_transfers=result.matches_pending_transfers,
-            matching_skipped=result.matching_skipped,
             transfers_retired=result.transfers_retired,
             self_heal_actions=[
                 SelfHealActionRow(
@@ -251,40 +314,10 @@ def refresh_envelope(
                 )
                 for r in result.self_heal_actions
             ],
-            stages=[
-                RefreshStageRow(
-                    step=s.step,
-                    ran=s.ran,
-                    # Copied out of the read-only view the carrier holds: the
-                    # payload is serialized, and a MappingProxyType is not.
-                    counts=dict(s.counts),
-                    error=s.error,
-                )
-                for s in result.stages
-            ],
-            rates_written=(
-                None
-                if result.rate_backfill is None
-                else result.rate_backfill.rates_written
-            ),
-            rate_pairs_failed=(
-                []
-                if result.rate_backfill is None
-                else list(result.rate_backfill.pairs_failed)
-            ),
-            rate_pairs_unsupported=(
-                []
-                if result.rate_backfill is None
-                else list(result.rate_backfill.pairs_unsupported)
-            ),
-            rate_pairs_discarded=(
-                []
-                if result.rate_backfill is None
-                else list(result.rate_backfill.pairs_discarded)
-            ),
-            # Not gated on `rate_backfill is None`: a crash is exactly the case
-            # where there is no backfill to read the answer off.
-            rate_backfill_error=result.rate_backfill_error,
+            # The same splat the four embedded surfaces use, so `refresh_run`
+            # cannot drift from the refresh that rides inside an import or a
+            # pull — one flattener, five surfaces, one vocabulary.
+            **refresh_steps_fields(step_outcome(result)),
         ),
         sensitivity="low",
         actions=actions,

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from moneybin.adapters.refresh_adapters import refresh_steps_fields
 from moneybin.privacy.payloads.sync import (
     SyncConnectionRow,
     SyncDisconnectPayload,
@@ -23,7 +24,6 @@ from moneybin.privacy.payloads.sync import (
     SyncStatusPayload,
 )
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
-from moneybin.services.refresh_outcome import refresh_steps_fields
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

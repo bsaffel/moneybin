@@ -498,9 +498,10 @@ class RefreshStageRow:
 
     All operational metadata (Tier.LOW): ``step`` is a fixed label from the
     canonical step list, ``counts`` holds plain decision and row counts naming
-    no transaction, and ``ran`` separates a step that examined nothing from one
-    that examined rows and found none — the same distinction
-    ``matching_skipped`` draws for the match step alone.
+    no transaction, and ``ran`` separates a step that examined rows and found
+    none from one that examined nothing. A step the caller never requested has
+    no row at all, so the three states stay distinct — the zero counts of a
+    step that declined to run cannot be read as "found nothing".
 
     ``error`` is DESCRIPTION for the same reason the payload's other error
     strings are: a step's error text can embed a model path.
@@ -516,44 +517,45 @@ class RefreshStageRow:
 class RefreshRunPayload:
     """Payload for ``refresh_run`` — pipeline execution result.
 
-    The ``*_error`` fields are DESCRIPTION (Tier.MEDIUM): SQLMesh / step error
-    type names are non-PII but we conservatively classify them as DESCRIPTION
-    since error strings in adjacent tooling sometimes embed model paths.
+    ``error`` is DESCRIPTION (Tier.MEDIUM): a SQLMesh error type name is
+    non-PII, but we conservatively classify it as DESCRIPTION since error
+    strings in adjacent tooling sometimes embed model paths. It describes the
+    apply step alone — the only step that can hard-fail. Every other step
+    reports its own error inside its ``stages`` entry, so a caller reads one
+    place per step rather than a flat field per step.
+
     ``identity_errors`` contains only fixed domain labels and is therefore
-    TXN_TYPE (Tier.LOW). These fields are emitted as stable keys so agents see a
-    consistent shape — matching the ``self_heal_actions`` stable-key intent.
+    TXN_TYPE (Tier.LOW). It stays a top-level list because it names *which*
+    domains failed, and one stage ``error`` string cannot carry two domains
+    that failed independently.
     """
 
     applied: Annotated[bool, DataClass.TXN_TYPE]
     duration_seconds: Annotated[float | None, DataClass.AGGREGATE]
     error: Annotated[str | None, DataClass.DESCRIPTION]
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION]
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION]
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE]
-    # What the match step decided on its own. AGGREGATE (Tier.LOW) — plain
-    # counts of decisions, naming no transaction. Emitted because the step acts
-    # without asking: it auto-merges above the confidence threshold and reverses
-    # transfers a dedup collapse invalidated. ``matching_skipped`` is what
-    # separates an honest zero from an invented one — on a skipped step nothing
-    # was examined, so "no duplicates" is a claim the counts cannot support.
-    matches_auto_merged: Annotated[int, DataClass.AGGREGATE]
-    matches_pending_review: Annotated[int, DataClass.AGGREGATE]
-    matches_pending_transfers: Annotated[int, DataClass.AGGREGATE]
-    matching_skipped: Annotated[bool, DataClass.TXN_TYPE]
+    # Accepted transfers this operation reversed. AGGREGATE (Tier.LOW) — a
+    # count naming no transaction. Top-level rather than inside the match
+    # stage's counts because it is an operation total, not a match-step count:
+    # a merge invalidates an accepted transfer either by collapsing its two
+    # legs (the matcher's own reconciliation) or by collapsing its two
+    # accounts, and the second happens inside `AccountLinksService.set`'s
+    # transaction and reaches no matcher. One counter because the user is owed
+    # one fact — a transfer they accepted is gone.
     transfers_retired: Annotated[int, DataClass.AGGREGATE]
     self_heal_actions: list[SelfHealActionRow]
     # One entry per step this run actually executed, in pipeline order. A step
     # the caller did not request is absent rather than present-and-zero, so a
     # narrowed `steps=[...]` call reports only what it ran.
     stages: list[RefreshStageRow]
-    # Counts of rates gathered, and the pairs the provider could not answer. A
-    # currency pair is CURRENCY (Tier.LOW): it names no account and discloses
-    # no amount. `rates_written` is None when the rates step did not run —
-    # distinct from 0, which means it ran and had nothing to fetch. It is the
-    # only did-it-run signal: an empty pair list is the same list either way.
+    # The currency pairs the provider could not answer. A pair is CURRENCY
+    # (Tier.LOW): it names no account and discloses no amount. These are not
+    # counts — how many rates were written is `stages`' business — they name
+    # the pairs a retry will never fill, which is what routes the user to
+    # `moneybin fx set`.
     #
-    # The three pair lists are separate because their remedies are: a failed
-    # pair retries itself on the next refresh, an unsupported one never will and
+    # The three lists are separate because their remedies are: a failed pair
+    # retries itself on the next refresh, an unsupported one never will and
     # only `moneybin fx set` can fill it, and a discarded one had its answer
     # thrown away by a MoneyBin gate rather than by the provider. Merging any
     # two would send a user to the wrong remedy — record rates by hand over a
@@ -562,7 +564,6 @@ class RefreshRunPayload:
     # `rate_pairs_discarded` is the only one that can carry a pair the run also
     # wrote rates for: it means part of the answer was unusable, so coverage may
     # be short on some dates rather than absent on all of them.
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -572,12 +573,6 @@ class RefreshRunPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    # The step ran and crashed. DESCRIPTION for the same reason the two errors
-    # above are, and required for a reason `rates_written` cannot cover: that
-    # field is null both when the step declined to run and when it died, and
-    # all three pair lists are empty on a crash because it never got far enough
-    # to name a pair. Without this the failure has no representation at all.
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
 
 
 # ---------------------------------------------------------------------------

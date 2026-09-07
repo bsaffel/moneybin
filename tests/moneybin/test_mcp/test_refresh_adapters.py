@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -10,9 +11,10 @@ from moneybin.adapters.refresh_adapters import (
     refresh_envelope,
     refresh_rate_gap_hints,
     refresh_step_actions,
+    refresh_steps_fields,
 )
 from moneybin.orchestration.refresh import RefreshResult, SelfHealRecord, expand_steps
-from moneybin.privacy.payloads.system import RefreshRunPayload
+from moneybin.privacy.payloads.system import RefreshRunPayload, RefreshStageRow
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
@@ -27,19 +29,46 @@ def _payload(env: ResponseEnvelope[Any]) -> RefreshRunPayload:
     return env.data
 
 
+def _stage(env: ResponseEnvelope[Any], step: str) -> RefreshStageRow | None:
+    """The payload row for one step, or None when the step has no entry."""
+    return next((s for s in _payload(env).stages if s.step == step), None)
+
+
+def _rates_stage(written: int | None = None, error: str | None = None) -> StageOutcome:
+    """A rates step, in the shape ``refresh`` builds it.
+
+    ``written=None`` is the step that declined to run — it needs a home currency
+    and built views — which comes back ``ran=False`` carrying no count at all.
+    """
+    if written is None:
+        return StageOutcome(step="rates", ran=False, error=error)
+    return StageOutcome(
+        step="rates", ran=True, counts={"rates_written": written}, error=error
+    )
+
+
+def _match_stage(
+    ran: bool = True, error: str | None = None, **counts: int
+) -> StageOutcome:
+    """A match step that ran (or declined), with the counts it reported."""
+    return StageOutcome(
+        step="match", ran=ran, counts={} if not ran else counts, error=error
+    )
+
+
 @pytest.mark.unit
 def test_rate_fields_are_absent_when_the_step_did_not_run() -> None:
-    """``rates_written`` is the only did-it-run signal the envelope carries.
+    """A step with no entry never ran, and reports no count at all.
 
-    ``None`` and ``0`` mean different things — the step was skipped versus it
-    ran and found nothing to fetch — and neither pair list can tell them apart,
-    since both are empty either way.
+    An absent stage and a stage reporting zero mean different things — the step
+    was never asked for versus it ran and found nothing to fetch — and neither
+    pair list can tell them apart, since both are empty either way.
     """
     env = refresh_envelope(
         RefreshResult(applied=True, duration_seconds=1.0), requested=expand_steps(None)
     )
 
-    assert _payload(env).rates_written is None
+    assert _stage(env, "rates") is None
     assert _payload(env).rate_pairs_failed == []
     assert _payload(env).rate_pairs_unsupported == []
     assert _payload(env).rate_pairs_discarded == []
@@ -65,11 +94,13 @@ def test_rate_backfill_counts_and_pairs_reach_the_envelope() -> None:
                 pairs_unsupported=("JPY/USD",),
                 pairs_discarded=("GBP/USD",),
             ),
+            stages=(_rates_stage(7),),
         ),
         requested=expand_steps(None),
     )
 
-    assert _payload(env).rates_written == 7
+    rates = _stage(env, "rates")
+    assert rates is not None and rates.counts["rates_written"] == 7
     assert _payload(env).rate_pairs_failed == ["EUR/USD"]
     assert _payload(env).rate_pairs_unsupported == ["JPY/USD"]
     assert _payload(env).rate_pairs_discarded == ["GBP/USD"]
@@ -83,11 +114,15 @@ def test_a_rates_step_that_found_nothing_is_not_a_skipped_step() -> None:
             applied=True,
             duration_seconds=1.0,
             rate_backfill=RateBackfillResult(rates_written=0, pairs_failed=()),
+            stages=(_rates_stage(0),),
         ),
         requested=expand_steps(None),
     )
 
-    assert _payload(env).rates_written == 0
+    rates = _stage(env, "rates")
+    assert rates is not None
+    assert rates.ran is True
+    assert rates.counts["rates_written"] == 0
     assert _payload(env).rate_pairs_failed == []
 
 
@@ -95,7 +130,7 @@ def test_a_rates_step_that_found_nothing_is_not_a_skipped_step() -> None:
 async def test_a_failed_rate_pair_offers_the_rates_retry() -> None:
     """A transient rate failure earns the same retry the sibling steps get.
 
-    ``matching_error`` and ``categorization_error`` each hand the agent a
+    A crashed match or categorize step each hands the agent a
     ``refresh_run(steps=[...])`` it can execute, and the CLI already prints the
     equivalent hint for a failed pair because ``retryable_error`` counts it. An
     MCP-driven agent was the only caller left to infer the next step, which is
@@ -108,6 +143,7 @@ async def test_a_failed_rate_pair_offers_the_rates_retry() -> None:
             rate_backfill=RateBackfillResult(
                 rates_written=0, pairs_failed=("EUR/USD",)
             ),
+            stages=(_rates_stage(0),),
         ),
         requested=expand_steps(None),
     )
@@ -123,25 +159,30 @@ async def test_a_failed_rate_pair_offers_the_rates_retry() -> None:
 async def test_a_crashed_rates_step_reaches_the_envelope_with_a_retry() -> None:
     """A crash is a distinct signal from an empty result, and earns the retry.
 
-    ``rate_backfill=None`` is what the payload defines as "the step did not
-    run", so a crash reported only that way is indistinguishable from a profile
-    with no home currency — the agent sees ``rates_written=null``, three empty
-    pair lists, and no reason to act. ``rate_backfill_error`` is the field that
-    separates them, and it earns a retry for the same reason
-    ``matching_error`` and ``categorization_error`` do.
+    A null backfill is what "the step did not run" looks like, so a crash
+    reported only that way is indistinguishable from a profile with no home
+    currency — the agent sees no count, three empty pair lists, and no reason to
+    act. The stage's own ``error`` is what separates them, and it earns a retry
+    for the same reason a crashed match or categorize step does.
     """
     env = refresh_envelope(
         RefreshResult(
             applied=True,
             duration_seconds=1.0,
             rate_backfill=None,
-            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+            stages=(
+                _rates_stage(
+                    error="Rate backfill failed — the cause is in the local log"
+                ),
+            ),
         ),
         requested=expand_steps(None),
     )
 
-    assert env.data.rate_backfill_error is not None
-    assert env.data.rates_written is None
+    rates = _stage(env, "rates")
+    assert rates is not None
+    assert rates.error is not None
+    assert rates.counts == {}
     actions = env.recovery_actions or []
     await assert_recovery_actions_executable(actions)
     tools = [(ra.tool, ra.arguments) for ra in actions]
@@ -163,7 +204,11 @@ def test_a_crashed_rates_step_offers_the_retry_exactly_once() -> None:
             rate_backfill=RateBackfillResult(
                 rates_written=0, pairs_failed=("EUR/USD",)
             ),
-            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+            stages=(
+                _rates_stage(
+                    0, error="Rate backfill failed — the cause is in the local log"
+                ),
+            ),
         ),
         requested=expand_steps(None),
     )
@@ -179,17 +224,19 @@ def test_a_crashed_rates_step_offers_the_retry_exactly_once() -> None:
 
 @pytest.mark.unit
 def test_a_clean_rates_step_reports_no_error() -> None:
-    """Negative twin: the new field stays absent on the paths that did not fail."""
+    """Negative twin: the stage's error stays absent on paths that did not fail."""
     env = refresh_envelope(
         RefreshResult(
             applied=True,
             duration_seconds=1.0,
             rate_backfill=RateBackfillResult(rates_written=3, pairs_failed=()),
+            stages=(_rates_stage(3),),
         ),
         requested=expand_steps(None),
     )
 
-    assert env.data.rate_backfill_error is None
+    rates = _stage(env, "rates")
+    assert rates is not None and rates.error is None
     assert env.recovery_actions is None
 
 
@@ -208,6 +255,7 @@ def test_an_unsupported_pair_is_offered_no_retry() -> None:
             rate_backfill=RateBackfillResult(
                 rates_written=0, pairs_failed=(), pairs_unsupported=("JPY/USD",)
             ),
+            stages=(_rates_stage(0),),
         ),
         requested=expand_steps(None),
     )
@@ -229,6 +277,7 @@ def test_a_discarded_pair_is_offered_no_retry() -> None:
             rate_backfill=RateBackfillResult(
                 rates_written=3, pairs_failed=(), pairs_discarded=("GBP/USD",)
             ),
+            stages=(_rates_stage(3),),
         ),
         requested=expand_steps(None),
     )
@@ -266,10 +315,15 @@ def test_envelope_serializes_self_heal_records() -> None:
 @pytest.mark.unit
 async def test_matching_error_yields_match_retry_and_doctor() -> None:
     env = refresh_envelope(
-        RefreshResult(applied=True, duration_seconds=1.0, matching_error="boom"),
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            stages=(_match_stage(error="boom"),),
+        ),
         requested=expand_steps(None),
     )
-    assert _payload(env).matching_error == "boom"
+    match = _stage(env, "match")
+    assert match is not None and match.error == "boom"
     actions = env.recovery_actions or []
     await assert_recovery_actions_executable(actions)
     tools = [(ra.tool, ra.arguments) for ra in actions]
@@ -283,10 +337,15 @@ async def test_matching_error_yields_match_retry_and_doctor() -> None:
 @pytest.mark.unit
 async def test_categorization_error_yields_categorize_retry_and_doctor() -> None:
     env = refresh_envelope(
-        RefreshResult(applied=True, duration_seconds=1.0, categorization_error="bang"),
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            stages=(StageOutcome(step="categorize", ran=True, error="bang"),),
+        ),
         requested=expand_steps(None),
     )
-    assert _payload(env).categorization_error == "bang"
+    categorize = _stage(env, "categorize")
+    assert categorize is not None and categorize.error == "bang"
     actions = env.recovery_actions or []
     await assert_recovery_actions_executable(actions)
     tools = [(ra.tool, ra.arguments) for ra in actions]
@@ -303,8 +362,10 @@ async def test_both_errors_emit_single_doctor_action() -> None:
         RefreshResult(
             applied=True,
             duration_seconds=1.0,
-            matching_error="boom",
-            categorization_error="bang",
+            stages=(
+                _match_stage(error="boom"),
+                StageOutcome(step="categorize", ran=True, error="bang"),
+            ),
         ),
         requested=expand_steps(None),
     )
@@ -333,7 +394,11 @@ def test_categorize_followup_suppressed_when_matcher_crashed() -> None:
     )
 
     env = refresh_envelope(
-        RefreshResult(applied=False, duration_seconds=None, matching_error="boom"),
+        RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            stages=(_match_stage(error="boom"),),
+        ),
         requested=expand_steps(["match"]),
     )
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT not in env.actions
@@ -366,18 +431,24 @@ def test_apply_failure_suppresses_step_recovery_actions() -> None:
             applied=False,
             duration_seconds=1.0,
             error="model boom",
-            matching_error="matcher boom",
+            stages=(_match_stage(error="matcher boom"),),
         ),
         requested=expand_steps(None),
     )
     assert env.recovery_actions is None
-    assert _payload(env).matching_error == "matcher boom"  # still surfaced in data
+    match = _stage(env, "match")
+    # Still surfaced in data — withholding the retry is not withholding the fact.
+    assert match is not None and match.error == "matcher boom"
 
 
 @pytest.mark.unit
 def test_recovery_actions_are_idempotent() -> None:
     env = refresh_envelope(
-        RefreshResult(applied=True, duration_seconds=1.0, matching_error="boom"),
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            stages=(_match_stage(error="boom"),),
+        ),
         requested=expand_steps(None),
     )
     assert all(ra.idempotent for ra in env.recovery_actions or [])
@@ -389,27 +460,36 @@ def test_envelope_discloses_what_the_match_step_decided() -> None:
 
     The match step auto-merges above the confidence threshold without asking
     and reverses transfers a dedup collapse invalidated. Both are decisions the
-    user did not make, and until these keys existed only the two merge-accept
-    tools reported them — a plain ``refresh_run`` after an import returned an
+    user did not make, and until the step reported them only the two
+    merge-accept tools did — a plain ``refresh_run`` after an import returned an
     ordinary success.
+
+    ``transfers_retired`` is asserted on the payload rather than in the match
+    stage's counts because it is an operation total: ``accounts_links_set`` adds
+    retirements the matcher never saw, so the stage must not claim it produced
+    the summed number.
     """
     env = refresh_envelope(
         RefreshResult(
             applied=True,
             duration_seconds=1.0,
-            matches_auto_merged=3,
-            matches_pending_review=2,
-            matches_pending_transfers=1,
+            stages=(
+                _match_stage(auto_merged=3, pending_review=2, pending_transfers=1),
+            ),
             transfers_retired=4,
         ),
         requested=expand_steps(None),
     )
-    payload = _payload(env)
-    assert payload.matches_auto_merged == 3
-    assert payload.matches_pending_review == 2
-    assert payload.matches_pending_transfers == 1
-    assert payload.transfers_retired == 4
-    assert payload.matching_skipped is False
+    match = _stage(env, "match")
+    assert match is not None
+    assert match.ran is True
+    assert match.counts == {
+        "auto_merged": 3,
+        "pending_review": 2,
+        "pending_transfers": 1,
+    }
+    assert "transfers_retired" not in match.counts
+    assert _payload(env).transfers_retired == 4
 
 
 @pytest.mark.unit
@@ -442,19 +522,25 @@ def test_envelope_stays_quiet_about_undo_when_nothing_was_retired() -> None:
 
 @pytest.mark.unit
 def test_envelope_marks_zero_counts_as_unexamined_when_match_was_skipped() -> None:
-    """``matching_skipped`` is what separates an honest zero from an invented one.
+    """``ran`` is what separates an honest zero from an invented one.
 
-    The counts are zero on a skipped step because nothing was examined, not
-    because nothing was found. Without this key an agent reads the same payload
-    as "no duplicates" — which is the claim the flag exists to refuse.
+    A step that declined to run reports no counts at all rather than a set of
+    zeros, because the zeros would say nothing was found when nothing was
+    examined — the claim ``ran=False`` exists to refuse. An agent reading the
+    counts alone would report "no duplicates" over rows the matcher never saw.
     """
     env = refresh_envelope(
-        RefreshResult(applied=True, duration_seconds=1.0, matching_skipped=True),
+        RefreshResult(
+            applied=True,
+            duration_seconds=1.0,
+            stages=(_match_stage(ran=False),),
+        ),
         requested=expand_steps(None),
     )
-    payload = _payload(env)
-    assert payload.matching_skipped is True
-    assert payload.matches_auto_merged == 0
+    match = _stage(env, "match")
+    assert match is not None
+    assert match.ran is False
+    assert match.counts == {}
 
 
 @pytest.mark.unit
@@ -462,7 +548,9 @@ def test_a_clean_step_outcome_earns_no_recovery_actions() -> None:
     """Silent when nothing broke, so an action keeps the meaning of an action."""
     assert refresh_step_actions(None, apply_failed=False) == []
     assert (
-        refresh_step_actions(RefreshStepOutcome(rates_written=0), apply_failed=False)
+        refresh_step_actions(
+            RefreshStepOutcome(stages=(_rates_stage(0),)), apply_failed=False
+        )
         == []
     )
 
@@ -477,10 +565,11 @@ async def test_each_crashed_step_is_offered_the_retry_that_fits_it() -> None:
     """
     actions = refresh_step_actions(
         RefreshStepOutcome(
-            matching_error="matcher blew up",
-            categorization_error="categorizer blew up",
-            rates_written=0,
-            rate_backfill_error="rates blew up",
+            stages=(
+                _match_stage(error="matcher blew up"),
+                StageOutcome(step="categorize", ran=True, error="categorizer blew up"),
+                _rates_stage(0, error="rates blew up"),
+            )
         ),
         apply_failed=False,
     )
@@ -526,10 +615,12 @@ async def test_retries_are_offered_in_the_order_refresh_runs_them() -> None:
     """
     actions = refresh_step_actions(
         RefreshStepOutcome(
-            matching_error="matcher blew up",
-            categorization_error="categorizer blew up",
+            stages=(
+                _match_stage(error="matcher blew up"),
+                StageOutcome(step="categorize", ran=True, error="categorizer blew up"),
+                _rates_stage(error="rates blew up"),
+            ),
             identity_errors=("identity blew up",),
-            rate_backfill_error="rates blew up",
         ),
         apply_failed=False,
     )
@@ -573,7 +664,7 @@ def test_pairs_that_are_merely_retryable_earn_no_manual_remedy() -> None:
     assert (
         refresh_rate_gap_hints(RefreshStepOutcome(rate_pairs_failed=("EUR/USD",))) == []
     )
-    assert refresh_rate_gap_hints(RefreshStepOutcome(rates_written=3)) == []
+    assert refresh_rate_gap_hints(RefreshStepOutcome(stages=(_rates_stage(3),))) == []
     assert refresh_rate_gap_hints(None) == []
 
 
@@ -592,6 +683,7 @@ def test_the_unpublished_remedy_reaches_the_refresh_envelope() -> None:
             rate_backfill=RateBackfillResult(
                 rates_written=0, pairs_failed=(), pairs_unsupported=("XBT/USD",)
             ),
+            stages=(_rates_stage(0),),
         ),
         requested=expand_steps(None),
     )
@@ -610,9 +702,11 @@ def test_a_failed_apply_withholds_every_step_retry() -> None:
     surfaces that embed a refresh cannot answer it differently.
     """
     crashed = RefreshStepOutcome(
-        matching_error="matcher blew up",
+        stages=(
+            _match_stage(error="matcher blew up"),
+            _rates_stage(error="rates blew up"),
+        ),
         identity_errors=("identity blew up",),
-        rate_backfill_error="rates blew up",
     )
 
     assert refresh_step_actions(crashed, apply_failed=True) == []
@@ -626,8 +720,8 @@ def test_a_pair_the_provider_never_answered_is_offered_a_retry() -> None:
     """``rate_pairs_failed`` is retryable even with no step crash beside it.
 
     The rates step can return without raising and still have left a pair
-    unfetched, so gating the retry on ``rate_backfill_error`` alone would drop
-    the action in a case a later run does fix.
+    unfetched, so gating the retry on the stage's own error alone would drop the
+    action in a case a later run does fix.
     """
     actions = refresh_step_actions(
         RefreshStepOutcome(rate_pairs_failed=("EUR/USD",)), apply_failed=False
@@ -647,7 +741,7 @@ def test_pairs_a_retry_cannot_fill_are_offered_no_retry() -> None:
     assert (
         refresh_step_actions(
             RefreshStepOutcome(
-                rates_written=3,
+                stages=(_rates_stage(3),),
                 rate_pairs_unsupported=("XBT/USD",),
                 rate_pairs_discarded=("JPY/USD",),
             ),
@@ -677,3 +771,84 @@ def test_a_refresh_counts_as_one_outcome_however_many_stages_ran() -> None:
 
     assert len(stages) == 6
     assert env.to_dict()["summary"]["returned_count"] == 1
+
+
+@pytest.mark.unit
+def test_the_flattened_field_names_are_pinned() -> None:
+    """Four public envelopes are built by splatting this dict; nothing checks it.
+
+    ``**refresh_steps_fields(...)`` spreads into a typed payload, so a key that
+    stops being emitted is a field that stops being populated — and the payload
+    still constructs, because every one of these carries a default. All four
+    surfaces would drop the same key silently and stay green. Pin the set here
+    so removing one is a decision rather than an accident.
+    """
+    assert set(refresh_steps_fields(None)) == {
+        "identity_errors",
+        "rate_pairs_failed",
+        "rate_pairs_unsupported",
+        "rate_pairs_discarded",
+        "stages",
+    }
+
+
+@pytest.mark.unit
+def test_a_skipped_step_survives_the_flattening_as_a_skip() -> None:
+    """An embedded caller is owed the same three states the refresh carrier has.
+
+    Never requested, requested-and-declined, and ran-and-found-nothing are
+    three different facts, and the flattened shape has to keep them apart: a
+    match step that declined for missing views leaves the same zero counts as
+    one that examined every row and found no duplicates. Reporting the first as
+    the second claims there are no duplicates among rows nothing read.
+    """
+    declined = refresh_steps_fields(
+        RefreshStepOutcome(stages=(StageOutcome(step="match", ran=False),))
+    )
+    clean = refresh_steps_fields(
+        RefreshStepOutcome(
+            stages=(StageOutcome(step="match", ran=True, counts={"auto_merged": 0}),)
+        )
+    )
+
+    assert declined["stages"] == [
+        RefreshStageRow(step="match", ran=False, counts={}, error=None)
+    ]
+    assert clean["stages"] == [
+        RefreshStageRow(step="match", ran=True, counts={"auto_merged": 0}, error=None)
+    ]
+    assert refresh_steps_fields(None)["stages"] == []
+
+
+@pytest.mark.unit
+def test_a_stage_survives_the_pydantic_carrier_it_rides_in() -> None:
+    """``PullResult`` embeds this carrier, so a stage has to reach JSON intact.
+
+    ``StageOutcome.counts`` defaulted to a ``MappingProxyType`` — safe for a
+    plain dataclass, and a live break once ``stages`` joined the carrier a
+    Pydantic model holds: ``model_dump`` passes the proxy straight through with
+    only a warning, and ``json.dumps`` then refuses it outright. The failure is
+    on the sync surface rather than in the adapter, which copies to a plain
+    dict, so no test of the payload shape would have found it.
+    """
+    from moneybin.connectors.sync_models import PullResult
+
+    pull = PullResult(
+        job_id="job-1",
+        transactions_loaded=0,
+        accounts_loaded=0,
+        balances_loaded=0,
+        transactions_removed=0,
+        institutions=[],
+        refresh_steps=RefreshStepOutcome(
+            stages=(StageOutcome(step="match", ran=False),)
+        ),
+    )
+
+    assert json.loads(pull.model_dump_json())["refresh_steps"]["stages"] == [
+        {"step": "match", "ran": False, "counts": {}, "error": None}
+    ]
+    # The proxy also guarded against a shared mutable default; `default_factory`
+    # is what actually holds that line, so prove it still does.
+    first, second = StageOutcome(step="a", ran=True), StageOutcome(step="b", ran=True)
+    assert first.counts is not second.counts

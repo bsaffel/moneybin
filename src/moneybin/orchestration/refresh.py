@@ -69,7 +69,6 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal
 
 import duckdb
@@ -79,7 +78,11 @@ from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error, exception_origin
 from moneybin.matching.engine import MatchRunError
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
-from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
+from moneybin.services.refresh_outcome import (
+    RefreshStepOutcome,
+    StageOutcome,
+    find_stage,
+)
 from moneybin.services.transform_service import TransformService
 
 if TYPE_CHECKING:
@@ -111,11 +114,11 @@ class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
     ``error`` describes the SQLMesh apply step — the only step that can
-    hard-fail. ``matching_error`` / ``categorization_error`` /
-    ``rate_backfill_error`` surface real crashes in the best-effort matcher /
-    categorizer / rates steps. ``identity_errors`` holds only failed identity
-    domain labels. A missing-view precondition on first load (before SQLMesh
-    apply built the views) is NOT a crash and leaves those errors ``None``.
+    hard-fail. Every other step reports its own crash, its own counts, and
+    whether it ran at all in its ``stages`` entry, so a caller reads one place
+    per step. A missing-view precondition on first load (before SQLMesh apply
+    built the views) is NOT a crash: that step's entry has ``ran=False`` and no
+    ``error``. ``identity_errors`` holds only failed identity domain labels.
     ``self_heal_actions`` lists self-heal recipes that ran (empty until the M2D
     self-heal safelist lands).
     """
@@ -123,39 +126,19 @@ class RefreshResult:
     applied: bool
     duration_seconds: float | None
     error: str | None = None
-    matching_error: str | None = None
-    categorization_error: str | None = None
     identity_errors: tuple[str, ...] = field(default_factory=tuple)
     # None means the step did not run — not that it ran and found nothing.
     rate_backfill: RateBackfillResult | None = None
-    # The rates step ran and crashed. Its own carrier above cannot say so: a
-    # crash and a step that correctly declined to run are both a null backfill,
-    # so without this the caller sees `rates_written=null` with empty pair
-    # lists either way and has no reason to act on the failure.
-    rate_backfill_error: str | None = None
-    # What the match step found, for callers that must report it rather than
-    # leave it in the log. A pass can auto-merge without asking (see
-    # engine._classify_pair), so a caller who *triggered* the pass — the
-    # post-merge re-match — owes the user that number. Zero when the step
-    # did not run: "found nothing" and "was skipped" are distinguished by
-    # whether the caller asked for the step, not by a null count.
-    matches_auto_merged: int = 0
-    matches_pending_review: int = 0
-    matches_pending_transfers: int = 0
-    # The match step was asked for but could not run — its views were missing
-    # or stale. Distinct from both a clean pass and a crash: the counts above
-    # are zero because nothing was examined, not because nothing was found. A
-    # caller reporting "no duplicates" off those zeros would be inventing a
-    # result. Expected on a first load, where the views postdate SQLMesh apply.
-    matching_skipped: bool = False
     # Accepted transfers reversed because the match step's dedup pass collapsed
     # their legs — the matcher reconciles them mid-run (see
     # matching.reconciliation.retire_transfers_invalidated_by_dedup), so every
     # trigger that reaches the match step reports them, not only the post-merge
     # re-match. That caller adds one more of its own: transfers whose two
     # *accounts* the merge collapsed, which happen inside `set`'s transaction
-    # and never reach the matcher. Reported rather than left in the log: the
-    # user accepted those transfers.
+    # and never reach the matcher. That is why this is an operation total here
+    # rather than a key in the match stage's counts — the match stage would
+    # otherwise report a number the matcher did not produce. Reported rather
+    # than left in the log: the user accepted those transfers.
     transfers_retired: int = 0
     # tuple, not list: frozen=True blocks reassignment but not in-place
     # mutation of a list field — a tuple keeps the result carrier truly immutable.
@@ -167,13 +150,8 @@ class RefreshResult:
     stages: tuple[StageOutcome, ...] = field(default_factory=tuple)
 
     def stage(self, step: str) -> StageOutcome | None:
-        """The outcome for one step, or ``None`` when it was never asked for.
-
-        A present entry with ``ran=False`` means the step was requested and
-        declined to run (a missing-view precondition, say); ``None`` means the
-        caller narrowed ``steps`` and never included it at all.
-        """
-        return next((s for s in self.stages if s.step == step), None)
+        """This result's entry for one step. See :func:`find_stage`."""
+        return find_stage(self.stages, step)
 
 
 RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity", "rates"]
@@ -196,14 +174,11 @@ def step_outcome(result: RefreshResult) -> RefreshStepOutcome:
     """
     rates = result.rate_backfill
     return RefreshStepOutcome(
-        matching_error=result.matching_error,
-        categorization_error=result.categorization_error,
+        stages=result.stages,
         identity_errors=tuple(result.identity_errors),
-        rates_written=None if rates is None else rates.rates_written,
         rate_pairs_failed=() if rates is None else tuple(rates.pairs_failed),
         rate_pairs_unsupported=() if rates is None else tuple(rates.pairs_unsupported),
         rate_pairs_discarded=() if rates is None else tuple(rates.pairs_discarded),
-        rate_backfill_error=result.rate_backfill_error,
     )
 
 
@@ -222,7 +197,7 @@ def _rates_stage(
     return StageOutcome(
         step="rates",
         ran=True,
-        counts=MappingProxyType({"rates_written": backfill.rates_written}),
+        counts={"rates_written": backfill.rates_written},
         error=error,
     )
 
@@ -312,11 +287,11 @@ def refresh(
             StageOutcome(
                 step="gsheet",
                 ran=True,
-                counts=MappingProxyType({
+                counts={
                     "completed": len(completed),
                     "rows": total_rows,
                     "non_complete": len(non_complete),
-                }),
+                },
             )
         )
         if pull_results:
@@ -343,7 +318,6 @@ def refresh(
                 )
 
     matching_error: str | None = None
-    categorization_error: str | None = None
     identity_errors: tuple[str, ...] = ()
     auto_merged = 0
     pending_review = 0
@@ -389,19 +363,23 @@ def refresh(
             matching_error = _step_error(exc, step="Matching")
         # One append covering all four branches rather than one per branch: the
         # counts are already accumulated in locals that every branch sets, and
-        # a skipped run must report no counts at all rather than four zeros.
+        # a skipped run must report no counts at all rather than three zeros.
+        #
+        # `transfers_retired` is deliberately not a key here. It rides on the
+        # result itself, because `AccountLinksService.set` adds retirements the
+        # matcher never saw — a stage reporting the summed number would be
+        # claiming the matcher produced it.
         stages.append(
             StageOutcome(
                 step="match",
                 ran=not matching_skipped,
-                counts=MappingProxyType({})
+                counts={}
                 if matching_skipped
-                else MappingProxyType({
+                else {
                     "auto_merged": auto_merged,
                     "pending_review": pending_review,
                     "pending_transfers": pending_transfers,
-                    "transfers_retired": transfers_retired,
-                }),
+                },
                 error=matching_error,
             )
         )
@@ -412,28 +390,19 @@ def refresh(
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
-            categorize_stage = _run_categorize_step(db)
-            stages.append(categorize_stage)
-            categorization_error = categorize_stage.error
+            stages.append(_run_categorize_step(db))
         if "identity" in requested:
             identity_stage, identity_errors = _run_identity_step(db)
             stages.append(identity_stage)
-        rate_backfill, rate_backfill_error = (None, None)
+        rate_backfill = None
         if "rates" in requested:
             rate_backfill, rate_backfill_error = _run_rates_step(db)
             stages.append(_rates_stage(rate_backfill, rate_backfill_error))
         return RefreshResult(
             applied=False,
             duration_seconds=None,
-            matching_error=matching_error,
-            categorization_error=categorization_error,
             identity_errors=identity_errors,
             rate_backfill=rate_backfill,
-            rate_backfill_error=rate_backfill_error,
-            matches_auto_merged=auto_merged,
-            matches_pending_review=pending_review,
-            matches_pending_transfers=pending_transfers,
-            matching_skipped=matching_skipped,
             transfers_retired=transfers_retired,
             stages=tuple(stages),
         )
@@ -450,29 +419,23 @@ def refresh(
     )
     if not apply_result.applied:
         # categorize is not attempted when apply fails (it reads SQLMesh-built
-        # views), so categorization_error stays None here — "not attempted",
-        # not "succeeded". The caller distinguishes via applied=False + error.
+        # views), so it contributes no stage here — absent means "not
+        # attempted", which is exactly the distinction a stage list draws and a
+        # null error field could not.
         return RefreshResult(
             applied=False,
             duration_seconds=apply_result.duration_seconds,
             error=apply_result.error,
-            matching_error=matching_error,
-            matches_auto_merged=auto_merged,
-            matches_pending_review=pending_review,
-            matches_pending_transfers=pending_transfers,
-            matching_skipped=matching_skipped,
             transfers_retired=transfers_retired,
             stages=tuple(stages),
         )
 
     if "categorize" in requested:
-        categorize_stage = _run_categorize_step(db)
-        stages.append(categorize_stage)
-        categorization_error = categorize_stage.error
+        stages.append(_run_categorize_step(db))
     if "identity" in requested:
         identity_stage, identity_errors = _run_identity_step(db)
         stages.append(identity_stage)
-    rate_backfill, rate_backfill_error = (None, None)
+    rate_backfill = None
     if "rates" in requested:
         rate_backfill, rate_backfill_error = _run_rates_step(db)
         stages.append(_rates_stage(rate_backfill, rate_backfill_error))
@@ -480,15 +443,8 @@ def refresh(
     return RefreshResult(
         applied=True,
         duration_seconds=apply_result.duration_seconds,
-        matching_error=matching_error,
-        categorization_error=categorization_error,
         identity_errors=identity_errors,
         rate_backfill=rate_backfill,
-        rate_backfill_error=rate_backfill_error,
-        matches_auto_merged=auto_merged,
-        matches_pending_review=pending_review,
-        matches_pending_transfers=pending_transfers,
-        matching_skipped=matching_skipped,
         transfers_retired=transfers_retired,
         stages=tuple(stages),
     )
@@ -497,10 +453,9 @@ def refresh(
 def _step_error(exc: Exception, *, step: str) -> str:
     """What a crashed best-effort step is allowed to say, and log.
 
-    ``matching_error``, ``categorization_error`` and ``rate_backfill_error`` are
-    ``DataClass.DESCRIPTION`` fields on ``RefreshRunPayload``: they reach the
-    model provider through
-    ``refresh_run`` and land in CLI JSON. An exception's message is whatever
+    A step's error lands in its ``stages`` entry, and ``RefreshStageRow.error``
+    is a ``DataClass.DESCRIPTION`` field: it reaches the model provider through
+    ``refresh_run`` and lands in CLI JSON. An exception's message is whatever
     raised it — DuckDB binder text, file paths, row values — and for
     ``MatchRunError`` it *is* the cause verbatim, because the carrier passes
     ``str(cause)`` to ``Exception``. So the returned string comes from
@@ -582,7 +537,7 @@ def _run_categorize_step(db: Database) -> StageOutcome:
     missing-view precondition (first load before SQLMesh apply built the views)
     comes back ``ran=False`` with no error and logs DEBUG — it is expected, not
     a failure. A genuine crash comes back ``ran=True`` with its message, which
-    ``refresh`` also surfaces in ``RefreshResult.categorization_error``.
+    reaches the caller in this step's ``stages`` entry.
     """
     # Deferred: the categorization stack costs +77 modules on this module's
     # import, and this module is on the CLI cold-start path.
@@ -590,7 +545,7 @@ def _run_categorize_step(db: Database) -> StageOutcome:
     from moneybin.services.categorization import CategorizationService  # noqa: PLC0415
 
     cat_start = time.monotonic()
-    # Only the categorization write itself decides categorization_error. The
+    # Only the categorization write itself decides this stage's error. The
     # post-step auto-rule proposal read below is informational — a crash there
     # must NOT be reported as a categorization failure (categorize succeeded).
     try:
@@ -619,7 +574,7 @@ def _run_categorize_step(db: Database) -> StageOutcome:
             f"({stats['merchant']} merchant, {stats['rule']} rule, "
             f"{stats['plaid']} plaid)"
         )
-    # Informational only — never surfaces as categorization_error.
+    # Informational only — never surfaces as the categorize stage's error.
     try:
         pending = AutoRuleService(db).stats().pending_proposals
         if pending:
@@ -633,11 +588,10 @@ def _run_categorize_step(db: Database) -> StageOutcome:
     return StageOutcome(
         step="categorize",
         ran=True,
-        # Copied into a read-only view rather than held by reference: the
-        # service owns that dict and is free to reuse it.
-        counts=MappingProxyType({
-            key: int(stats[key]) for key in ("total", "merchant", "rule", "plaid")
-        }),
+        # A fresh dict rather than the service's own: it owns that one and is
+        # free to reuse it, so holding it by reference would let a later run
+        # rewrite a stage this one already reported.
+        counts={key: int(stats[key]) for key in ("total", "merchant", "rule", "plaid")},
     )
 
 
@@ -744,6 +698,6 @@ def _run_identity_step(db: Database) -> tuple[StageOutcome, tuple[str, ...]]:
         counts["merchants_bound"] = harvest.bound
         counts["merchant_conflicts"] = harvest.conflicts
     return (
-        StageOutcome(step="identity", ran=True, counts=MappingProxyType(counts)),
+        StageOutcome(step="identity", ran=True, counts=counts),
         tuple(errors),
     )

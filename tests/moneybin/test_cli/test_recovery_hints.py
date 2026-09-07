@@ -24,7 +24,39 @@ from moneybin.matching.reconciliation import (
     RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED,
 )
 from moneybin.orchestration.refresh import RefreshResult
+from moneybin.services.refresh_outcome import StageOutcome
 from tests.cli_command_helpers import assert_published_commands_resolve
+
+
+def _rematch(
+    *,
+    error: str | None = None,
+    auto_merged: int = 0,
+    pending_review: int = 0,
+    pending_transfers: int = 0,
+) -> RefreshResult:
+    """A post-merge refresh whose match step reported these counts.
+
+    ``ran=True`` on both branches, matching what ``refresh`` records: the crash
+    path is a step that examined rows and then raised, which is what makes its
+    counts durable and distinguishes it from a step that declined to run.
+    """
+    return RefreshResult(
+        applied=True,
+        duration_seconds=0.0,
+        stages=(
+            StageOutcome(
+                step="match",
+                ran=True,
+                counts={
+                    "auto_merged": auto_merged,
+                    "pending_review": pending_review,
+                    "pending_transfers": pending_transfers,
+                },
+                error=error,
+            ),
+        ),
+    )
 
 
 @pytest.mark.parametrize(
@@ -120,9 +152,7 @@ def test_partial_rematch_report_publishes_runnable_recovery(
 ) -> None:
     """The crash branch: counts are incomplete and some merges already landed."""
     with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(
-            RefreshResult(applied=True, duration_seconds=0.0, matching_error="boom")
-        )
+        _report_rematch(_rematch(error="boom"))
 
     assert caplog.messages, "the partial-failure branch did not report"
     assert_published_commands_resolve("\n".join(caplog.messages))
@@ -134,21 +164,13 @@ def test_partial_rematch_report_names_the_decisions_that_landed(
     """The crash branch has real counts now, and hedging past them hides merges.
 
     ``MatchRunError`` carries the committed counts and ``refresh`` copies them
-    onto the result, so this branch knows exactly how many auto-merges and
+    into the match stage, so this branch knows exactly how many auto-merges and
     proposals are durable. Saying duplicates "may" have been merged spends that
     number on a hedge — and an auto-merge is what suppresses the duplicate side
     of a transaction in the ledger.
     """
     with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(
-            RefreshResult(
-                applied=True,
-                duration_seconds=0.0,
-                matching_error="boom",
-                matches_auto_merged=4,
-                matches_pending_review=2,
-            )
-        )
+        _report_rematch(_rematch(error="boom", auto_merged=4, pending_review=2))
 
     joined = "\n".join(caplog.messages)
     assert "4" in joined, f"the crash branch hid the merges that landed: {joined}"
@@ -167,9 +189,7 @@ def test_partial_rematch_report_claims_nothing_landed_when_nothing_did(
     audit log for decisions that were never made.
     """
     with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(
-            RefreshResult(applied=True, duration_seconds=0.0, matching_error="boom")
-        )
+        _report_rematch(_rematch(error="boom"))
 
     joined = "\n".join(caplog.messages)
     assert "may already have been merged" not in joined
@@ -185,14 +205,7 @@ def test_mcp_partial_rematch_action_names_the_decisions_that_landed() -> None:
     """
     from moneybin.adapters.rematch_report import rematch_actions
 
-    actions = rematch_actions(
-        RefreshResult(
-            applied=True,
-            duration_seconds=0.0,
-            matching_error="boom",
-            matches_auto_merged=4,
-        )
-    )
+    actions = rematch_actions(_rematch(error="boom", auto_merged=4))
 
     partial = next(a for a in actions if "stopped partway" in a)
     assert "4" in partial, f"the agent-facing action hid the merges: {partial}"
@@ -201,21 +214,15 @@ def test_mcp_partial_rematch_action_names_the_decisions_that_landed() -> None:
 def test_mcp_partial_rematch_states_its_counts_once() -> None:
     """The crash branch owns the counts; the clean hints must not restate them.
 
-    Both fire off the same fields, so an agent reading the unfiltered list gets
-    "its remaining counts are incomplete" and, two lines later, a flat "the
+    Both fire off the same match stage, so an agent reading the unfiltered list
+    gets "its remaining counts are incomplete" and, two lines later, a flat "the
     merge exposed 2 new duplicate proposal(s)" that reads like a finished pass.
     The CLI twin never had this — its branches are exclusive.
     """
     from moneybin.adapters.rematch_report import rematch_actions
 
     actions = rematch_actions(
-        RefreshResult(
-            applied=True,
-            duration_seconds=0.0,
-            matching_error="boom",
-            matches_pending_review=2,
-            matches_pending_transfers=1,
-        )
+        _rematch(error="boom", pending_review=2, pending_transfers=1)
     )
 
     assert sum("proposal(s)" in action for action in actions) == 1, actions
@@ -228,11 +235,53 @@ def test_pending_transfer_hint_publishes_runnable_recovery(
 ) -> None:
     """The clean branch that raised transfers still owes a way to review them."""
     with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(
-            RefreshResult(
-                applied=True, duration_seconds=0.0, matches_pending_transfers=3
-            )
-        )
+        _report_rematch(_rematch(pending_transfers=3))
 
     assert caplog.messages, "the pending-transfer branch did not report"
     assert_published_commands_resolve("\n".join(caplog.messages))
+
+
+def test_only_a_reject_reports_a_null_rematch_count() -> None:
+    """``None`` on the two accept payloads means one thing: no pass ran.
+
+    `accounts_links_set` and `identity_links_decide` document null as "the
+    decision was a reject". A refresh that ran but carries no match stage must
+    therefore still answer with a number — reading its absence as null would
+    make an accept indistinguishable from a reject on the one field the caller
+    uses to tell them apart.
+    """
+    from moneybin.adapters.rematch_report import rematch_count
+
+    assert rematch_count(None, "auto_merged") is None
+    assert rematch_count(_rematch(auto_merged=3), "auto_merged") == 3
+    assert (
+        rematch_count(RefreshResult(applied=True, duration_seconds=0.0), "auto_merged")
+        == 0
+    )
+
+
+def test_an_absent_match_stage_reads_the_same_on_both_surfaces(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Neither twin may read a missing match stage as a clean pass.
+
+    Both callers always request the match step, so an absent entry is an
+    anomaly rather than evidence the pass ran and found nothing. Keeping the
+    two readings identical is this module's whole reason to exist, and they had
+    drifted: the CLI warned on an absent stage while the MCP twin stayed
+    silent, which is the surface whose caller can least afford the quieter one.
+    """
+    from moneybin.adapters.rematch_report import rematch_actions
+
+    no_stages = RefreshResult(applied=True, duration_seconds=0.0)
+
+    actions = rematch_actions(no_stages)
+    assert any("could not run" in action for action in actions), actions
+
+    with caplog.at_level(
+        logging.WARNING, logger="moneybin.cli.commands.accounts.links"
+    ):
+        _report_rematch(no_stages)
+    assert any("could not run" in message for message in caplog.messages), (
+        caplog.messages
+    )

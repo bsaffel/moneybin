@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
+import pytest
 from click.testing import Result
 from typer.testing import CliRunner
 
@@ -176,11 +178,29 @@ def test_refresh_step_match_without_categorize_emits_followup_hint(
     assert REFRESH_CATEGORIZE_FOLLOWUP_HINT in payload["actions"]
 
 
+def _match_crash(
+    *,
+    applied: bool = True,
+    duration_seconds: float = 2.0,
+    error: str | None = None,
+) -> RefreshResult:
+    """A refresh whose match step raised, in the shape ``refresh`` records it.
+
+    ``ran=True``: the step executed and then crashed, which is a different
+    state from one that reached its precondition and declined. ``error`` is
+    the apply step's — the only step that can fail the command.
+    """
+    return RefreshResult(
+        applied=applied,
+        duration_seconds=duration_seconds,
+        error=error,
+        stages=(StageOutcome(step="match", ran=True, error="matcher boom"),),
+    )
+
+
 def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
     """A matcher crash (best-effort) surfaces in JSON without failing the command."""
-    fake_result = RefreshResult(
-        applied=True, duration_seconds=2.0, matching_error="matcher boom"
-    )
+    fake_result = _match_crash()
     with (
         patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -192,7 +212,8 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
     payload = json.loads(
         result.stdout
     )  # stdout stays clean JSON (warning is on stderr)
-    assert payload["data"]["matching_error"] == "matcher boom"
+    stages = {s["step"]: s for s in payload["data"]["stages"]}
+    assert stages["match"]["error"] == "matcher boom"
     recovery = {ra["tool"]: ra["arguments"] for ra in payload["recovery_actions"]}
     assert "refresh_run" in recovery
     assert recovery["system_status"] == {
@@ -245,7 +266,15 @@ def test_refresh_warns_when_the_rates_step_itself_crashed(runner: CliRunner) -> 
             applied=True,
             duration_seconds=1.0,
             rate_backfill=None,
-            rate_backfill_error="Rate backfill failed — the cause is in the local log",
+            # ran=False with an error is what the step reports when it never
+            # produced a backfill: it crashed before naming a single pair.
+            stages=(
+                StageOutcome(
+                    step="rates",
+                    ran=False,
+                    error="Rate backfill failed — the cause is in the local log",
+                ),
+            ),
         ),
     )
 
@@ -359,9 +388,7 @@ def test_refresh_clean_rates_still_prints_the_success_banner(
 
 def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
     """A matcher crash emits a ⚠️ warning in human output, exit 0."""
-    fake_result = RefreshResult(
-        applied=True, duration_seconds=2.0, matching_error="matcher boom"
-    )
+    fake_result = _match_crash()
     with (
         patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -375,9 +402,7 @@ def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
 
 def test_refresh_matcher_crash_warns_even_in_quiet(runner: CliRunner) -> None:
     """--quiet suppresses ✅/status but NOT a best-effort step-crash warning."""
-    fake_result = RefreshResult(
-        applied=True, duration_seconds=2.0, matching_error="matcher boom"
-    )
+    fake_result = _match_crash()
     with (
         patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -407,12 +432,7 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
     runner: CliRunner,
 ) -> None:
     """Apply failure + matcher crash: ⚠️ warning shows, 💡 step-retry hint suppressed."""
-    fake_result = RefreshResult(
-        applied=False,
-        duration_seconds=1.0,
-        error="apply boom",
-        matching_error="matcher boom",
-    )
+    fake_result = _match_crash(applied=False, duration_seconds=1.0, error="apply boom")
     with (
         patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
         patch("moneybin.database.get_database") as get_db,
@@ -468,11 +488,26 @@ def test_refresh_clean_pass_does_not_warn_about_retired_transfers(
 
 
 def test_refresh_json_discloses_the_match_counts(runner: CliRunner) -> None:
-    """The JSON surface carries the same disclosure as the MCP envelope."""
+    """The JSON surface carries the same disclosure as the MCP envelope.
+
+    ``transfers_retired`` stays top-level rather than joining the match stage's
+    counts: ``AccountLinksService.set`` adds account-collapse retirements the
+    matcher never saw, so it is an operation total, not a step count.
+    """
     fake_result = RefreshResult(
         applied=True,
         duration_seconds=1.0,
-        matches_auto_merged=3,
+        stages=(
+            StageOutcome(
+                step="match",
+                ran=True,
+                counts=MappingProxyType({
+                    "auto_merged": 3,
+                    "pending_review": 0,
+                    "pending_transfers": 0,
+                }),
+            ),
+        ),
         transfers_retired=1,
     )
     with (
@@ -484,7 +519,8 @@ def test_refresh_json_discloses_the_match_counts(runner: CliRunner) -> None:
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload["data"]["matches_auto_merged"] == 3
+    stages = {s["step"]: s for s in payload["data"]["stages"]}
+    assert stages["match"]["counts"]["auto_merged"] == 3
     assert payload["data"]["transfers_retired"] == 1
 
 
@@ -655,3 +691,33 @@ def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
             "error": None,
         }
     ]
+
+
+@pytest.mark.unit
+def test_a_failed_apply_is_warned_about_once_not_once_per_surface(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """``warn_refresh_steps`` is deliberately silent about the transform stage.
+
+    Every embedded caller — import, sync pull, inbox drain, sheet pull — reports
+    the SQLMesh apply through its own ``transforms_error`` field and then calls
+    this helper for the best-effort steps. Once the apply became a stage like
+    any other, warning on it here would print the same failure twice on four
+    surfaces. The neighbouring steps still warn, so this is silence about one
+    stage rather than silence about a failed run.
+    """
+    from moneybin.cli.utils import warn_refresh_steps
+    from moneybin.services.refresh_outcome import RefreshStepOutcome
+
+    with caplog.at_level(logging.WARNING):
+        warn_refresh_steps(
+            RefreshStepOutcome(
+                stages=(
+                    StageOutcome(step="transform", ran=False, error="model boom"),
+                    StageOutcome(step="categorize", ran=True, error="categorizer boom"),
+                )
+            )
+        )
+
+    assert "model boom" not in caplog.text
+    assert "categorizer boom" in caplog.text

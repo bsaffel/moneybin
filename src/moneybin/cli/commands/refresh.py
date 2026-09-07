@@ -19,7 +19,7 @@ from moneybin.cli.utils import (
     warn_transfers_retired,
 )
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-from moneybin.services.refresh_outcome import StageOutcome
+from moneybin.services.refresh_outcome import StageOutcome, best_effort
 
 logger = logging.getLogger(__name__)
 
@@ -124,9 +124,9 @@ def refresh_command(
 
     Single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent. Matching, categorization and rates are best-effort: a
-    real crash in any of them is surfaced (a ⚠️ warning here, `matching_error` /
-    `categorization_error` / `rate_backfill_error` + `recovery_actions` under
-    `--output json`) but does not fail the command. Identity failures expose
+    real crash in any of them is surfaced (a ⚠️ warning here, that step's own
+    `error` inside `stages` plus `recovery_actions` under `--output json`) but
+    does not fail the command. Identity failures expose
     only their domain in `identity_errors`. The rates step gathers the exchange
     rates this profile's own transactions, balances and holdings imply, so
     reports can convert without reaching the network; a pair the provider could
@@ -160,8 +160,8 @@ def refresh_command(
     # Emit them regardless of output format and regardless of --quiet (per
     # cli.md, -q suppresses status/✅, not warnings; JSON data still goes
     # cleanly to stdout) so a partial-pipeline failure is never silent. In
-    # JSON mode the crash is also in the payload (matching_error +
-    # recovery_actions); the stderr warning is the human/operator signal.
+    # JSON mode the crash is also in the payload (that step's `stages` entry
+    # plus recovery_actions); the stderr warning is the human/operator signal.
     steps_outcome = step_outcome(result)
     # Sits with the crash warnings, not with the ✅ status line, for the same
     # reason: this is a decision the *user* made being undone, so it survives
@@ -175,9 +175,7 @@ def refresh_command(
     # without earning the "re-run the failed step" hint below, whose own remedy
     # already rode the warning above.
     retryable_error = (
-        steps_outcome.matching_error is not None
-        or steps_outcome.categorization_error is not None
-        or steps_outcome.rate_backfill_error is not None
+        any(stage.error is not None for stage in best_effort(steps_outcome.stages))
         or bool(steps_outcome.identity_errors)
         or bool(steps_outcome.rate_pairs_failed)
     )

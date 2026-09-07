@@ -321,15 +321,21 @@ The response envelope follows the standard shape
 |---|---|---|
 | All six default stages succeed | `true` | Success; all error fields are empty. |
 | A Google Sheets pull is non-complete | Depends on transform | Warning in logs; query `gsheet(view="status")` for per-connection detail. |
-| Matching crashes | `true` if transform later succeeds | `matching_error` plus executable `recovery_actions` for a match-only retry and doctor diagnosis. |
+| Matching crashes | `true` if transform later succeeds | The `match` entry in `data.stages` carries `ran: true` and its own `error`, plus executable `recovery_actions` for a match-only retry and doctor diagnosis. |
 | SQLMesh apply fails | `false` | `data.error` is populated; CLI exits non-zero. Later categorization and identity stages do not run. |
-| Categorization crashes | `true` | `categorization_error` plus executable `recovery_actions` for a categorize-only retry and doctor diagnosis. |
+| Categorization crashes | `true` | The `categorize` entry in `data.stages` carries `ran: true` and its own `error`, plus executable `recovery_actions` for a categorize-only retry and doctor diagnosis. |
 | An identity domain fails | Depends on transform | `identity_errors` contains `accounts` and/or `merchants`; successful domains still complete. |
 | A scoped call omits `transform` | `false` (with `duration_seconds = null`) | Success; this explicitly means SQLMesh apply did not run. |
 
-The CLI's `--output json` path and MCP `refresh_run` share this payload. A
-first-load missing-view precondition is not treated as a matching or
-categorization crash, so it leaves the corresponding error field empty.
+The CLI's `--output json` path and MCP `refresh_run` share this payload. Each
+step reports itself in one `data.stages` entry — `{"step": "match", "ran":
+true, "counts": {"auto_merged": 1, "pending_review": 0, "pending_transfers":
+0}, "error": null}` — and three states stay distinct: no entry means the caller
+never requested that step, `ran: false` means it was requested and declined,
+and `ran: true` with zero counts means it examined rows and honestly found
+none. A first-load missing-view precondition is not treated as a matching or
+categorization crash, so that step reports `ran: false` with `error: null`
+rather than a crash.
 
 The lower-level `moneybin transform` group exposes individual SQLMesh operations (`apply`, `plan`, `seed`, `status`, `validate`, `audit`, `restate`). Reach for those when debugging a specific model or restating a date range; for normal post-load work, `refresh` is the entry point.
 
