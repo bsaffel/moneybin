@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -187,6 +188,64 @@ def test_loader_writes_balances(db: Database, sync_data: SyncDataResponse) -> No
     ).fetchall()
     assert len(rows) == 2
     assert rows[0] == ("acc_chase_check", Decimal("1234.56"), Decimal("1200.00"))
+
+
+def test_loader_writes_the_balance_fields_the_client_used_to_drop(
+    db: Database, sync_data: SyncDataResponse
+) -> None:
+    """All three must reach raw, or the wire model's copy dies one layer later.
+
+    ``_BALANCES_SCHEMA`` selects which keys of ``SyncBalance.model_dump()``
+    become columns, and Polars silently ignores a dict key the schema omits — so
+    declaring the fields on the model is only half the path, exactly as it was
+    for ``persistent_account_id`` above. ``raw`` is where a backfill would read
+    them from, and nothing upstream keeps a copy once the pull is acked.
+
+    The values are set here rather than in the shared YAML. That fixture feeds
+    ``core.fct_balances`` in five other files, and Plaid sends
+    ``margin_loan_amount`` only for investment accounts — putting one on the
+    fixture's checking account silently changed that account's net-worth
+    contribution and failed ``test_stg_plaid``. What the value *means* for net
+    worth is covered by ``test_fct_balances_plaid.py``; this test covers only
+    whether the column survives the loader.
+
+    ``last_updated_datetime`` is read back through ``::TIMESTAMPTZ`` rather than
+    compared to a wall-clock literal. The column is a naive TIMESTAMP, matching
+    its two siblings (``raw.plaid_investment_transactions.transaction_datetime``
+    and ``raw.plaid_investment_holding_lots.original_purchase_datetime``), so a
+    UTC instant lands shifted into the writing machine's zone and a literal here
+    would pass locally and fail on a UTC runner. The cast resolves in the
+    reading session's zone — the writing zone, for one machine — which is the
+    guarantee this layer currently offers. ``transform_service`` records the
+    same limitation on the landing columns and names TIMESTAMPTZ as the fix.
+    """
+    payload = sync_data.model_copy(deep=True)
+    payload.balances = [
+        balance.model_copy(
+            update={
+                "balance_limit": Decimal("5000.00"),
+                "margin_loan_amount": Decimal("250.00"),
+                "last_updated_datetime": datetime(2026, 4, 8, 12, 0, tzinfo=UTC),
+            }
+        )
+        if balance.account_id == "acc_chase_check"
+        else balance
+        for balance in payload.balances
+    ]
+
+    loader = PlaidExtractor(db)
+    loader.load(payload, job_id=payload.metadata.job_id)
+
+    row = db.execute(
+        """
+        SELECT balance_limit, margin_loan_amount, last_updated_datetime::TIMESTAMPTZ
+        FROM raw.plaid_balances WHERE account_id = 'acc_chase_check'
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[0] == Decimal("5000.00")
+    assert row[1] == Decimal("250.00")
+    assert row[2] == datetime(2026, 4, 8, 12, 0, tzinfo=UTC)
 
 
 def test_handle_removed_transactions(db: Database, sync_data: SyncDataResponse) -> None:
