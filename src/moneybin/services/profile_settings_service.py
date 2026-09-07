@@ -66,7 +66,7 @@ class ProfileSettingsService:
                 "such as USD, EUR, or GBP.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             ) from exc
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting,
         )
 

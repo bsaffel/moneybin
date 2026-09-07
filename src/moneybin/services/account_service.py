@@ -818,7 +818,7 @@ class AccountService:
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"
         )
         if diff.keys() & {"currency_code", "default_cost_basis_method"}:
-            from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )
 

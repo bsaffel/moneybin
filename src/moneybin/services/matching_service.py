@@ -171,7 +171,7 @@ class MatchingService:
         """
         seed_source_priority(self._db, self._settings)
         matcher = TransactionMatcher(self._db, self._settings, actor=actor)
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_run,
         )
 
@@ -297,7 +297,7 @@ class MatchingService:
                 f"were written on"
             )
         record_committed_curation_restore(restored)
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_undo,
         )
 
@@ -412,7 +412,7 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_effects,
         )
 
@@ -578,7 +578,7 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_effects,
         )
 

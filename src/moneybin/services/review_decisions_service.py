@@ -528,7 +528,7 @@ class ReviewDecisionsService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting_after_match_effects,
         )
 

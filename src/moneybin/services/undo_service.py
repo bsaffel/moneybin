@@ -320,7 +320,7 @@ class UndoService:
             undone
         )
         if needs_fx_restatement:
-            from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+            from moneybin.services.fx_accounting_refresh import (
                 restate_fx_accounting,
             )
 

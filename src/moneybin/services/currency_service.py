@@ -325,7 +325,7 @@ class CurrencyService:
         event = ExchangeRateOverridesRepo(self._db).set(
             base, quote, on, rate=rate, note=note, actor=self._actor
         )
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting,
         )
 
@@ -347,7 +347,7 @@ class CurrencyService:
         )
         if event is None:
             return False
-        from moneybin.services.fx_accounting_refresh import (  # noqa: PLC0415
+        from moneybin.services.fx_accounting_refresh import (
             restate_fx_accounting,
         )
 
