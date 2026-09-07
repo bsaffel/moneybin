@@ -9,11 +9,14 @@ SELECT
   b.balance_date,
   b.current_balance,
   b.available_balance,
+  b.balance_limit,
+  b.margin_loan_amount,
   b.iso_currency_code,
   b.unofficial_currency_code,
   b.source_file,
   b.source_type,
   b.source_origin,
+  b.last_updated_datetime,
   b.extracted_at,
   b.loaded_at
 FROM raw.plaid_balances AS b
