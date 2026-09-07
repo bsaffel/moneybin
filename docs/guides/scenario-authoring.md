@@ -222,7 +222,7 @@ For a bug-repro PR: Tier 1 plus the single Tier 2 / Tier 3 assertion that captur
 
 | Assertion | What it asserts | Use when |
 |---|---|---|
-| `assert_transform_audit` with `audit: bridge_transfers_balanced` | Both legs of a confirmed transfer pair exist and cancel exactly | Scenario exercises transfer detection |
+| `assert_transform_audit` with `audit: bridge_transfers_balanced` | Both legs and currencies exist, debit < 0 and credit > 0, and same-currency legs cancel exactly | Scenario exercises transfer detection |
 | `score_categorization` | Categorization accuracy + per-category precision/recall vs ground truth | Scenario runs `categorize` |
 | `score_transfer_detection` | Transfer F1 + precision + recall (separately, to catch one-sided bias) | Scenario exercises transfer detection |
 | `assert_distribution_within_bounds` | Match confidence (or amount) distribution within expected bounds | Multi-source matching or amount-distribution checks |

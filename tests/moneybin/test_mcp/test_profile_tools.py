@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from moneybin.mcp.tools.profile import (
@@ -62,8 +64,13 @@ async def test_profile_answers_on_a_database_that_predates_the_settings_table(
 
 async def test_profile_set_then_profile_round_trips_the_home_currency(
     mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The write tool's effect is visible to the read tool."""
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        MagicMock(),
+    )
     write_env = await profile_set(home_currency="EUR")
     assert write_env.error is None
     assert write_env.data.home_currency == "EUR"

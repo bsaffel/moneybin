@@ -203,6 +203,43 @@ def test_balanced_transfers_accepts_a_known_cross_currency_pair(
     assert _violations(db, "bridge_transfers_balanced") == []
 
 
+@pytest.mark.parametrize(
+    ("debit_amount", "debit_direction", "credit_amount", "credit_direction"),
+    [
+        ("100.00", "income", "90.00", "income"),
+        ("-100.00", "expense", "-90.00", "expense"),
+        ("0.00", "zero", "90.00", "income"),
+        ("-100.00", "expense", "0.00", "zero"),
+    ],
+)
+def test_balanced_transfers_flags_cross_currency_legs_with_invalid_signs(
+    db: Database,
+    debit_amount: str,
+    debit_direction: str,
+    credit_amount: str,
+    credit_direction: str,
+) -> None:
+    _seed_account(db)
+    _insert_transactions(
+        db,
+        _txn_values(
+            "T_DEBIT",
+            amount=debit_amount,
+            direction=debit_direction,
+            currency="USD",
+        ),
+        _txn_values(
+            "T_CREDIT",
+            amount=credit_amount,
+            direction=credit_direction,
+            currency="EUR",
+        ),
+    )
+    _insert_transfer(db, "XFER1", "T_DEBIT", "T_CREDIT", "100.00")
+
+    assert _violations(db, "bridge_transfers_balanced") == ["T_DEBIT"]
+
+
 def test_sign_convention_flags_a_direction_that_contradicts_its_amount(
     db: Database,
 ) -> None:

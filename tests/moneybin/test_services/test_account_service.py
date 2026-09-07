@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -547,8 +548,12 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_clear_sentinel(
-        self, test_db: Database
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         svc = AccountService(test_db)
         svc.settings_update("acct_a", actor="cli", default_cost_basis_method="fifo")
         updated, _ = svc.settings_update(

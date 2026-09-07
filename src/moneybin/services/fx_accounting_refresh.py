@@ -42,10 +42,10 @@ def restate_fx_accounting(
         _ACCOUNT_ROOT_MODEL if account_currency_changed else _FX_ACCOUNTING_ROOT_MODEL
     )
     try:
-        missing_models = sqlmesh_registry.model_presence(db).missing
+        presence = sqlmesh_registry.model_presence(db)
     except UserError as exc:
         raise _committed_refresh_error(committed_change=committed_change) from exc
-    if root_model in missing_models:
+    if presence.never_built:
         return
 
     result = TransformService(db).restate_models([root_model])

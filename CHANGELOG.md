@@ -252,11 +252,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   change_pct`, leading with the position the two changes are measured from.
 
 - **`moneybin system doctor` reports two data-quality checks more strictly.**
-  `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel
-  exactly, instead of tolerating a $0.01 residue, and reports a pair whose leg
-  has left `core.fct_transactions` rather than skipping it. The transfer matcher
-  pairs on exactly equal amounts and `amount` is `DECIMAL(18,2)` throughout, so
-  a cent of residue is missing money, not rounding. `fct_transactions_sign_convention`
+  `bridge_transfers_balanced` now requires both legs and currencies, a negative
+  debit, and a positive credit. Same-currency legs must cancel exactly instead
+  of tolerating a $0.01 residue; cross-currency legs retain their executed unlike
+  amounts. A pair whose leg has left `core.fct_transactions` is reported rather
+  than skipped. `amount` is `DECIMAL(18,2)` throughout, so a cent of same-currency
+  residue is missing money, not rounding. `fct_transactions_sign_convention`
   now also reports a row whose `transaction_direction` or `amount_absolute`
   contradicts its own `amount`; it still treats `$0.00` as a legitimate third
   direction, and it deliberately does not judge an amount's sign against its

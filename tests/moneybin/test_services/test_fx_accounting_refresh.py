@@ -16,8 +16,18 @@ from moneybin.services.fx_accounting_refresh import (
     restate_fx_accounting_after_match_run,
 )
 from moneybin.services.transform_service import ApplyResult, TransformService
+from moneybin.sqlmesh_registry import ModelPresence
 
 pytestmark = pytest.mark.unit
+
+
+def _model_presence(
+    *, missing: tuple[str, ...] = (), never_built: bool = False
+) -> ModelPresence:
+    return ModelPresence(
+        missing=missing,
+        built_beyond_init_count=0 if never_built else 1,
+    )
 
 
 @pytest.mark.parametrize(
@@ -51,8 +61,8 @@ def test_match_run_restates_only_for_committed_transfer_changes(
 def test_restate_fx_accounting_restates_only_the_root_model(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def model_presence(_db: Database) -> MagicMock:
-        return MagicMock(missing=())
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence()
 
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
@@ -66,11 +76,21 @@ def test_restate_fx_accounting_restates_only_the_root_model(
     restate.assert_called_once_with(["core.bridge_currency_conversions"])
 
 
-def test_restate_fx_accounting_is_a_noop_before_the_models_exist(
-    db: Database, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("account_currency_changed", "missing_root"),
+    [
+        (False, "core.bridge_currency_conversions"),
+        (True, "core.dim_accounts"),
+    ],
+)
+def test_restate_fx_accounting_is_a_noop_before_the_warehouse_is_built(
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    account_currency_changed: bool,
+    missing_root: str,
 ) -> None:
-    def model_presence(_db: Database) -> MagicMock:
-        return MagicMock(missing=("core.bridge_currency_conversions",))
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence(missing=(missing_root,), never_built=True)
 
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
@@ -79,16 +99,54 @@ def test_restate_fx_accounting_is_a_noop_before_the_models_exist(
     restate = MagicMock()
     monkeypatch.setattr(TransformService, "restate_models", restate)
 
-    restate_fx_accounting(db)
+    restate_fx_accounting(db, account_currency_changed=account_currency_changed)
 
     restate.assert_not_called()
+
+
+def test_restate_fx_accounting_repairs_a_missing_root_after_a_prior_build(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence(missing=("core.bridge_currency_conversions",))
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        model_presence,
+    )
+    restate = MagicMock(return_value=ApplyResult(applied=True, duration_seconds=0.1))
+    monkeypatch.setattr(TransformService, "restate_models", restate)
+
+    restate_fx_accounting(db)
+
+    restate.assert_called_once_with(["core.bridge_currency_conversions"])
+
+
+def test_restate_fx_accounting_reports_a_missing_root_that_cannot_be_repaired(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence(missing=("core.bridge_currency_conversions",))
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        model_presence,
+    )
+    restate = MagicMock(return_value=ApplyResult(applied=False, duration_seconds=0.1))
+    monkeypatch.setattr(TransformService, "restate_models", restate)
+
+    with pytest.raises(UserError) as caught:
+        restate_fx_accounting(db, committed_change="match decision")
+
+    assert caught.value.code == error_codes.REFRESH_MODEL_FAILED
+    assert "match decision was committed" in str(caught.value).lower()
 
 
 def test_account_currency_change_restates_from_the_account_dimension(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def model_presence(_db: Database) -> MagicMock:
-        return MagicMock(missing=())
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence()
 
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
@@ -105,8 +163,8 @@ def test_account_currency_change_restates_from_the_account_dimension(
 def test_restate_fx_accounting_reports_committed_write_when_restate_fails(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def model_presence(_db: Database) -> MagicMock:
-        return MagicMock(missing=())
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence()
 
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
@@ -132,8 +190,8 @@ def test_restate_fx_accounting_reports_committed_write_when_restate_fails(
 def test_restate_failure_reports_that_an_undo_was_committed(
     db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def model_presence(_db: Database) -> MagicMock:
-        return MagicMock(missing=())
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence()
 
     monkeypatch.setattr(
         "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",

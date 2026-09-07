@@ -4,10 +4,11 @@ AUDIT (
 );
 
 /* Returns the debit_transaction_id of a transfer missing either leg or currency,
-   or whose same-currency legs do not cancel EXACTLY. Not "within a cent":
-   `amount` is DECIMAL(18,2) end to end, so a one-cent same-currency residue is
-   money that went missing. Cross-currency amounts are unlike units and therefore
-   cannot be added; their executed terms live in core.bridge_currency_conversions.
+   whose debit/credit signs are invalid, or whose same-currency legs do not cancel
+   EXACTLY. Not "within a cent": `amount` is DECIMAL(18,2) end to end, so a
+   one-cent same-currency residue is money that went missing. Cross-currency
+   amounts are unlike units and therefore cannot be added; their executed terms
+   live in core.bridge_currency_conversions.
 
    LEFT JOIN on purpose. A pair whose leg has left core.fct_transactions is
    unbalanced too, and an inner join drops that case without a word.
@@ -25,6 +26,8 @@ WHERE
   OR c.amount IS NULL
   OR d.currency_code IS NULL
   OR c.currency_code IS NULL
+  OR d.amount >= 0
+  OR c.amount <= 0
   OR (
     d.currency_code = c.currency_code
     AND d.amount + c.amount IS DISTINCT FROM 0
