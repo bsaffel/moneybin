@@ -334,13 +334,21 @@ def transactions_categorize_stats(
     category-source-bridge mapping yet (omitted when no Plaid data is
     present).
 
-    Every figure covers the transactions that need categorizing, not the whole
-    ledger: confirmed transfer legs, archived accounts, and transactions whose
-    account never resolved are excluded, matching core.uncategorized_queue. So
+    The coverage figures — everything except ``plaid_unmapped`` — cover the
+    transactions that need categorizing, not the whole ledger: confirmed
+    transfer legs, archived accounts, and transactions whose account never
+    resolved are excluded, matching core.uncategorized_queue. So
     ``total_transactions`` is the size of that population rather than a count
     of all transactions, ``uncategorized`` equals what reviews(kind=
     'categorization') will hand back, and the three reconcile
     (total = categorized + uncategorized).
+
+    ``plaid_unmapped`` is deliberately ledger-wide and sits outside that
+    reconciliation. It measures the category bridge, not this user's backlog —
+    whether a PFC code has a mapping does not depend on the transaction being
+    archived or a transfer leg — so it may legitimately exceed
+    ``total_transactions``. Do not subtract or compare it against the coverage
+    figures.
 
     The source breakdown carries one bucket per persisted ``categorized_by``
     value (``user``, ``rule``, ``auto_rule``, ``migration``, ``ml``,

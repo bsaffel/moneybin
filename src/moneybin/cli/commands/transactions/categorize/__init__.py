@@ -482,7 +482,10 @@ def stats(
     # `moneybin review` will offer, so transfer legs and archived accounts are
     # out. Without it "Transactions" reads as the whole ledger and the number
     # looks wrong.
-    logger.info("Categorization coverage (excludes transfers, archived accounts):")
+    logger.info(
+        "Categorization coverage (excludes transfers, archived and "
+        "unresolved accounts):"
+    )
     logger.info(f"  Transactions:         {coverage.total}")
     logger.info(
         f"  Categorized:          {coverage.categorized} "

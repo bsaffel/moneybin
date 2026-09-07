@@ -595,7 +595,15 @@ class CategorizationQueries:
 
         # Plaid coverage gap (Tier-2b observability): count Plaid transactions
         # carrying a PFC code with no bridge mapping — the long-tail codes the
-        # two-tier bridge doesn't cover. Reads prep.stg_plaid__transactions (one
+        # two-tier bridge doesn't cover.
+        #
+        # Deliberately NOT scoped to _CATEGORIZABLE_POPULATION like everything
+        # above it. This measures the bridge, not the user's backlog, and a
+        # code's coverage does not depend on the transaction sitting on an
+        # archived account or being half of a transfer — narrowing it would
+        # under-report the gap and answer a question nobody asked. It can
+        # therefore exceed `total`, which is why both payload docstrings carve
+        # it out of their reconciliation claim rather than restating it. Reads prep.stg_plaid__transactions (one
         # row per Plaid transaction) — the natural grain for a per-transaction
         # coverage count, and a light view over the raw.plaid table rather than
         # the heavy multi-source int_transactions__merged pipeline (a stats call
