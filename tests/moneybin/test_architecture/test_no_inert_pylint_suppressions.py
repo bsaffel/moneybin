@@ -17,6 +17,7 @@ import pathlib
 import re
 import tomllib
 from collections.abc import Iterator
+from typing import cast
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -40,12 +41,23 @@ def test_pylint_family_is_not_enabled() -> None:
     exists to correct.
     """
     config = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
-    selected = config["tool"]["ruff"]["lint"]["select"]
+    lint: dict[str, object] = config["tool"]["ruff"]["lint"]
 
-    assert not any(code.startswith("PL") for code in selected), (
-        "ruff now selects a Pylint-family rule, so `# noqa: PL…` markers can "
-        "suppress a real diagnostic. This guard's premise no longer holds — "
-        "delete it instead of adding exemptions."
+    # Both keys, because `extend-select` enables rules just as `select` does, and
+    # reading only one lets the premise go stale without this test noticing —
+    # which is the failure it exists to prevent. `ALL` sweeps in the family too.
+    enabled: list[str] = []
+    for key in ("select", "extend-select"):
+        value = lint.get(key)
+        if isinstance(value, list):
+            enabled.extend(str(code) for code in cast(list[object], value))
+
+    offenders = [c for c in enabled if c.startswith("PL") or c == "ALL"]
+
+    assert not offenders, (
+        f"ruff now enables a Pylint-family rule ({', '.join(offenders)}), so a "
+        "`noqa` citing one can suppress a real diagnostic. This guard's premise "
+        "no longer holds — delete it instead of adding exemptions."
     )
 
 
