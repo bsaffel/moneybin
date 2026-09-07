@@ -172,7 +172,6 @@ class TransactionCategoriesRepo(BaseRepo):
         # A module-level import would form a cycle; by call time the package is
         # initialized. The precedence ladder is the table's write contract, so
         # the CASE is generated from the same SOURCE_PRIORITY the engine uses.
-        # deferred: module-scope import would cycle
         from moneybin.services.categorization._shared import (
             priority_case_sql,
         )
@@ -475,7 +474,6 @@ class TransactionCategoriesRepo(BaseRepo):
         # imports the applier, which imports this repo — a module-level import
         # would cycle. The ladder is the table's write contract, so reusing it
         # keeps the merge tiebreak and the upsert guard from drifting apart.
-        # deferred: module-scope import would cycle
         from moneybin.services.categorization._shared import (
             SOURCE_PRIORITY,
         )

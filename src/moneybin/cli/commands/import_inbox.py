@@ -67,7 +67,6 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # Deferred: import_cmd imports this module at its own module level, so a
     # top-level import here would close the cycle. Reused rather than re-rendered
     # because one wrong-account recovery hint is hard enough to keep correct.
-    # deferred: module-scope import would cycle
     from moneybin.cli.commands.import_cmd import (
         echo_accounts_created,
         format_account_candidate,

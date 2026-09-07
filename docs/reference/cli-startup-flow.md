@@ -75,12 +75,17 @@ Heavy transitive imports MUST be deferred inside the function that needs them:
 @app.command("list-prompts")
 def mcp_list_prompts(...) -> None:
     from moneybin.mcp.server import (
-        mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
+        mcp,  # defer fastmcp import to subcommand body
     )
     ...
 ```
 
-The `# noqa: PLC0415` suppression is the grep-able marker for the pattern. The same pattern applies to anything that pulls a parser, ORM, or large package graph: `fastmcp`, `sqlmesh`, `polars`.
+A plain comment naming the cost is the whole convention — there is no
+suppression to add. Ruff's `select` omits `PL`, so a `# noqa: PLC0415` would
+suppress nothing, and `test_no_inert_pylint_suppression_markers` rejects it. The
+pattern itself is greppable by structure: an `import` indented inside a
+function body. The same applies to anything that pulls a parser, ORM, or large
+package graph: `fastmcp`, `sqlmesh`, `polars`.
 
 The non-obvious failure mode: `from x import Y` at module top of any command file (including transitive imports from helper modules those files load) loads the heavy graph for *every* invocation — `--help`, autocomplete, every E2E subprocess. The CLI feels fine in isolation but the test suite slows by a factor of N over time. The CI guard described below catches regressions early.
 
@@ -289,4 +294,4 @@ Before opening the PR, verify cold start stays clean:
 uv run pytest tests/moneybin/test_cli/test_cold_start.py tests/moneybin/test_cli/test_help_no_wizard.py -v
 ```
 
-If your new command needs a heavy import, put it inside the function body with `# noqa: PLC0415 — defer <dep> import` per the pattern in `mcp.py` and `transform.py`. See CONTRIBUTING.md → "Adding a new CLI command" for the full recipe (test layer expectations, JSON-output parity, `--help` audit).
+If your new command needs a heavy import, put it inside the function body with a plain comment naming the cost — `# <dep> is not cold-start cheap` — per the pattern in `mcp.py` and `transform.py`. See CONTRIBUTING.md → "Adding a new CLI command" for the full recipe (test layer expectations, JSON-output parity, `--help` audit).

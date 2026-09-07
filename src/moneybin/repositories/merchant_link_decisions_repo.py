@@ -40,7 +40,6 @@ _MERCHANT_LINK_DECISIONS_COLUMNS = (
 
 def _refresh_merchant_link_pending_gauge(db: Database) -> None:
     """Avoid a repository-to-service import cycle until the gauge is needed."""
-    # deferred: module-scope import would cycle
     from moneybin.services.merchant_resolver import (
         refresh_merchant_link_pending_gauge,
     )

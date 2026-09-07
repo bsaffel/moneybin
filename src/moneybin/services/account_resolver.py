@@ -901,7 +901,6 @@ class AccountResolver:
             if existing != account_id:
                 # Imported here, not at module scope: import_service imports this
                 # module, so a top-level import closes the cycle.
-                # deferred: module-scope import would cycle
                 from moneybin.services.import_service import (
                     mask_embedded_account_number,
                 )

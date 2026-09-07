@@ -270,7 +270,6 @@ class CategorizationOrchestrator:
         txn_ids = [item.transaction_id for item in items]
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
-        # deferred: module-scope import would cycle
         from moneybin.services.auto_rule_service import (
             AutoRuleService,
             RecordingContext,
@@ -548,7 +547,6 @@ class CategorizationOrchestrator:
         MerchantResolver imports back into this package's applier, so a
         top-level import cycles.
         """
-        # deferred: module-scope import would cycle
         from moneybin.services.merchant_resolver import (
             MerchantResolver,
         )
