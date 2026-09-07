@@ -856,7 +856,22 @@ When a source row receives a new revision:
   retires every affected standalone membership and registers the reconstructed
   Source event or events through the normal identity rules. A structurally
   changed event or leg mints new ids; prior ids remain resolver-visible as
-  retired or forwarded only when an active successor exists;
+  retired or forwarded only when an active successor exists. Before activating
+  any successor, the transaction preflights every complete
+  `app.lot_selections` collection whose disposal or selected acquisition lot
+  depends on an affected Golden leg. An unchanged `lot_id` remains selected. If
+  a selected acquisition leg has exactly one semantic successor and its
+  selected quantity remains valid, the transaction derives the successor lot
+  first and collection-replaces the complete remapped set through
+  `LotSelectionsRepo`, preserving the before-image in the same audit chain.
+  Collections converging on one disposal follow the acceptance rule: their
+  complete remapped sets must be identical or the transition blocks. A missing
+  or ambiguous successor, invalid quantity, or impossible complete collection
+  blocks before any membership or curation write, retains the current
+  projection without advancing `projection_changed_at`, and keeps the dependent
+  transform non-current. The cost-basis engine's unknown-lot FIFO fallback never
+  decides this lifecycle transition. The user may correct or clear the existing
+  selection and retry;
 - any accepted or multi-source membership becomes stale and untrusted, but
   continues to project the last-reviewed exact revisions until a person accepts
   a replacement or reverses the Match. Its stable source-row identities remain
@@ -1255,7 +1270,7 @@ fixtures and expected Golden-ledger outcomes.
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
 | Stability | Repeated sync, input reordering, and an additional source observation preserve Golden ids and avoid duplicate reviews |
 | Extensibility | A third-Source-type fixture joins an accepted event without changing public Golden identities |
-| Curation | Explicit field and lot-selection curation survives acceptance, added observations, rebuild, and undo; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
+| Curation | Explicit field and lot-selection curation survives acceptance, added observations, standalone source correction, rebuild, and undo; when a standalone correction such as an acquisition-date change rotates a selected lot id, one unambiguous quantity-valid semantic successor remaps the complete collection atomically before successor membership activates, while missing, ambiguous, or invalid remapping blocks the revision so unknown-lot FIFO fallback is never observed; undo of a third-source acceptance restores the complete prior topology, including its accepted two-source component and the removed source's appropriate standalone component, under each component's current lifecycle rather than decomposing everything into standalones; multiple collections converging on one disposal write once only when their complete remapped sets are identical, otherwise acceptance blocks; ambiguous current membership, dependency, decision linkage, or curation remapping blocks undo, and later overlapping curation blocks undo |
 | Field choices | Candidate date bands do not become silent tax-lot field tolerances: any two present unequal explicit `trade_date` values require a choice, while an explicit date outranks a posting fallback within the candidate threshold and two fallbacks retain the ordinary threshold rule; an otherwise-eligible native or ratified candidate beyond tolerance requires a choice; any two present unequal `original_acquisition_date` values require a choice while present still outranks missing; present `qualified` versus `non_qualified` dividend subtypes and `short_term` versus `long_term` capital-gain-distribution subtypes always require a choice; if individually within-tolerance accounting-field defaults combine incoherently, the participating fields expose observed-value choices and a pending Proposal exists only when at least one complete choice combination validates; missing, unknown, duplicate, stale, incoherent, and complete choice sets have identical CLI/MCP outcomes; CLI rejects `field-choice` outside one investment-match confirmation and rejects `confirm-all` for investment matches or all queues with exit 2; acceptance validates the full projected event and writes decision, membership, and resolutions atomically |
 | Field provenance | Explicit curation outranks the default; otherwise present values outrank missing values, an explicit trade date outranks a posting fallback, aggregator beats manual, and the stable source tuple breaks an aggregator tie, so a basis-bearing manual transfer is not erased by aggregator `NULL`, a manual actual trade date is not displaced by Plaid's posting fallback, and differing descriptions from two Plaid origins plus input reordering produce one unchanged value and exact provenance without affecting assignment; a singleton retains exact source/provider metadata, while manual-plus-Plaid and two-aggregator-origin Matches copy all four representative-source fields from one deterministic member regardless of field choices or input order and source-row provenance recovers every contributor |
 | Downstream | Exact lots, holdings, realized gains, income, and fee results before acceptance, after acceptance, and after undo |
@@ -1415,8 +1430,13 @@ fixtures and expected Golden-ledger outcomes.
   complete selection set, identical collections converging on one disposal are
   written once with every before-image retained, differing collections block
   acceptance, ambiguous id remapping blocks acceptance, and newer user curation
-  blocks undo. Undo also blocks atomically when a current-dependency successor
-  membership or its complete curation remap cannot be constructed.
+  blocks undo. A standalone acquisition correction that rotates a selected lot
+  id proves the complete collection remaps atomically before successor
+  membership activates when semantic correspondence and quantity are valid;
+  missing, ambiguous, or invalid remapping instead retains the prior projection
+  and blocks the dependent transform without exposing unknown-lot FIFO fallback.
+  Undo also blocks atomically when a current-dependency successor membership or
+  its complete curation remap cannot be constructed.
 - Undo-topology tests proving acceptance over an existing two-source Match plus
   a third standalone records the complete before-image and undo restores the
   prior accepted component and standalone successor under their respective
@@ -1538,9 +1558,11 @@ accepted contract and must be reconciled to it before delivery begins.
    curation. Before acceptance and undo are enabled, route investment-Match
    operations from `system_audit_undo` through the domain-aware reversal handler;
    never fall back to generic row-image undo. Reconstruct affected Source events
-   before an unreviewed aggregator revision advances; preserve Golden ids only
-   when the stable source-event key and complete semantic membership survive,
-   otherwise retire and register the rebuilt events normally. Make
+   before an unreviewed aggregator revision advances; preflight and atomically
+   remap every affected complete lot-selection collection, or block the revision
+   before membership changes. Preserve Golden ids only when the stable
+   source-event key and complete semantic membership survive, otherwise retire
+   and register the rebuilt events normally. Make
    equivalence merges follow the canonical alias path, and make a
    non-equivalent rebind, unlink, or split invalidate affected pending and
    accepted or multi-source Matches before publishing the new mapping.
