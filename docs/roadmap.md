@@ -152,7 +152,7 @@ Every essential analysis feature a serious user (and the PFM field) expects, bui
 | Address | Area | Status | Notes |
 |---|---|---|---|
 | **M2A** | Reports recipe library | Shipped | 8 registered report routes: six `@report` SQL runners plus two service-backed net-worth routes, backed by seven `reports.*` SQLMesh views. |
-| **M2B** | Net worth & balance tracking | ✅ | Daily carry-forward, reconciliation deltas. [`reports-net-worth.md`](specs/reports-net-worth.md). |
+| **M2B** | Net worth & balance tracking | 🚧 | **M2B.1 ✅ shipped**: daily carry-forward, reconciliation deltas, per-currency aggregation. [`reports-net-worth.md`](specs/reports-net-worth.md). **M2B.2 📐 designed**: net worth answerable by a rerunnable query at three grains — one report and one view each, at day, currency x day, and account x day — with home-currency conversion moved into SQL over a window-bounded daily rate spine, balance and rate freshness published as columns, date-scoped archival so closing an account stops rewriting its own history, and both service-backed net-worth reports retired onto `@report` runners. Each report takes the same optional date range, so the snapshot/history split retires with them. Also sets the repo-wide rule that a report's id, view, and CLI command share one name. [`reports-net-worth-sql-surface.md`](specs/reports-net-worth-sql-surface.md). |
 | **M2C** | Monthly budgets, target-vs-actual, **rollovers** | 📐 | Rewrite of [`budget-tracking.md`](specs/budget-tracking.md). |
 | **M2D** | Recurring / subscription review workflow | 🗓️ | Accepted definitions + evidence + report impact — reviewable, with provenance. |
 | **M2E** | Reimbursements / transaction links | 🗓️ | Reversible linking of refunds, reimbursements, shared expenses. |
