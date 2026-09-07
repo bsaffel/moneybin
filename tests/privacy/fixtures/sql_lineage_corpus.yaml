@@ -250,8 +250,18 @@
   expected_output_classes: {name: description}
   expected_query_tier: medium
 
-- description: CASE WHEN on category column yields LOW category class
+- description: CASE WHEN equality on a column keeps that column's class (branches can echo the tested literal)
   sql: SELECT CASE WHEN category = 'Food' THEN 'food' ELSE 'other' END AS cat FROM core.fct_transactions
+  expected_output_classes: {cat: category}
+  expected_query_tier: low
+
+- description: CASE WHEN on a NULL test carries no class from the tested column
+  sql: SELECT CASE WHEN category IS NULL THEN 'none' ELSE 'some' END AS cat FROM core.fct_transactions
+  expected_output_classes: {cat: aggregate}
+  expected_query_tier: low
+
+- description: CASE WHEN whose branch returns the column keeps that column's class
+  sql: SELECT CASE WHEN category = 'Food' THEN category ELSE 'other' END AS cat FROM core.fct_transactions
   expected_output_classes: {cat: category}
   expected_query_tier: low
 
