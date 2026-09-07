@@ -29,6 +29,7 @@ from moneybin.services.currency_service import (
     unsupported_currencies,
 )
 from moneybin.tables import (
+    BRIDGE_CURRENCY_CONVERSIONS,
     DIM_HOLDINGS,
     FCT_BALANCES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
@@ -255,6 +256,7 @@ def _core_is_built(db: Database) -> bool:
     message differs by DuckDB version and by which relation was missing.
     """
     relations = (
+        BRIDGE_CURRENCY_CONVERSIONS,
         FCT_TRANSACTIONS,
         FCT_BALANCES_DAILY,
         FCT_INVESTMENT_TRANSACTIONS,
@@ -303,6 +305,9 @@ def plan_rate_backfill(
         WITH dated AS (
             SELECT currency_code, transaction_date AS on_date
               FROM {FCT_TRANSACTIONS.full_name}
+            UNION ALL
+            SELECT to_currency, to_date
+              FROM {BRIDGE_CURRENCY_CONVERSIONS.full_name}
             UNION ALL
             SELECT currency_code, balance_date
               FROM {FCT_BALANCES_DAILY.full_name}

@@ -31,6 +31,7 @@ from moneybin.services.rate_backfill import (
     run_rate_backfill,
 )
 from tests.moneybin.db_helpers import (
+    CORE_BRIDGE_CURRENCY_CONVERSIONS_DDL,
     CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
     create_core_tables,
 )
@@ -63,6 +64,7 @@ CREATE TABLE IF NOT EXISTS core.dim_holdings (
 def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
     """Every test here reads the core relations a profile's currencies live in."""
     create_core_tables(db)
+    db.execute(CORE_BRIDGE_CURRENCY_CONVERSIONS_DDL)
     db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
     db.execute(_DIM_HOLDINGS_TABLE_DDL)
 
@@ -103,6 +105,20 @@ def _add_stored_rate(db: Database, *, on: date, rate: str = "0.9") -> None:
     )
 
 
+def _add_received_currency_conversion(db: Database, *, on: date, currency: str) -> None:
+    """Insert one conversion whose received Currency appears nowhere else."""
+    db.execute(
+        """
+        INSERT INTO core.bridge_currency_conversions
+            (conversion_id, source_shape, from_currency, to_currency,
+             home_currency, from_amount, to_amount, from_date, to_date)
+        VALUES ('fxc-received-only', 'source_single_row', 'GBP', ?, 'USD',
+                100.00, 150.00, ?, ?)
+        """,
+        [currency, on, on],
+    )
+
+
 def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
     db: Database,
 ) -> None:
@@ -117,6 +133,24 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
             from_currency="EUR",
             to_currency="USD",
             start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_a_received_only_conversion_currency_yields_a_rate_window(
+    db: Database,
+) -> None:
+    """A single-row received leg needs its own rate even without another row."""
+    _add_received_currency_conversion(db, on=date(2026, 4, 12), currency="JPY")
+
+    windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == (
+        RateWindow(
+            from_currency="JPY",
+            to_currency="USD",
+            start=date(2026, 4, 12),
             end=_TODAY,
         ),
     )
@@ -553,9 +587,10 @@ def test_planning_against_an_unbuilt_core_raises_the_named_precondition(
     opposite reason, so it could not tell the two apart.
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
-    # `dim_holdings` is a table in this module (see `_DIM_HOLDINGS_TABLE_DDL`),
-    # so all four drop the same way here.
+    # `dim_holdings` and the Currency bridge are tables in this module, so all
+    # five drop the same way here.
     for relation in (
+        "core.bridge_currency_conversions",
         "core.fct_transactions",
         "core.fct_balances_daily",
         "core.fct_investment_transactions",

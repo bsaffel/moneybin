@@ -31,7 +31,7 @@ from moneybin.matching.application import (
     record_committed_match_effects,
 )
 from moneybin.matching.assignment import NodeKey, connected_components
-from moneybin.matching.engine import TransactionMatcher
+from moneybin.matching.engine import MatchRunError, TransactionMatcher
 from moneybin.matching.persistence import (
     VALID_MATCH_TYPES,
     count_pending_matches,
@@ -170,6 +170,11 @@ class MatchingService:
         ``"cli"``/``"mcp"``; defaults to ``"system"`` for automated callers).
         """
         seed_source_priority(self._db, self._settings)
+        matcher = TransactionMatcher(self._db, self._settings, actor=actor)
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting_after_match_run,
+        )
+
         # The run's own auto-accepted merges re-key transactions, and so does a
         # sync that landed a posted row for a pending one Plaid has removed —
         # neither passes through `MatchDecisionApplication`, so the forwarding is
@@ -192,30 +197,48 @@ class MatchingService:
         # report the counts it carries. A forwarding failure that displaced it
         # would turn merges the user can already see in the ledger into a
         # generic error with those counts lost, so it is logged instead. With no
-        # matcher error to protect, it is still the caller's to handle.
+        # matcher error to protect, it is still the caller's to handle after
+        # committed transfer effects have been restated below.
         in_flight: BaseException | None = None
+        forwarding_failure: Exception | None = None
         try:
-            return TransactionMatcher(self._db, self._settings, actor=actor).run(
-                auto_accept_transfers=auto_accept_transfers
-            )
-        except BaseException as exc:
-            in_flight = exc
-            raise
-        finally:
             try:
-                record_committed_alias_forwarding(
-                    forward_rekeyed_transaction_ids(self._db, actor=actor)
-                )
-            except Exception as forwarding_error:
-                if in_flight is None:
-                    raise
-                logger.warning(
-                    f"⚠️ Transaction-id alias forwarding failed at "
-                    f"{exception_origin(forwarding_error)} while a matching run "
-                    f"was already failing; reporting the run's own error. Any "
-                    f"curation left on a superseded id is repaired by the next "
-                    f"successful run."
-                )
+                result = matcher.run(auto_accept_transfers=auto_accept_transfers)
+            except BaseException as exc:
+                in_flight = exc
+                raise
+            finally:
+                try:
+                    record_committed_alias_forwarding(
+                        forward_rekeyed_transaction_ids(self._db, actor=actor)
+                    )
+                except Exception as forwarding_error:
+                    if in_flight is None:
+                        forwarding_failure = forwarding_error
+                    else:
+                        logger.warning(
+                            f"⚠️ Transaction-id alias forwarding failed at "
+                            f"{exception_origin(forwarding_error)} while a matching run "
+                            f"was already failing; reporting the run's own error. Any "
+                            f"curation left on a superseded id is repaired by the next "
+                            f"successful run."
+                        )
+        except MatchRunError as exc:
+            try:
+                restate_fx_accounting_after_match_run(self._db, exc.partial)
+            except UserError as restatement_error:
+                exc.restatement_error = restatement_error
+                raise exc from restatement_error
+            raise
+        try:
+            restate_fx_accounting_after_match_run(self._db, result)
+        except UserError as restatement_error:
+            if forwarding_failure is not None:
+                raise forwarding_failure from restatement_error
+            raise
+        if forwarding_failure is not None:
+            raise forwarding_failure
+        return result
 
     def seed_priority(self) -> None:
         """Seed ``app.seed_source_priority`` from current MatchingSettings.
@@ -274,6 +297,11 @@ class MatchingService:
                 f"were written on"
             )
         record_committed_curation_restore(restored)
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting_after_match_undo,
+        )
+
+        restate_fx_accounting_after_match_undo(self._db, match_id)
 
     def get_log(
         self, *, limit: int | None = 50, match_type: str | None = None
@@ -384,6 +412,11 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting_after_match_effects,
+        )
+
+        restate_fx_accounting_after_match_effects(self._db, effects)
         return MatchDecisionOutcome(
             match_status=effects.effective_statuses[match_id],
             transfers_retired=effects.standing_transfers_retired,
@@ -545,6 +578,11 @@ class MatchingService:
             self._db.rollback()
             raise
         record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting_after_match_effects,
+        )
+
+        restate_fx_accounting_after_match_effects(self._db, effects)
         return BulkAcceptOutcome(
             accepted=effects.accepted_count,
             reversed_by_reconciliation=effects.immediate_reversals,

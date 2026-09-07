@@ -307,11 +307,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   change_pct`, leading with the position the two changes are measured from.
 
 - **`moneybin system doctor` reports two data-quality checks more strictly.**
-  `bridge_transfers_balanced` now requires a confirmed transfer pair to cancel
-  exactly, instead of tolerating a $0.01 residue, and reports a pair whose leg
-  has left `core.fct_transactions` rather than skipping it. The transfer matcher
-  pairs on exactly equal amounts and `amount` is `DECIMAL(18,2)` throughout, so
-  a cent of residue is missing money, not rounding. `fct_transactions_sign_convention`
+  `bridge_transfers_balanced` now requires both legs and currencies, a negative
+  debit, and a positive credit. Same-currency legs must cancel exactly instead
+  of tolerating a $0.01 residue; cross-currency legs retain their executed unlike
+  amounts. A pair whose leg has left `core.fct_transactions` is reported rather
+  than skipped. `amount` is `DECIMAL(18,2)` throughout, so a cent of same-currency
+  residue is missing money, not rounding. `fct_transactions_sign_convention`
   now also reports a row whose `transaction_direction` or `amount_absolute`
   contradicts its own `amount`; it still treats `$0.00` as a legitimate third
   direction, and it deliberately does not judge an amount's sign against its
@@ -684,6 +685,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   --account-metadata display_name=…` now refuses such a name as `moneybin
   accounts set --display-name` already did, so a rename survives re-importing
   the same file. (#533)
+- **A Core accounting foundation for realized foreign-exchange gains.** Trusted
+  accepted Transfer Decisions and the reserved single-row conversion shape now
+  produce auditable Currency lots and realized gains through the existing
+  cost-basis engine. The public report and deliberate EUR/USD statement tie-out
+  remain in progress.
 - **A getting-started guide and a reports guide, built from real transcripts.**
   `docs/guides/getting-started.md` walks a clean machine to a first report
   and a first MCP question, and `docs/guides/reports.md` runs all eight

@@ -72,6 +72,7 @@ WITH notes_agg AS (
     t.location_latitude,
     t.location_longitude,
     COALESCE(t.currency_code, a.currency_code) AS currency_code,
+    CASE WHEN t.currency_code IS NULL THEN a.updated_at END AS inherited_currency_latest,
     t.canonical_source_type AS source_type,
     t.source_count,
     t.match_confidence,
@@ -151,8 +152,9 @@ SELECT
     COALESCE(categorized_at, loaded_at),
     COALESCE(notes_latest, loaded_at),
     COALESCE(tags_latest, loaded_at),
-    COALESCE(splits_latest, loaded_at)
-  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, or categorization. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
+    COALESCE(splits_latest, loaded_at),
+    COALESCE(inherited_currency_latest, loaded_at)
+  ) AS updated_at, /* Latest of all per-row input timestamps contributing to this row's current values. Advances on user edits to notes, tags, splits, categorization, or an Account Currency inherited by a transaction without its own Currency. Does not advance on idempotent SQLMesh re-applies. NULL-safe: DuckDB's GREATEST returns NULL if any arg is NULL, so optional inputs from LEFT JOINs are COALESCEd to loaded_at — without this, every uncategorized transaction had updated_at=NULL and incremental sync `WHERE updated_at > :last_sync` silently missed them. See docs/specs/core-updated-at-convention.md. */
   is_transfer, /* TRUE if this transaction is part of a confirmed transfer pair */
   transfer_pair_id, /* FK to core.bridge_transfers.transfer_id; NULL if not a transfer */
   DATE_PART('year', transaction_date) AS transaction_year, /* Calendar year */

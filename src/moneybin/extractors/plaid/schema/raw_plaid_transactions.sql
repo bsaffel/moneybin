@@ -29,5 +29,7 @@ CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
     source_origin VARCHAR NOT NULL,     -- provider_item_id; scopes dedup to the institution connection
     extracted_at TIMESTAMP,
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    to_amount DECIMAL(18, 2),           -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
+    to_currency VARCHAR,                -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (transaction_id, source_origin)
 );

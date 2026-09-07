@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
+from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -1340,8 +1341,14 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] is None
 
     @pytest.mark.unit
-    async def test_default_cost_basis_method_round_trips(self, mcp_db: Path) -> None:
+    async def test_default_cost_basis_method_round_trips(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """default_cost_basis_method param round-trips through the payload."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         result = await accounts_set(
             account_id="ACC001", default_cost_basis_method="hifo"
         )
@@ -1349,8 +1356,14 @@ class TestAccountsSetExtended:
         assert parsed["data"]["default_cost_basis_method"] == "hifo"
 
     @pytest.mark.unit
-    async def test_clear_default_cost_basis_method(self, mcp_db: Path) -> None:
+    async def test_clear_default_cost_basis_method(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """default_cost_basis_method is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         await accounts_set(account_id="ACC001", default_cost_basis_method="fifo")
         result = await accounts_set(
             account_id="ACC001", clear_fields=["default_cost_basis_method"]

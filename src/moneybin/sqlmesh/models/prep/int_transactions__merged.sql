@@ -211,6 +211,12 @@ SELECT
     END
   ) AS location_longitude,
   ARG_MIN(m.currency_code, COALESCE(sp.priority, 2147483647)) AS currency_code,
+  UNNEST(
+    FIRST(
+      {'conversion_source_transaction_id': m.source_transaction_id, 'conversion_from_currency': m.currency_code, 'to_currency': m.to_currency, 'conversion_source_type': m.source_type, 'conversion_source_origin': m.source_origin, 'conversion_from_amount': m.amount, 'to_amount': m.to_amount, 'conversion_from_date': m.transaction_date} ORDER BY CASE WHEN NOT m.to_amount IS NULL AND NOT m.to_currency IS NULL THEN 0 ELSE 1 END, COALESCE(sp.priority, 2147483647), m.loaded_at DESC, m.source_type, m.source_origin, m.source_transaction_id
+    ) FILTER(WHERE
+      NOT m.to_amount IS NULL OR NOT m.to_currency IS NULL)
+  ),
   ARG_MIN(m.source_type, COALESCE(sp.priority, 2147483647)) AS canonical_source_type,
   COUNT(*) AS source_count,
   MIN(m.match_confidence) AS match_confidence, /* Weakest-link: every member of a group already carries the same group-level

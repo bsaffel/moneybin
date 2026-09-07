@@ -86,7 +86,7 @@ what doctor and the scenario assertion do.
 |---|---|
 | `fct_transactions_sign_convention` | `amount` is classifiable, and `transaction_direction` / `amount_absolute` agree with its sign |
 | `fct_transactions_fk_integrity` | Every transaction's `account_id` resolves in `dim_accounts` |
-| `bridge_transfers_balanced` | Both legs of a confirmed transfer pair exist and cancel exactly |
+| `bridge_transfers_balanced` | Both legs and currencies exist, debit < 0 and credit > 0, and same-currency legs cancel exactly |
 | `fct_investment_transactions_sign_convention` | Buys and reinvests are cash out, sells are cash in |
 | `fct_investment_transactions_uniqueness` | `investment_transaction_id` holds its declared grain |
 | `fct_investment_transactions_fk_integrity` | Every investment transaction's `account_id` resolves in `dim_accounts` |

@@ -407,11 +407,13 @@ def refresh(
             stages=tuple(stages),
         )
 
-    apply_result = TransformService(db).apply()
+    transform_service = TransformService(db)
+    apply_result = transform_service.apply()
     # No counts: apply rebuilds models rather than producing a countable
     # outcome, and its duration and error already ride on the result itself.
     # The stage exists so the renderer's per-stage loop has an entry to name
     # for the one step every full refresh runs.
+    transform_stage_index = len(stages)
     stages.append(
         StageOutcome(
             step="transform", ran=apply_result.applied, error=apply_result.error
@@ -440,9 +442,27 @@ def refresh(
         rate_backfill, rate_backfill_error = _run_rates_step(db)
         stages.append(_rates_stage(rate_backfill, rate_backfill_error))
 
+    duration_seconds = apply_result.duration_seconds
+    if rate_backfill is not None and rate_backfill.rates_written > 0:
+        rate_apply_result = transform_service.apply()
+        duration_seconds += rate_apply_result.duration_seconds
+        if not rate_apply_result.applied:
+            stages[transform_stage_index] = StageOutcome(
+                step="transform", ran=False, error=rate_apply_result.error
+            )
+            return RefreshResult(
+                applied=False,
+                duration_seconds=duration_seconds,
+                error=rate_apply_result.error,
+                identity_errors=identity_errors,
+                rate_backfill=rate_backfill,
+                transfers_retired=transfers_retired,
+                stages=tuple(stages),
+            )
+
     return RefreshResult(
         applied=True,
-        duration_seconds=apply_result.duration_seconds,
+        duration_seconds=duration_seconds,
         identity_errors=identity_errors,
         rate_backfill=rate_backfill,
         transfers_retired=transfers_retired,
