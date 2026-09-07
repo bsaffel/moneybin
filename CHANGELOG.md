@@ -42,6 +42,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   masking too. (MB-102)
 
 ### Changed
+- **`moneybin stats` says what it is counting.** Every measurement printed a
+  bare number under one alphabetical list, and every histogram printed its
+  total with an `s` appended whether or not it measured time — so
+  `Import Batch Size: 2 observations (sum=12.00s)` reported twelve seconds for
+  a figure that counts *files*. Measurements now group under a per-subsystem
+  header, each histogram renders a unit declared beside its definition, and a
+  measurement recorded under more than one dimension prints that dimension
+  rather than repeating one label against different numbers. The line also
+  stops calling stored snapshots "observations": it counts how many times the
+  metric was written, not how many things were measured.
 - **Categorization coverage counts the work you can actually do.** `moneybin
   transactions categorize stats`, MCP `transactions_categorize_stats`, and the
   `categorization_coverage` doctor check each derived their own "uncategorized"

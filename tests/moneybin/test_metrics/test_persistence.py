@@ -78,6 +78,37 @@ class TestFlushToDuckDB:
         assert rows[0][3] == 5.0
 
     @pytest.mark.unit
+    def test_a_counter_declared_with_total_persists_without_it(
+        self, fresh_registry: CollectorRegistry, mock_db: MagicMock
+    ) -> None:
+        """The suffix a MoneyBin counter declaration spells is not stored.
+
+        Every counter in `metrics/registry.py` is declared with an explicit
+        `_total`, and two tables key off the stored name — `METRIC_DOMAINS` and
+        `HISTOGRAM_UNITS`, both read by `moneybin stats`. Which spelling lands
+        in `app.metrics` is therefore a fact those tables depend on, and it was
+        assumed rather than checked once already: the domain table was written
+        with the declaration's suffix, so every counter rendered under `Other`.
+        """
+        from moneybin.metrics.persistence import flush_to_duckdb
+
+        Counter(
+            "test_records_total",
+            "Declared the way every registry.py counter is",
+            registry=fresh_registry,
+        )
+
+        flush_to_duckdb(mock_db, registry=fresh_registry)
+
+        names = [
+            row[0]
+            for row in mock_db.execute(
+                "SELECT DISTINCT metric_name FROM app.metrics"
+            ).fetchall()
+        ]
+        assert names == ["test_records"], names
+
+    @pytest.mark.unit
     def test_flush_gauge(
         self, fresh_registry: CollectorRegistry, mock_db: MagicMock
     ) -> None:

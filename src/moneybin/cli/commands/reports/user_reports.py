@@ -187,7 +187,9 @@ def reports_run(
             # Resolved inside the database scope for the same reason `money` is:
             # a user-tier spec is built from a row, and this is the only scope
             # holding the connection that builds it.
-            view = column_view(spec, result.columns, parameters=parameters, wide=wide)
+            view = column_view(
+                spec, result.columns, parameters=parameters, wide=wide, output=output
+            )
     render_report_result(
         result,
         output,
