@@ -2220,7 +2220,7 @@ class DoctorService:
         # package, which is unnecessary cost for doctor runs against installs
         # whose pdf_formats table is empty (the no-rows branch above returns
         # early).
-        from moneybin.extractors.pdf.recipe import Recipe  # noqa: PLC0415
+        from moneybin.extractors.pdf.recipe import Recipe
 
         bad: list[str] = []
         for name_, recipe_json in rows:

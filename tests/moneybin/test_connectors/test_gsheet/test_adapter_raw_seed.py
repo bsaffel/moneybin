@@ -89,7 +89,7 @@ def test_infer_type_rejects_non_castable_floats() -> None:
     so a view emitting those casts fails at query time. They fall to VARCHAR.
     """
     from moneybin.connectors.gsheet.adapters.raw_seed import (
-        _infer_type,  # pyright: ignore[reportPrivateUsage]  # noqa: PLC0415
+        _infer_type,  # pyright: ignore[reportPrivateUsage]
     )
 
     assert _infer_type(pl.Series(["inf", "1.0"])) == "VARCHAR"

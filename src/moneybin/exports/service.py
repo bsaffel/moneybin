@@ -157,12 +157,12 @@ class ExportService:
         }
         started_at = perf_counter()
         try:
-            from moneybin.config import get_settings  # noqa: PLC0415
-            from moneybin.database import get_database  # noqa: PLC0415
-            from moneybin.exports.workbook_roles import (  # noqa: PLC0415
+            from moneybin.config import get_settings
+            from moneybin.database import get_database
+            from moneybin.exports.workbook_roles import (
                 workbook_role_lease,
             )
-            from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+            from moneybin.repositories.export_destinations_repo import (
                 ExportDestinationsRepo,
             )
 
@@ -213,7 +213,7 @@ class ExportService:
                 if lifetime is not None:
                     lifetime.raise_if_cancelled()
                 if destination.kind == "local":
-                    from moneybin.exports.local import (  # noqa: PLC0415
+                    from moneybin.exports.local import (
                         LocalExportPublisher,
                     )
 
@@ -279,10 +279,10 @@ class ExportService:
         actually failed, logs it, and counts it in
         ``EXPORT_RECEIPT_FAILURES_TOTAL``.
         """
-        from moneybin.database import get_database  # noqa: PLC0415
-        from moneybin.errors import exception_origin  # noqa: PLC0415
-        from moneybin.services.audit_service import AuditService  # noqa: PLC0415
-        from moneybin.services.request_lifetime import (  # noqa: PLC0415
+        from moneybin.database import get_database
+        from moneybin.errors import exception_origin
+        from moneybin.services.audit_service import AuditService
+        from moneybin.services.request_lifetime import (
             publication_barrier,
         )
 
@@ -388,13 +388,13 @@ class ExportService:
 
     def resolve_destination(self, reference: str) -> ExportDestination:
         """Resolve one explicit kind:name reference without accepting a path."""
-        from moneybin import error_codes  # noqa: PLC0415
-        from moneybin.config import get_settings  # noqa: PLC0415
-        from moneybin.errors import UserError  # noqa: PLC0415
-        from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+        from moneybin import error_codes
+        from moneybin.config import get_settings
+        from moneybin.errors import UserError
+        from moneybin.repositories.export_destinations_repo import (
             ExportDestinationsRepo,
         )
-        from moneybin.services.entity_reference import (  # noqa: PLC0415
+        from moneybin.services.entity_reference import (
             AmbiguousEntity,
             MissingEntity,
         )
@@ -487,11 +487,11 @@ class ExportService:
 
     @staticmethod
     def _sheets_publisher() -> _SheetsPublisher:
-        from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
+        from moneybin.connectors.gsheet.service_factory import (
             build_oauth_client,
         )
-        from moneybin.connectors.gsheet.sheets_api import SheetsClient  # noqa: PLC0415
-        from moneybin.exports.sheets import SheetsExportPublisher  # noqa: PLC0415
+        from moneybin.connectors.gsheet.sheets_api import SheetsClient
+        from moneybin.exports.sheets import SheetsExportPublisher
 
         return SheetsExportPublisher(
             sheets_client=SheetsClient(oauth=build_oauth_client()),
@@ -503,7 +503,7 @@ class ExportService:
         sheets_authorization: _SheetsReadiness | None = None,
     ) -> ExportReadinessStatus:
         """Return destination readiness without target identities or locations."""
-        from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+        from moneybin.repositories.export_destinations_repo import (
             ExportDestinationSpreadsheetConflictError,
             ExportDestinationsRepo,
         )
@@ -513,7 +513,7 @@ class ExportService:
         sheets_write_capable = False
         if any(destination.kind == "sheets" for destination in stored):
             if sheets_authorization is None:
-                from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
+                from moneybin.connectors.gsheet.service_factory import (
                     build_oauth_client,
                 )
 
@@ -525,7 +525,7 @@ class ExportService:
                 require_write=True
             )
 
-        from moneybin.config import get_settings  # noqa: PLC0415
+        from moneybin.config import get_settings
 
         default_path = get_settings().profile_exports_dir.expanduser().resolve()
         default_reasons = _local_path_validation_reasons(default_path)
@@ -572,16 +572,16 @@ class ExportService:
         oauth_client: SheetsAuthorization | None = None,
     ) -> AuditEvent:
         """Validate, authorize without DuckDB, then persist one Sheets target."""
-        from moneybin.connectors.gsheet.errors import GSheetAuthError  # noqa: PLC0415
-        from moneybin.database import get_database  # noqa: PLC0415
-        from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
-        from moneybin.repositories.export_destinations_repo import (  # noqa: PLC0415
+        from moneybin.connectors.gsheet.errors import GSheetAuthError
+        from moneybin.database import get_database
+        from moneybin.exports.sheets import validate_managed_tab_prefix
+        from moneybin.repositories.export_destinations_repo import (
             ExportDestinationsRepo,
         )
 
         client: SheetsAuthorization
         if oauth_client is None:
-            from moneybin.connectors.gsheet.service_factory import (  # noqa: PLC0415
+            from moneybin.connectors.gsheet.service_factory import (
                 build_oauth_client,
             )
 
@@ -834,7 +834,7 @@ def _destination_validation_reasons(
     destination: ExportDestination,
 ) -> tuple[str, ...]:
     """Return fixed structural reason codes shared by run and status."""
-    from moneybin.exports.sheets import validate_managed_tab_prefix  # noqa: PLC0415
+    from moneybin.exports.sheets import validate_managed_tab_prefix
 
     reasons: list[str] = []
     if not destination.name.strip():

@@ -77,7 +77,7 @@ def _resolve_display_name(db: Database, account_id: str) -> str:
     # Function-local for the same reason as run() below: a module-level import
     # of account_resolver cycles (AccountResolver <- AccountLinkDecisionsRepo
     # <- AccountLinksService).
-    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+    from moneybin.services.account_resolver import (
         fetch_display_name,
     )
 
@@ -86,7 +86,7 @@ def _resolve_display_name(db: Database, account_id: str) -> str:
 
 def _resolve_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, str]:
     """Batched twin of ``_resolve_display_name`` — same resolver, same fallbacks."""
-    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+    from moneybin.services.account_resolver import (
         fetch_display_names,
     )
 
@@ -97,7 +97,7 @@ def _resolve_core_display_names(
     db: Database, account_ids: Iterable[str]
 ) -> dict[str, str]:
     """Constructed names only — the half that is safe to write down."""
-    from moneybin.services.account_resolver import (  # noqa: PLC0415 — circular-import avoidance
+    from moneybin.services.account_resolver import (
         fetch_core_display_names,
     )
 
@@ -468,7 +468,7 @@ class AccountLinksService:
         """
         # Import here to avoid a circular-import at module level
         # (AccountResolver ← AccountLinkDecisionsRepo ← AccountLinksService would cycle).
-        from moneybin.services.account_resolver import (  # noqa: PLC0415
+        from moneybin.services.account_resolver import (
             AccountResolver,
             refresh_account_link_pending_gauge,
         )
@@ -594,7 +594,7 @@ class AccountLinksService:
         past answer is not a permanent veto, and a reject is the cheapest
         decision to make by mistake.
         """
-        from moneybin.services.account_resolver import (  # noqa: PLC0415  # circular at module level
+        from moneybin.services.account_resolver import (
             AccountResolver,
             refresh_account_link_pending_gauge,
         )
@@ -603,7 +603,7 @@ class AccountLinksService:
         # import_service's graph. It is on the CLI cold path today only through
         # inbox_service, and a module-level import here would keep it there
         # even after that one is deferred. Only the refusal below needs it.
-        from moneybin.services.import_service import (  # noqa: PLC0415  # cold-start hygiene
+        from moneybin.services.import_service import (  # cold-start hygiene
             mask_embedded_account_number,
         )
 
@@ -692,7 +692,7 @@ class AccountLinksService:
 
     def record_committed_outer_decisions(self) -> None:
         """Refresh metrics after an enclosing transaction commits."""
-        from moneybin.services.account_resolver import (  # noqa: PLC0415
+        from moneybin.services.account_resolver import (
             refresh_account_link_pending_gauge,
         )
 
@@ -906,7 +906,7 @@ class AccountLinksService:
             return None
         # Accept/reject changed the pending count — refresh the gauge (only
         # reached on a successful commit; the except above re-raises).
-        from moneybin.services.account_resolver import (  # noqa: PLC0415
+        from moneybin.services.account_resolver import (
             refresh_account_link_pending_gauge,
         )
 
@@ -957,7 +957,7 @@ class AccountLinksService:
         # their tops. Deferring keeps that out of a cycle; it does not make the
         # dependency go away, and test_orchestration_layering enumerates it as
         # an inversion either way.
-        from moneybin.orchestration.refresh import refresh  # noqa: PLC0415
+        from moneybin.orchestration.refresh import refresh
 
         collapsed = self._transfers_retired_by_collapse
         self._transfers_retired_by_collapse = 0

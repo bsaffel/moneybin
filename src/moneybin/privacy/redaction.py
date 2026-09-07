@@ -375,7 +375,7 @@ def has_active_transform(payload_type: Any) -> bool:
     every payload carrying it starts being walked. Avoids the documented trap
     where a CRITICAL-only gate silently skips newly-maskable HIGH/MEDIUM tools.
     """
-    from moneybin.privacy.introspection import (  # noqa: PLC0415 — avoid import cycle
+    from moneybin.privacy.introspection import (
         extract_data_classes,
     )
 

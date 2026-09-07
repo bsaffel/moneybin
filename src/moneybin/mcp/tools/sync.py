@@ -70,9 +70,9 @@ def _build_sync_client() -> Any:
     slot. (The two builders are duplicated; consolidating them is tracked as a
     follow-up.)
     """
-    from moneybin.config import get_settings  # noqa: PLC0415
-    from moneybin.connectors.sync_client import SyncClient  # noqa: PLC0415
-    from moneybin.utils.user_config import get_or_create_profile_id  # noqa: PLC0415
+    from moneybin.config import get_settings
+    from moneybin.connectors.sync_client import SyncClient
+    from moneybin.utils.user_config import get_or_create_profile_id
 
     settings = get_settings()
     if settings.sync.server_url is None:
@@ -88,7 +88,7 @@ def _build_sync_client() -> Any:
 
 def _build_sync_auth_service() -> Any:
     """Construct profile-scoped nonblocking authentication orchestration."""
-    from moneybin.connectors.sync_auth import SyncAuthService  # noqa: PLC0415
+    from moneybin.connectors.sync_auth import SyncAuthService
 
     return SyncAuthService(client=_build_sync_client())
 
@@ -96,9 +96,9 @@ def _build_sync_auth_service() -> Any:
 @contextmanager
 def _build_sync_service() -> Generator[Any, None, None]:
     """Context manager yielding a SyncService with active Database connection."""
-    from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.extractors.plaid import PlaidExtractor  # noqa: PLC0415
-    from moneybin.services.sync_service import SyncService  # noqa: PLC0415
+    from moneybin.database import get_database
+    from moneybin.extractors.plaid import PlaidExtractor
+    from moneybin.services.sync_service import SyncService
 
     client = _build_sync_client()
     with get_database(read_only=False) as db:

@@ -47,8 +47,8 @@ def _error_audit_classification(payload_type: type | None) -> tuple[str, list[st
     """
     if payload_type is None:
         return "high", []
-    from moneybin.privacy.classified_envelope import classify  # noqa: PLC0415
-    from moneybin.privacy.introspection import PrivacyContractError  # noqa: PLC0415
+    from moneybin.privacy.classified_envelope import classify
+    from moneybin.privacy.introspection import PrivacyContractError
 
     classification = classify(payload_type)
     try:
@@ -114,7 +114,7 @@ def handle_cli_errors(
                 # Mirror the MCP decorator's error-path audit emission so
                 # JSON-mode failures appear in privacy.log.jsonl alongside
                 # success rows.
-                from moneybin.privacy.log import (  # noqa: PLC0415 — defer import
+                from moneybin.privacy.log import (
                     build_tool_call_event,
                     write_privacy_event,
                 )
@@ -345,7 +345,7 @@ def sqlmesh_command(
         success: Custom success message after ``✅ ``. Defaults to
             ``f"{label} completed"``.
     """
-    from moneybin.database import get_database  # noqa: PLC0415 — defer heavy import
+    from moneybin.database import get_database  # defer heavy import
 
     logger.info(f"⚙️  {label}...")
     try:

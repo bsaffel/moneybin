@@ -186,7 +186,8 @@ def save_format_to_db(
             format saved during import, ``"cli"``/``"mcp"`` for an explicit save).
         in_outer_txn: Join a transaction already owned by the caller.
     """
-    from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415 — deferred to avoid a runtime database import in this loader module
+    # deferred to avoid a runtime database import in this loader module
+    from moneybin.repositories.tabular_formats_repo import (
         TabularFormatsRepo,
     )
 
@@ -306,7 +307,8 @@ def delete_format_from_db(db: Database, name: str, *, actor: str) -> bool:
     Returns:
         True if the format was found and deleted, False if not found.
     """
-    from moneybin.repositories.tabular_formats_repo import (  # noqa: PLC0415 — deferred to avoid a runtime database import in this loader module
+    # deferred to avoid a runtime database import in this loader module
+    from moneybin.repositories.tabular_formats_repo import (
         TabularFormatsRepo,
     )
 

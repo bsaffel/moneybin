@@ -594,7 +594,7 @@ class PriceService:
         and resolution to happen once at the service boundary, and two resolvers
         for one question would drift.
         """
-        from moneybin.services.investment_service import (  # noqa: PLC0415  # avoids an import cycle
+        from moneybin.services.investment_service import (
             InvestmentService,
         )
 
@@ -1366,12 +1366,12 @@ def build_price_service(db: Database, *, actor: str = "system") -> PriceService:
     Kept out of ``PriceService.__init__`` so tests inject fakes without a
     production seam, matching ``connectors/gsheet/service_factory.py``.
     """
-    from moneybin.connectors.prices.coingecko import (  # noqa: PLC0415  # httpx is not cold-start cheap
+    from moneybin.connectors.prices.coingecko import (  # httpx is not cold-start cheap
         CoinGeckoPriceAdapter,
     )
-    from moneybin.connectors.prices.tiingo import TiingoPriceAdapter  # noqa: PLC0415
+    from moneybin.connectors.prices.tiingo import TiingoPriceAdapter
     from moneybin.secrets import (
-        SecretStore,  # noqa: PLC0415  # keyring import is deferred too
+        SecretStore,  # keyring import is deferred too
     )
 
     # One clock for the whole pull. The service derives its complete-day cutoff

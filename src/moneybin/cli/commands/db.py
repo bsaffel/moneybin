@@ -65,8 +65,8 @@ def _load_encryption_key() -> Generator[str, None, None]:
     but ``del`` here prevents this frame from extending the object's lifetime
     beyond the yield.
     """
-    from moneybin.database import database_key_error_hint  # noqa: PLC0415
-    from moneybin.secrets import (  # noqa: PLC0415
+    from moneybin.database import database_key_error_hint
+    from moneybin.secrets import (
         SecretNotFoundError,
         SecretStore,
         SecretUnavailableError,
@@ -653,7 +653,7 @@ def db_lock() -> None:
     store = SecretStore()
     try:
         store.delete_key("DATABASE__ENCRYPTION_KEY")
-        from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+        from moneybin.database import (  # defer to avoid cold-start cost
             invalidate_encryption_key_cache,
         )
 
@@ -739,7 +739,7 @@ def db_unlock() -> None:
     try:
         with Database(settings.database.path, secret_store=store, read_only=True):
             pass
-        from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+        from moneybin.database import (  # defer to avoid cold-start cost
             invalidate_encryption_key_cache,
         )
 
@@ -862,7 +862,7 @@ def db_key_rotate(
 
     # Rotation changes the encryption key, so the in-process cache is stale.
     # Clear it so subsequent Database() calls fetch the new key from the keychain.
-    from moneybin.database import (  # noqa: PLC0415 — defer to avoid cold-start cost
+    from moneybin.database import (  # defer to avoid cold-start cost
         invalidate_encryption_key_cache,
     )
 

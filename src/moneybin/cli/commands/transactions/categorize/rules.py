@@ -186,7 +186,8 @@ def rules_create(
     A 'contains' rule whose pattern is too short to discriminate is refused
     unless --allow-broad is passed — see --allow-broad help.
     """
-    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    # defer import; CLI cold-start hygiene
+    from moneybin.services.categorization import (
         CategorizationService,
         validate_rule_items,
     )
@@ -320,7 +321,8 @@ def rules_delete(
     strip categorizations written by this rule and re-evaluate those rows
     against remaining active matchers.
     """
-    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    # defer import; CLI cold-start hygiene
+    from moneybin.services.categorization import (
         CategorizationService,
     )
 
@@ -384,7 +386,8 @@ def rules_list_conflicts(
     wide: bool = wide_option,
 ) -> None:
     """Show categorization rules refused because another rule owns the matcher."""
-    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    # defer import; CLI cold-start hygiene
+    from moneybin.services.categorization import (
         CategorizationService,
     )
 
@@ -462,7 +465,8 @@ _RESOLUTIONS: tuple[str, ...] = ("replace", "reprioritize", "cancel")
 
 def _decision_from_row(index: int, row: object) -> "ConflictDecision":
     """Validate one batch-file row into a typed decision, naming its position."""
-    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    # defer import; CLI cold-start hygiene
+    from moneybin.services.categorization import (
         ConflictDecision,
     )
 
@@ -566,7 +570,8 @@ def rules_resolve(
     A conflict recorded against a rule that has since been edited is refused
     as stale — re-read the queue with `rules list-conflicts` and decide again.
     """
-    from moneybin.services.categorization import (  # noqa: PLC0415 — defer import; CLI cold-start hygiene
+    # defer import; CLI cold-start hygiene
+    from moneybin.services.categorization import (
         CategorizationService,
         ConflictDecision,
     )

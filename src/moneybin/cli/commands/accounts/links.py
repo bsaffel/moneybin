@@ -75,7 +75,7 @@ def links_pending(
     payload = AccountLinksPendingPayload.from_service(groups, n_pending)
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+        from moneybin.cli.output import render_or_json
 
         render_or_json(
             build_envelope(data=payload),
@@ -220,7 +220,7 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
     # Deferred, and below the guard: matching_service pulls duckdb and the match
     # engine, this module is on the CLI cold-start path (.claude/rules/cli.md),
     # and the reject path reaches here needing none of it.
-    from moneybin.services.matching_service import (  # noqa: PLC0415
+    from moneybin.services.matching_service import (
         PENDING_MATCHES_HINT,
     )
 
@@ -316,10 +316,12 @@ def _plan_merge(
     """Resolve the merge against ``db``, the way MCP plans the same decision."""
     # Deferred: the identity contracts and decision service are not worth loading
     # on every CLI invocation to gate one subcommand.
-    from moneybin.protocol.write_contracts import (  # noqa: PLC0415 — keep off the cold-start path
+    from moneybin.protocol.write_contracts import (  # keep off the cold-start path
         AccountLinkDecisionRequest,
     )
-    from moneybin.services.review_decisions_service import (  # noqa: PLC0415 — keep off the cold-start path
+
+    # keep off the cold-start path
+    from moneybin.services.review_decisions_service import (
         ReviewDecisionsService,
     )
 
@@ -536,7 +538,7 @@ def links_history(
     payload = AccountLinksHistoryPayload.from_rows(rows)
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+        from moneybin.cli.output import render_or_json
 
         render_or_json(
             build_envelope(data=payload),
@@ -624,7 +626,7 @@ def links_run(
     )
 
     if output == OutputFormat.JSON:
-        from moneybin.cli.output import render_or_json  # noqa: PLC0415 — defer import
+        from moneybin.cli.output import render_or_json
 
         render_or_json(
             build_envelope(data=payload),

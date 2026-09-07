@@ -467,8 +467,8 @@ def restore_forwarded_curation(
     # and `undo_service` pulls in that same registry — both re-enter
     # `services.__init__` and back into this package, the cycle the forwarding
     # defers around.
-    from moneybin.services.undo_dispatch import repo_for  # noqa: PLC0415
-    from moneybin.services.undo_service import UndoService  # noqa: PLC0415
+    from moneybin.services.undo_dispatch import repo_for
+    from moneybin.services.undo_service import UndoService
 
     audit = AuditService(db)
     undo_service = UndoService(db)
@@ -628,7 +628,7 @@ def _reversed_alias_edges(db: Database) -> frozenset[str]:
     # Deferred import: `undo_service` pulls in the dispatch registry, which
     # imports every repository module — the same cycle the rest of this module
     # defers around.
-    from moneybin.services.undo_service import UndoService  # noqa: PLC0415
+    from moneybin.services.undo_service import UndoService
 
     rows = db.execute(
         _ALIAS_INSERT_OPERATIONS_SQL,
@@ -674,16 +674,16 @@ def _curation_repos(db: Database) -> tuple[Any, ...]:
     # Deferred imports: the repos' base → services.audit_service chain re-enters
     # `services.__init__`, which imports this package's engine — a module-top
     # import would cycle, the same reason `engine.py` defers its repo import.
-    from moneybin.repositories.transaction_categories_repo import (  # noqa: PLC0415
+    from moneybin.repositories.transaction_categories_repo import (
         TransactionCategoriesRepo,
     )
-    from moneybin.repositories.transaction_notes_repo import (  # noqa: PLC0415
+    from moneybin.repositories.transaction_notes_repo import (
         TransactionNotesRepo,
     )
-    from moneybin.repositories.transaction_splits_repo import (  # noqa: PLC0415
+    from moneybin.repositories.transaction_splits_repo import (
         TransactionSplitsRepo,
     )
-    from moneybin.repositories.transaction_tags_repo import (  # noqa: PLC0415
+    from moneybin.repositories.transaction_tags_repo import (
         TransactionTagsRepo,
     )
 
@@ -697,7 +697,7 @@ def _curation_repos(db: Database) -> tuple[Any, ...]:
 
 def _forward(db: Database, *, actor: str) -> AliasForwardResult:
     """Write the derived aliases and move each superseded id's curation."""
-    from moneybin.repositories.transaction_id_aliases_repo import (  # noqa: PLC0415
+    from moneybin.repositories.transaction_id_aliases_repo import (
         TransactionIdAliasesRepo,  # deferred for the cycle `_curation_repos` names
     )
 
