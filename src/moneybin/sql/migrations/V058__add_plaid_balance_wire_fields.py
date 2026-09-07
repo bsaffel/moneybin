@@ -1,4 +1,4 @@
-"""V057: capture the Plaid balance fields the client was discarding.
+"""V058: capture the Plaid balance fields the client was discarding.
 
 ``SyncBalance`` declared six of the nine keys moneybin-sync sends in
 ``balances[]``. Pydantic's default ``extra='ignore'`` destroyed the other three
@@ -16,8 +16,17 @@ different fact from the user-asserted ``app.account_settings.credit_limit``. It
 and ``last_updated_datetime`` are captured here but not yet wired to core.
 
 Pure additive DDL — ``ADD COLUMN IF NOT EXISTS ... NULL`` with no DEFAULT, so no
-backfill and the migration is a no-op on replay. Existing rows land NULL until
-re-pulled (``moneybin sync pull --force`` re-fetches and upserts the values).
+backfill and the migration is a no-op on replay. Nor is one available later.
+V030 says the opposite of ``raw.plaid_transactions`` and is right about it:
+transactions are cursor-backed, so ``--force`` re-fetches the full history and
+upserts every row in place. Balances are point-in-time snapshots instead —
+``raw.plaid_balances`` accumulates one row per account per balance date, a pull
+writes only the current snapshot's date, and ``force`` resets the transactions
+cursor rather than re-fetching anything here. Every balance date recorded
+before this migration therefore keeps NULL permanently, so net worth steps
+down by the loan on the first post-upgrade sync while the history before that
+date stays overstated. Plaid returns current balances only; those amounts were
+never sent and cannot be reconstructed.
 """
 
 from __future__ import annotations
@@ -32,7 +41,7 @@ logger = logging.getLogger(__name__)
 # `_apply_comments` re-runs that DDL's comments on every startup while this
 # migration runs once, so a divergent string here would be overwritten on the
 # next open and the catalog description would differ by which ran last. V050 and
-# V052 carry the same note; test_migration_v057 derives the DDL side and asserts
+# V052 carry the same note; test_migration_v058 derives the DDL side and asserts
 # the pair rather than restating either literal.
 _COLUMNS: list[tuple[str, str, str]] = [
     (
@@ -59,7 +68,7 @@ _COLUMNS: list[tuple[str, str, str]] = [
 def migrate(conn: object) -> None:
     """Add the dropped Plaid balance columns to raw.plaid_balances. Idempotent."""
     for name, sql_type, comment in _COLUMNS:
-        logger.debug(f"V057: ADD COLUMN IF NOT EXISTS raw.plaid_balances.{name}")
+        logger.debug(f"V058: ADD COLUMN IF NOT EXISTS raw.plaid_balances.{name}")
         conn.execute(  # type: ignore[attr-defined]
             f"ALTER TABLE raw.plaid_balances ADD COLUMN IF NOT EXISTS {name} {sql_type}"
         )

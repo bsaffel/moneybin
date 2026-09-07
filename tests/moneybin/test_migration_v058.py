@@ -1,11 +1,13 @@
-"""Tests for V057: capture the Plaid balance fields the client was discarding.
+"""Tests for V058: capture the Plaid balance fields the client was discarding.
 
 ``SyncBalance`` declared six of the nine keys moneybin-sync sends in
 ``balances[]``, and Pydantic's default ``extra='ignore'`` destroyed the other
 three at validation. Fresh installs get the columns from the schema DDL;
 existing installs get them here. Pure additive (``ADD COLUMN IF NOT EXISTS ...
-NULL``), so it is idempotent and needs no backfill — a row loaded before this
-migration keeps NULL until ``moneybin sync pull --force`` re-fetches it.
+NULL``), so it is idempotent and takes no backfill — and no later pull supplies
+one, because balances accumulate one row per balance date and a pull writes
+only the current snapshot's. See the migration docstring for why ``--force``
+does not reach them.
 """
 
 from __future__ import annotations
@@ -19,15 +21,15 @@ from moneybin.schema import (
     _all_schema_files,  # pyright: ignore[reportPrivateUsage]
     _comment_plan,  # pyright: ignore[reportPrivateUsage]
 )
-from moneybin.sql.migrations.V057__add_plaid_balance_wire_fields import (
+from moneybin.sql.migrations.V058__add_plaid_balance_wire_fields import (
     _COLUMNS,  # pyright: ignore[reportPrivateUsage]
     migrate,
 )
 
 _NEW_COLUMNS = ["balance_limit", "margin_loan_amount", "last_updated_datetime"]
 
-# The pre-V057 shape of raw.plaid_balances (none of the three wire fields).
-_PRE_V057_DDL = """
+# The pre-V058 shape of raw.plaid_balances (none of the three wire fields).
+_PRE_V058_DDL = """
     CREATE TABLE raw.plaid_balances (
         account_id VARCHAR NOT NULL,
         balance_date DATE NOT NULL,
@@ -53,10 +55,10 @@ def _plaid_balances_columns(db: Database) -> set[str]:
     return {row[0] for row in rows}
 
 
-def _recreate_pre_v057_table(db: Database) -> None:
-    """Reverse the V057 end-state: rebuild raw.plaid_balances without the new columns."""
+def _recreate_pre_v058_table(db: Database) -> None:
+    """Reverse the V058 end-state: rebuild raw.plaid_balances without the new columns."""
     db.execute("DROP TABLE IF EXISTS raw.plaid_balances")
-    db.execute(_PRE_V057_DDL)
+    db.execute(_PRE_V058_DDL)
     db.execute(
         "INSERT INTO raw.plaid_balances "
         "(account_id, balance_date, current_balance, available_balance, "
@@ -74,8 +76,8 @@ def _recreate_pre_v057_table(db: Database) -> None:
     )
 
 
-def test_v057_adds_the_dropped_wire_columns(db: Database) -> None:
-    _recreate_pre_v057_table(db)
+def test_v058_adds_the_dropped_wire_columns(db: Database) -> None:
+    _recreate_pre_v058_table(db)
     before = _plaid_balances_columns(db)
     assert not (before & set(_NEW_COLUMNS)), "setup failed: new columns already present"
 
@@ -83,7 +85,7 @@ def test_v057_adds_the_dropped_wire_columns(db: Database) -> None:
 
     after = _plaid_balances_columns(db)
     for col in _NEW_COLUMNS:
-        assert col in after, f"V057 did not add {col}"
+        assert col in after, f"V058 did not add {col}"
 
     # A row loaded before the migration gets NULL for all three — no backfill.
     row = db.execute(
@@ -93,7 +95,7 @@ def test_v057_adds_the_dropped_wire_columns(db: Database) -> None:
     assert row == (None, None, None)
 
 
-def test_v057_comments_match_the_schema_ddl_byte_for_byte() -> None:
+def test_v058_comments_match_the_schema_ddl_byte_for_byte() -> None:
     """A comment that diverges from the DDL loses to it on the very next open.
 
     ``_apply_comments`` re-runs ``raw_plaid_balances.sql``'s comments on every
@@ -115,9 +117,9 @@ def test_v057_comments_match_the_schema_ddl_byte_for_byte() -> None:
     }
 
 
-def test_v057_is_idempotent(db: Database) -> None:
+def test_v058_is_idempotent(db: Database) -> None:
     """ADD COLUMN IF NOT EXISTS — a second run (columns already present) is a no-op."""
-    _recreate_pre_v057_table(db)
+    _recreate_pre_v058_table(db)
 
     migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
     migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
