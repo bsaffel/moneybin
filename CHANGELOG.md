@@ -289,6 +289,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the count rather than leaving it to be inferred.
 
 ### Fixed
+- **A margin account no longer overstates net worth by the size of its loan.**
+  moneybin-sync sends nine fields in each `balances[]` record; the client
+  declared six. Pydantic's default `extra='ignore'` destroyed the other three at
+  validation with no error and no log line, so `margin_loan_amount`, `limit`,
+  and `last_updated_datetime` reached nothing downstream — the same mechanism
+  that stranded `persistent_account_id`. Plaid reports an investment account's
+  `current_balance` as the total value of *assets*, carrying the funds borrowed
+  against them separately, so summing the balance alone booked the broker's
+  money as the holder's: a brokerage holding $10,000 of assets against a $250
+  margin loan contributed $10,000 to net worth instead of $9,750.
+  `core.fct_balances` now subtracts the loan, and leaves every non-investment
+  account — where the field is always NULL — unchanged. All three fields are
+  captured in `raw.plaid_balances` (`limit` as `balance_limit`, since the wire
+  name is a SQL reserved word and `credit_limit` already means the
+  user-asserted figure). Migration V057 is additive and idempotent; rows loaded
+  before it read NULL until `moneybin sync pull --force` re-fetches them.
 - **Curation no longer disappears when a transaction is re-keyed.** A
   transaction's canonical id is derived from its dedup group's most stable
   member, so it changes when a steadier source backfills the same transaction —
