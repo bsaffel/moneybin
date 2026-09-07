@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import types
 import typing
 from dataclasses import fields, is_dataclass
 
@@ -50,9 +51,16 @@ def _is_list_hint(hint: object) -> bool:
     origin = typing.get_origin(hint)
     if origin is list:
         return True
-    if origin is None:
-        return False
-    return any(_is_list_hint(arg) for arg in typing.get_args(hint))
+    # Unwrap only what wraps a field's type without changing what the field
+    # holds. Recursing into any generic instead would find the ``list[str]``
+    # inside ``dict[str, list[str]]`` and call that field a collection, while
+    # ``row_set_field`` sees a dict and refuses it — the disagreement this
+    # helper exists to prevent, one container level down.
+    if origin is typing.Annotated:
+        return _is_list_hint(typing.get_args(hint)[0])
+    if origin is typing.Union or origin is types.UnionType:
+        return any(_is_list_hint(arg) for arg in typing.get_args(hint))
+    return False
 
 
 def _list_field_names(cls: type) -> list[str]:
@@ -229,3 +237,51 @@ def test_a_tuple_annotation_is_not_a_collection() -> None:
     """
     assert not _is_list_hint(tuple)
     assert not _is_list_hint(tuple[str, ...])
+
+
+@pytest.mark.unit
+def test_a_container_whose_values_are_lists_is_not_a_collection() -> None:
+    """A field holding a dict of lists holds a dict, and is not a row set.
+
+    ``get_origin(dict[str, list[str]])`` is ``dict`` — neither ``list`` nor
+    ``None`` — so unwrapping every generic rather than a named few reaches the
+    ``list[str]`` in its arguments and reports the field a collection.
+    ``row_set_field`` tests the value with ``isinstance(value, list)`` and
+    rejects the dict, so the sweep would demand a declaration the runtime would
+    never honour, and worse, would accept ``@row_set`` naming that field:
+    ``test_a_declared_row_set_names_a_collection`` asks whether the declared
+    name is in ``_list_field_names``, and the same over-count that put it there
+    is what makes the check pass. The mismatch would then surface only on the
+    first production call — the failure this module exists to move earlier.
+
+    No payload is shaped this way today, so this fixes no live miscount; it
+    holds the helper to the equivalence its docstring claims.
+    """
+    assert not _is_list_hint(dict[str, list[str]])
+    assert not _is_list_hint(tuple[list[str], ...])
+    assert not _is_list_hint(set[str])
+
+
+@pytest.mark.unit
+def test_the_wrappers_the_payloads_use_are_still_unwrapped() -> None:
+    """Every wrapper the sweep unwraps keeps a case here.
+
+    ``_is_list_hint`` names the wrappers it unwraps instead of recursing into
+    any generic, which makes dropping one a one-line edit that silently empties
+    part of the sweep rather than failing. ``Annotated`` is the case that would
+    hurt: every field in ``moneybin.privacy.payloads.system`` carries
+    ``Annotated[T, DataClass.X]``, so losing it would take
+    ``TransformPlanPayload`` and its four ``Annotated[list[str], ...]`` fields
+    out of the scan while the suite stayed green.
+    """
+    assert _is_list_hint(typing.Annotated[list[str], "metadata"])
+    assert _is_list_hint(typing.Annotated[list[str] | None, "metadata"])
+    assert not _is_list_hint(typing.Annotated[str, "metadata"])
+
+    # `X | None` evaluates to `types.UnionType`, so the legacy spelling is the
+    # only way to reach the `typing.Union` sentinel. Ruff's UP045 keeps it out
+    # of the tree, which makes that branch defensive rather than live — and
+    # exercising it here is what says so, instead of leaving a reader to guess
+    # whether it is dead.
+    legacy_optional = typing.Optional[list[str]]  # noqa: UP045  # branch under test
+    assert _is_list_hint(legacy_optional)
