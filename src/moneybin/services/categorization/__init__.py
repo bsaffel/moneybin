@@ -159,6 +159,7 @@ from moneybin.services.categorization.orchestrator import (
     CategorizationResult,
 )
 from moneybin.services.categorization.queries import (
+    CategorizationCoverage,
     CategorizationQueries,
     CategorizationStats,
 )
@@ -811,6 +812,10 @@ class CategorizationService:
     def count_uncategorized(self) -> int:
         """Return the size of the canonical ``core.uncategorized_queue``."""
         return self._queries.count_uncategorized()
+
+    def coverage(self) -> CategorizationCoverage:
+        """Count what needs categorizing, and how much of it already is."""
+        return self._queries.coverage()
 
     def categorization_stats(self) -> dict[str, int | float]:
         """Get summary statistics about categorization coverage."""

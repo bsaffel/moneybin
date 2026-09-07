@@ -175,7 +175,7 @@ What it audits, via `DoctorService`:
 - **SQLMesh named audits** attached to core models — FK integrity and sign convention on `core.fct_transactions`, the same two plus uniqueness on `core.fct_investment_transactions`, and transfer-pair balance on `core.bridge_transfers`.
 - **Transform model presence** — the SQLMesh models the pipeline expects are materialized.
 - **Dedup reconciliation** and **cross-source duplicates** — duplicate account overlap, plus cross-source duplicate transactions that have no merge proposal.
-- **Categorization coverage** — share of transactions with a category assigned. Warns (not fails) when under 50% of non-transfer rows are categorized.
+- **Categorization coverage** — share of the transactions that need a category that have one. Scoped to the population `core.uncategorized_queue` is drawn from, so transfer legs and archived accounts are out. Warns (not fails) when under 50%.
 - **Currency integrity** — profile currencies and rows carrying an unknown currency.
 - **Protected `app.*` audit coverage** — one check per repository-wrapped table (`user_categories`, `categorization_rules`, `account_settings`, `balance_assertions`, `imports`, and the rest), verifying every mutation left an audit-log row. Sampled over recent rows by default; `--full` scans the whole table.
 - **Orphaned app state** — `app.*` rows pointing at accounts, categories, or transactions that no longer exist.
