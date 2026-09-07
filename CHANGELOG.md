@@ -10,6 +10,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+- **`sql_query` no longer masks a count of how many rows are missing a
+  protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so
+  `COUNT(*) - COUNT(last_four)` already returned the number of accounts with no
+  last-four unmasked. Two other spellings of that same number did not:
+  `SUM(CASE WHEN last_four IS NULL THEN 1 ELSE 0 END)` and `COUNT(*) FILTER
+  (WHERE last_four IS NULL)` traced to a CRITICAL column and came back `*****`,
+  so a data-completeness question was answerable only if phrased one particular
+  way, and an agent that missed the workaround reported the data as
+  unavailable. A **base catalog column** reaching the output solely as the
+  operand of an `IS NULL` / `IS NOT NULL` test inside a `FILTER (WHERE …)` or a
+  `CASE`/`IF` condition now contributes no class. A nullity test on a base
+  column has one answer per row, so repeating it yields copies of one bit
+  rather than more of the value — except on an outer join's optional side,
+  where a null-extended row makes `IS NULL` report the `ON` predicate instead
+  of the column. That exception is not specific to this rule: the shipped
+  `COUNT(col)` collapse has it identically, so it is tracked against both
+  (MB-179) rather than closed for one spelling. Comparisons do not share that
+  cap and are
+  unchanged, so `SUM(CASE WHEN last_four = '5678' THEN 1 ELSE 0 END)` still
+  masks, as do `MAX(CASE WHEN … THEN routing_number END)`,
+  `SUM(CAST(last_four AS INT))`, and `MAX(x) FILTER (WHERE …)`. Neither does an
+  alias: `NULLIF(substr(col, 1, 1), '0') AS d` makes `d IS NULL` an equality
+  probe in nullity's spelling, so an occurrence is exempt only if it resolves
+  to a catalog column — a CTE or derived-table alias, or a reference lineage
+  cannot resolve at all, keeps masking. Neither does a name a `PIVOT` /
+  `UNPIVOT` generated: those output columns are computed at execution time, so
+  one can answer to a catalog name while holding whichever expression the
+  author put in each arm, and a pivot anywhere in the occurrence's scope keeps
+  masking too. (MB-102)
+
 ### Changed
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
@@ -21,6 +52,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than repeating one label against different numbers. The line also
   stops calling stored snapshots "observations": it counts how many times the
   metric was written, not how many things were measured.
+- **Categorization coverage counts the work you can actually do.** `moneybin
+  transactions categorize stats`, MCP `transactions_categorize_stats`, and the
+  `categorization_coverage` doctor check each derived their own "uncategorized"
+  figure, and none of them matched the one `moneybin review` hands you. Stats
+  counted every transaction in the ledger against every row in
+  `app.transaction_categories` — including transfer legs nobody is asked to
+  categorize, archived accounts nobody maintains, and categorizations orphaned
+  from transactions that no longer exist. Doctor counted a third population,
+  excluding transfer legs but not archived accounts. All of them now read the
+  population `core.uncategorized_queue` is drawn from, so the percentage
+  measures a backlog you can act on and every surface reports the same size for
+  it.
+
+  **The numbers move.** A ledger whose transfer legs and closed accounts made up
+  much of its "uncategorized" count will report a smaller backlog and a higher
+  percentage than before — the same data, described as work rather than as rows.
+  `total_transactions` in the MCP payload is now the size of that population
+  rather than a count of all transactions; the field name is unchanged, and its
+  description says so. `by_source` moves with it and gains a `source_supplied`
+  bucket for transactions that count as categorized only because their CSV
+  column or manual entry carried category text of its own, so the breakdown
+  still sums to `categorized`. `transactions list --uncategorized` deliberately
+  does not move: it means "MoneyBin never decided this one", which is the only
+  way to find those source-supplied labels. (#563)
 - **`moneybin refresh` says what each pipeline step did.** A run that changed
   nothing and a run that recategorized 400 transactions both printed a single
   `✅ Refresh complete in 4.2s`, because the counts each step computed went to

@@ -155,7 +155,23 @@ CategorizationRulesCoarsePayload = (
 
 @dataclass(frozen=True, slots=True)
 class CategorizeStatsPayload:
-    """Payload for transactions_categorize_stats — aggregate counts only."""
+    """Payload for transactions_categorize_stats — aggregate counts only.
+
+    The coverage counts — ``total_transactions``, ``categorized``,
+    ``uncategorized``, ``percent_categorized``, ``by_source`` — cover the
+    population core.uncategorized_queue is drawn from, so
+    ``total_transactions`` is how many transactions need a category, not how
+    many exist. The three counts reconcile and ``by_source`` sums to
+    ``categorized``.
+
+    ``plaid_unmapped`` is outside that reconciliation and is ledger-wide by
+    design. It counts Plaid rows whose category code has no bridge mapping,
+    which measures the bridge rather than this user's backlog: whether a code
+    is covered does not depend on the transaction sitting on an archived
+    account or being half of a transfer. So it can exceed
+    ``total_transactions``, and a reader must not subtract it from anything
+    here.
+    """
 
     total_transactions: Annotated[int, DataClass.AGGREGATE]
     categorized: Annotated[int, DataClass.AGGREGATE]

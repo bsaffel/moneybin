@@ -334,13 +334,32 @@ def transactions_categorize_stats(
     category-source-bridge mapping yet (omitted when no Plaid data is
     present).
 
+    The coverage figures — everything except ``plaid_unmapped`` — cover the
+    transactions that need categorizing, not the whole ledger: confirmed
+    transfer legs, archived accounts, and transactions whose account never
+    resolved are excluded, matching core.uncategorized_queue. So
+    ``total_transactions`` is the size of that population rather than a count
+    of all transactions, ``uncategorized`` equals what reviews(kind=
+    'categorization') will hand back, and the three reconcile
+    (total = categorized + uncategorized).
+
+    ``plaid_unmapped`` is deliberately ledger-wide and sits outside that
+    reconciliation. It measures the category bridge, not this user's backlog —
+    whether a PFC code has a mapping does not depend on the transaction being
+    archived or a transfer leg — so it may legitimately exceed
+    ``total_transactions``. Do not subtract or compare it against the coverage
+    figures.
+
     The source breakdown carries one bucket per persisted ``categorized_by``
     value (``user``, ``rule``, ``auto_rule``, ``migration``, ``ml``,
-    ``provider_native``, ``ai``) plus a reporting-only ``merchant_map``
-    bucket: rows written via merchant-pattern matching are split out of
-    ``rule`` here so the count reconciles with transactions_categorize_rules'
-    rule list, but the persisted ``categorized_by`` value on those rows is
-    still ``rule``.
+    ``provider_native``, ``ai``) plus two reporting-only buckets, and sums to
+    ``categorized``. Rows written via merchant-pattern matching are split out
+    of ``rule`` into ``merchant_map`` so the count reconciles with
+    transactions_categorize_rules' rule list, though the persisted
+    ``categorized_by`` value on those rows is still ``rule``. Rows counted as
+    categorized only because their source file supplied category text of its
+    own — a CSV column, a manual entry — have no ``categorized_by`` at all and
+    fall in ``source_supplied``; nobody confirmed those inside MoneyBin.
 
     Args:
         include_auto: When True, also return auto-rule health metrics
