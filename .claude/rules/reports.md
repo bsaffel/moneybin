@@ -1,5 +1,5 @@
 ---
-description: "Report authoring: the @report contract, declared privacy classes, derivation/CI verification, the reports.* boundary"
+description: "Report authoring: SQL-backed by default (a non-SQL kind needs approval first), the @report contract, declared privacy classes, derivation/CI verification, the reports.* boundary"
 paths: ["src/moneybin/reports/**", "src/moneybin/sqlmesh/models/reports/**"]
 ---
 
@@ -20,6 +20,33 @@ Four kinds ship today. Pick the row you are writing, then read its section.
 | **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
 | **Service-backed** | A hand-written `ServiceReportSpec` | The author, against an independently reviewed map |
 | **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
+
+## A new report is SQL-backed — anything else needs explicit approval first
+
+Three of those four kinds answer with a query the caller can read and rerun.
+Write one of them: an `@report` runner returning a `ReportQuery`, or a
+runner-less `reports.*` view. **Before adding a `ServiceReportSpec` — or
+inventing any other kind whose rows come out of Python instead of SQL — stop and
+get Brandon's explicit yes. Do not start the code and ask afterward.** With no
+user reachable (subagent, autonomous run), take the SQL path and say so.
+
+What the non-SQL path costs, so the ask is a real decision:
+
+- `reports explain` returns a `sql_unavailable` reason instead of the query, and
+  inspection falls back to declared provenance (`_framework/explain.py:96,167`).
+- Graduation returns the `service_backed` verdict — the report can never
+  materialize (`explain.py:198,330`).
+- Privacy classes lose their independent derivation check. There is no SQL
+  source to derive lineage from, so the second source of truth becomes a
+  hand-written map in `test_service_report_privacy_maps_match_independent_contract`
+  — see "Service-backed reports use an independent reviewed class map" below.
+
+`core:networth` and `core:networth_history` are the only two, they predate the
+framework, and their arithmetic was always SQL (`reports.net_worth`) — they are
+precedent for nothing. If a report looks like it needs Python, name the thing
+SQL cannot express and bring that as the decision: an expression spliced from an
+allowlist is already sanctioned (`definitions/large_transactions.py:218-294`),
+and a second SQLMesh view is usually cheaper than a service.
 
 ## Materialized reports need three parts, all required
 
