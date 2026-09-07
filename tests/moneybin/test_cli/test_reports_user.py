@@ -488,6 +488,38 @@ def test_run_counts_its_wide_request_and_its_omission() -> None:
     assert count("moneybin_cli_columns_omitted_total") == omitted_before + 1
 
 
+def test_run_counts_no_wide_request_on_the_json_branch() -> None:
+    """`--wide` asks JSON for nothing, so it is not a wide request.
+
+    Requirement 8 keeps the JSON projection whole, so the flag changes no
+    output there and no omission can ever be counted against it. Counting the
+    request anyway raises one half of the ratio while the other stays at zero,
+    which reads as a narrow default on the one surface that has none — and a
+    caller passing `--wide` defensively beside `--output json` is exactly the
+    shape that inflates it.
+
+    The assertion runs through `reports run` rather than against `column_view`
+    directly, because the defect was not in that function: it was that both
+    call sites resolve the view *before* `render_report_result` branches on the
+    format, so only the real command proves the format reaches the decision.
+    """
+    from prometheus_client import REGISTRY
+
+    def count(name: str) -> float:
+        return REGISTRY.get_sample_value(name, {"command": "reports_run"}) or 0.0
+
+    wide_before = count("moneybin_cli_wide_requested_total")
+    omitted_before = count("moneybin_cli_columns_omitted_total")
+
+    result = _invoke_run(
+        "--wide", "--output", "json", default_columns=("year_month", "net")
+    )
+
+    assert result.exit_code == 0, result.output
+    assert count("moneybin_cli_wide_requested_total") == wide_before
+    assert count("moneybin_cli_columns_omitted_total") == omitted_before
+
+
 def test_run_fits_a_report_that_declares_no_columns_to_the_terminal() -> None:
     """Requirement 6 for the saved reports this command exists to run.
 

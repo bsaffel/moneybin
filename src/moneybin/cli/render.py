@@ -45,6 +45,7 @@ __all__ = [
     "Style",
     "color_enabled",
     "column_view",
+    "count_wide_request",
     "format_money",
     "render_note",
     "render_rows",

@@ -115,6 +115,7 @@ def test_a_library_caller_outside_a_command_counts_nothing() -> None:
             for metric in REGISTRY.collect()
             if metric.name == "moneybin_cli_wide_requested"
             for sample in metric.samples
+            if sample.name.endswith("_total")
         )
 
     before = total()
@@ -138,3 +139,33 @@ def test_invoking_a_stub_counts_it_against_that_command() -> None:
 
     assert result.exit_code == 0, result.output
     assert _count("moneybin_cli_stub_invoked_total", "sync_schedule_show") == before + 1
+
+
+def test_an_unfinished_mode_of_a_working_command_is_not_counted_as_a_stub() -> None:
+    """`review --interactive` prints the stub message but is not stub demand.
+
+    The counter ranks whole commands a user reached without `--help`
+    advertising them. `review` is documented and runs; only its interactive
+    mode is unfinished, so a `review` label here would report demand for
+    something that already exists — and the deprecated `transactions review`
+    alias would split that one mode across two labels on top of it.
+    """
+    from moneybin.cli.main import app
+
+    def total() -> float:
+        return sum(
+            sample.value
+            for metric in REGISTRY.collect()
+            if metric.name == "moneybin_cli_stub_invoked"
+            for sample in metric.samples
+            if sample.name.endswith("_total")
+        )
+
+    before = total()
+
+    result = runner.invoke(app, ["review", "--interactive"])
+
+    assert result.exit_code == 0, result.output
+    assert "not yet implemented" in result.output
+    # Every label, not just `review`: the alias would land on a second one.
+    assert total() == before

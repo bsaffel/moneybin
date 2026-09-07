@@ -639,9 +639,13 @@ Numbered, each independently testable.
     recorded dimension rather than a word this renderer chose.
     The row's leading word is cased through one acronym table, so a metric
     under the MCP header cannot render `Mcp` beneath it.
-24. Histogram metrics render an **explicitly declared** unit, carried as a `unit`
-    field on the metric declaration in `src/moneybin/metrics/registry.py`. A
-    metric that is not a duration does not render `s`.
+24. Histogram metrics render an **explicitly declared** unit, carried in a
+    `HISTOGRAM_UNITS` table beside the metric declarations in
+    `src/moneybin/metrics/registry.py`. A metric that is not a duration does
+    not render `s`. A `unit` field *on* the declaration is what this
+    requirement first specified and is the trap the second paragraph below
+    describes — `prometheus_client` already owns that keyword and renames the
+    metric with it.
     **Name-suffix derivation was tried and rejected.** It holds for
     `..._duration_seconds` and `..._rate`, but nine registered metrics end in
     suffixes that name a *dimension* rather than a unit — `..._batch_size`,
@@ -687,6 +691,14 @@ Numbered, each independently testable.
     Blocks print in the registry's declaration order — import through transform
     to export — rather than alphabetically by whichever name each block starts
     with.
+    **The table is keyed by the name `app.metrics` stores, not by the name the
+    declaration spells**, and for a counter those differ: `flush_to_duckdb`
+    strips the `_total` off the sample name, so `Counter("…_records_total")`
+    persists as `…_records`. Keying by the declaration matches no counter row
+    and sends every one of them to `Other` — which is how this table first
+    shipped, and neither coverage test caught it, because both reconstructed
+    the expected keys with the same wrong rule. They now read `metric.name`
+    unchanged, and `test_persistence.py` pins the stripping they depend on.
 
 **Identity display (F7)**
 
@@ -998,8 +1010,12 @@ Numbered, each independently testable.
 
 No schema changes. No migration. This spec touches presentation only.
 
-One registry change: requirement 24's `unit` field on each metric declaration in
-`src/moneybin/metrics/registry.py`. A middle draft of this spec removed it in
+Two registry changes, both tables beside the declarations in
+`src/moneybin/metrics/registry.py` rather than fields on them: requirement 24's
+`HISTOGRAM_UNITS` and requirement 25's `METRIC_DOMAINS`. Both are keyed by the
+name `app.metrics` stores, which for a counter is the declaration minus its
+`_total` — `flush_to_duckdb` strips that suffix, so a key that keeps it matches
+no row. A middle draft of this spec removed the unit in
 favour of deriving the unit from the Prometheus name suffix, on the reasoning
 that the convention was already universal. It is not: `..._duration_seconds` and
 `..._rate` are self-describing, but `..._batch_size`, `..._score`, `..._pending`,
@@ -1053,7 +1069,7 @@ removed field and costs a `stats` surface that cannot label nine of its metrics.
 | `src/moneybin/cli/commands/db.py` | Route the three `db key` stubs through `_not_implemented` and hide them, keeping their `typer.Exit(1)` (31–33). Also the `ps` process roll, printed twice from one format string — one renderer serves `ps` and `kill`'s preamble (1) |
 | `src/moneybin/cli/commands/demo.py`, `fx.py`, `import_cmd.py`, `investments/{__init__,lots,prices,securities}.py` | The eight modules the audit's file list did not name, found by the guard rather than by the audit. All migrated; `_AWAITING_RENDER_ROWS` is empty and the guard that policed it is retired (1) |
 | `src/moneybin/cli/commands/accounts/__init__.py`, `reports/networth.py` | The only two already-migrated commands that still rendered an empty result as a header box. Not part of the eight, but the empty-result rule holds tree-wide or not at all (1) |
-| `src/moneybin/metrics/registry.py` | Add a `unit` field to each histogram declaration (24); add the three counters in Observability below |
+| `src/moneybin/metrics/registry.py` | Add the `HISTOGRAM_UNITS` (24) and `METRIC_DOMAINS` (25) tables beside the declarations, both keyed by the persisted metric name; add the three counters in Observability below |
 | `.claude/rules/cli.md` | Add a "Text rendering" section pointing at this spec — the rule file is where a future contributor looks first |
 
 ### Key Decisions
@@ -1178,6 +1194,31 @@ around: the `--wide`-versus-omission ratio is a **directional** signal drawn fro
 write-bearing sessions, not a census, and it does not by itself settle whether a
 report's `DEFAULT_COLUMNS` is right. Requirement 9's contract test is what
 *enforces* the column policy; these counters only suggest where to look next.
+
+**`stub_invoked` is not directional — it is currently inert, and that is stated
+rather than left to be inferred.** A stub prints and returns without writing,
+and one CLI process resolves one leaf command, so nothing else in that process
+can make `database_was_written()` true. The counter therefore reaches
+`app.metrics` on no run at all and `moneybin stats` never shows it, which means
+the demand ranking described above is not available from it as it stands. The
+increment is kept because it is where the signal would have to be recorded
+either way; making it readable needs either a read-safe flush or removal, and
+that is a decision to take on its own rather than to smuggle in here.
+
+Two narrower shapes follow from the same "a metric with no question behind it is
+noise" test, and both are settled in the implementation:
+
+- **`--wide` is counted on the text branch only.** JSON returns the whole
+  projection regardless, so `--output json --wide` asks for nothing and can
+  produce no omission to weigh it against. Counting it would raise one half of
+  the ratio while the other stayed at zero — which reads as a narrow default on
+  exactly the surface that has none.
+- **`stub_invoked` counts whole commands, not unfinished modes.** `review
+  --interactive` reaches the same not-implemented helper, but `review` is a
+  documented command that runs; labelling it would report demand for something
+  that already exists, and its deprecated alias would split that one mode across
+  two labels. `_not_implemented(..., whole_command=False)` prints the message
+  without the increment.
 
 ## Testing Strategy
 

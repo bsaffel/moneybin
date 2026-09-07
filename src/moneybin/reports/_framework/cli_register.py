@@ -169,6 +169,7 @@ def column_view(
     *,
     parameters: Mapping[str, Any],
     wide: bool,
+    output: OutputFormat,
 ) -> ColumnView:
     """One report's whole text-branch column decision (requirements 6, 7).
 
@@ -176,12 +177,22 @@ def column_view(
     ``reports run``, which serves every tier — so resolving the narrowed set and
     the fit flag separately in each is two copies of one decision. They were,
     and the tested copy was not the one `run` used.
+
+    ``output`` is here only for the counter below. Both callers resolve the
+    view before :func:`render_report_result` branches on the format, so this
+    function — unlike ``render.py``'s namesake, which its callers reach only
+    after their own JSON branch has returned — runs on the JSON path too.
     """
-    if wide:
+    if wide and output != OutputFormat.JSON:
         # Counted here rather than in the generated command body, for the same
         # reason the narrowing itself is: `reports run` reaches this function
         # and not that body, so counting there would report a rate for the
         # built-ins alone and read as a rate for reports.
+        #
+        # Not counted for JSON, which returns the whole projection either way:
+        # `--wide` asks for nothing there, and no omission can be counted
+        # against it, so counting the request alone would inflate one half of
+        # the ratio requirement 7 reads and leave the other at zero.
         count_wide_request()
     return ColumnView(
         visible_columns(spec, result_columns, parameters=parameters, wide=wide),
@@ -400,7 +411,9 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                     display_currency=display_currency,
                     home_currency=profile_home_currency(db),
                 )
-            view = column_view(spec, result.columns, parameters=kwargs, wide=wide)
+            view = column_view(
+                spec, result.columns, parameters=kwargs, wide=wide, output=output
+            )
             render_report_result(
                 result,
                 output,

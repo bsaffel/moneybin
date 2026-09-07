@@ -960,6 +960,19 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
 # telemetry, and `--wide` is common enough that the lock would land on nearly
 # every read. The consequence is that the wide-versus-omitted ratio is a
 # directional signal from write-bearing sessions, not a census.
+#
+# `CLI_STUB_INVOKED_TOTAL` is worse than directional, and the difference is
+# worth stating rather than leaving a reader to infer it from the paragraph
+# above. A stub prints and returns without writing anything, and one CLI
+# process resolves one leaf command, so nothing else in that process can make
+# `database_was_written()` true. It therefore increments in memory and reaches
+# `app.metrics` on no run at all: `moneybin stats` will not show it, and the
+# demand ranking requirement 31 wants is not available from this counter as it
+# stands. It is kept because the increment is where the signal would have to be
+# recorded either way, and the alternative — a sink that persists without the
+# lock — is the trade named above. Removing it, or giving the flush a
+# read-safe path, is a decision to take on its own rather than to read off
+# this comment.
 
 CLI_WIDE_REQUESTED_TOTAL = Counter(
     "moneybin_cli_wide_requested_total",
@@ -1048,6 +1061,16 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # and `merchant_link_*` are two subsystems sharing a first word, and no prefix
 # separates them without being written down.
 #
+# Keyed by the name `app.metrics` stores, which for a counter is the
+# declaration above minus its `_total`: `flush_to_duckdb` strips that suffix
+# off the sample name, so `Counter("moneybin_import_records_total")` persists,
+# and reaches `stats`, as `moneybin_import_records`. A key that keeps the
+# suffix matches no row and sends the metric to `Other` — which is how this
+# table first shipped, silently demoting every counter in the registry while
+# gauges and histograms grouped correctly. `test_persistence.py` pins the
+# stripping; `HISTOGRAM_UNITS` above needs no such note because a histogram's
+# stored name and declared name are already the same string.
+#
 # Kept in step with the declarations above by `test_stats.py`, in both
 # directions — a metric with no domain, and a domain whose metric is gone, each
 # fail their own test. An undeclared name still prints, under `Other`: rows
@@ -1055,145 +1078,145 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # their value, the way an undeclared histogram keeps its sum.
 METRIC_DOMAINS: dict[str, str] = {
     # Import pipeline
-    "moneybin_import_records_total": "Import pipeline",
+    "moneybin_import_records": "Import pipeline",
     "moneybin_import_duration_seconds": "Import pipeline",
-    "moneybin_import_errors_total": "Import pipeline",
+    "moneybin_import_errors": "Import pipeline",
     "moneybin_import_batch_size": "Import pipeline",
-    "moneybin_inbox_sync_total": "Import pipeline",
+    "moneybin_inbox_sync": "Import pipeline",
     "moneybin_inbox_sync_duration_seconds": "Import pipeline",
     # Tabular import
-    "moneybin_tabular_format_matches_total": "Tabular import",
-    "moneybin_tabular_detection_confidence_total": "Tabular import",
-    "moneybin_tabular_import_batches_total": "Tabular import",
-    "moneybin_ofx_import_batches_total": "Tabular import",
-    "moneybin_ofx_fitid_collision_repaired_total": "Tabular import",
-    "moneybin_pdf_import_total": "Tabular import",
+    "moneybin_tabular_format_matches": "Tabular import",
+    "moneybin_tabular_detection_confidence": "Tabular import",
+    "moneybin_tabular_import_batches": "Tabular import",
+    "moneybin_ofx_import_batches": "Tabular import",
+    "moneybin_ofx_fitid_collision_repaired": "Tabular import",
+    "moneybin_pdf_import": "Tabular import",
     "moneybin_pdf_extraction_confidence": "Tabular import",
-    "moneybin_pdf_recipe_hit_total": "Tabular import",
-    "moneybin_pdf_replay_guard_failure_total": "Tabular import",
-    "moneybin_pdf_self_heal_total": "Tabular import",
-    "moneybin_pdf_seed_rows_total": "Tabular import",
-    "moneybin_pdf_bridge_egress_total": "Tabular import",
-    "moneybin_pdf_sign_gate_total": "Tabular import",
-    "moneybin_tabular_sign_gate_total": "Tabular import",
+    "moneybin_pdf_recipe_hit": "Tabular import",
+    "moneybin_pdf_replay_guard_failure": "Tabular import",
+    "moneybin_pdf_self_heal": "Tabular import",
+    "moneybin_pdf_seed_rows": "Tabular import",
+    "moneybin_pdf_bridge_egress": "Tabular import",
+    "moneybin_pdf_sign_gate": "Tabular import",
+    "moneybin_tabular_sign_gate": "Tabular import",
     # MCP elicitation
-    "moneybin_mcp_elicitations_total": "MCP elicitation",
+    "moneybin_mcp_elicitations": "MCP elicitation",
     # Smart import confirmation
-    "moneybin_import_confirmations_total": "Smart import confirmation",
+    "moneybin_import_confirmations": "Smart import confirmation",
     "moneybin_import_detection_score": "Smart import confirmation",
-    "moneybin_import_self_accept_total": "Smart import confirmation",
-    "moneybin_import_override_total": "Smart import confirmation",
-    "moneybin_import_known_format_reuse_total": "Smart import confirmation",
-    "moneybin_import_revalidation_failure_total": "Smart import confirmation",
+    "moneybin_import_self_accept": "Smart import confirmation",
+    "moneybin_import_override": "Smart import confirmation",
+    "moneybin_import_known_format_reuse": "Smart import confirmation",
+    "moneybin_import_revalidation_failure": "Smart import confirmation",
     # SQLMesh transforms
     "moneybin_sqlmesh_run_duration_seconds": "SQLMesh transforms",
     # Export delivery
-    "moneybin_export_runs_total": "Export delivery",
+    "moneybin_export_runs": "Export delivery",
     "moneybin_export_duration_seconds": "Export delivery",
-    "moneybin_export_receipt_failures_total": "Export delivery",
+    "moneybin_export_receipt_failures": "Export delivery",
     # Deduplication
-    "moneybin_dedup_matches_total": "Deduplication",
-    "moneybin_dedup_pairs_scored_total": "Deduplication",
+    "moneybin_dedup_matches": "Deduplication",
+    "moneybin_dedup_pairs_scored": "Deduplication",
     "moneybin_dedup_review_pending": "Deduplication",
     "moneybin_dedup_match_confidence": "Deduplication",
-    "moneybin_transaction_id_aliases_written_total": "Deduplication",
-    "moneybin_transaction_curation_forwarded_total": "Deduplication",
-    "moneybin_transaction_curation_restored_total": "Deduplication",
-    "moneybin_transfer_retirements_total": "Deduplication",
+    "moneybin_transaction_id_aliases_written": "Deduplication",
+    "moneybin_transaction_curation_forwarded": "Deduplication",
+    "moneybin_transaction_curation_restored": "Deduplication",
+    "moneybin_transfer_retirements": "Deduplication",
     # Transfer detection
-    "moneybin_transfer_pairs_scored_total": "Transfer detection",
-    "moneybin_transfer_matches_proposed_total": "Transfer detection",
+    "moneybin_transfer_pairs_scored": "Transfer detection",
+    "moneybin_transfer_matches_proposed": "Transfer detection",
     "moneybin_transfer_match_confidence": "Transfer detection",
     # Multi-currency integrity
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
     # Exchange rates
-    "moneybin_fx_rate_rows_written_total": "Exchange rates",
-    "moneybin_fx_rate_resolution_total": "Exchange rates",
-    "moneybin_fx_rate_backfill_pairs_total": "Exchange rates",
+    "moneybin_fx_rate_rows_written": "Exchange rates",
+    "moneybin_fx_rate_resolution": "Exchange rates",
+    "moneybin_fx_rate_backfill_pairs": "Exchange rates",
     "moneybin_fx_rate_fetch_duration_seconds": "Exchange rates",
     # Categorization
     "moneybin_categorization_auto_rate": "Categorization",
-    "moneybin_categorization_rules_fired_total": "Categorization",
-    "moneybin_categorize_items_total": "Categorization",
+    "moneybin_categorization_rules_fired": "Categorization",
+    "moneybin_categorize_items": "Categorization",
     "moneybin_categorize_duration_seconds": "Categorization",
-    "moneybin_categorize_errors_total": "Categorization",
-    "moneybin_categorize_assist_calls_total": "Categorization",
-    "moneybin_categorize_assist_txns_returned_total": "Categorization",
+    "moneybin_categorize_errors": "Categorization",
+    "moneybin_categorize_assist_calls": "Categorization",
+    "moneybin_categorize_assist_txns_returned": "Categorization",
     "moneybin_categorize_assist_duration_seconds": "Categorization",
-    "moneybin_categorize_match_outcome_total": "Categorization",
-    "moneybin_categorize_write_skipped_precedence_total": "Categorization",
-    "moneybin_categorize_provider_native_total": "Categorization",
-    "moneybin_auto_rule_pattern_downgraded_total": "Categorization",
+    "moneybin_categorize_match_outcome": "Categorization",
+    "moneybin_categorize_write_skipped_precedence": "Categorization",
+    "moneybin_categorize_provider_native": "Categorization",
+    "moneybin_auto_rule_pattern_downgraded": "Categorization",
     "moneybin_auto_rule_broad_pending": "Categorization",
-    "moneybin_auto_rule_broad_accept_blocked_total": "Categorization",
-    "moneybin_auto_rule_unselective_accept_blocked_total": "Categorization",
-    "moneybin_rule_create_unselective_contains_blocked_total": "Categorization",
-    "moneybin_rule_create_conflict_blocked_total": "Categorization",
+    "moneybin_auto_rule_broad_accept_blocked": "Categorization",
+    "moneybin_auto_rule_unselective_accept_blocked": "Categorization",
+    "moneybin_rule_create_unselective_contains_blocked": "Categorization",
+    "moneybin_rule_create_conflict_blocked": "Categorization",
     "moneybin_rule_conflicts_pending": "Categorization",
-    "moneybin_rule_conflict_resolved_total": "Categorization",
-    "moneybin_categorize_skipped_confidence_total": "Categorization",
+    "moneybin_rule_conflict_resolved": "Categorization",
+    "moneybin_categorize_skipped_confidence": "Categorization",
     "moneybin_categorize_apply_post_commit_duration_seconds": "Categorization",
     "moneybin_categorize_apply_post_commit_rows_affected": "Categorization",
     "moneybin_merchant_exemplar_count": "Categorization",
     # Account identity resolution
-    "moneybin_account_link_outcomes_total": "Account identity resolution",
+    "moneybin_account_link_outcomes": "Account identity resolution",
     "moneybin_account_link_review_pending": "Account identity resolution",
     "moneybin_account_link_confidence": "Account identity resolution",
     "moneybin_account_link_overlap_ratio": "Account identity resolution",
-    "moneybin_account_link_overlap_probes_total": "Account identity resolution",
+    "moneybin_account_link_overlap_probes": "Account identity resolution",
     "moneybin_duplicate_account_pairs": "Account identity resolution",
     # Merchant identity resolution
     "moneybin_merchant_link_review_pending": "Merchant identity resolution",
     "moneybin_merchant_link_confidence": "Merchant identity resolution",
-    "moneybin_merchant_resolution_outcome_total": "Merchant identity resolution",
-    "moneybin_merchant_link_outcomes_total": "Merchant identity resolution",
+    "moneybin_merchant_resolution_outcome": "Merchant identity resolution",
+    "moneybin_merchant_link_outcomes": "Merchant identity resolution",
     # Investments
-    "moneybin_investment_events_recorded_total": "Investments",
-    "moneybin_security_resolution_outcomes_total": "Investments",
+    "moneybin_investment_events_recorded": "Investments",
+    "moneybin_security_resolution_outcomes": "Investments",
     # MCP server
-    "moneybin_mcp_tool_calls_total": "MCP server",
+    "moneybin_mcp_tool_calls": "MCP server",
     "moneybin_mcp_tool_duration_seconds": "MCP server",
     # Synthetic data
-    "moneybin_synthetic_generated_transactions_total": "Synthetic data",
+    "moneybin_synthetic_generated_transactions": "Synthetic data",
     "moneybin_synthetic_generation_duration_seconds": "Synthetic data",
-    "moneybin_synthetic_reset_total": "Synthetic data",
-    "moneybin_demo_run_total": "Synthetic data",
+    "moneybin_synthetic_reset": "Synthetic data",
+    "moneybin_demo_run": "Synthetic data",
     # Database
     "moneybin_db_query_duration_seconds": "Database",
-    "moneybin_db_write_lock_timeout_total": "Database",
-    "moneybin_db_checkpoint_total": "Database",
+    "moneybin_db_write_lock_timeout": "Database",
+    "moneybin_db_checkpoint": "Database",
     # Audit log
-    "moneybin_audit_events_emitted_total": "Audit log",
-    "moneybin_app_mutation_audit_emitted_total": "Audit log",
-    "moneybin_audit_undo_total": "Audit log",
-    "moneybin_audit_undo_rows_reversed_total": "Audit log",
+    "moneybin_audit_events_emitted": "Audit log",
+    "moneybin_app_mutation_audit_emitted": "Audit log",
+    "moneybin_audit_undo": "Audit log",
+    "moneybin_audit_undo_rows_reversed": "Audit log",
     # Sync
     "moneybin_sync_pull_duration_seconds": "Sync",
-    "moneybin_sync_pull_outcomes_total": "Sync",
-    "moneybin_sync_pull_transactions_loaded_total": "Sync",
-    "moneybin_sync_institution_errors_total": "Sync",
-    "moneybin_sync_auth_refresh_outcomes_total": "Sync",
-    "moneybin_sync_connect_outcomes_total": "Sync",
+    "moneybin_sync_pull_outcomes": "Sync",
+    "moneybin_sync_pull_transactions_loaded": "Sync",
+    "moneybin_sync_institution_errors": "Sync",
+    "moneybin_sync_auth_refresh_outcomes": "Sync",
+    "moneybin_sync_connect_outcomes": "Sync",
     # Investments sync
-    "moneybin_sync_investments_records_loaded_total": "Investments sync",
-    "moneybin_investment_amount_drift_rows_total": "Investments sync",
-    "moneybin_price_rows_written_total": "Investments sync",
+    "moneybin_sync_investments_records_loaded": "Investments sync",
+    "moneybin_investment_amount_drift_rows": "Investments sync",
+    "moneybin_price_rows_written": "Investments sync",
     "moneybin_price_refresh_duration_seconds": "Investments sync",
-    "moneybin_price_refresh_securities_total": "Investments sync",
-    "moneybin_price_resolution_status_total": "Investments sync",
+    "moneybin_price_refresh_securities": "Investments sync",
+    "moneybin_price_resolution_status": "Investments sync",
     "moneybin_price_staleness_days": "Investments sync",
-    "moneybin_security_link_outcomes_total": "Investments sync",
-    "moneybin_security_link_decision_outcomes_total": "Investments sync",
+    "moneybin_security_link_outcomes": "Investments sync",
+    "moneybin_security_link_decision_outcomes": "Investments sync",
     "moneybin_security_link_review_pending": "Investments sync",
     # User-created reports
-    "moneybin_user_report_saves_total": "User-created reports",
-    "moneybin_user_report_runs_total": "User-created reports",
-    "moneybin_user_report_unresolved_columns_total": "User-created reports",
-    "moneybin_user_report_drift_detected_total": "User-created reports",
-    "moneybin_user_report_reclassify_total": "User-created reports",
+    "moneybin_user_report_saves": "User-created reports",
+    "moneybin_user_report_runs": "User-created reports",
+    "moneybin_user_report_unresolved_columns": "User-created reports",
+    "moneybin_user_report_drift_detected": "User-created reports",
+    "moneybin_user_report_reclassify": "User-created reports",
     # CLI text rendering
-    "moneybin_cli_wide_requested_total": "CLI text rendering",
-    "moneybin_cli_columns_omitted_total": "CLI text rendering",
-    "moneybin_cli_stub_invoked_total": "CLI text rendering",
+    "moneybin_cli_wide_requested": "CLI text rendering",
+    "moneybin_cli_columns_omitted": "CLI text rendering",
+    "moneybin_cli_stub_invoked": "CLI text rendering",
 }

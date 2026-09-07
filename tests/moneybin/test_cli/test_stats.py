@@ -155,8 +155,8 @@ def test_metrics_are_grouped_under_a_domain_header(
     _patch_rows(
         monkeypatch,
         [
-            ("moneybin_export_runs_total", "counter", "{}", 7.0, 1, _RECORDED),
-            ("moneybin_import_records_total", "counter", "{}", 40.0, 1, _RECORDED),
+            ("moneybin_export_runs", "counter", "{}", 7.0, 1, _RECORDED),
+            ("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED),
         ],
     )
 
@@ -220,7 +220,7 @@ def test_one_subsystem_declared_under_several_name_prefixes_gets_one_header(
         [
             ("moneybin_auto_rule_broad_pending", "gauge", "{}", 2.0, 1, _RECORDED),
             ("moneybin_categorization_auto_rate", "gauge", "{}", 0.8, 1, _RECORDED),
-            ("moneybin_categorize_items_total", "counter", "{}", 9.0, 1, _RECORDED),
+            ("moneybin_categorize_items", "counter", "{}", 9.0, 1, _RECORDED),
             ("moneybin_merchant_exemplar_count", "gauge", "{}", 5.0, 1, _RECORDED),
             ("moneybin_rule_conflicts_pending", "gauge", "{}", 1.0, 1, _RECORDED),
         ],
@@ -279,7 +279,7 @@ def test_an_undeclared_metric_still_prints_under_its_own_heading(
     """
     _patch_rows(
         monkeypatch,
-        [("moneybin_since_renamed_total", "counter", "{}", 3.0, 1, _RECORDED)],
+        [("moneybin_since_renamed", "counter", "{}", 3.0, 1, _RECORDED)],
     )
 
     result = runner.invoke(_app(), [])
@@ -291,22 +291,29 @@ def test_an_undeclared_metric_still_prints_under_its_own_heading(
 
 
 def _registered_metrics() -> set[str]:
-    """Every MoneyBin metric the process has registered, read off the registry.
+    """Every MoneyBin metric name as ``app.metrics`` stores it.
 
     The registry rather than this module's declarations, for the reason
     `_registered_histograms` gives: a metric declared beside its service still
     renders through `stats` and still needs a domain.
+
+    ``metric.name`` unchanged, because that is the name `flush_to_duckdb`
+    writes for every type — it strips the `_total` a counter declaration spells
+    and the `_sum` a histogram sample carries, and both leave `metric.name`.
+    An earlier version of this helper appended `_total` back for counters on
+    the belief that the declaration's spelling is what gets persisted, which
+    made both coverage tests compare the declarations against themselves and
+    pass while every counter rendered under `Other`.
+    `test_persistence.py::test_a_counter_declared_with_total_persists_without_it`
+    is what pins the premise; this helper only relies on it.
     """
     from prometheus_client import REGISTRY
 
-    names: set[str] = set()
-    for metric in REGISTRY.collect():
-        if not metric.name.startswith("moneybin_"):
-            continue
-        # `collect()` reports a counter under its base name; `app.metrics`
-        # persists the `_total` the declaration spells.
-        names.add(f"{metric.name}_total" if metric.type == "counter" else metric.name)
-    return names
+    return {
+        metric.name
+        for metric in REGISTRY.collect()
+        if metric.name.startswith("moneybin_")
+    }
 
 
 def test_every_metric_declares_a_domain() -> None:
