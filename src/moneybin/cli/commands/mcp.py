@@ -622,7 +622,7 @@ def _print_client_notes(client: str) -> None:
         # counts come from moneybin.mcp.surface (plain constants, no FastMCP import
         # — resolving them live would make `mcp install` boot the server), and a
         # test asserts them against the live registry so they can't go stale.
-        from moneybin.mcp.surface import (  # noqa: PLC0415 — keep it off the CLI cold-start path
+        from moneybin.mcp.surface import (  # keep it off the CLI cold-start path
             VISIBLE_TOOL_COUNT,
             WINDSURF_ACTIVE_TOOL_CAP,
         )
@@ -737,7 +737,7 @@ def mcp_list_prompts(
     """
     from moneybin.mcp.server import (
         init_db,
-        mcp,  # noqa: PLC0415 — defer fastmcp import to subcommand body
+        mcp,  # defer fastmcp import to subcommand body
     )
 
     init_db()

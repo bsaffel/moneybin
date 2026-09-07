@@ -2099,7 +2099,7 @@ def test_the_ambiguous_ref_refusal_says_where_to_read_the_masked_key() -> None:
     # Private by design: this is the pure binding resolver, and reaching it
     # through import_file would need a two-account fixture whose first ACCTID is
     # literally "@1" to exercise one error string.
-    from moneybin.services.import_service import (  # noqa: PLC0415
+    from moneybin.services.import_service import (
         _resolve_binding_targets,  # pyright: ignore[reportPrivateUsage]
     )
 

@@ -131,7 +131,7 @@ def run_cli(
     # to prevent the first-run setup wizard and isolate from the user's
     # real profile. The fallback profile dir is created on first use.
     if env is None:
-        global _fallback_profile_created  # noqa: PLW0603 — lazy init for module-level state
+        global _fallback_profile_created  # lazy init for module-level state
         if not _fallback_profile_created:
             Path(_FALLBACK_HOME, "profiles", _FALLBACK_PROFILE).mkdir(
                 parents=True, exist_ok=True

@@ -95,9 +95,14 @@ Every E2E test, every shell autocomplete, and every CLI invocation pays the full
   ```python
   @app.command("serve")
   def serve(...) -> None:
-      from moneybin.mcp.server import build_server  # noqa: PLC0415 — defer import
+      from moneybin.mcp.server import build_server  # fastmcp is not cold-start cheap
       build_server(...).run()
   ```
+
+  Say *why* in a plain comment, and never reach for `# noqa: PLC0415`. Ruff's
+  `select` omits `PL`, so that marker suppresses nothing — it only looks
+  official, which is how 17 wrong justifications rode one unchallenged until
+  MB-168 tested them. `test_no_inert_pylint_suppression_markers` now rejects it.
 
 - **Verify with `importtime`.** When adding a new command module, confirm the cold-start path stays clean:
 

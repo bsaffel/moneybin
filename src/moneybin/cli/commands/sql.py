@@ -74,11 +74,11 @@ def sql_query_command(
     """
     # Deferred: execute_sql_query pulls in sqlglot (a SQL parser); keep it off
     # the CLI cold-start path per .claude/rules/cli.md "Cold-Start Hygiene".
-    from moneybin.privacy.sensitivity import (  # noqa: PLC0415
+    from moneybin.privacy.sensitivity import (
         get_max_rows,
         tier_to_sensitivity,
     )
-    from moneybin.privacy.sql_query import execute_sql_query  # noqa: PLC0415
+    from moneybin.privacy.sql_query import execute_sql_query
 
     # render_or_json stays inside handle_cli_errors so a rendering/serialization
     # failure (e.g. an unusual DuckDB column type) surfaces as a clean CLI error

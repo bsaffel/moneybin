@@ -709,7 +709,7 @@ class TestOFXAccountTypeDerivation:
 
     @staticmethod
     def _account(account_type: str, kind: int) -> object:
-        import ofxparse  # noqa: PLC0415
+        import ofxparse
 
         acct = ofxparse.Account()
         acct.account_type = account_type
@@ -733,7 +733,7 @@ class TestOFXAccountTypeDerivation:
     def test_type_falls_back_to_the_statement_container(
         self, declared: str, kind: int, expected: str | None
     ) -> None:
-        from moneybin.extractors.ofx.extractor import (  # noqa: PLC0415
+        from moneybin.extractors.ofx.extractor import (
             ofx_account_type,
         )
 

@@ -1306,7 +1306,8 @@ def set_current_profile(profile: str) -> None:
             # Each profile has its own encryption key; clear the process-level
             # key cache so the next Database() open fetches the correct key.
             from moneybin.database import (
-                invalidate_encryption_key_cache,  # noqa: PLC0415
+                # deferred: module-scope import would cycle
+                invalidate_encryption_key_cache,
             )
 
             invalidate_encryption_key_cache()
@@ -1330,7 +1331,8 @@ def clear_current_profile() -> None:
     _current_settings = None  # Invalidate settings cache
     # Each profile has its own encryption key; clear the process-level key cache so
     # the next Database() open fetches the correct one.
-    from moneybin.database import invalidate_encryption_key_cache  # noqa: PLC0415
+    # deferred: module-scope import would cycle
+    from moneybin.database import invalidate_encryption_key_cache
 
     invalidate_encryption_key_cache()
 

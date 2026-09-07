@@ -254,7 +254,7 @@ async def gsheet_connect(
     inline and retries internally only after explicit confirmation. The agent
     cannot ratify that inference through this tool's parameters.
     """
-    from moneybin.connectors.gsheet.connection_service import (  # noqa: PLC0415
+    from moneybin.connectors.gsheet.connection_service import (
         ConnectionRequest,
     )
 
@@ -272,7 +272,7 @@ async def gsheet_connect(
     try:
         result = await asyncio.to_thread(_connect, req)
     except GSheetSignConfirmationRequiredError as error:
-        from moneybin.mcp.elicitation import confirm_or_raise  # noqa: PLC0415
+        from moneybin.mcp.elicitation import confirm_or_raise
 
         await confirm_or_raise(
             _sign_confirmation_message(error),
@@ -475,7 +475,7 @@ async def gsheet_reconnect(
             yes=yes,
         )
     except GSheetSignConfirmationRequiredError as error:
-        from moneybin.mcp.elicitation import confirm_or_raise  # noqa: PLC0415
+        from moneybin.mcp.elicitation import confirm_or_raise
 
         await confirm_or_raise(
             _sign_confirmation_message(error),

@@ -8,7 +8,9 @@ import duckdb
 import pytest
 
 import moneybin.services.schema_catalog as schema_catalog_module
-from moneybin.database import (  # noqa: PLC2701  # the single definition of "point a new cursor at the attached DB"
+
+# the single definition of "point a new cursor at the attached DB"
+from moneybin.database import (
     Database,
     _pin_cursor_to_moneybin,  # pyright: ignore[reportPrivateUsage]
 )

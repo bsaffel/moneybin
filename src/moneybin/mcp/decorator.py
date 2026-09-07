@@ -32,7 +32,7 @@ from contextvars import ContextVar
 from typing import Any, cast
 
 from moneybin import error_codes
-from moneybin.database import (  # noqa: PLC2701 — private import for per-call tracking
+from moneybin.database import (  # private import for per-call tracking
     _call_conn_holder,  # pyright: ignore[reportPrivateUsage]
     interrupt_and_reset_database,
 )

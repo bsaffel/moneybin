@@ -90,7 +90,7 @@ def import_inbox_sync(refresh: bool = True) -> ResponseEnvelope[ImportInboxSyncP
     # the surface has to name what it created. Same helper as import_files —
     # unattended drain is where an unannounced account is least likely to be
     # noticed, not where a weaker hint is acceptable.
-    from moneybin.mcp.tools.import_tools import accounts_created_action  # noqa: PLC0415
+    from moneybin.mcp.tools.import_tools import accounts_created_action
 
     if minted_action := accounts_created_action(_minted_count(sync_result.processed)):
         actions.insert(0, minted_action)

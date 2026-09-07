@@ -223,7 +223,7 @@ def derive_report_classes(
     partial map and never falls back to a permissive default — an unresolvable
     model is a CI failure, not a silent AGGREGATE.
     """
-    from moneybin.database import SQLMESH_ROOT  # noqa: PLC0415  # avoid import cycle
+    from moneybin.database import SQLMESH_ROOT
 
     root = models_root or (SQLMESH_ROOT / "models" / REPORTS_SCHEMA)
     out, _excluded = _derive_view_classes(root, exclude_non_derivable=False)
@@ -245,7 +245,7 @@ def derive_core_view_classes(
     ``tests/privacy/test_report_class_derivation.py`` for the pinned set —
     rather than a side effect of silently dropping what didn't fit.
     """
-    from moneybin.database import SQLMESH_ROOT  # noqa: PLC0415  # avoid import cycle
+    from moneybin.database import SQLMESH_ROOT
 
     root = models_root or (SQLMESH_ROOT / "models" / _CORE_SCHEMA)
     return _derive_view_classes(root, exclude_non_derivable=True)

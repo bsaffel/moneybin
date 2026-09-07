@@ -859,8 +859,8 @@ def _unavailable_section(section: str, exc: Exception) -> SectionUnavailable:
 
 def _export_status_section() -> ExportsStatus:
     """Load export readiness synchronously inside one database lifetime."""
-    from moneybin.database import get_database  # noqa: PLC0415
-    from moneybin.exports.service import ExportService  # noqa: PLC0415
+    from moneybin.database import get_database
+    from moneybin.exports.service import ExportService
 
     with get_database(read_only=True) as db:
         readiness = ExportService(db).status()

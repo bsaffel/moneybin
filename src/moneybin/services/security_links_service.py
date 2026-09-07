@@ -505,7 +505,7 @@ class SecurityLinksService:
             f"ref_kind={decision['ref_kind']}"
         )
 
-        from moneybin.services.security_resolver import (  # noqa: PLC0415
+        from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
         )
 
@@ -556,7 +556,7 @@ class SecurityLinksService:
         logger.info(f"security merge rejected: decision={decision_id}")
 
         # Rejecting changed the pending count — refresh the gauge.
-        from moneybin.services.security_resolver import (  # noqa: PLC0415
+        from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
         )
 
@@ -566,7 +566,7 @@ class SecurityLinksService:
         """Record metrics after an enclosing transaction commits."""
         for outcome in outcomes:
             SECURITY_LINK_DECISION_OUTCOMES_TOTAL.labels(outcome=outcome).inc()
-        from moneybin.services.security_resolver import (  # noqa: PLC0415
+        from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
         )
 
@@ -751,7 +751,7 @@ class SecurityLinksService:
 
         # Accepting changed the pending count (the named decision plus its
         # auto-rejected siblings) — refresh the gauge.
-        from moneybin.services.security_resolver import (  # noqa: PLC0415
+        from moneybin.services.security_resolver import (
             refresh_security_link_pending_gauge,
         )
 

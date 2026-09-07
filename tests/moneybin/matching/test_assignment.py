@@ -279,7 +279,7 @@ def _edge(
     )
 
 
-def _edge_f(  # noqa: PLR0913  # explicit per-side fields keep the fixture readable
+def _edge_f(  # explicit per-side fields keep the fixture readable
     st_a: str,
     stid_a: str,
     sf_a: str,

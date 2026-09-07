@@ -243,7 +243,7 @@ def pending_dedup_caveat(db: Database, provenance: Iterable[str]) -> DedupCaveat
         # The CLI half is `PENDING_MATCHES_HINT` verbatim, so it cannot drift
         # from the command a test executes; imported inside the function because
         # the service module drags the matching engine into every catalog import.
-        from moneybin.services.matching_service import (  # noqa: PLC0415
+        from moneybin.services.matching_service import (
             PENDING_MATCHES_HINT,
         )
 

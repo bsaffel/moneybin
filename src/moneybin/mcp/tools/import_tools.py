@@ -183,7 +183,7 @@ def _reject_unsupported_pdf_account_signals(
     never forwards these two arguments to a service call at all — there is no
     later point at which the service could see them.
     """
-    from moneybin.services.import_service import (  # noqa: PLC0415 — defer import
+    from moneybin.services.import_service import (
         reject_unhonored_account_signals,
     )
 
@@ -1349,7 +1349,7 @@ async def import_revert(
             ``mutation_confirmation_required`` refusal, for clients that cannot
             elicit.
     """
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService
 
     with get_database(read_only=True) as db:
         plan = ImportService(db).plan_revert(import_id)
@@ -1413,7 +1413,7 @@ async def _delete_saved_format(
     confirmation_token: str | None,
 ) -> ResponseEnvelope[ImportSavedFormatDeletePayload]:
     """Confirm and audit-delete one exact user-saved tabular format."""
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService
 
     with get_database(read_only=True) as db:
         plan = ImportService(db).plan_saved_format_delete(format_name)
@@ -1469,7 +1469,7 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
     kind, routing target, and replay statistics. Filter by ``type`` to narrow.
     Use ``import_preview`` to test a tabular format against a specific file.
     """
-    from moneybin.services.import_service import ImportService  # noqa: PLC0415
+    from moneybin.services.import_service import ImportService
 
     pdf_format_rows: list[ImportFormatEntry] = []
     # `list_formats` hands back the built-ins as a mapping; only membership is
@@ -1480,7 +1480,7 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
             formats, builtin, pdf_formats = ImportService(db).list_formats()
             pdf_format_rows = [pdf_format_row(pf) for pf in pdf_formats]
     except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
-        from moneybin.extractors.tabular.formats import (  # noqa: PLC0415
+        from moneybin.extractors.tabular.formats import (
             load_builtin_formats,
         )
 

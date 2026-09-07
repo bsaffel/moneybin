@@ -1538,13 +1538,13 @@ def _declared_tables() -> list[tuple[str, Sequence[Any], Sequence[str]]]:
     the command modules pull in service code that `render.py` deliberately does
     not.
     """
-    from moneybin.cli.commands.import_cmd import (  # noqa: PLC0415, PLC2701
+    from moneybin.cli.commands.import_cmd import (
         _HISTORY_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _HISTORY_DEFAULT,  # pyright: ignore[reportPrivateUsage]
         _PDF_FORMAT_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _PDF_FORMAT_DEFAULT,  # pyright: ignore[reportPrivateUsage]
     )
-    from moneybin.cli.commands.investments import (  # noqa: PLC0415, PLC2701
+    from moneybin.cli.commands.investments import (
         _EVENTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _EVENTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
         _GAINS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
@@ -1552,7 +1552,7 @@ def _declared_tables() -> list[tuple[str, Sequence[Any], Sequence[str]]]:
         _HOLDINGS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _HOLDINGS_DEFAULT,  # pyright: ignore[reportPrivateUsage]
     )
-    from moneybin.cli.commands.investments.lots import (  # noqa: PLC0415, PLC2701
+    from moneybin.cli.commands.investments.lots import (
         _LOTS_ALL_DEFAULT,  # pyright: ignore[reportPrivateUsage]
         _LOTS_COLUMNS,  # pyright: ignore[reportPrivateUsage]
         _LOTS_DEFAULT,  # pyright: ignore[reportPrivateUsage]

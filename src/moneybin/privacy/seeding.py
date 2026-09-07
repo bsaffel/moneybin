@@ -58,7 +58,7 @@ def get_redaction_key() -> bytes:
     contaminate HMAC identifiers — a key-confusion defect once PR 3's
     hash-placeholder transforms land.
     """
-    from moneybin.config import (  # noqa: PLC0415 — defer to avoid import cycle
+    from moneybin.config import (
         get_current_profile,
     )
 

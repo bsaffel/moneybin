@@ -610,7 +610,8 @@ def seed_pending_dedup_pair(db: Database) -> None:
     it, so both rows stay in ``core.fct_transactions`` and every total covering
     them counts the payment twice. Needs the core tables already created.
     """
-    from moneybin.repositories.match_decisions_repo import (  # noqa: PLC0415  # keep the repo off this helper module's import path
+    # keep the repo off this helper module's import path
+    from moneybin.repositories.match_decisions_repo import (
         MatchDecisionsRepo,
     )
 
