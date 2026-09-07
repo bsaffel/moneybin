@@ -17,6 +17,7 @@ from fastmcp import FastMCP
 
 from moneybin import error_codes
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.mcp.tools.categories import (
     categories,
     categories_set,
@@ -37,9 +38,13 @@ from moneybin.mcp.tools.transactions_categorize import (
 from moneybin.mcp.tools.transactions_categorize_assist import (
     register_transactions_categorize_assist_tools,
 )
-from moneybin.privacy.introspection import derive_tier
-from moneybin.privacy.payloads.categorize import CategorizationRulesCoarsePayload
-from moneybin.privacy.taxonomy import Tier
+from moneybin.privacy.introspection import derive_tier, extract_data_classes
+from moneybin.privacy.payloads.categorize import (
+    CategorizationRulesCoarsePayload,
+    RuleConflictDetail,
+    RulesCreatePayload,
+)
+from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.protocol.write_contracts import (
     CategorizationRuleMatch,
     CategorizationRuleTarget,
@@ -595,6 +600,37 @@ class TestCategorizationRulesTargetState:
             ).fetchone() == (0,)
 
     @pytest.mark.unit
+    async def test_conflicting_target_fails_and_queues_the_refusal(
+        self, mcp_db: Path
+    ) -> None:
+        """The refusal is an error, and the queued row must survive it."""
+        await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present", category="Food")]
+        )
+
+        response = await transactions_categorize_rules_set_coarse(
+            rules=[_rule_target(state="present", category="Travel")]
+        )
+
+        error = response.to_dict()["error"]
+        assert error["code"] == error_codes.TAXONOMY_RULE_CONFLICT
+        with get_database(read_only=True) as db:
+            conflict_ids = [
+                row[0]
+                for row in db.execute(
+                    "SELECT conflict_id FROM app.rule_conflicts"
+                ).fetchall()
+            ]
+        assert error["details"]["conflict_ids"] == conflict_ids
+        assert len(conflict_ids) == 1
+        assert [
+            action["tool"] for action in response.to_dict()["recovery_actions"]
+        ] == [
+            "reviews",
+            "reviews_decide",
+        ]
+
+    @pytest.mark.unit
     async def test_unsafe_short_contains_target_is_rejected(self, mcp_db: Path) -> None:
         response = await transactions_categorize_rules_set_coarse(
             rules=[_rule_target(state="present", value="TO")]
@@ -872,3 +908,102 @@ def test_the_auto_review_accept_hint_is_built_per_surface() -> None:
         "transactions_categorize_auto_accept" in action
         for action in (*cli_actions, *mcp_actions)
     )
+
+
+class TestRuleConflictPayloadPrivacy:
+    """A refused proposal carries the name its author wrote."""
+
+    @pytest.mark.unit
+    def test_conflict_detail_names_are_user_notes(self) -> None:
+        """`RuleRow.name` is USER_NOTE; the same text here cannot be CATEGORY."""
+        classes = extract_data_classes(RulesCreatePayload)
+
+        assert DataClass.USER_NOTE in classes
+        assert derive_tier(RulesCreatePayload) is Tier.MEDIUM
+
+    @pytest.mark.unit
+    def test_rules_create_reports_conflicts_without_claiming_nothing_changed(
+        self,
+    ) -> None:
+        """A batch that created a row really wrote, so it is not a failure."""
+        result = RuleCreationResult(
+            created=1,
+            existing=0,
+            skipped=0,
+            error_details=[],
+            rule_ids=["r2"],
+            conflicts=1,
+            conflict_ids=["conf_aaaaaaaaaaaaaaaa"],
+            conflict_details=[
+                RuleConflictDetail(
+                    conflict_id="conf_aaaaaaaaaaaaaaaa",
+                    name="Transfer TO",
+                    existing_rule_id="r1",
+                    reason="Rule r1 already matches this pattern.",
+                )
+            ],
+        )
+        with (
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.get_database"
+            ) as mock_get_db,
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.CategorizationService"
+            ) as mock_svc_cls,
+        ):
+            mock_get_db.return_value.__enter__.return_value = MagicMock()
+            mock_svc_cls.return_value.create_rules.return_value = result
+            envelope = transactions_categorize_rules_create([
+                {
+                    "name": "Transfer TO",
+                    "merchant_pattern": "TRANSFER",
+                    "category": "Transfer",
+                }
+            ])
+
+        assert envelope.status == "ok"
+
+    @pytest.mark.unit
+    def test_rules_create_that_wrote_nothing_raises_a_conflict(self) -> None:
+        result = RuleCreationResult(
+            created=0,
+            existing=0,
+            skipped=0,
+            error_details=[],
+            rule_ids=[],
+            conflicts=1,
+            conflict_ids=["conf_aaaaaaaaaaaaaaaa"],
+            conflict_details=[
+                RuleConflictDetail(
+                    conflict_id="conf_aaaaaaaaaaaaaaaa",
+                    name="Transfer TO",
+                    existing_rule_id="r1",
+                    reason="Rule r1 already matches this pattern.",
+                )
+            ],
+        )
+        with (
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.get_database"
+            ) as mock_get_db,
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.CategorizationService"
+            ) as mock_svc_cls,
+        ):
+            mock_get_db.return_value.__enter__.return_value = MagicMock()
+            mock_svc_cls.return_value.create_rules.return_value = result
+            with pytest.raises(UserError) as excinfo:
+                transactions_categorize_rules_create([
+                    {
+                        "name": "Transfer TO",
+                        "merchant_pattern": "TRANSFER",
+                        "category": "Transfer",
+                    }
+                ])
+
+        assert excinfo.value.code == error_codes.TAXONOMY_RULE_CONFLICT
+        assert excinfo.value.details == {"conflict_ids": ["conf_aaaaaaaaaaaaaaaa"]}
+        assert [action.tool for action in excinfo.value.recovery_actions or []] == [
+            "reviews",
+            "reviews_decide",
+        ]

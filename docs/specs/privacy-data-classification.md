@@ -183,7 +183,7 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (core, dim_holdings) | price_date | TIMESTAMP_OBSERVABILITY | the date of the public close used to value the position — the same value as `fct_security_prices.price_date` (audited above), carried onto the position. It names when a *market* closed, not when the user did anything, so it takes that column's LOW-tier treatment rather than TXN_DATE. |
 | (core, dim_holdings) | price_source | TXN_TYPE | which provider supplied the close (`plaid`, …) — a low-cardinality routing tag, identical in kind to `fct_security_prices.source_type` and the other `source_type` discriminators classified TXN_TYPE elsewhere. Reveals nothing about the position itself. |
 | (core, dim_holdings) | days_since_observed | TIMESTAMP_OBSERVABILITY | `CURRENT_DATE - price_date`. `CURRENT_DATE` is public, so this is bijective with `price_date` and cannot carry more information than it — masking one while publishing the other would be theatre. Inherits `price_date`'s class (the `uncategorized_queue.age_days` precedent). |
-| (core, dim_holdings) | valuation_status | TXN_TYPE | a four-value enum (`valued` / `carried_forward` / `unpriced` / `withheld`) describing the *pricing* of the row, not the user's holding. Same closed-vocabulary discriminator shape as `term` and `cost_basis_method`. |
+| (core, dim_holdings) | valuation_status | TXN_TYPE | a five-value enum (`valued` / `carried_forward` / `unpriced` / `withheld` / `source_overlap`) describing the *pricing* of the row, not the user's holding. Same closed-vocabulary discriminator shape as `term` and `cost_basis_method`. |
 | (core, fct_security_prices) | close | AGGREGATE | a market close is public reference data — same security, same date, same price for every user — not a personal fact like `fct_investment_transactions.price` (what the user actually paid). No existing numeric LOW-tier class fits a bare public price value; AGGREGATE is the closest fit, same as other non-sensitive computed numerics (`confidence_score`, `priority`). |
 | (core, fct_security_prices) | price_date | TIMESTAMP_OBSERVABILITY | which calendar date a public close applies to, not a personal event date like `trade_date`/`balance_date` (TXN_DATE, MEDIUM) — it reveals nothing about the user's behavior on its own, so it gets the same LOW-tier treatment as other "when was this recorded" columns. |
 | (core, fct_transactions) | check_number | DESCRIPTION | a check number identifies a payment instrument, not an account; parked at MEDIUM until PR 2 introduces `PAYMENT_INSTRUMENT` (CRITICAL). Knowingly underclassified — check numbers are not account numbers. |
@@ -375,6 +375,7 @@ The `sql_query` MCP tool accepts arbitrary read-only SQL, so its output columns 
 | `COUNT(*)`, `COUNT(col)`, `COUNT(DISTINCT col)` | `AGGREGATE` (LOW) — counts destroy individual values |
 | `SUM`, `AVG`, `STDDEV`, `VARIANCE` over `col` | Source column's class — numerically derived from individuals |
 | `MIN`, `MAX`, `FIRST`, `LAST`, `ANY_VALUE` over `col` | Source column's class — surfaces an individual value |
+| `col IS NULL` / `col IS NOT NULL` inside a condition slot — the `FILTER (WHERE …)` predicate, a `CASE`/`IF` branch condition, or a simple-`CASE` operand — where `col` resolves to a **base catalog column** and no `PIVOT` / `UNPIVOT` is in its scope | `AGGREGATE` (LOW) — one bit per row, capped except on an outer join's optional side (see "Null tests inside a condition" below) |
 | Multi-column expression (`CONCAT`, `+`, `\|\|`) | `max(tier)` over all referenced columns; highest-tier class |
 | Literal-only (`'hi'`, `1`) | `AGGREGATE` (LOW) |
 | `COLUMNS('regex')`, `COLUMNS(c -> …)` | Conservative fallback — sqlglot models the argument, never the columns DuckDB expands it to |
@@ -388,6 +389,77 @@ literal and of an expression we could not decompose, and the last three rows
 above are the second kind.
 
 5. **Query tier** — `derive_query_tier(output_classes)` takes the max `Tier` across all output columns.
+
+### Null tests inside a condition
+
+`COUNT(col)` has collapsed to `AGGREGATE` since this classifier shipped, so `SELECT COUNT(*) - COUNT(last_four) FROM core.dim_accounts` already returns the number of NULL last-fours unmasked. Two other spellings of that same number did not: `SUM(CASE WHEN last_four IS NULL THEN 1 ELSE 0 END)` and `COUNT(*) FILTER (WHERE last_four IS NULL)` traced to a CRITICAL column and came back `*****` (MB-102). Two guards together close that gap: `_only_null_tested` (the occurrence sits as the operand of an `IS NULL` / `IS NOT NULL` test inside a `_CONDITION_SLOTS` slot) **and** `_capped_null_test` (that occurrence resolves to a catalog column with a known class). Both are required, and the second is not a formality — see "The cap is a claim about base columns" below.
+
+The exemption is nullity, **not** "any condition", and the difference is a cap rather than a preference. `IS NULL` has one answer per row per base column whose NULLness is its own, so N projections of it return N copies of one bit. A comparison does not: each literal asks about a different piece of the value, and a `CASE` branch may return the literal it just matched —
+
+```sql
+CASE WHEN substr(routing_number,1,1)='0' THEN '0'
+     WHEN substr(routing_number,1,1)='1' THEN '1' … END
+```
+
+— so ten branches recover one character and nine concatenated projections recover the whole number from one query. `MAX('0') FILTER (WHERE substr(routing_number,1,1)='0')` does it without a `CASE`, and `CASE substr(routing_number,1,1) WHEN '0' THEN '0' …` through the operand slot. A rule keyed on position alone returned a real routing number at LOW; it was caught in pre-push review and never shipped.
+
+#### The cap is not absolute: outer joins
+
+An outer join null-extends its optional side. A column read from that side is a genuine catalog column, but its NULLness reports the `ON` predicate — which the author writes — rather than anything about the column:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE j.routing_number IS NULL) AS n
+FROM core.dim_accounts a
+LEFT JOIN core.dim_accounts j
+       ON j.account_id = a.account_id
+      AND substr(a.routing_number, 1, 1) = '0'
+```
+
+Ninety such arms recover a routing number in one query, at LOW.
+
+This is written down rather than closed, and the reason is that it is **not specific to this rule**. The counting-aggregate collapse has it identically: `COUNT(j.account_id)` over the same joins yields the same ninety bits, with no `IS NULL` anywhere, and has done since long before MB-102. `COUNT(col)` counts non-NULLs, which is the same one bit per row in a different spelling. Closing it for the newer spelling alone would leave two behaviours for one question — the failure mode `design-principles.md` names as the largest source of rot.
+
+It is therefore tracked as MB-179, against **both** rules, and belongs to whichever change closes both. What MB-102 changed is which spellings reach it, not whether it is reachable.
+
+#### The cap is a claim about base columns
+
+"One answer per row per column" is true of a *column*. An alias is a name for an arbitrary expression, and the author chooses the expression, so the same sentence is false of an alias:
+
+```sql
+WITH t AS (SELECT NULLIF(substr(routing_number,1,1),'0') AS d FROM core.dim_accounts)
+SELECT SUM(CASE WHEN d IS NULL THEN 1 ELSE 0 END) AS n FROM t
+```
+
+`d IS NULL` is spelled as nullity and means `substr(routing_number,1,1) = '0'`. The cap becomes one bit per *literal the author chose* rather than one per column, and ninety such projections recover a routing number from a single query — the same reconstruction, one indirection away. A second pre-push review round caught this; the position test alone cannot see it.
+
+So an occurrence is exempt only when it resolves, at that point, to a catalog column carrying a known class. Four failures are treated alike, because each leaves the identity unestablished rather than establishing a safe one: it resolves inside a CTE or derived-table scope; its scope draws from a `PIVOT` / `UNPIVOT` source (see below); `_column_key` cannot name it (an unresolvable reference must keep reaching the conservative fallback, not be quietly dropped — a `routing_number` alias past `_MAX_SCOPE_DEPTH` answered `AGGREGATE` while the same projection without the null test answered `UNRESOLVED`); or the key resolves with no class, which is a coverage gap.
+
+This is deliberately conservative in one honest case: `WITH t AS (SELECT routing_number AS d …)` really is a base column and its null test really is capped, but proving that means classifying the CTE's own projection first. It masks instead — which is what it did before this rule existed, so nothing regresses.
+
+#### A pivot generates the name as well as the value
+
+A `PIVOT` / `UNPIVOT` source's output columns are computed by DuckDB at execution time, so the catalog cannot say what one holds — only what its name *would* mean if the name were the catalog's. `UNPIVOT` lets the author name the generated value column and choose every arm feeding it:
+
+```sql
+SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c
+FROM core.dim_accounts
+UNPIVOT INCLUDE NULLS (
+    last_four FOR arm IN (
+        last_four, NULLIF(substr(routing_number,1,1),'0') AS d0, … AS d9))
+GROUP BY arm ORDER BY arm
+```
+
+Listing the real `last_four` among the arms is what frees the bare name: the pivot consumes that column, so DuckDB stops disambiguating the collision to `last_four_1` and the generated column answers to `last_four`. It then resolves against the catalog, its scope is no CTE, and every check above passes — while each row's value is whichever arm the author wrote. Ten arms recover a digit and nine groups a routing number. This is the alias exploit with a pivot for the indirection; a third review round caught it, and it returned a real routing digit at LOW before the fix.
+
+Deciding case by case would mean re-deriving each pivot output's provenance through the pivot's field list. Every wrong answer there is a value leak and every wrong answer the other way is an over-mask, so a pivot anywhere in the occurrence's scope declines the exemption — including the honest `IN (last_four, account_id)` form, whose count really is one bit per row. The conservative-fallback section below already takes this position for the `Star` a pivot source stops `qualify()` from expanding; this is the same reasoning reaching the one name that survives expansion.
+
+Three further properties bound what shipped:
+
+- **Per occurrence, not per column name.** `MAX(routing_number) FILTER (WHERE routing_number IS NOT NULL)` still masks — the aggregate's occurrence returns the value whatever the predicate does with its own.
+- **The column's own parent, not the enclosing condition.** `COALESCE(routing_number, '') IS NULL` is a nullity test on an expression over the column, and the sibling argument can carry the value, so that occurrence stays classified.
+- **A condition slot must lie between.** A bare `SELECT last_four IS NULL` keeps its class: the `Is` node *is* the projection, so nothing separates the test from the output. That is a deliberately conservative edge, not a claim that the bit differs.
+
+The opaque-node veto still outranks this rule, as it does the counting aggregate: `COLUMNS(…)` inside a condition takes the conservative fallback, because it distributes into sibling projections lineage never named.
 
 ### Conservative fallback
 

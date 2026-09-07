@@ -248,9 +248,10 @@ follow-up (filed), not part of this feature. `DemoService` calls the clean
 7. **Match + categorize** → `refresh(db, steps=["match", "categorize"])` against the
    built views. The `gsheet` step is never requested: demo generated its own raw data
    and must never trigger a live external pull. The `identity` step is also omitted;
-   identity proposal backfill is outside the demo's categorized-report payoff. A failure in *any* requested step (including
-   `matching_error` / `categorization_error`) aborts — demo's premise is a clean,
-   categorized pipeline.
+   identity proposal backfill is outside the demo's categorized-report payoff. A failure in *any* requested step aborts —
+   the SQLMesh apply through the result's top-level `error`, and the match and
+   categorize steps through the `error` on their own `stages` entry. Demo's
+   premise is a clean, categorized pipeline.
 8. **Doctor** → `DoctorService(db).run_all(full=True)` — exhaustive, not the default
    1000-row sample, so "doctor clean" is a guarantee rather than a heuristic on a
    3-year `family` run. `DemoResult.categorized_count` carries coverage into the

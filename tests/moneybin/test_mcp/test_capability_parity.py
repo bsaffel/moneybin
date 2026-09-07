@@ -616,6 +616,13 @@ def _seed_lot_parity(path: Path) -> None:
         )
 
 
+def _match_stage(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """The serialized match-step row of a refresh payload, or None when absent."""
+    return next(
+        (stage for stage in payload["stages"] if stage["step"] == "match"), None
+    )
+
+
 @pytest.mark.unit
 async def test_refresh_match_identity_has_same_observable_outcome(
     mcp_db: Path,
@@ -661,9 +668,11 @@ async def test_refresh_match_identity_has_same_observable_outcome(
     _select_database(mcp_path)
     mcp = (await refresh_run(steps=["match", "identity"])).to_dict()
     cli_data = json.loads(cli.stdout)["data"]
-    assert cli_data["matching_error"] == mcp["data"]["matching_error"]
+    cli_match = _match_stage(cli_data)
+    assert cli_match == _match_stage(mcp["data"])
     assert cli_data["identity_errors"] == mcp["data"]["identity_errors"]
-    assert cli_data["matching_error"] is None
+    assert cli_match is not None
+    assert cli_match["error"] is None
     assert cli_data["identity_errors"] == []
     cli_matches = _query_rows(cli_path, match_query)
     mcp_matches = _query_rows(mcp_path, match_query)

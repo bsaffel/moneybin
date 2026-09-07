@@ -9,6 +9,7 @@ from typing import cast
 from moneybin.adapters.refresh_adapters import (
     refresh_rate_gap_hints,
     refresh_step_actions,
+    refresh_steps_fields,
 )
 from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.database import get_database
@@ -21,7 +22,6 @@ from moneybin.privacy.payloads.imports import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.services.categorization.queries import CategorizationQueries
 from moneybin.services.inbox_service import InboxService
-from moneybin.services.refresh_outcome import refresh_steps_fields
 
 logger = logging.getLogger(__name__)
 

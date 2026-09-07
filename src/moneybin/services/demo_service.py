@@ -125,8 +125,14 @@ def _check_refresh(result: RefreshResult) -> None:
     `refresh()` reports crashes as returned errors rather than exceptions, so an
     unchecked call fails silently. Demo's whole premise is a clean, categorized
     pipeline — a half-built profile is worse than none.
+
+    Every step is checked, not a named few: a step added to the pipeline later
+    joins this gate on its own, rather than crashing into a demo that reports
+    success because nobody remembered to name it here.
     """
-    error = result.error or result.matching_error or result.categorization_error
+    error = result.error or next(
+        (stage.error for stage in result.stages if stage.error is not None), None
+    )
     if error:
         raise DemoRefreshFailedError(str(error))
 

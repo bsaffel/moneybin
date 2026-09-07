@@ -107,21 +107,27 @@ def doctor_db(db: Database) -> Database:
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
     """)  # noqa: S608 — test input, not user data
+    # is_transfer is written rather than left NULL: production computes it from
+    # two LEFT JOINs onto core.bridge_transfers and the expression never yields
+    # NULL, while a NULL here meets `NOT is_transfer` as NULL and silently drops
+    # the row from every transfer-excluding check.
     db.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, transaction_direction, description,
             transaction_type, is_pending, currency_code, source_type,
-            source_extracted_at, loaded_at,
+            is_transfer, source_extracted_at, loaded_at,
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month,
             transaction_year_quarter
         ) VALUES
         ('T1', 'ACC1', '2026-01-01', -50.00, 50.00, 'expense', 'Coffee',
-         'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         'DEBIT', false, 'USD', 'ofx', FALSE,
+         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 1, 1, 3, '2026-01', '2026-Q1'),
         ('T2', 'ACC1', '2026-01-02', 1000.00, 1000.00, 'income', 'Paycheck',
-         'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+         'CREDIT', false, 'USD', 'ofx', FALSE,
+         CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 1, 2, 4, '2026-01', '2026-Q1')
     """)  # noqa: S608 — test input, not user data
     return db
@@ -712,6 +718,64 @@ def test_categorization_coverage_passes_when_all_categorized(
 
 
 @pytest.mark.unit
+def test_categorization_coverage_ignores_archived_accounts(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed account's backlog must not drag the ratio down.
+
+    core.uncategorized_queue excludes archived accounts, so ``moneybin review``
+    never offers these rows. Counting them reported a coverage problem with no
+    action behind it: every route the recovery action suggests skips them.
+
+    The archived rows set ``is_transfer`` explicitly. Left NULL they would be
+    dropped by the transfer filter instead, and this would pass without ever
+    exercising the archived-account one.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions
+        SET category = 'Food & Drink'
+        WHERE transaction_id IN ('T1', 'T2')
+    """)  # noqa: S608 — test input, not user data
+    doctor_db.execute(
+        "INSERT INTO core.dim_accounts "
+        "(account_id, display_name, currency_code, archived) "
+        "VALUES ('ACC_CLOSED', 'Closed Card', 'USD', TRUE)"
+    )
+    for i in range(10):
+        doctor_db.execute(
+            """
+            INSERT INTO core.fct_transactions (
+                transaction_id, account_id, transaction_date, amount,
+                amount_absolute, transaction_direction, description,
+                transaction_type, is_pending, currency_code, source_type,
+                is_transfer, source_extracted_at, loaded_at,
+                transaction_year, transaction_month, transaction_day,
+                transaction_day_of_week, transaction_year_month,
+                transaction_year_quarter
+            ) VALUES (?, 'ACC_CLOSED', '2026-01-03', -10.00, 10.00, 'expense',
+                      'Old charge', 'DEBIT', false, 'USD', 'ofx',
+                      FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                      2026, 1, 3, 5, '2026-01', '2026-Q1')
+            """,  # noqa: S608 — test input, not user data
+            [f"T_CLOSED_{i}"],
+        )
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
+    svc = DoctorService(doctor_db)
+    report = svc.run_all()
+
+    cat = next(r for r in report.invariants if r.name == "categorization_coverage")
+    # Both live transactions carry a category; the 10 uncategorized rows all
+    # sit on the archived account. Counting them gives 2/12 = 17% and warns.
+    assert cat.status == "pass"
+
+
+@pytest.mark.unit
 def test_categorization_coverage_warns_when_below_50pct(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -781,10 +845,13 @@ def test_run_all_returns_expected_invariants(
     # pairs on account_id) + unproposed_cross_source_duplicates (the same two
     # sources *after* the link is accepted, which is where the overlap check
     # stops applying and dedup_reconciliation never applied)
+    # + rule_conflicts audit coverage (MB-124: the rule-conflict queue is a
+    # protected app.* table, so its writes carry the same coverage check)
     # + dim_accounts_reserved_label (the same fold reached through a source's
     # own account_label, which never touches app.*).
-    assert len(report.invariants) == 61
+    assert len(report.invariants) == 62
     names = [r.name for r in report.invariants]
+    assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
     assert "bridge_transfers_balanced" in names
@@ -1388,7 +1455,15 @@ def test_holdings_divergence_still_fires_beyond_relative_tolerance(
 
 
 @pytest.mark.unit
-def test_source_overlap_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Mixed-source investment history is a release gate, not an advisory.
+
+    `fail`, not `warn`: the derived positions for such an account are wrong
+    (double-counted lots, a cost basis mixing two accountings), and
+    ``core.dim_holdings`` withholds every figure it would otherwise publish
+    for them. A `warn` would let the pipeline report healthy while producing
+    numbers nobody should read.
+    """
     db.execute(
         """
         INSERT INTO raw.plaid_investment_transactions (
@@ -1414,8 +1489,14 @@ def test_source_overlap_warn(db: Database, monkeypatch: pytest.MonkeyPatch) -> N
         """  # noqa: S608 — test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
-    assert result.status == "warn"
+    assert result.status == "fail"
     assert result.affected_ids == ["ACC1"]
+    assert result.recovery_actions is not None
+    # Only the action that can actually leave one ledger behind. A disconnect
+    # is a remote-only operation — the rows it already pulled stay local, and
+    # this check reads exactly those rows — so offering it would hand the user
+    # a permanent disconnection and an unchanged failure.
+    assert [a.tool for a in result.recovery_actions] == ["import_revert"]
 
 
 @pytest.mark.unit

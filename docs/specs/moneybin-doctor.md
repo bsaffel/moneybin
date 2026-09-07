@@ -101,7 +101,7 @@ The `account_id` scoping is load-bearing in both. A source-native id is unique o
 
 Remedy: `moneybin refresh --step match --step transform` proposes the pairs and reflects any auto-merges into the ledger; `moneybin review --type matches` decides the rest. An accepted account-link merge now re-runs matching automatically (`AccountLinksService.rematch_after_merge()`), so this check should only fire on ledgers whose merges predate that behavior, or where a match pass failed.
 
-**`categorization_coverage`** — What percentage of non-transfer transactions have a category. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
+**`categorization_coverage`** — What percentage of the transactions that need a category have one. The population is the one `core.uncategorized_queue` is drawn from — confirmed transfer legs, archived accounts, and transactions whose account never resolved are excluded — so the ratio measures work `moneybin review` will actually offer, and it agrees with `moneybin transactions categorize stats`. Status is `warn` (not `fail`) when below 50%; `pass` otherwise. Never blocks exit 0 on its own.
 
 ### Investment reconciliation (M1G.4)
 
@@ -116,8 +116,54 @@ Nine checks covering the Plaid investment ledger. They split into two families: 
 | `investment_unreported_holdings` | Broker-reported positions with no `core.dim_holdings` row — the opposite direction, and the more dangerous one. |
 | `investment_phantom_holdings` | Open lots MoneyBin holds that the broker's newest snapshot no longer reports. Keyed on the per-pull holdings-snapshot receipt (below), not on the presence of holdings rows. |
 | `investment_unresolved_securities` | Ledger rows whose provider security key never resolved to a canonical security. These are dropped from cost basis entirely, so they must not stay silent. |
-| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history, where double-counting is possible. |
+| `investment_source_overlap` | Accounts carrying both manual and Plaid investment history. **The one investment check that `fail`s** — see below. |
 | `investment_conflicting_security_refs` | One provider security bound to two different canonical securities. The resolver refuses to repoint either binding on its own — a repoint is a reviewed merge, never a sync-time side effect — so it logs and moves on, which made the conflict visible only to whoever was reading server logs. |
+
+**`investment_source_overlap` is the only investment check that `fail`s, and
+the only one whose remedy is outside the pipeline.** Every other investment
+check `warn`s: it reports a position MoneyBin can still describe honestly, and
+`core.dim_holdings` withholds only the figures it cannot stand behind. Source
+overlap is different in kind — the account has two ledgers rather than one, so
+every event exists twice and lots, cost basis, gains and holdings are *all*
+wrong at once. There is no investment dedup to run (transactions have
+`prep.int_transactions__matched`; investments have no equivalent, and it is a
+future matching child), so no refresh, price pull, or reconciliation clears it.
+Only removing one of the two feeds does.
+
+`core.dim_holdings` withholds accordingly: every position in such an account
+carries `valuation_status = 'source_overlap'` and publishes no market value,
+unrealized gain, or pricing at all. That status is deliberately **not** spelled
+`withheld` — the four `withheld` clauses each say one position's share count is
+wrong and want it reconciled, and a reader who cannot tell the two apart cannot
+tell which repair applies.
+
+The check reads the RAW tables rather than the ledger, so it still fires before
+a first transform has run — the point at which the withhold does not yet exist.
+Its recipe emits exactly one `RecoveryAction`, `import_revert`, because that is
+the only remedy MoneyBin can run: `REVERT_TABLES['manual']` covers
+`raw.manual_investment_transactions`, so reverting the batch deletes those rows
+and leaves the account with one ledger. `sync_disconnect` is deliberately **not**
+offered beside it. It is a remote operation — `SyncService.disconnect_confirmed`
+calls `client.disconnect` and deletes nothing locally, as its own confirmation
+says ("Previously pulled local rows remain") — and this check joins exactly
+those retained rows, as does `core.dim_holdings`'s `source_overlap_accounts`.
+Following it would cost the user their connection permanently and leave the
+check failing and the holdings withheld, which is worse than no suggestion: a
+`RecoveryAction` is a claim that running it fixes the failure. The fact still
+reaches the user, in the remedy's rationale and this check's `detail`, because
+someone whose file import is the ledger they want will reach for a disconnect
+on their own.
+
+**Open gap:** there is no local counterpart for the synced feed —
+`raw.plaid_investment_transactions` carries no `import_id` and no tool deletes
+it — so a user who wants to keep the file import and drop the connector has no
+remedy today. Closing it needs a way to remove locally-retained rows for one
+connection.
+
+The remedy does not carry its identifying argument: the check knows account ids
+and not an `import_id`, so it names the missing argument in the rationale at
+`confidence: suggested`, which is the shape `RecoveryAction` prescribes for a
+value unknown at construction time.
 
 **The phantom check depends on `raw.plaid_investment_holdings_snapshots`.** Holdings *rows* cannot distinguish "this item reported and holds nothing" from "this item never reported" — an item whose pull returns an empty holdings array writes no rows at all, so a newest-snapshot join keyed on those rows silently keeps the last non-empty snapshot from an earlier pull. That reads a fully-liquidated broker as still holding its old positions: the largest possible net-worth overstatement, and precisely the phantom this check exists to catch. The receipt is written per (item, pull) **even when zero positions come back**, and both `core.dim_holdings` and this check derive "newest snapshot" from it.
 
@@ -228,7 +274,7 @@ moneybin system doctor [--verbose] [--output text|json]
 ✅ fct_transactions_sign_convention
 ❌ bridge_transfers_balanced — 2 violation(s)
    Run with --verbose for affected pair IDs
-⚠️  categorization_coverage — 43% of non-transfer transactions are uncategorized
+⚠️  categorization_coverage — 43% of the transactions needing a category are uncategorized
 ✅ dedup_reconciliation
 
 5 invariants checked across 14,203 transactions — 1 failing
@@ -254,7 +300,7 @@ With `--verbose`, affected IDs appear under each failing line:
       {"name": "fct_transactions_fk_integrity", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "fct_transactions_sign_convention", "status": "pass", "detail": null, "affected_ids": []},
       {"name": "bridge_transfers_balanced", "status": "fail", "detail": "2 violation(s)", "affected_ids": []},
-      {"name": "categorization_coverage", "status": "warn", "detail": "43% of non-transfer transactions are uncategorized", "affected_ids": []},
+      {"name": "categorization_coverage", "status": "warn", "detail": "43% of the transactions needing a category are uncategorized", "affected_ids": []},
       {"name": "dedup_reconciliation", "status": "pass", "detail": null, "affected_ids": []}
     ]
   },

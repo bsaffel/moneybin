@@ -79,6 +79,32 @@ logger = logging.getLogger(__name__)
 # already produces — so only the counting set needs an explicit check.
 _COUNTING_AGGS: tuple[type[exp.Expr], ...] = (exp.Count,)
 
+# (node type, argument) pairs naming an expression slot that holds a CONDITION
+# rather than a returned value. A BASE COLUMN NULL-tested inside one contributes
+# no class (MB-102) — see ``_only_null_tested`` for why nullity, and only
+# nullity, is safe there, and ``_capped_null_test`` for why the occurrence must
+# also resolve to a catalog column before the cap can be claimed.
+#
+#   * ``Filter.expression`` — the ``FILTER (WHERE …)`` clause, which narrows
+#     which rows the aggregate sees. ``Filter.this`` (the aggregate itself) is
+#     deliberately absent: `MAX(routing_number) FILTER (WHERE …)` returns the
+#     column.
+#   * ``If.this`` — the condition of ``CASE WHEN c THEN …`` and of DuckDB's
+#     ``IF(c, a, b)``. The returned value comes from ``true`` / ``false``. In a
+#     SIMPLE ``CASE x WHEN v``, this slot holds ``v`` — the compared value, not
+#     a boolean — which is still never returned.
+#   * ``Case.this`` — the operand slot ``x`` of that simple form, compared
+#     against each ``WHEN`` value; the result is the matching branch's. Note
+#     what this does and does not reach: a bare ``CASE routing_number WHEN …``
+#     is NOT exempt, because `_only_null_tested` requires the column's own
+#     parent to be the ``Is`` node. The slot matters only for a NULL test
+#     SITTING IN it — ``CASE (routing_number IS NULL) WHEN TRUE THEN …``.
+_CONDITION_SLOTS: tuple[tuple[type[exp.Expr], str], ...] = (
+    (exp.Filter, "expression"),
+    (exp.If, "this"),
+    (exp.Case, "this"),
+)
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -769,6 +795,99 @@ def _within_subquery(node: exp.Expr, stop: exp.Expr) -> bool:
     return False
 
 
+def _is_null_test_operand(node: exp.Expr) -> bool:
+    """True if ``node`` is the operand of an ``IS NULL`` / ``IS NOT NULL`` test.
+
+    Read from ``node``'s OWN parent, never from the enclosing condition:
+    ``COALESCE(routing_number, '') IS NULL`` is a null test on an expression
+    over the column, and its sibling argument can carry the value.
+    ``IS NOT NULL`` differs only by an ``exp.Not`` above the ``exp.Is``, which
+    the caller's upward walk passes through.
+    """
+    parent = node.parent
+    return isinstance(parent, exp.Is) and any(
+        isinstance(parent.args.get(side), exp.Null)
+        and parent.args.get(side) is not node
+        for side in ("this", "expression")
+    )
+
+
+def _only_null_tested(node: exp.Expr, stop: exp.Expr) -> bool:
+    """True if ``node`` reaches ``stop`` only as the operand of a NULL test.
+
+    **Why nullity and not "any condition".** The tempting rule — a column in a
+    condition slot contributes no class, because only the predicate's truth
+    value escapes — is FALSE, and a review caught it returning a real routing
+    number at LOW. A ``CASE`` branch chooses a literal, and nothing stops that
+    literal from being the digit the condition just tested:
+
+        CASE WHEN substr(routing_number,1,1)='0' THEN '0'
+             WHEN substr(routing_number,1,1)='1' THEN '1' … END
+
+    Ten branches recover one character and nine concatenated projections
+    recover the whole number, from one query. ``MAX('0') FILTER (WHERE
+    substr(routing_number,1,1)='0')`` does it with no ``CASE`` at all, and
+    ``CASE substr(routing_number,1,1) WHEN '0' THEN '0' …`` through the operand
+    slot. "Only compared" does not imply "cannot reach the output".
+
+    Nullity is exempt because it is capped, not because it is a condition:
+    ``IS NULL`` has ONE answer per row per base column WHOSE NULLNESS IS ITS
+    OWN, so N projections of it return N copies of one bit, while ``substr(col,
+    i, 1) = 'd'`` interrogates a different piece of the value each time. That
+    cap is what the general rule lacked.
+
+    Every qualifier in that sentence is load-bearing, and this function
+    establishes NONE of them — it answers position only. An alias names any
+    expression, so ``d IS NULL`` over ``NULLIF(substr(col,1,1),'0')`` is an
+    equality probe in nullity's spelling. The caller pairs this with
+    :func:`_capped_null_test`, which establishes that the occurrence is a
+    catalog column; neither is sufficient alone.
+
+    THE CAP IS NOT ABSOLUTE, and the exception is written down rather than
+    hidden. An outer join null-extends its optional side, so on that side
+    ``IS NULL`` reports the ``ON`` predicate — which the author writes — instead
+    of the column::
+
+        SELECT COUNT(*) FILTER (WHERE j.routing_number IS NULL) …
+        FROM core.dim_accounts a
+        LEFT JOIN core.dim_accounts j
+               ON j.account_id = a.account_id
+              AND substr(a.routing_number, 1, 1) = '0'
+
+    Ninety such arms recover the value. This is NOT a hole this rule opened: the
+    shipped counting-aggregate collapse has it identically — ``COUNT(j.account_id)``
+    over the same joins returns the same ninety bits at LOW, with no ``IS NULL``
+    anywhere — so closing it here alone would leave two behaviours for one
+    question. It belongs to whichever change closes both; see MB-179.
+
+    It also discloses nothing new. ``COUNT(col)`` has collapsed to AGGREGATE
+    since long before this rule, so ``COUNT(*) - COUNT(last_four)`` already
+    returns the NULL count unmasked — the exact number MB-102 asked for. This
+    accepts two further spellings of a published number rather than opening a
+    channel.
+
+    Terminates AT ``stop`` (the projection root) rather than at the tree root,
+    so a condition in an enclosing query can never exempt a column this
+    projection returns — the trap ``_within_subquery`` documents from the other
+    direction. A bare ``SELECT last_four IS NULL`` therefore stays classified:
+    its ``Is`` IS the projection, so no condition slot lies between.
+    """
+    if not _is_null_test_operand(node):
+        return False
+    child = node.parent
+    while child is not None and child is not stop:
+        parent = child.parent
+        if parent is None:
+            return False
+        if any(
+            isinstance(parent, kind) and parent.args.get(slot) is child
+            for kind, slot in _CONDITION_SLOTS
+        ):
+            return True
+        child = parent
+    return False
+
+
 def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
     """True if ``node`` sits inside a counting aggregate at or below ``stop``.
 
@@ -1058,6 +1177,104 @@ def _has_uncounted_opaque(inner: exp.Expr) -> bool:
     )
 
 
+def _reads_a_pivot(col: exp.Column, col_scope: Scope | None) -> bool:
+    """True if ``col``'s scope draws from a ``PIVOT`` / ``UNPIVOT`` source.
+
+    A pivot's output columns are computed by DuckDB at execution time, so the
+    catalog cannot say what one holds — only what its name would mean if the
+    name were the catalog's. An ``UNPIVOT`` names its generated value column,
+    and the author picks both that name and every arm feeding it::
+
+        SELECT COUNT(*) FILTER (WHERE last_four IS NULL) AS c
+        FROM core.dim_accounts
+        UNPIVOT INCLUDE NULLS (
+            last_four FOR arm IN (
+                last_four, NULLIF(substr(routing_number, 1, 1), '0') AS d0, …))
+        GROUP BY arm ORDER BY arm
+
+    Listing the real ``last_four`` among the arms is what frees the bare name:
+    the pivot consumes that column, so DuckDB stops suffixing the collision to
+    ``last_four_1`` and the generated column answers to ``last_four``. It
+    resolves against the catalog, its own scope is no CTE, and every check
+    ``_capped_null_test`` had passed — while each row's value is whichever arm
+    the author wrote. Ten arms recover a digit and nine such groups a routing
+    number, so this is the alias exploit again with a pivot for the
+    indirection.
+
+    Deciding case-by-case would mean re-deriving each pivot output's provenance
+    through ``exp.Pivot``'s field list; every wrong answer there is a value
+    leak, while every wrong answer here is an over-mask. So the presence of a
+    pivot anywhere in the column's scope declines the exemption, including for
+    the honest ``IN (last_four, account_id)`` form whose count really is one
+    bit per row. ``_OPAQUE_PROJECTION_NODES`` already takes this position for
+    the ``Star`` a pivot source stops ``qualify()`` from expanding; this is the
+    same reasoning reaching the one name that survives expansion.
+    """
+    root = col_scope.expression if col_scope is not None else col.root()
+    return root.find(exp.Pivot) is not None
+
+
+def _capped_null_test(
+    col: exp.Column,
+    inner: exp.Expr,
+    scope: Scope | None,
+    subscopes: dict[int, Scope],
+    alias_map: dict[str, tuple[str, str]],
+    ctx: _ResolveCtx,
+) -> bool:
+    """True if ``col`` is a NULL test whose one-bit cap actually holds.
+
+    ``_only_null_tested`` answers a question about POSITION; this adds the
+    question about IDENTITY, and the cap needs both. "One answer per row per
+    column" is a statement about a *base column* — an alias is a name for an
+    arbitrary expression, and the author picks the expression:
+
+        WITH t AS (SELECT NULLIF(substr(routing_number, 1, 1), '0') AS d …)
+        SELECT SUM(CASE WHEN d IS NULL THEN 1 ELSE 0 END) …
+
+    ``d IS NULL`` is spelled as nullity and means ``substr(…) = '0'``. The cap
+    becomes one bit per LITERAL THE AUTHOR CHOSE rather than one per column, and
+    ninety such projections recover a routing number from a single query — the
+    very reconstruction the nullity narrowing was supposed to close, one
+    indirection away. A review caught it; the position test alone cannot.
+
+    So the occurrence must resolve, HERE, to a catalog column with a known
+    class. Four failures are all treated the same, because each leaves the
+    identity unestablished rather than establishing a safe one:
+
+      * it resolves inside a CTE or derived-table scope (``_source_scope_of``),
+        where the projection behind the name may be any expression;
+      * its scope draws from a ``PIVOT`` / ``UNPIVOT`` source
+        (``_reads_a_pivot``), whose output columns DuckDB computes at execution
+        time — a generated column may ANSWER to a catalog name while holding
+        the author's expression;
+      * ``_column_key`` cannot name it at all — an unresolvable reference must
+        keep reaching ``_conservative_floor``, not be quietly dropped;
+      * the key resolves but carries no class, which is a coverage gap and the
+        floor's business, not a licence to exempt.
+
+    This is deliberately conservative about one honest case: a plain
+    ``SELECT routing_number AS d`` passed through a CTE really is a base column,
+    and its null test really is capped, but proving that means classifying the
+    CTE's own projection first. It masks instead — which is exactly what it did
+    before this rule existed, so nothing regresses.
+
+    It is deliberately PERMISSIVE about one dishonest case, which is the more
+    important half to know about: this establishes that the occurrence names a
+    catalog column, NOT that the row reaching it came from that table. An outer
+    join's optional side is a catalog column whose NULLness is the ``ON``
+    predicate's answer — see :func:`_only_null_tested` for the worked example
+    and for why it is not closed here.
+    """
+    col_scope = _scope_of_column(col, inner, scope, subscopes)
+    if _source_scope_of(col, col_scope) is not None:
+        return False
+    if _reads_a_pivot(col, col_scope):
+        return False
+    key = _column_key(col, alias_map, ctx.snapshot, ctx.shadowed)
+    return key is not None and _class_of_key(key) is not None
+
+
 def _resolve_projection(
     proj: exp.Expr,
     scope: Scope | None,
@@ -1119,13 +1336,48 @@ def _resolve_projection(
     # nothing is False, and the projection collapsed to AGGREGATE beside a row
     # count. Same shape of vacuous pass as the opaque-node veto above.
     bound: list[DataClass] = []
+    #
+    # The null-test exemption needs no identity check here, unlike the column
+    # loop below: a placeholder IS the value the caller bound, so there is no
+    # alias indirection to smuggle an expression behind. `NULLIF($acct, 'x') IS
+    # NULL` fails the position test anyway — the placeholder's own parent is the
+    # NULLIF, not the Is.
     for node in inner.find_all(*PLACEHOLDER_NODES):
-        if _within_counting_agg(node, inner):
+        if _within_counting_agg(node, inner) or _only_null_tested(node, inner):
             continue
         # A positional `?` names nothing, so no map can answer for it; a named one
         # absent from the map was never declared. Both fail closed.
         found = ctx.placeholder_classes.get(placeholder_name(node))
         bound.append(FAIL_CLOSED_CLASS if found is None else found)
+
+    # Built only when the projection actually nests a SELECT (a scalar or IN
+    # subquery); the common case pays nothing. Built BEFORE the column list
+    # because the null-test exemption below needs to resolve each occurrence,
+    # and resolving needs the subquery scopes.
+    subscopes: dict[int, Scope] = (
+        _subquery_scopes_by_select(scope)
+        if scope is not None and inner.find(exp.Select) is not None
+        else {}
+    )
+
+    # Columns whose value can reach the output. An occurrence only NULL-tested
+    # inside a condition is dropped here, ONCE, so every rule below reads the
+    # same list — two notions of "which columns count" beside each other is how
+    # the vacuous passes above got in.
+    #
+    # Both halves of the guard are load-bearing: `_only_null_tested` answers
+    # where the occurrence sits, `_capped_null_test` answers what it names. The
+    # position alone is not enough — an alias over `NULLIF(...)` is a nullity
+    # test in spelling only, and dropping it reopened the reconstruction this
+    # whole rule exists to prevent.
+    cols = [
+        c
+        for c in inner.find_all(exp.Column)
+        if not (
+            _only_null_tested(c, inner)
+            and _capped_null_test(c, inner, scope, subscopes, alias_map, ctx)
+        )
+    ]
 
     # A counting aggregate at the projection's TOP level collapses values to a
     # count — but it only governs the projection when EVERY column reference is
@@ -1140,19 +1392,28 @@ def _resolve_projection(
             isinstance(n, _COUNTING_AGGS) and not _within_subquery(n, inner)
             for n in inner.find_all(exp.AggFunc)
         )
-        and not any(
-            not _within_counting_agg(c, inner) for c in inner.find_all(exp.Column)
-        )
+        and not any(not _within_counting_agg(c, inner) for c in cols)
         and not bound
     ):
         return DataClass.AGGREGATE
 
-    cols = list(inner.find_all(exp.Column))
     if not cols:
         # THE INVARIANT: a projection is classified LOW only when we positively
-        # established what it is. "No exp.Column node" is NOT that proof — it
-        # conflates a genuine literal with an expression we could not
+        # established what it is. "No surfacing exp.Column" is NOT that proof —
+        # it conflates a genuine literal with an expression we could not
         # decompose, and the two must not share an answer.
+        #
+        # Reaching here with an emptied `cols` IS that proof in one further
+        # case: every column was dropped by the null-test guard, which is a
+        # positive finding about each occurrence — it resolved to a known
+        # catalog column AND sits as the operand of a NULL test inside a
+        # condition, so it yields one bit, capped except on an outer join's
+        # optional side (`_only_null_tested`). That is why the guard resolves
+        # before it drops (`_capped_null_test`): a drop keyed on position alone
+        # would empty this list for occurrences nothing was ever established
+        # about, and this branch would read that silence as proof. It did — a
+        # `routing_number` alias past `_MAX_SCOPE_DEPTH` answered AGGREGATE
+        # while the same projection without the null test answered UNRESOLVED.
         #
         # The opacity gate is `_has_uncounted_opaque` above, and it is the ONLY
         # one: reaching this line already proves every opaque node here is a
@@ -1167,14 +1428,6 @@ def _resolve_projection(
         # A bound placeholder is the one thing here that is neither a literal nor
         # a column, so it answers for the projection when nothing else can.
         return _combined_class(bound) if bound else DataClass.AGGREGATE
-
-    # Built only when the projection actually nests a SELECT (a scalar or IN
-    # subquery); the common case pays nothing.
-    subscopes: dict[int, Scope] = (
-        _subquery_scopes_by_select(scope)
-        if scope is not None and inner.find(exp.Select) is not None
-        else {}
-    )
 
     classes: list[DataClass] = []
     for col in cols:

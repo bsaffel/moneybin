@@ -37,6 +37,7 @@ from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     CORE_UNCATEGORIZED_QUEUE,
+    DIM_ACCOUNTS,
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     MATCH_DECISIONS,
@@ -46,6 +47,39 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# The population core.uncategorized_queue is drawn from, minus its own
+# `category IS NULL` filter: not a confirmed transfer leg, on an account that
+# is not archived, and resolving to a real account — the queue INNER JOINs
+# dim_accounts, so a transaction whose account_id never resolved is absent from
+# it and must be absent from any denominator compared against it.
+#
+# Repeated here rather than read off the view because the view holds only the
+# uncategorized rows and a coverage denominator needs the ones it filtered out.
+# The clauses are the view's, character for character, and
+# test_uncategorized_matches_the_canonical_queue builds that view from the
+# shipped model file and compares the two counts — so a divergence fails a test
+# instead of quietly publishing a coverage figure the review queue contradicts.
+_CATEGORIZABLE_POPULATION = f"""
+FROM {FCT_TRANSACTIONS.full_name} AS t
+INNER JOIN {DIM_ACCOUNTS.full_name} AS a
+  ON t.account_id = a.account_id
+WHERE NOT t.is_transfer AND NOT a.archived
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationCoverage:
+    """How much of the work the review queue implies has been done.
+
+    ``categorizable`` is the whole population; the other two partition it, so
+    the three always reconcile. ``uncategorized`` is what ``moneybin review``
+    will actually hand the user.
+    """
+
+    categorizable: int
+    categorized: int
+    uncategorized: int
 
 
 @dataclass(slots=True)
@@ -453,18 +487,47 @@ class CategorizationQueries:
         except Exception:  # noqa: BLE001 — the view is absent before first refresh
             return 0
 
+    def coverage(self) -> CategorizationCoverage:
+        """Count what needs categorizing, and how much of it already is.
+
+        Scoped to :data:`_CATEGORIZABLE_POPULATION` — a coverage figure over
+        rows nobody is ever asked to categorize describes no work. A category
+        counts however it arrived: a row whose source file supplied its own
+        category text is one ``moneybin review`` skips, so coverage has to
+        agree that it is done.
+
+        Raises:
+            duckdb.CatalogException: the core layer is not built yet. Callers
+                decide whether that means "nothing to report" or "cannot
+                check" — the two surfaces here answer differently.
+        """
+        row = self._db.execute(
+            f"""
+            SELECT
+                COUNT(*) AS categorizable,
+                COUNT(*) FILTER (WHERE t.category IS NULL) AS uncategorized
+            {_CATEGORIZABLE_POPULATION}
+            """  # noqa: S608  # TableRef constants, no user input interpolated
+        ).fetchone()
+        categorizable = int(row[0]) if row else 0
+        uncategorized = int(row[1]) if row else 0
+        return CategorizationCoverage(
+            categorizable=categorizable,
+            categorized=categorizable - uncategorized,
+            uncategorized=uncategorized,
+        )
+
     def categorization_stats(self) -> dict[str, int | float]:
         """Get summary statistics about categorization coverage.
 
         Returns:
             Dict with total, categorized, uncategorized counts and
-            breakdown by categorized_by source.
+            breakdown by categorized_by source. All of them describe the
+            population that needs categorizing, not the whole ledger — see
+            :meth:`coverage`.
         """
         try:
-            total_result = self._db.execute(
-                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"
-            ).fetchone()
-            total = total_result[0] if total_result else 0
+            counts = self.coverage()
         except duckdb.CatalogException:
             return {
                 "total": 0,
@@ -473,44 +536,54 @@ class CategorizationQueries:
                 "pct_categorized": 0,
             }
 
-        try:
-            categorized_result = self._db.execute(
-                f"SELECT COUNT(*) FROM {TRANSACTION_CATEGORIES.full_name}"
-            ).fetchone()
-            categorized = categorized_result[0] if categorized_result else 0
-        except duckdb.CatalogException:
-            categorized = 0
-
-        uncategorized = total - categorized
-        pct = round((categorized / total * 100), 1) if total > 0 else 0.0
+        total = counts.categorizable
+        pct = round((counts.categorized / total * 100), 1) if total > 0 else 0.0
 
         stats: dict[str, int | float] = {
             "total": total,
-            "categorized": categorized,
-            "uncategorized": uncategorized,
+            "categorized": counts.categorized,
+            "uncategorized": counts.uncategorized,
             "pct_categorized": pct,
         }
 
-        # Breakdown by source. `categorized_by='rule'` is written by BOTH the
-        # rule engine and apply_merchant_categories — the latter deliberately
-        # stamps the 'rule' method rather than the merchant's authoring
-        # provenance, so machine writes don't leak into the auto-rule
-        # override-detection query (which counts 'user'/'ai' as human
-        # corrections). Correct storage, but it made a lone `by_rule: 298`
-        # unreconcilable with an empty rules[] list. Split them for reporting
-        # using columns already on the row — the persisted value is untouched.
+        # Breakdown by source, over the same population as the three counts
+        # above so the buckets still sum to `categorized` — the CLI prints them
+        # directly beneath it, and parts that don't reach the whole are the
+        # defect this population change exists to fix. Two consequences of
+        # scoping it that way: a categorization orphaned from its transaction
+        # stops counting as coverage (doctor keeps a separate invariant for
+        # those), and a row whose category came from its source file's own
+        # column gets the `source_supplied` bucket, since it is categorized but
+        # no assignment method describes it.
+        #
+        # `categorized_by='rule'` is written by BOTH the rule engine and
+        # apply_merchant_categories — the latter deliberately stamps the 'rule'
+        # method rather than the merchant's authoring provenance, so machine
+        # writes don't leak into the auto-rule override-detection query (which
+        # counts 'user'/'ai' as human corrections). Correct storage, but it made
+        # a lone `by_rule: 298` unreconcilable with an empty rules[] list. Split
+        # them for reporting using columns already on the row — the persisted
+        # value is untouched.
         try:
             source_rows = self._db.execute(
                 f"""
+                WITH categorizable AS (
+                  SELECT t.transaction_id, t.category
+                  {_CATEGORIZABLE_POPULATION}
+                )
                 SELECT
                   CASE
-                    WHEN categorized_by = 'rule' AND rule_id IS NULL
-                         AND merchant_id IS NOT NULL
+                    WHEN c.transaction_id IS NULL THEN 'source_supplied'
+                    WHEN c.categorized_by = 'rule' AND c.rule_id IS NULL
+                         AND c.merchant_id IS NOT NULL
                     THEN 'merchant_map'
-                    ELSE categorized_by
+                    ELSE c.categorized_by
                   END AS source,
                   COUNT(*) AS cnt
-                FROM {TRANSACTION_CATEGORIES.full_name}
+                FROM categorizable AS t
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS c
+                  ON t.transaction_id = c.transaction_id
+                WHERE t.category IS NOT NULL
                 GROUP BY 1
                 ORDER BY cnt DESC
                 """  # noqa: S608  # TableRef constant
@@ -522,7 +595,15 @@ class CategorizationQueries:
 
         # Plaid coverage gap (Tier-2b observability): count Plaid transactions
         # carrying a PFC code with no bridge mapping — the long-tail codes the
-        # two-tier bridge doesn't cover. Reads prep.stg_plaid__transactions (one
+        # two-tier bridge doesn't cover.
+        #
+        # Deliberately NOT scoped to _CATEGORIZABLE_POPULATION like everything
+        # above it. This measures the bridge, not the user's backlog, and a
+        # code's coverage does not depend on the transaction sitting on an
+        # archived account or being half of a transfer — narrowing it would
+        # under-report the gap and answer a question nobody asked. It can
+        # therefore exceed `total`, which is why both payload docstrings carve
+        # it out of their reconciliation claim rather than restating it. Reads prep.stg_plaid__transactions (one
         # row per Plaid transaction) — the natural grain for a per-transaction
         # coverage count, and a light view over the raw.plaid table rather than
         # the heavy multi-source int_transactions__merged pipeline (a stats call

@@ -1658,13 +1658,19 @@ async def test_links_set_accept_reports_what_the_rematch_found(
     """
     from moneybin.mcp.tools import accounts as accounts_module
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(
             applied=True,
             duration_seconds=0.0,
-            matches_auto_merged=2,
-            matches_pending_review=5,
+            stages=(
+                StageOutcome(
+                    step="match",
+                    ran=True,
+                    counts={"auto_merged": 2, "pending_review": 5},
+                ),
+            ),
         )
 
     def _verify(_binding: object) -> None:
@@ -1700,9 +1706,15 @@ async def test_links_set_accept_reports_a_retired_transfer_in_data(
     """
     from moneybin.mcp.tools import accounts as accounts_module
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
-        return RefreshResult(applied=True, duration_seconds=0.0, transfers_retired=3)
+        return RefreshResult(
+            applied=True,
+            duration_seconds=0.0,
+            transfers_retired=3,
+            stages=(StageOutcome(step="match", ran=True),),
+        )
 
     def _verify(_binding: object) -> None:
         return None
@@ -1757,14 +1769,20 @@ async def test_links_set_accept_flags_a_failed_rebuild(
     """
     from moneybin.mcp.tools import accounts as accounts_module
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(
             applied=False,
             duration_seconds=1.0,
             error="sqlmesh apply failed",
-            matches_auto_merged=2,
-            matches_pending_review=5,
+            stages=(
+                StageOutcome(
+                    step="match",
+                    ran=True,
+                    counts={"auto_merged": 2, "pending_review": 5},
+                ),
+            ),
         )
 
     def _verify(_binding: object) -> None:
@@ -1794,21 +1812,22 @@ async def test_links_set_accept_flags_a_match_pass_that_never_ran(
     """A skipped pass reports zeros that mean "not examined", not "nothing found".
 
     ``refresh`` skips ``match`` outright when its views are missing or stale,
-    and every count on the result stays at its default. Nothing in ``data``
-    separates that from a pass that ran and found no duplicates, so the caveat
-    is the only thing standing between the agent and reporting a merge clean
-    over rows the matcher never looked at. The CLI's own ``matching_skipped``
-    branch is a separate implementation with a separate test; this one covers
-    the MCP surface.
+    and that stage comes back ``ran=False`` carrying no counts at all. Nothing
+    in ``data`` separates that from a pass that ran and found no duplicates, so
+    the caveat is the only thing standing between the agent and reporting a
+    merge clean over rows the matcher never looked at. The CLI reads the same
+    ``ran=False`` stage in a separate implementation with its own test; this
+    one covers the MCP surface.
     """
     from moneybin.mcp.tools import accounts as accounts_module
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     def _accepted(*_args: object, **_kw: object) -> RefreshResult:
         return RefreshResult(
             applied=True,
             duration_seconds=1.0,
-            matching_skipped=True,
+            stages=(StageOutcome(step="match", ran=False),),
         )
 
     def _verify(_binding: object) -> None:

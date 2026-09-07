@@ -680,15 +680,19 @@ def test_sync_pull_reports_the_best_effort_steps_its_refresh_ran(
     backfill on the user's behalf. It reported only the SQLMesh apply, so a
     provider outage mid-pull looked exactly like a clean pull.
     """
-    from moneybin.services.refresh_outcome import RefreshStepOutcome
+    from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
     service = MagicMock()
     service.pull.return_value = _fake_pull_result(
         refresh_steps=RefreshStepOutcome(
-            matching_error="matcher blew up",
-            categorization_error="categorizer blew up",
+            stages=(
+                StageOutcome(step="match", ran=True, error="matcher blew up"),
+                StageOutcome(step="categorize", ran=True, error="categorizer blew up"),
+                # ran=False: a rates step that crashed produced no backfill, so
+                # it never got as far as naming a pair.
+                StageOutcome(step="rates", ran=False, error="provider timeout"),
+            ),
             identity_errors=("merchants",),
-            rate_backfill_error="provider timeout",
         )
     )
     mock_build.return_value.__enter__.return_value = service
@@ -710,12 +714,23 @@ def test_sync_pull_json_carries_the_refresh_step_outcome(
     Keys are spelled as ``refresh_envelope`` spells them, so a caller reading
     `sync pull` and `refresh_run` does not learn two names for one outcome.
     """
-    from moneybin.services.refresh_outcome import RefreshStepOutcome
+    from moneybin.services.refresh_outcome import RefreshStepOutcome, StageOutcome
 
     service = MagicMock()
     service.pull.return_value = _fake_pull_result(
         refresh_steps=RefreshStepOutcome(
-            rates_written=4,
+            stages=(
+                StageOutcome(
+                    step="match",
+                    ran=True,
+                    counts={
+                        "auto_merged": 0,
+                        "pending_review": 0,
+                        "pending_transfers": 0,
+                    },
+                ),
+                StageOutcome(step="rates", ran=True, counts={"rates_written": 4}),
+            ),
             rate_pairs_unsupported=("EUR/XTS",),
         )
     )
@@ -724,6 +739,9 @@ def test_sync_pull_json_carries_the_refresh_step_outcome(
 
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)["data"]
-    assert payload["rates_written"] == 4
+    stages = {s["step"]: s for s in payload["stages"]}
+    assert stages["rates"]["counts"]["rates_written"] == 4
     assert payload["rate_pairs_unsupported"] == ["EUR/XTS"]
-    assert payload["matching_error"] is None
+    # A step that ran clean still gets a row carrying a null error — it is not
+    # dropped, so an agent can tell it apart from one that was never asked for.
+    assert stages["match"]["error"] is None

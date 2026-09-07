@@ -12,7 +12,8 @@ Tier derivation summary:
   - ``RuleRow``                    → Tier.HIGH (TXN_AMOUNT via min/max_amount;
                                     account_id = RECORD_ID per spec D6)
   - ``CategorizeRulesPayload``     → Tier.HIGH (via RuleRow)
-  - ``RulesCreatePayload``         → Tier.LOW  (AGGREGATE only — counts + IDs)
+  - ``RulesCreatePayload``         → Tier.MEDIUM (USER_NOTE via
+                                    RuleConflictDetail.name)
   - ``RulesDeletePayload``         → Tier.LOW  (RECORD_ID — rule_id only)
   - ``PendingTxnRow``              → Tier.HIGH (TXN_AMOUNT via amount;
                                     account_id = RECORD_ID per spec D6)
@@ -34,7 +35,7 @@ middleware must not mask further.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Annotated, Literal
 
@@ -154,7 +155,23 @@ CategorizationRulesCoarsePayload = (
 
 @dataclass(frozen=True, slots=True)
 class CategorizeStatsPayload:
-    """Payload for transactions_categorize_stats — aggregate counts only."""
+    """Payload for transactions_categorize_stats — aggregate counts only.
+
+    The coverage counts — ``total_transactions``, ``categorized``,
+    ``uncategorized``, ``percent_categorized``, ``by_source`` — cover the
+    population core.uncategorized_queue is drawn from, so
+    ``total_transactions`` is how many transactions need a category, not how
+    many exist. The three counts reconcile and ``by_source`` sums to
+    ``categorized``.
+
+    ``plaid_unmapped`` is outside that reconciliation and is ledger-wide by
+    design. It counts Plaid rows whose category code has no bridge mapping,
+    which measures the bridge rather than this user's backlog: whether a code
+    is covered does not depend on the transaction sitting on an archived
+    account or being half of a transfer. So it can exceed
+    ``total_transactions``, and a reader must not subtract it from anything
+    here.
+    """
 
     total_transactions: Annotated[int, DataClass.AGGREGATE]
     categorized: Annotated[int, DataClass.AGGREGATE]
@@ -239,6 +256,22 @@ class CategorizeCommitPayload:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class RuleConflictDetail:
+    """One refused proposal, explained where the caller submitted it.
+
+    Typed rather than a ``dict[str, str]`` so each field carries its own class:
+    ``name`` is the rule name its author wrote — USER_NOTE, exactly as
+    ``RuleRow.name`` and ``app.rule_conflicts.proposed_name`` are — while the
+    ids and the category-naming ``reason`` stay LOW.
+    """
+
+    conflict_id: Annotated[str, DataClass.RECORD_ID]
+    name: Annotated[str, DataClass.USER_NOTE]
+    existing_rule_id: Annotated[str, DataClass.RECORD_ID]
+    reason: Annotated[str, DataClass.CATEGORY]
+
+
 @row_set("rule_ids")
 @dataclass(frozen=True, slots=True)
 class RulesCreatePayload:
@@ -249,6 +282,11 @@ class RulesCreatePayload:
     skipped: Annotated[int, DataClass.AGGREGATE]
     rule_ids: Annotated[list[str], DataClass.RECORD_ID]
     error_details: Annotated[list[dict[str, str]], DataClass.AGGREGATE]
+    conflicts: Annotated[int, DataClass.AGGREGATE] = 0
+    conflict_ids: Annotated[list[str], DataClass.RECORD_ID] = field(
+        default_factory=list
+    )
+    conflict_details: list[RuleConflictDetail] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

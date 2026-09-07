@@ -24,6 +24,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from moneybin.privacy.payloads.system import RefreshStageRow
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.row_set import row_set
 
@@ -74,19 +75,17 @@ class SyncPullPayload:
     transforms_error: Annotated[str | None, DataClass.DESCRIPTION]
     # Accepted transfers this pull's refresh reversed (AGGREGATE, Tier.LOW).
     transfers_retired: Annotated[int, DataClass.AGGREGATE] = 0
-    # What the pull's own refresh did in its four best-effort steps. Spelled
-    # flat, and named exactly as `RefreshRunPayload` names them, so an agent
-    # reading sync_pull and refresh_run learns one vocabulary. `transforms_error`
-    # above covers only the SQLMesh apply; these are the steps it cannot report.
-    # A currency pair is CURRENCY (Tier.LOW): it names no account and discloses
-    # no amount. `rates_written` is None when the rates step did not run —
-    # distinct from 0, which means it ran and had nothing to fetch.
-    matching_error: Annotated[str | None, DataClass.DESCRIPTION] = None
-    categorization_error: Annotated[str | None, DataClass.DESCRIPTION] = None
+    # What the pull's own refresh did, step by step. Named exactly as
+    # `RefreshRunPayload` names them, and built by the same flattener, so an
+    # agent reading sync_pull and refresh_run learns one vocabulary.
+    # `transforms_error` above covers only the SQLMesh apply; `stages` carries
+    # the steps it cannot report — each one's counts, its error, and whether it
+    # ran at all. A currency pair is CURRENCY (Tier.LOW): it names no account
+    # and discloses no amount.
+    stages: list[RefreshStageRow] = field(default_factory=list)
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
         default_factory=list
     )
-    rates_written: Annotated[int | None, DataClass.AGGREGATE] = None
     rate_pairs_failed: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
@@ -96,7 +95,6 @@ class SyncPullPayload:
     rate_pairs_discarded: Annotated[list[str], DataClass.CURRENCY] = field(
         default_factory=list
     )
-    rate_backfill_error: Annotated[str | None, DataClass.DESCRIPTION] = None
     securities_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     investment_transactions_loaded: Annotated[int, DataClass.AGGREGATE] = 0
     holdings_loaded: Annotated[int, DataClass.AGGREGATE] = 0

@@ -83,34 +83,64 @@ def _core_tables(db: Database) -> None:  # pyright: ignore[reportUnusedFunction]
     create_core_tables(db)
 
 
+def _reflect_categorizations_into_fact(db: Database) -> None:
+    """Mirror app.transaction_categories onto the fact table's category column.
+
+    core.fct_transactions is a SQLMesh view in production, and its category
+    column COALESCEs the categorization join — so a row in
+    app.transaction_categories (NOT NULL category) always shows up there. The
+    unit-test stand-in is a plain table with no such join, so a categorization
+    written through a production code path leaves the fact column NULL and
+    anything reading it sees an uncategorized row. This performs the join the
+    view would have.
+    """
+    db.execute(
+        """
+        UPDATE core.fct_transactions AS t
+        SET category = c.category
+        FROM app.transaction_categories AS c
+        WHERE c.transaction_id = t.transaction_id AND t.category IS NULL
+        """  # noqa: S608 — test input, not user data
+    )
+
+
 @pytest.fixture()
 def db_with_transactions(db: Database) -> Database:
     """DB with sample transactions in core.fct_transactions."""
+    # The accounts these transactions belong to, and an explicit is_transfer.
+    # Coverage figures are scoped to core.uncategorized_queue's population,
+    # which INNER JOINs core.dim_accounts and filters on `NOT is_transfer` —
+    # transactions with neither model a database that cannot exist, and would
+    # silently count as zero.
+    db.conn.execute("""
+        INSERT INTO core.dim_accounts (account_id, display_name, archived)
+        VALUES ('ACC001', 'Checking', false), ('ACC002', 'Savings', false)
+    """)
     db.conn.execute("""
         INSERT INTO core.fct_transactions (
             transaction_id, account_id, transaction_date, amount,
             amount_absolute, transaction_direction, description, memo,
             transaction_type, is_pending, currency_code, source_type,
-            source_extracted_at, loaded_at,
+            is_transfer, source_extracted_at, loaded_at,
             transaction_year, transaction_month, transaction_day,
             transaction_day_of_week, transaction_year_month,
             transaction_year_quarter
         ) VALUES
         ('TXN001', 'ACC001', '2025-06-15', -4.50, 4.50, 'expense',
          'SQ *STARBUCKS #1234 SEATTLE WA', 'Coffee', 'DEBIT', false,
-         'USD', 'ofx', '2025-01-24', CURRENT_TIMESTAMP,
+         'USD', 'ofx', false, '2025-01-24', CURRENT_TIMESTAMP,
          2025, 6, 15, 0, '2025-06', '2025-Q2'),
         ('TXN002', 'ACC001', '2025-06-20', 3000.00, 3000.00, 'income',
-         'ACME CORP PAYROLL', 'Payroll', 'CREDIT', false, 'USD', 'ofx',
+         'ACME CORP PAYROLL', 'Payroll', 'CREDIT', false, 'USD', 'ofx', false,
          '2025-01-24', CURRENT_TIMESTAMP,
          2025, 6, 20, 5, '2025-06', '2025-Q2'),
         ('TXN003', 'ACC001', '2025-06-25', -52.13, 52.13, 'expense',
-         'AMZN MKTP US*ABC123', 'Amazon order', 'DEBIT', false, 'USD', 'ofx',
+         'AMZN MKTP US*ABC123', 'Amazon order', 'DEBIT', false, 'USD', 'ofx', false,
          '2025-01-24', CURRENT_TIMESTAMP,
          2025, 6, 25, 3, '2025-06', '2025-Q2'),
         ('TXN004', 'ACC002', '2025-06-26', -150.00, 150.00, 'expense',
          'WHOLEFDS MKT 10234 AUSTIN TX 78701', 'Groceries', 'DEBIT', false,
-         'USD', 'ofx', '2025-01-24', CURRENT_TIMESTAMP,
+         'USD', 'ofx', false, '2025-01-24', CURRENT_TIMESTAMP,
          2025, 6, 26, 4, '2025-06', '2025-Q2')
     """)
     return db
@@ -724,6 +754,7 @@ class TestGetCategorizationStats:
             (transaction_id, category, categorized_by)
             VALUES ('TXN001', 'Food & Drink', 'user')
         """)
+        _reflect_categorizations_into_fact(db)
         stats = get_categorization_stats(db)
         assert stats["total"] == 4
         assert stats["categorized"] == 1
@@ -740,6 +771,15 @@ class TestGetCategorizationStats:
         That's correct storage, but it made stats report "rule: 298" against
         an empty rules[] list, which reads to an agent as data loss.
         """
+        # The transactions being categorized. The breakdown is scoped to the
+        # population that needs categorizing, so a categorization with no
+        # surviving transaction is not counted as coverage at all.
+        db.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+            "VALUES ('acct', 'Checking', false)"
+        )
+        _insert_coverage_txn(db, "t_1", account_id="acct")
+        _insert_coverage_txn(db, "t_2", account_id="acct")
         # A real rule write: rule_id set.
         db.execute(
             "INSERT INTO app.transaction_categories "
@@ -752,11 +792,178 @@ class TestGetCategorizationStats:
             "(transaction_id, category, categorized_by, rule_id, merchant_id) "
             "VALUES ('t_2', 'Groceries', 'rule', NULL, 'm_1')"
         )
+        _reflect_categorizations_into_fact(db)
 
         stats = get_categorization_stats(db)
 
         assert stats["by_rule"] == 1
         assert stats["by_merchant_map"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Coverage over the population that needs categorizing
+# ---------------------------------------------------------------------------
+
+
+def _insert_coverage_txn(
+    db: Database,
+    transaction_id: str,
+    *,
+    account_id: str = "ACC_OPEN",
+    category: str | None = None,
+    is_transfer: bool = False,
+) -> None:
+    """Insert one core.fct_transactions row for the coverage-population tests.
+
+    ``is_transfer`` is written explicitly rather than left to default NULL.
+    Production derives it from two LEFT JOINs onto core.bridge_transfers and
+    the expression is never NULL there, but a NULL here meets the queue's
+    ``NOT is_transfer`` as NULL and drops the row — the queue would read empty
+    and every assertion below would pass without exercising anything.
+    """
+    db.execute(
+        """
+        INSERT INTO core.fct_transactions (
+            transaction_id, account_id, transaction_date, amount,
+            amount_absolute, transaction_direction, description,
+            transaction_type, is_pending, currency_code, source_type,
+            category, is_transfer, source_extracted_at, loaded_at,
+            transaction_year, transaction_month, transaction_day,
+            transaction_day_of_week, transaction_year_month,
+            transaction_year_quarter
+        ) VALUES (?, ?, '2026-02-01', -25.00, 25.00, 'expense', 'Test txn',
+                  'DEBIT', false, 'USD', 'ofx', ?, ?,
+                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
+                  2026, 2, 1, 0, '2026-02', '2026-Q1')
+        """,  # noqa: S608 — test input, not user data
+        [transaction_id, account_id, category, is_transfer],
+    )
+
+
+@pytest.fixture()
+def db_with_coverage_population(db: Database) -> Database:
+    """Every row shape the coverage figures have to classify, exactly once.
+
+    Five rows are eligible for categorization — an open account, not a
+    transfer leg. Two of those carry no category, two were categorized inside
+    MoneyBin, and one arrived from its source file already carrying category
+    text. Three further rows exist only to be excluded: a transfer leg, a row
+    on an archived account, and a row whose account never resolved. One
+    orphaned categorization points at a transaction that no longer exists.
+    """
+    for account_id, archived in (("ACC_OPEN", False), ("ACC_ARCHIVED", True)):
+        db.execute(
+            "INSERT INTO core.dim_accounts "
+            "(account_id, display_name, currency_code, archived) "
+            "VALUES (?, ?, 'USD', ?)",
+            [account_id, f"Account {account_id}", archived],
+        )
+
+    _insert_coverage_txn(db, "T_BARE_1")
+    _insert_coverage_txn(db, "T_BARE_2")
+    _insert_coverage_txn(db, "T_USER", category="Groceries")
+    _insert_coverage_txn(db, "T_RULE", category="Shopping")
+    _insert_coverage_txn(db, "T_FROM_FILE", category="Utilities")
+    _insert_coverage_txn(db, "T_TRANSFER", is_transfer=True)
+    _insert_coverage_txn(db, "T_ARCHIVED", account_id="ACC_ARCHIVED")
+    _insert_coverage_txn(db, "T_NO_ACCOUNT", account_id="ACC_GONE")
+
+    # T_FROM_FILE deliberately gets no row here — its category came from the
+    # source file's own column, which is the whole point of it. T_VANISHED has
+    # no fact row, the orphan shape doctor keeps a separate invariant for.
+    db.execute(
+        "INSERT INTO app.transaction_categories "
+        "(transaction_id, category, categorized_by, rule_id) VALUES "
+        "('T_USER', 'Groceries', 'user', NULL), "
+        "('T_RULE', 'Shopping', 'rule', 'r_1'), "
+        "('T_VANISHED', 'Food', 'user', NULL)"
+    )
+    install_uncategorized_queue_view(db)
+    return db
+
+
+class TestCoverageOverWhatNeedsCategorizing:
+    """The coverage figures describe the queue's population, not the whole ledger."""
+
+    @pytest.mark.unit
+    def test_the_population_excludes_rows_nobody_is_asked_to_categorize(
+        self, db_with_coverage_population: Database
+    ) -> None:
+        stats = get_categorization_stats(db_with_coverage_population)
+
+        # Eligible: T_BARE_1, T_BARE_2, T_USER, T_RULE, T_FROM_FILE. Excluded:
+        # the transfer leg, the archived account's row, and the row whose
+        # account_id resolves to no account.
+        assert stats["total"] == 5
+        assert stats["categorized"] == 3
+        assert stats["uncategorized"] == 2
+        assert stats["pct_categorized"] == 60.0
+
+    @pytest.mark.unit
+    def test_the_three_figures_sum(self, db_with_coverage_population: Database) -> None:
+        """Total = Categorized + Uncategorized, which is how the CLI renders them."""
+        stats = get_categorization_stats(db_with_coverage_population)
+
+        assert stats["categorized"] + stats["uncategorized"] == stats["total"]
+
+    @pytest.mark.unit
+    def test_uncategorized_matches_the_canonical_queue(
+        self, db_with_coverage_population: Database
+    ) -> None:
+        """The figure equals what ``moneybin review`` will actually hand the user.
+
+        The view under test is built from the shipped model file, so this fails
+        if core.uncategorized_queue's predicate and this query's ever diverge.
+        That divergence is what MB-155 exists to close and the one thing no
+        type check can see.
+        """
+        db = db_with_coverage_population
+        queue_count = db.execute(
+            "SELECT COUNT(*) FROM core.uncategorized_queue"
+        ).fetchone()
+
+        stats = get_categorization_stats(db)
+
+        assert queue_count is not None
+        assert stats["uncategorized"] == queue_count[0]
+
+    @pytest.mark.unit
+    def test_a_category_the_source_file_supplied_counts_as_categorized(
+        self, db_with_coverage_population: Database
+    ) -> None:
+        """It has a category, so the queue skips it — coverage has to agree.
+
+        It carries no app.transaction_categories row, so no assignment method
+        describes it. It gets its own bucket rather than dropping out of the
+        breakdown and leaving the parts short of the whole.
+        """
+        stats = get_categorization_stats(db_with_coverage_population)
+
+        assert stats["by_source_supplied"] == 1
+
+    @pytest.mark.unit
+    def test_the_breakdown_sums_to_categorized(
+        self, db_with_coverage_population: Database
+    ) -> None:
+        """The CLI prints the by-method lines directly beneath Categorized."""
+        stats = get_categorization_stats(db_with_coverage_population)
+
+        by_method = sum(v for k, v in stats.items() if k.startswith("by_"))
+
+        assert by_method == stats["categorized"]
+
+    @pytest.mark.unit
+    def test_a_categorization_of_a_vanished_transaction_is_not_coverage(
+        self, db_with_coverage_population: Database
+    ) -> None:
+        """An orphaned app.transaction_categories row used to inflate `categorized`.
+
+        Doctor keeps a whole invariant for these rows; counting them here
+        claimed completed work against transactions that no longer exist.
+        """
+        stats = get_categorization_stats(db_with_coverage_population)
+
+        assert stats["by_user"] == 1  # T_USER only — T_VANISHED has no fact row
 
 
 # ---------------------------------------------------------------------------
@@ -3062,10 +3269,20 @@ class TestPlaidCategorizerObservability:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        # The breakdown counts transactions, not categorization rows, so the
+        # gold-keyed fact row this write lands on has to exist — it is what
+        # `_insert_plaid_txn` means by "callers pass the same value used for
+        # the matching core.fct_transactions row".
+        db.execute(
+            "INSERT INTO core.dim_accounts (account_id, display_name, archived) "
+            "VALUES ('acct', 'Checking', false)"
+        )
+        _insert_coverage_txn(db, "t1", account_id="acct")
 
         n = apply_plaid_categories(db)
 
         assert n == 1
+        _reflect_categorizations_into_fact(db)
         stats = get_categorization_stats(db)
         assert stats["by_provider_native"] == 1
 

@@ -699,9 +699,9 @@ Guard-2 free-text resolution):
   Because the pass can auto-accept without asking (`engine._classify_pair`
   returns `("accepted", "auto")` above `high_confidence_threshold` with agreeing
   descriptions), it reports what it did rather than merging rows silently —
-  "magic stays visible" (`design-principles.md`). `RefreshResult` carries
-  `matches_auto_merged` / `matches_pending_review` / `matches_pending_transfers`;
-  the CLI prints them and MCP returns `rematch_auto_merged` /
+  "magic stays visible" (`design-principles.md`). The `RefreshResult` match
+  stage carries `auto_merged` / `pending_review` / `pending_transfers` in its
+  `counts`; the CLI prints them and MCP returns `rematch_auto_merged` /
   `rematch_pending_review` on the payload. Both are **null on a reject**, which
   runs no pass at all — distinct from a pass that ran and found nothing (`0`).
   On the CLI the report is outside the confirmation branch, so `--yes` waives
@@ -771,10 +771,16 @@ Guard-2 free-text resolution):
   together or not at all.
 
   `refresh` reports the count on `RefreshResult.transfers_retired`, which
-  `refresh_run` and `moneybin refresh` both disclose alongside
-  `matches_auto_merged`, `matches_pending_review`, `matches_pending_transfers`,
-  and `matching_skipped` — an ordinary refresh reaches the match step, so it can
-  auto-merge or reverse without a merge anywhere in sight.
+  `refresh_run` and `moneybin refresh` both disclose alongside the match
+  stage's `auto_merged`, `pending_review` and `pending_transfers` counts and its
+  `ran` flag — an ordinary refresh reaches the match step, so it can
+  auto-merge or reverse without a merge anywhere in sight. `transfers_retired`
+  stays a top-level count rather than joining those: a merge invalidates an
+  accepted transfer either by collapsing its two legs — the matcher's own
+  reconciliation, above — or by collapsing its two accounts, and the second
+  happens inside `AccountLinksService.set`'s transaction and reaches no matcher.
+  It is an operation total, and a match stage reporting it would claim the
+  matcher produced a number it did not.
 
   No accept path is scoped to `match_type = 'dedup'`. Accepting a duplicate
   is the usual way to collide two transfers' legs, but a *transfer* proposed
@@ -906,8 +912,8 @@ Guard-2 free-text resolution):
   decision to undo, while the metric measures reversals, and that one committed.
 
   A **partially failed pass reports as partial**, and the two halves fail
-  independently. `RefreshResult.matching_error` means the proposals are
-  incomplete — but not that nothing happened. The matcher wraps no transaction
+  independently. An `error` on the match stage of `RefreshResult.stages` means
+  the proposals are incomplete — but not that nothing happened. The matcher wraps no transaction
   around the run and the reconciliation commits each reversal as it goes, so a
   failure anywhere after it — or *inside* it — leaves those reversals durable.
   The guard therefore starts at the reconciliation, not after it: a crash
@@ -921,8 +927,9 @@ Guard-2 free-text resolution):
   restores every one of them and a count there would be the same over-report in
   the opposite direction. Catching it before the
   first-load `CatalogException` branch is part of the same rule — a *late*
-  catalog failure is not a skipped match step, and calling it one claims nothing
-  was examined after the tiers had already written decisions.
+  catalog failure is not a match step that declined to run, and reporting it as
+  `ran: false` would claim nothing was examined after the tiers had already
+  written decisions.
   `RefreshResult.error` means matching succeeded — the
   decisions are written and the counts are true — but the SQLMesh apply did
   not, so `core.dim_accounts` was never rebuilt and still lists both accounts.

@@ -24,6 +24,7 @@ from moneybin.services.account_resolution_types import (
     UNNAMED_ACCOUNT_LABEL,
     is_reserved_account_name,
 )
+from moneybin.services.categorization import CategorizationService
 from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
@@ -62,6 +63,7 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
+    RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
     SECURITY_PRICE_OVERRIDES,
@@ -118,7 +120,10 @@ _EXCHANGE_RATE_OVERRIDES_PK_EXPR = (
 # hard-coded constant from these sets — a runtime guard that enforces the
 # code-supplied-literal contract per `.claude/rules/security.md` (allowlist
 # dynamic SQL), closing the door before a future caller passes a tainted value.
-_ALLOWED_UPDATED_EXPRS = frozenset({"GREATEST(decided_at, reversed_at)"})
+_ALLOWED_UPDATED_EXPRS = frozenset({
+    "GREATEST(decided_at, reversed_at)",
+    "GREATEST(detected_at, resolved_at)",
+})
 _ALLOWED_PK_EXPRS = frozenset({
     _BALANCE_ASSERTIONS_PK_EXPR,
     _SECURITY_PRICE_OVERRIDES_PK_EXPR,
@@ -389,6 +394,7 @@ class DoctorService:
 
         Covers ``user_categories``, ``category_overrides``, ``gsheet_connections``,
         ``user_merchants``, ``categorization_rules``, ``proposed_rules``,
+        ``rule_conflicts``,
         ``transaction_categories``, ``account_settings``, ``balance_assertions``,
         ``budgets``, ``profile_settings``, plus the edge writers
         ``tabular_formats``, ``match_decisions``, ``imports``, the
@@ -407,7 +413,8 @@ class DoctorService:
 
         Tables without an ``updated_at`` column pass their natural watermark:
         ``proposed_rules`` → ``proposed_at``, ``transaction_categories`` →
-        ``categorized_at``, ``match_decisions`` →
+        ``categorized_at``, ``rule_conflicts`` →
+        ``GREATEST(detected_at, resolved_at)``, ``match_decisions`` →
         ``GREATEST(decided_at, reversed_at)`` (the latest of any mutation, so a
         bypass insert, status update, *or* reversal is caught) — the
         ``account_links`` / ``account_link_decisions`` link tables use the same
@@ -431,6 +438,12 @@ class DoctorService:
                 PROPOSED_RULES,
                 "proposed_rule_id",
                 updated_col="proposed_at",
+                full=full,
+            ),
+            self._run_app_audit_coverage(
+                RULE_CONFLICTS,
+                "conflict_id",
+                updated_expr="GREATEST(detected_at, resolved_at)",
                 full=full,
             ),
             self._run_app_audit_coverage(
@@ -1048,9 +1061,24 @@ class DoctorService:
     def _run_investment_source_overlap(self) -> InvariantResult:
         """Accounts carrying BOTH manual and Plaid investment history.
 
-        Lots and gains double-count until one source is chosen per account
-        (investment dedup across sources is a future matching child, unlike
-        transactions which already have ``prep.int_transactions__matched``).
+        ``fail``, not ``warn``: every position in such an account is derived
+        from two interleaved ledgers, so lots double-count and cost basis
+        mixes two accountings — numbers nobody should read. Investment dedup
+        across sources is a future matching child, unlike transactions which
+        already have ``prep.int_transactions__matched``, so nothing the
+        pipeline can re-run resolves it; one of the two feeds has to go.
+
+        ``core.dim_holdings`` already withholds every figure for these
+        positions (``valuation_status = 'source_overlap'``). This check is what
+        says so out loud and blocks the release gate, and it reads the RAW
+        tables rather than the ledger so it still fires before a first
+        transform — the point at which the withhold does not yet exist.
+
+        Reverting the imported batch is the only remedy MoneyBin can run
+        today. Disconnecting the connector is a remote operation that leaves
+        every row it already pulled — the rows this very query reads — so it
+        stops the feed growing without clearing the check. The recipe says so
+        rather than offering it (``audits/recipes/investment_source_overlap``).
         """
         name = "investment_source_overlap"
         try:
@@ -1077,13 +1105,18 @@ class DoctorService:
         if rows:
             return InvariantResult(
                 name=name,
-                status="warn",
+                status="fail",
                 detail=(
                     f"{len(rows)} account(s) have both manual and Plaid "
-                    "investment rows — lots and gains double-count until one "
-                    "source is chosen per account; delete or stop importing the "
-                    "redundant manual entries (investment dedup is a future "
-                    "matching child)"
+                    "investment rows — the two ledgers interleave, so lots and "
+                    "gains double-count and cost basis mixes two accountings; "
+                    "core.dim_holdings withholds every figure for these "
+                    "positions (valuation_status 'source_overlap') until one "
+                    "source is left. Revert the redundant import batch to "
+                    "clear it; disconnecting the connector stops future pulls "
+                    "but keeps the rows already pulled, so it does not "
+                    "(investment dedup across sources is a future matching "
+                    "child)"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )
@@ -1444,9 +1477,10 @@ class DoctorService:
         place users go to ask "is anything wrong with my data?". A position whose
         feed key never bound simply reads blank forever.
 
-        Scoped to ``unpriced`` alone. ``withheld`` also publishes no value, but
-        its remedy is reconciling a share count, not adding a price source, and
-        routing it here would send the user to fix something that was never
+        Scoped to ``unpriced`` alone. ``withheld`` and ``source_overlap`` also
+        publish no value, but their remedies are reconciling a share count and
+        removing one of two source ledgers — not adding a price source — and
+        routing either here would send the user to fix something that was never
         broken. ``carried_forward`` has a usable price whose age the staleness
         surface carries.
 
@@ -1500,8 +1534,9 @@ class DoctorService:
         so that reporting an age is not mistaken for judging one.
 
         Scoped to ``carried_forward``. ``valued`` means the close is dated today
-        and can never be stale; ``unpriced`` and ``withheld`` publish no value,
-        and their remedies — a price source, a reconciled share count — are owned
+        and can never be stale; ``unpriced``, ``withheld`` and ``source_overlap``
+        publish no value, and their remedies — a price source, a reconciled
+        share count, one fewer source ledger — are owned
         by their own checks.
 
         The threshold resolves per security type rather than globally: markets
@@ -3139,41 +3174,47 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_categorization_coverage(self) -> InvariantResult:
-        """Warn (not fail) when <50% of non-transfer transactions are categorized."""
+        """Warn (not fail) when <50% of the transactions needing a category have one.
+
+        Delegates the counting so this check and ``categorize stats`` cannot
+        report different coverage for the same database: one query, scoped to
+        the population ``core.uncategorized_queue`` is drawn from, so the
+        percentage describes work ``moneybin review`` will actually offer.
+        """
         try:
-            row = self._db.execute(
-                f"""
-                SELECT
-                    COUNT(*) FILTER (WHERE category IS NULL) AS uncategorized,
-                    COUNT(*) AS total
-                FROM {FCT_TRANSACTIONS.full_name}
-                WHERE NOT COALESCE(is_transfer, FALSE)
-                """  # noqa: S608 — TableRef constant, not user input
-            ).fetchone()
+            coverage = CategorizationService(self._db).coverage()
         except Exception:  # noqa: BLE001 — core schema may not exist before first transform
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",
-                detail="fct_transactions not available",
+                # Names both models the delegated count reads: it joins
+                # dim_accounts to match the queue's population, so either being
+                # absent lands here and a reader sent to the wrong one looks
+                # for a table that is already there.
+                detail="fct_transactions or dim_accounts not available",
                 affected_ids=[],
             )
-        if not row or row[1] == 0:
+        if coverage.categorizable == 0:
             return InvariantResult(
                 name="categorization_coverage",
                 status="pass",
                 detail=None,
                 affected_ids=[],
             )
-        uncategorized, total = int(row[0]), int(row[1])
         # Use unrounded ratio for the threshold so values like 49.6% categorized
         # correctly trigger the warning instead of rounding up to 50 and passing.
-        pct_categorized = (total - uncategorized) / total * 100
+        pct_categorized = coverage.categorized / coverage.categorizable * 100
         if pct_categorized < 50:
-            pct_uncategorized = round(uncategorized / total * 100)
+            pct_uncategorized = round(
+                coverage.uncategorized / coverage.categorizable * 100
+            )
             return InvariantResult(
                 name="categorization_coverage",
                 status="warn",
-                detail=f"{pct_uncategorized}% of non-transfer transactions are uncategorized",
+                detail=(
+                    f"{pct_uncategorized}% of the transactions needing a "
+                    "category are uncategorized"
+                ),
                 affected_ids=[],
             )
         return InvariantResult(

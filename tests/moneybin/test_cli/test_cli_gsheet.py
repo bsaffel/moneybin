@@ -506,6 +506,7 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
     `applied`/`error` check stays silent and only this signal remains.
     """
     from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -517,7 +518,11 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
     mock_oauth.return_value = MagicMock()
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     mock_refresh.return_value = RefreshResult(
-        applied=True, duration_seconds=0.05, rate_backfill_error="provider timeout"
+        applied=True,
+        duration_seconds=0.05,
+        # ran=False: the crash left no backfill behind, so the step named no
+        # pair and this error is the only signal it failed at all.
+        stages=(StageOutcome(step="rates", ran=False, error="provider timeout"),),
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
@@ -540,12 +545,13 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
 ) -> None:
     """A pair no provider publishes carries its own remedy, not a retry hint.
 
-    Distinct from the crash above on purpose: this result has no
-    ``rate_backfill_error``, so it isolates the per-pair lines rather than
-    passing on the crash warning.
+    Distinct from the crash above on purpose: the rates stage here ran and
+    carries no error, so it isolates the per-pair lines rather than passing on
+    the crash warning.
     """
     from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -564,6 +570,7 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
             pairs_failed=(),
             pairs_unsupported=("EUR/XTS",),
         ),
+        stages=(StageOutcome(step="rates", ran=True, counts={"rates_written": 0}),),
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
@@ -592,6 +599,7 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
     """
     from moneybin.orchestration.refresh import RefreshResult
     from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh_outcome import StageOutcome
 
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -610,16 +618,18 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
             pairs_failed=("EUR/USD",),
             pairs_discarded=("GBP/USD",),
         ),
+        stages=(StageOutcome(step="rates", ran=True, counts={"rates_written": 7}),),
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)["data"]
-    assert payload["rates_written"] == 7
+    rates = next(s for s in payload["stages"] if s["step"] == "rates")
+    assert rates["counts"]["rates_written"] == 7
     assert payload["rate_pairs_failed"] == ["EUR/USD"]
     assert payload["rate_pairs_discarded"] == ["GBP/USD"]
     assert payload["rate_pairs_unsupported"] == []
-    assert payload["rate_backfill_error"] is None
+    assert rates["error"] is None
 
 
 @pytest.mark.unit
@@ -627,19 +637,19 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
 @patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
 @patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
 @patch("moneybin.cli.commands.gsheet._build_oauth_client")
-def test_gsheet_pull_json_says_null_when_the_rates_step_did_not_run(
+def test_gsheet_pull_json_omits_the_rates_stage_when_it_did_not_run(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
     mock_sheets_cls: MagicMock,  # noqa: ARG001
     mock_get_db: MagicMock,
 ) -> None:
-    """``null`` and ``0`` are different answers, and only one of them is true here.
+    """An absent stage and a zero count are different answers; only one is true.
 
-    ``rates_written`` is the sole did-it-run signal on this envelope — the three
-    pair lists are empty whether the step ran clean or never ran at all. Under
-    ``--no-refresh`` it did not run, so a ``0`` would tell a script that rate
-    coverage was checked and found complete, and it would skip the refresh that
-    is actually owed.
+    A step's row is the did-it-run signal on this envelope — the three pair
+    lists are empty whether the step ran clean or never ran at all. Under
+    ``--no-refresh`` it did not run, so a row reporting zero rates written
+    would tell a script that rate coverage was checked and found complete, and
+    it would skip the refresh that is actually owed.
     """
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -656,8 +666,10 @@ def test_gsheet_pull_json_says_null_when_the_rates_step_did_not_run(
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.stdout)["data"]
-    assert payload["rates_written"] is None
-    assert payload["rate_backfill_error"] is None
+    # The key is emitted whether or not a refresh ran, so a missing key never
+    # has to be told apart from a clean step; the step that never ran simply
+    # has no row, and so reports neither a count nor an error.
+    assert payload["stages"] == []
 
 
 # -------------------------------------------------------------------- list ---

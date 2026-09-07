@@ -373,6 +373,8 @@ TAXONOMY_CATEGORY_NOT_FOUND = "taxonomy_category_not_found"
 TAXONOMY_CATEGORY_REFERENCE_NOT_FOUND = "taxonomy_category_reference_not_found"
 TAXONOMY_CURSOR_INVALID = "taxonomy_cursor_invalid"
 TAXONOMY_INCLUDE_INACTIVE_NOT_ALLOWED = "taxonomy_include_inactive_not_allowed"
+TAXONOMY_RULE_CONFLICT = "taxonomy_rule_conflict"
+TAXONOMY_RULE_CONFLICT_STALE = "taxonomy_rule_conflict_stale"
 TAXONOMY_RULE_NOT_FOUND = "taxonomy_rule_not_found"
 
 

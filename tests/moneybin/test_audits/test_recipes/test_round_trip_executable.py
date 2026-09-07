@@ -29,9 +29,11 @@ import pytest
 from moneybin.audits.recipes import (
     categorization_coverage,
     dedup_reconciliation,
+    investment_source_overlap,
     orphan_app_state,
     registry,
 )
+from moneybin.mcp.tools.import_tools import import_revert_coarse
 from moneybin.mcp.tools.refresh import refresh_run
 from moneybin.mcp.tools.system import system_status_coarse
 from moneybin.mcp.tools.transactions import transactions_annotate_coarse
@@ -45,6 +47,7 @@ _TOOLS: dict[str, Callable[..., Any]] = {
     "transactions_categorize_run": transactions_categorize_run,
     "refresh_run": refresh_run,
     "system_status": system_status_coarse,
+    "import_revert": import_revert_coarse,
 }
 
 
@@ -103,6 +106,10 @@ _RECIPE_CASES = [
     ),
     pytest.param("categorization_coverage", [], id="categorization_coverage"),
     pytest.param("dedup_reconciliation", [], id="dedup_reconciliation"),
+    pytest.param("investment_source_overlap", [], id="investment_source_overlap-empty"),
+    pytest.param(
+        "investment_source_overlap", ["acc_1"], id="investment_source_overlap"
+    ),
 ]
 
 
@@ -186,6 +193,7 @@ def test_every_explicit_recipe_module_is_registered() -> None:
     modules_to_audit_names = {
         categorization_coverage: "categorization_coverage",
         dedup_reconciliation: "dedup_reconciliation",
+        investment_source_overlap: "investment_source_overlap",
         orphan_app_state: "orphan_app_state",
     }
     for module, name in modules_to_audit_names.items():
@@ -205,3 +213,48 @@ def test_dedup_reconciliation_requests_full_doctor_detail() -> None:
         "sections": ["doctor"],
         "detail": "full",
     }
+
+
+def test_source_overlap_offers_only_a_remedy_that_clears_it() -> None:
+    """Every offered action must be able to end the state it is offered for.
+
+    ``sync_disconnect`` cannot. It is a remote operation — ``SyncService.
+    disconnect_confirmed`` calls ``client.disconnect`` and deletes nothing
+    locally, and the tool's own confirmation says "Previously pulled local rows
+    remain". Both readers of the overlap keep reading exactly those rows: the
+    check joins ``raw.plaid_investment_transactions``, and
+    ``core.dim_holdings``'s ``source_overlap_accounts`` counts the ledger they
+    feed. A user who followed it would permanently lose the connection AND keep
+    the failing check and the withheld holdings.
+
+    ``import_revert`` really does clear it: ``REVERT_TABLES['manual']`` includes
+    ``raw.manual_investment_transactions``, so the batch's rows are deleted and
+    the account is left with one ledger.
+    """
+    actions = investment_source_overlap.recipe(
+        ["acc_1"], registry.RecipeContext(db=None)
+    )
+
+    assert [a.tool for a in actions] == ["import_revert"]
+    assert all(a.confidence == "suggested" for a in actions)
+    assert not any(a.idempotent for a in actions)
+    (revert,) = actions
+    # The audit carries account ids, not an import_id, so the missing argument
+    # is named in the rationale rather than guessed.
+    assert "import_id" not in revert.arguments
+    assert "import_id" in revert.rationale
+
+
+def test_source_overlap_says_a_disconnect_does_not_clear_it() -> None:
+    """Dropping the action must not drop the fact a user needs to act on.
+
+    Someone whose file import is the ledger they want will reach for
+    ``sync_disconnect`` on their own. The remedy prose is where they find out
+    that it stops future pulls without removing the rows already pulled — the
+    one thing that keeps this check red.
+    """
+    (revert,) = investment_source_overlap.recipe(
+        ["acc_1"], registry.RecipeContext(db=None)
+    )
+
+    assert "sync_disconnect" in revert.rationale
