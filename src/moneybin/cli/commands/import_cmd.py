@@ -2404,7 +2404,9 @@ def import_revert(
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            result = ImportService(db).revert_confirmed(import_id, verify=_verify)
+            result = ImportService(db).revert_confirmed(
+                import_id, verify=_verify, actor="cli"
+            )
 
     status = result.get("status")
     if status == "not_found":

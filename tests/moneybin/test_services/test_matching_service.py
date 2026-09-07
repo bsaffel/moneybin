@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from moneybin.services.matching_service import MatchingService
 
 
@@ -57,9 +59,26 @@ def test_undo_delegates_to_match_decisions_repo() -> None:
     ) as repo_cls:
         MatchingService(db).undo("match-123", reversed_by="user", actor="cli")
     repo_cls.assert_called_once_with(db)
+    # ``in_outer_txn`` because the reversal and the curation restore that follows
+    # it are one transaction, opened here rather than inside the repo.
     repo_cls.return_value.reverse.assert_called_once_with(
-        "match-123", reversed_by="user", actor="cli"
+        "match-123", reversed_by="user", actor="cli", in_outer_txn=True
     )
+    db.begin.assert_called_once_with()
+    db.commit.assert_called_once_with()
+
+
+def test_undo_rolls_back_when_the_reversal_raises() -> None:
+    """A refused reversal must not leave the transaction it opened dangling."""
+    db = MagicMock()
+    with patch(
+        "moneybin.repositories.match_decisions_repo.MatchDecisionsRepo"
+    ) as repo_cls:
+        repo_cls.return_value.reverse.side_effect = ValueError("already reversed")
+        with pytest.raises(ValueError, match="already reversed"):
+            MatchingService(db).undo("match-123")
+    db.rollback.assert_called_once_with()
+    db.commit.assert_not_called()
 
 
 def test_undo_default_reversed_by_and_actor() -> None:
@@ -70,7 +89,7 @@ def test_undo_default_reversed_by_and_actor() -> None:
     ) as repo_cls:
         MatchingService(db).undo("match-123")
     repo_cls.return_value.reverse.assert_called_once_with(
-        "match-123", reversed_by="user", actor="system"
+        "match-123", reversed_by="user", actor="system", in_outer_txn=True
     )
 
 
