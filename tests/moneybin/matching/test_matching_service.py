@@ -778,3 +778,59 @@ class TestForwardingNeverMasksTheMatchersError:
 
         with pytest.raises(RuntimeError, match="damaged"):
             MatchingService(db).run(actor="system")
+
+    @pytest.mark.unit
+    def test_a_clean_transfer_run_restates_before_forwarding_failure_propagates(
+        self, db: Database, mocker: MockerFixture
+    ) -> None:
+        """Committed transfer effects are restated despite forwarding failure."""
+        result = MatchResult(accepted_transfers=1)
+        forwarding_failure = RuntimeError("app.transaction_categories is damaged")
+        mocker.patch.object(
+            matching_service.TransactionMatcher, "run", return_value=result
+        )
+        mocker.patch.object(
+            matching_service,
+            "forward_rekeyed_transaction_ids",
+            side_effect=forwarding_failure,
+        )
+        restate = mocker.patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run"
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            MatchingService(db).run(actor="system")
+
+        assert excinfo.value is forwarding_failure
+        restate.assert_called_once_with(db, result)
+
+    @pytest.mark.unit
+    def test_forwarding_failure_remains_primary_when_restatement_also_fails(
+        self, db: Database, mocker: MockerFixture
+    ) -> None:
+        """A dual maintenance failure preserves both errors without changing the API."""
+        result = MatchResult(transfers_retired=1)
+        forwarding_failure = RuntimeError("app.transaction_categories is damaged")
+        restatement_failure = UserError(
+            "FX restatement failed", code=error_codes.REFRESH_MODEL_FAILED
+        )
+        mocker.patch.object(
+            matching_service.TransactionMatcher, "run", return_value=result
+        )
+        mocker.patch.object(
+            matching_service,
+            "forward_rekeyed_transaction_ids",
+            side_effect=forwarding_failure,
+        )
+        mocker.patch(
+            "moneybin.services.fx_accounting_refresh."
+            "restate_fx_accounting_after_match_run",
+            side_effect=restatement_failure,
+        )
+
+        with pytest.raises(RuntimeError) as excinfo:
+            MatchingService(db).run(actor="system")
+
+        assert excinfo.value is forwarding_failure
+        assert excinfo.value.__cause__ is restatement_failure

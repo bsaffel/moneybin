@@ -43,6 +43,8 @@ WITH cleaned AS (
     transaction_type,
     check_number,
     currency_code,
+    to_currency,
+    to_amount,
     created_at,
     created_by
   FROM raw.manual_transactions
