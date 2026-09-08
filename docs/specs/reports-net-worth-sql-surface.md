@@ -61,13 +61,13 @@ the default.
 
 ## Defects in the shipped surface
 
-Verified against the tree at the time of writing. The disposition column says
-which are this spec's to close.
+Verified against `main` at `4b3412ee`. The disposition column says which are
+this spec's to close.
 
 | # | Defect | Evidence | Disposition |
 |---|---|---|---|
-| 1 | A margin account's net worth is overstated by the size of its loan. The sync server sends `margin_loan_amount`; `SyncBalance` does not declare it, and Pydantic's default `extra='ignore'` discards it silently. `grep -rn 'margin_loan' src/moneybin/` returns nothing. | `src/moneybin/connectors/sync_models.py:210-219` | **Not this spec.** A connector bug producing a wrong number today; fix independently and first. See §Out of Scope. |
-| 2 | Archiving an account rewrites net-worth history. `archived` is a plain BOOLEAN with no date, and the filter applies to every `balance_date`, so closing an account in 2026 retroactively removes it from 2022. | `src/moneybin/sql/schema/app_account_settings.sql:13`, `src/moneybin/sqlmesh/models/reports/net_worth.sql:21` | **Closed here** — Requirement 9. |
+| 1 | A margin account's net worth was overstated by the size of its loan. The sync server sends `margin_loan_amount`, `SyncBalance` did not declare it, and Pydantic's default `extra='ignore'` discarded it silently. | `src/moneybin/connectors/sync_models.py:232` now declares the field; it reaches the spine through `prep/stg_plaid__balances.sql` and `core/fct_balances.sql`, on migration `V058`. | **Already closed**, by #565, before this spec. Kept in the table because the ladder's correctness depends on the balance it reads, and a reader checking that dependency should find it answered rather than absent. |
+| 2 | Archiving an account rewrites net-worth history. `archived` is a plain BOOLEAN with no date, and the filter applies to every `balance_date`, so closing an account in 2026 retroactively removes it from 2022. | `src/moneybin/sql/schema/app_account_settings.sql:13`, `src/moneybin/sqlmesh/models/reports/net_worth.sql:21` | **Closed here** — Requirement 9, behind the prerequisite that requirement names. |
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
 | 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The doctor check is out of scope. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
@@ -100,11 +100,16 @@ which are this spec's to close.
 5. **A rate is never manufactured.** Outside a pair's own observation window the
    rate spine has no row, so a join misses rather than matching an invented
    rate. Requirement 12 of `multi-currency.md` forbids substituting today's rate
-   or 1.0; this extends the same rule to the shape of the table.
+   or 1.0; this extends the same rule to the shape of the table. The window's
+   trailing edge is the one place it is not the last observation: it runs
+   `MAX_BACKWARD_RESOLUTION_DAYS` further, the same allowance
+   `CurrencyService` and the backfill already grant a feed that has not
+   published yet today — see §Rate models.
 6. **Carry-forward is bounded and visible.** A rate row states the day the
    provider actually priced it (`published_date`) beside the day it is being
    applied to (`effective_date`), plus the distance between them. Carry-forward
-   spans genuine non-publication days only.
+   spans genuine non-publication days and the bounded trailing allowance of
+   Requirement 5, never an unbounded gap.
 7. **An unpriced currency makes the total NULL, not smaller.**
    `reports.net_worth.net_worth` is NULL when any contributing currency
    is unpriced on that date, with the unpriced currency count beside it. A
@@ -118,7 +123,10 @@ which are this spec's to close.
    `app.account_settings` gains `archived_at DATE`; the three net-worth rungs
    exclude an archived account only for dates after it, preserving history that
    was true when it was recorded. Flow reports keep the present-tense filter —
-   see §Key Decision 5.
+   see §Key Decision 5. **This requirement has a prerequisite that is not this
+   spec's to build** — retiring the archive cascade in `AccountService`, without
+   which `archived_at` preserves nothing. See §`app.account_settings` and
+   §Prerequisites.
 10. **The net-worth reports become SQL-backed.** They become `@report` runners
     over the new views, and `ServiceReportSpec` and its executor branch are
     deleted. This is `.claude/rules/reports.md` §"A new report is SQL-backed"
@@ -127,7 +135,7 @@ which are this spec's to close.
     at 1.0) are materialized, so no rung needs a branch for the common case and
     no single-currency user sees a NULL converted column.
 12. **Observability.** The rate spine's row and coverage counts join the existing
-    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:334-380`; the two
+    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:357-401`; the two
     migrated reports keep the report-execution metrics every catalog report
     already emits.
 13. **A report's id, its view, and its CLI command share one name.** The name
@@ -150,7 +158,7 @@ than one wide relation. All three are `kind VIEW` in the `reports` schema.
 | `reports.net_worth_accounts` | `(account_id, balance_date)` | *Which accounts hold my money, how fresh is each number, and what is each worth in one comparable unit?* |
 
 They read the same three sources — `core.fct_balances_daily`,
-`core.dim_accounts`, `core.fct_exchange_rates_daily` — at three `GROUP BY`
+`core.dim_accounts`, `core.fct_exchange_rates_effective` — at three `GROUP BY`
 levels. The eligibility filter and the rate join are therefore written three
 times. That duplication is deliberate and forced by Requirement 2; if it becomes
 painful, the remedy is one `core.*` **VIEW** carrying the filter and join that
@@ -251,8 +259,9 @@ fails closed.
 
 ### Rate models
 
-Three models, each mirroring an existing sibling exactly rather than inventing a
-shape.
+Four models. The first three mirror an existing sibling exactly rather than
+inventing a shape; the fourth exists because override precedence has to stay at
+read time.
 
 #### `prep.stg_exchange_rates` (VIEW)
 
@@ -272,6 +281,12 @@ already resolved by `core.fct_security_prices`.
 
 Grain `(from_currency, to_currency, effective_date)`. Mirrors
 `core.fct_balances_daily`: a dense daily spine over an observation model.
+Densifies the **provider arm** of `core.fct_exchange_rates` — published rates
+and identity rows only. User overrides are applied above it, at read time, by
+`core.fct_exchange_rates_effective`; see that model for why. `rate_source` here
+is therefore `provider` or `identity`, never `override`. The observation-grain
+model above keeps resolving precedence for its own consumers; this one takes the
+half that is safe to materialize.
 
 ```
 from_currency         VARCHAR        -- Grain. ISO 4217, upper
@@ -292,12 +307,29 @@ opposite meanings across two layers.
 
 Four properties define it:
 
-- **Window-bounded fill.** For a real pair, rows exist only for
-  `effective_date` between that pair's first and last observation. Before the
-  first quote and after the last there is no row at all, so a join misses
-  visibly rather than matching a manufactured rate. An unbounded fill would
-  invent a rate for a delisted pair, a discontinued peg, or a provider that
-  stopped publishing.
+- **Window-bounded fill, with the same trailing allowance the backfill grants.**
+  For a real pair, rows start at that pair's first observation — before the
+  first quote there is no row at all, so a join misses visibly rather than
+  matching a manufactured rate. An unbounded fill would invent a rate for a
+  delisted pair, a discontinued peg, or a provider that stopped publishing.
+
+  Ending the rows at the *last* observation would be wrong, though, and wrong in
+  a way the rest of the system already knows about. `_covers_window_end`
+  (`src/moneybin/services/rate_backfill.py:479-502`) deliberately tolerates a
+  trailing gap of `MAX_BACKWARD_RESOLUTION_DAYS` — 14 days — because, in its own
+  words, the provider "has no rate for a weekend and often none for today until
+  the afternoon," and an exact bound "would warn on every healthy profile." A
+  spine that stops at the last quote disagrees with that: a Saturday balance
+  finds no Friday rate, and the headline `net_worth` goes NULL on a profile the
+  backfill, `system doctor`, and the user all consider healthy.
+
+  So the effective range runs forward through the balance dates the rungs
+  require, for as long as the last observation is within
+  `MAX_BACKWARD_RESOLUTION_DAYS` of them, carrying the last published rate with
+  `days_since_published` counting up. Past that allowance the rows stop and the
+  join misses, which is the genuinely-stopped series the bound is for. One
+  constant defines a healthy trailing edge for both the backfill and the spine,
+  so the two cannot drift into disagreeing about the same feed.
 - **Carry-forward across non-publication days only.** Within the window, a day
   with no observation takes the last published rate, and `published_date` /
   `days_since_published` state that it did. This is precisely the stored
@@ -311,15 +343,43 @@ Four properties define it:
   `days_since_published = 0`, spanning the date domain of
   `core.fct_balances_daily`. Requirement 11: one join path, no branch, and a
   single-currency profile never sees a NULL converted column.
-- **Kind FULL, recomputed every `sqlmesh run`.** A retroactively corrected rate
-  or a newly entered override is picked up by the next run with no incremental
-  bookkeeping and no staleness marker. This matches `fct_balances_daily` and
-  `fct_security_prices`.
+- **Kind FULL, recomputed every `sqlmesh run`.** A retroactively corrected
+  provider rate is picked up by the next run with no incremental bookkeeping and
+  no staleness marker. This matches `fct_balances_daily` and
+  `fct_security_prices`. A user override is *not* in that set — it must apply
+  the moment it is written, which is why it is not materialized here.
 
 The identity arm reads `core.dim_accounts` and `core.fct_balances_daily` for its
 date domain, which couples this model to the balance spine. That is accepted:
 the coupling is one arm of one model, and the alternative — a manufactured 1.0
 written into three report views — is the substitution Requirement 5 forbids.
+
+#### `core.fct_exchange_rates_effective` (VIEW)
+
+Same grain, and **the model the three rungs actually join**. It overlays
+`app.exchange_rate_overrides` onto the dense spine at read time: where the user
+has recorded a rate for a pair and date, that rate wins and `rate_source`
+reads `override`; everywhere else the published or identity row passes through
+unchanged.
+
+The split exists because the two halves have opposite freshness requirements. A
+materialized override is a regression against the path this spec replaces:
+`CurrencyService.resolve_rate` consults `_stored_rate`, which checks the
+override table **first** — "a correction outranks every cached provider rate for
+its own pair and date, and this is the single place that ordering is expressed"
+(`src/moneybin/services/currency_service.py:346-372`). A `kind FULL` model
+carrying overrides would serve the pre-override rate until the next
+`sqlmesh run`, so a user who ran `fx set` to correct a wrong number would keep
+reading the wrong number — and the new SQL reports would be *less* fresh than
+today's Python path. Correcting a rate is a mutation with an audit row; a
+surface that ignores it until a scheduled rebuild is not one a user can trust.
+
+Dense carry-forward is expensive and safely cacheable; override precedence is a
+cheap join and must be live. The seam goes between them. This is the same
+reasoning as Key Decision 6 — a reversible, user-controlled input is never
+frozen into materialized rows — and leaves the ordering expressed in exactly two
+places, `_stored_rate` and this view, which the parity test in §Testing Strategy
+holds together.
 
 ### `app.account_settings` — new column
 
@@ -336,6 +396,37 @@ rewrites the past. The three rungs exclude an account for
 balance stays in 2022's net worth. Backfill sets `archived_at` to the archival
 audit-log date where one exists, and otherwise leaves it NULL, which preserves
 today's behavior for that account rather than guessing a cutoff.
+
+**The column alone preserves nothing.** `AccountService.settings_update` forces
+`include_in_net_worth=False` in the same write as `archived=True`
+(`src/moneybin/services/account_service.py:714-718`), and `archived=False`
+deliberately does not restore it. That flag carries no date, so every historical
+row of an archived account still fails the `include_in_net_worth` half of the
+eligibility filter and the history this column exists to preserve is excluded
+anyway. Adding the date predicate on top of the cascade is inert.
+
+The cascade is also redundant with the filter it defends. `reports.net_worth`
+already reads `a.include_in_net_worth AND NOT a.archived`
+(`src/moneybin/sqlmesh/models/reports/net_worth.sql:21`); the `NOT a.archived`
+half enforces "an archived account never contributes" on its own, at read time.
+The write buys exactly one behavior the predicate does not — an account stays
+excluded after archive-then-unarchive — and pays for it by overwriting a
+user-authored preference with a derived one.
+
+So the fix is to retire the cascade and let `archived_at` carry the exclusion,
+date-scoped: `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
+archived_at)`. That is a change to a service write path, an `app.*` column
+semantic, and a backfill that reconstructs pre-archive intent from
+`before_value.include_in_net_worth` on the `archived` FALSE→TRUE audit row.
+`.claude/rules/design-principles.md` puts `app.*` schema semantics on the
+one-way-door trigger list, and a change of that shape earns its own review
+rather than approval alongside three report views. It is therefore a
+**prerequisite**, sequenced ahead of this spec exactly as the margin-loan defect
+was — see §Prerequisites.
+
+Nothing about that reconstruction decays while it waits: `app.audit_log` is
+append-only, with no prune, retention, or delete path, so each archive write
+keeps its full prior row state indefinitely.
 
 ## Report allocation
 
@@ -433,6 +524,7 @@ SQLMesh models:
 - `src/moneybin/sqlmesh/models/prep/stg_exchange_rates.sql`
 - `src/moneybin/sqlmesh/models/core/fct_exchange_rates.sql`
 - `src/moneybin/sqlmesh/models/core/fct_exchange_rates_daily.sql`
+- `src/moneybin/sqlmesh/models/core/fct_exchange_rates_effective.sql`
 - `src/moneybin/sqlmesh/models/reports/net_worth_accounts.sql`
 - `src/moneybin/sqlmesh/models/reports/net_worth_currencies.sql` — today's
   `net_worth.sql`, renamed and widened
@@ -604,10 +696,25 @@ AGENTS.md's AX bias both point at.
 
 ### Tier 1 — Unit
 
-- **Rate spine window bounds.** A pair with observations only in a closed
-  interval produces no row outside it — asserted on both edges. This is the
-  guard for Requirement 5, and the one most likely to regress into an unbounded
-  fill.
+- **Rate spine window bounds.** A pair whose observations stop produces no row
+  more than `MAX_BACKWARD_RESOLUTION_DAYS` past the last one, and none at all
+  before the first — asserted on both edges. This is the guard for Requirement
+  5, and the one most likely to regress into an unbounded fill.
+- **Healthy trailing edge.** A pair last quoted on a Friday still prices a
+  Saturday and Sunday balance, with `days_since_published` at 1 and 2 and a
+  non-NULL `net_worth`. The companion to the bound above: together they pin the
+  allowance at the same width `_covers_window_end` uses, so a feed the backfill
+  calls healthy is never one the spine leaves unpriced.
+- **Override precedence is live.** Writing an `app.exchange_rate_overrides` row
+  changes `core.fct_exchange_rates_effective` and the three rungs on the next
+  query, with **no `sqlmesh run` in between**, and `rate_source` reads
+  `override`. This is the regression guard for the FULL-table shape this spec
+  rejected; without it, materializing the override is an easy and invisible
+  simplification for a later author to make.
+- **Override precedence agrees with `resolve_rate`.** For the same pair and
+  date, `core.fct_exchange_rates_effective` returns what
+  `CurrencyService.resolve_rate` returns — the parity check that keeps the two
+  places expressing this ordering from drifting apart.
 - **Carry-forward provenance.** A non-publication day inside the window carries
   the prior rate with `published_date` set to the publication day and
   `days_since_published` equal to the gap.
@@ -620,7 +727,10 @@ AGENTS.md's AX bias both point at.
   must not be priced twice. Write this before any converted column exists; it
   fails silently today and passes every existing test.
 - **Date-scoped archival.** An account archived on date D contributes to
-  `balance_date <= D` and not after, on all three rungs.
+  `balance_date <= D` and not after, on all three rungs. Archive the account
+  through `AccountService.settings_update` rather than by writing the columns
+  directly — writing them directly is what makes this test pass while the
+  cascade is still in place and the behavior is still broken.
 - **Grain integrity.** Each rung's declared grain is unique.
 - **The naming rule has a guard.** For every runner in `ALL_REPORTS`, the name
   half of `spec.report_id` equals `spec.view.name`. Requirement 13 is a
@@ -673,13 +783,32 @@ expected NULL dates for the unpriced currency.
 - [`reports-overview.md`](reports-overview.md) — M2P.3 materialization, bound by
   Key Decision 6.
 
+## Prerequisites
+
+Work that is not this spec's to build, but that this spec cannot ship correct
+without. Both are sequenced ahead of it, for the same reason: each is a change
+to a different subsystem, and folding it into a reports change would get it
+approved as a footnote rather than reviewed on its own terms.
+
+- **Retire the archive cascade** — blocks Requirement 9, and only that
+  requirement. `AccountService.settings_update` stops forcing
+  `include_in_net_worth=False` when `archived=True`; `archived_at` carries the
+  exclusion instead, date-scoped, and the net-worth eligibility filter becomes
+  `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
+  archived_at)`. Needs the `archived_at` column and its migration, the service
+  change, and a backfill that reads `before_value.include_in_net_worth` from the
+  `archived` FALSE→TRUE audit row to distinguish a cascade-written FALSE from
+  one the user chose. `app.audit_log` is append-only, so that reconstruction
+  does not decay while this waits. Rationale and the redundancy that makes the
+  cascade removable: §`app.account_settings`.
+- **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
+  spec, which is the sequencing this section describes working as intended. The
+  guard its neighbouring docstring implied — a test that fails when a wire field
+  the server sends is undeclared on the client model — is the remaining piece,
+  tracked with the other undeclared wire fields rather than here.
+
 ## Out of Scope
 
-- **The margin-loan defect** (Defect 1). A wrong headline number today, one
-  field wide, depending on nothing here. It should ship on its own, before or
-  independent of this work, with the guard its neighbouring docstring already
-  implies: a test that fails when a wire field the server sends is undeclared on
-  the client model. Burying it inside this refactor would hide it.
 - **Investment holdings in net worth** (Pillar D) and the daily position spine
   `core.fct_holdings_daily` (Pillar C.3) — both designed in
   [`investments-price-feeds.md`](investments-price-feeds.md). C.3 is the fourth
