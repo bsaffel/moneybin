@@ -1170,6 +1170,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_transfer_matches_proposed": "Transfer detection",
     "moneybin_transfer_match_confidence": "Transfer detection",
     # Multi-currency integrity
+    "moneybin_fx_accounting_rows": "Multi-currency integrity",
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
     # Exchange rates
