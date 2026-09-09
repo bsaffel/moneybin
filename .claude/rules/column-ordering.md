@@ -252,7 +252,7 @@ reorders it expecting an effect and gets none.
 
 A **service-backed** report has nothing to mirror against — its tuple is already
 the projection, per the exception above. Rules B and C govern it directly, and
-the `column_types` list beside it moves with it.
+the derived `column_types` moves with it automatically.
 
 ## Enforcement
 
