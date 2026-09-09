@@ -48,7 +48,7 @@ def make_curation_db(tmp_path: Path) -> Database:
             '2026-04-10', CURRENT_TIMESTAMP,
             2026, 4, 10, 3, '2026-04', '2026-Q2'
         )
-        """  # noqa: S608  # test input, not executing SQL
+        """  # test input, not executing SQL
     )
     return database
 

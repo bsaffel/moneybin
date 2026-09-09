@@ -101,7 +101,7 @@ def account_db(db: Database) -> Database:
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Insert test balances
     conn.execute("""
@@ -114,7 +114,7 @@ def account_db(db: Database) -> Database:
          4800.00, 'test.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx'),
         ('ACC002', '2025-06-01', '2025-06-30', 15000.00, '2025-06-30',
          15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     return db
 

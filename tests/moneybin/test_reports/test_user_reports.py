@@ -1378,7 +1378,7 @@ def _create_kwargs_rejected_at(boundary: str) -> dict[str, Any]:
         "invalid-name": {"name": "no spaces allowed"},
         "long-description": {"description": "d" * (DESCRIPTION_MAX_LEN + 1)},
         "long-query": {
-            "query_sql": f"SELECT 1 AS a -- {'x' * REPORT_QUERY_MAX_LEN}"  # noqa: S608  # test input, not executing SQL
+            "query_sql": f"SELECT 1 AS a -- {'x' * REPORT_QUERY_MAX_LEN}"  # test input, not executing SQL
         },
         "long-params": {
             "query_sql": _LOW_PARAM_SQL,

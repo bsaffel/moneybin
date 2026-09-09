@@ -99,10 +99,10 @@ class SystemService:
     def _count_accounts(self) -> int:
         try:
             row = self._db.execute(
-                f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant, not user input
+                f"SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}"  # TableRef constant, not user input
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+        except Exception:  # core schema may not exist before first transform
             return 0
 
     def _query_transactions(self) -> tuple[int, date | None, date | None]:
@@ -114,9 +114,9 @@ class SystemService:
                     MIN(transaction_date),
                     MAX(transaction_date)
                 FROM {FCT_TRANSACTIONS.full_name}
-                """  # noqa: S608  # TableRef constant, not user input
+                """  # TableRef constant, not user input
             ).fetchone()
-        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+        except Exception:  # core schema may not exist before first transform
             return 0, None, None
         if not row:
             return 0, None, None
@@ -133,10 +133,10 @@ class SystemService:
                 SELECT MAX(completed_at)::DATE
                 FROM {IMPORT_LOG.full_name}
                 WHERE status = 'complete'
-                """  # noqa: S608  # TableRef constant, not user input
+                """  # TableRef constant, not user input
             ).fetchone()
             return row[0] if row and row[0] is not None else None
-        except Exception:  # noqa: BLE001 — table may not exist before first import
+        except Exception:  # table may not exist before first import
             return None
 
     def model_freshness(self, model_name: str) -> ModelFreshness | None:
@@ -149,11 +149,11 @@ class SystemService:
         try:
             row = self._db.execute(
                 "SELECT last_changed_at, last_applied_at, last_executed_at, model_kind "
-                f"FROM {MODEL_FRESHNESS.full_name} "  # noqa: S608  # MODEL_FRESHNESS is a TableRef constant
+                f"FROM {MODEL_FRESHNESS.full_name} "  # MODEL_FRESHNESS is a TableRef constant
                 "WHERE model_name = ?",
                 [model_name],
             ).fetchone()
-        except Exception:  # noqa: BLE001 — view may not exist before first transform
+        except Exception:  # view may not exist before first transform
             return None
         if row is None:
             return None

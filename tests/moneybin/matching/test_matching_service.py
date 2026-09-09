@@ -64,7 +64,7 @@ def _retirement_count() -> float:
     from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 
     counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="dedup_component")
-    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # no public counter getter
+    return counter._value.get()  # pyright: ignore[reportPrivateUsage]  # no public counter getter
 
 
 def _seed_transfer_collision_fixture(db: Database) -> tuple[str, str, str]:

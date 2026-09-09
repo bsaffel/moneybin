@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Regression guards for CLI cold-start cost.
 
 Every E2E subprocess and every shell autocomplete pays the full module-import
@@ -10,7 +9,7 @@ tests guard. See `.claude/rules/cli.md` → "Cold-Start Hygiene".
 
 from __future__ import annotations
 
-import subprocess  # noqa: S404 — clean-interpreter import check
+import subprocess  # noqa: S404  # clean-interpreter import check
 import sys
 
 # Modules that must NOT load when `moneybin.cli.main` is merely imported.
@@ -39,7 +38,7 @@ def test_cli_main_import_does_not_load_heavy_deps() -> None:
         ")\n"
         "print('LOADED:' + ','.join(loaded))\n"
     )
-    result = subprocess.run(  # noqa: S603 — controlled snippet, not user input
+    result = subprocess.run(  # noqa: S603  # controlled snippet, not user input
         [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,
@@ -71,7 +70,7 @@ def test_account_links_service_does_not_eagerly_load_import_service() -> None:
         "import moneybin.services.account_links_service  # noqa: F401\n"
         "print('LOADED:' + str('moneybin.services.import_service' in sys.modules))\n"
     )
-    result = subprocess.run(  # noqa: S603 — controlled snippet, not user input
+    result = subprocess.run(  # noqa: S603  # controlled snippet, not user input
         [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,

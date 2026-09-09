@@ -855,7 +855,7 @@ def test_a_callback_that_keeps_every_row_leaves_the_total_alone(
 # --- Requirement 9: the default display currency is the profile's home --------
 
 
-def _money_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+def _money_runner(db: Database) -> ReportQuery:  # contract handle
     """One EUR amount on a fixed date.
 
     Args:
@@ -952,7 +952,7 @@ def test_a_requested_currency_that_cannot_resolve_says_why(
 # --- A target that names no currency is refused, not segmented ----------------
 
 
-def _empty_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+def _empty_runner(db: Database) -> ReportQuery:  # contract handle
     """The same columns as ``_money_runner``, and no rows.
 
     Args:
@@ -1434,7 +1434,7 @@ def test_a_single_currency_snapshot_keeps_its_one_totals_row() -> None:
 # --- The row limit applies to the answer, not to conversion's inputs ----------
 
 
-def _two_currency_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+def _two_currency_runner(db: Database) -> ReportQuery:  # contract handle
     """One EUR row and one USD row on the same date, EUR ordered first.
 
     Args:

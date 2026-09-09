@@ -43,7 +43,7 @@ def assert_sqlmesh_catalog_matches(db: Database) -> AssertionResult:
     try:
         with sqlmesh_context(db) as ctx:
             adapter_path = _resolve_adapter_path(ctx)
-    except Exception as exc:  # noqa: BLE001  — sqlmesh raises untyped errors during context setup
+    except Exception as exc:  # sqlmesh raises untyped errors during context setup
         return AssertionResult(
             name="sqlmesh_catalog_matches",
             passed=False,
@@ -70,7 +70,7 @@ def _resolve_adapter_path(ctx: Any) -> str:
             "SELECT path FROM duckdb_databases() "
             "WHERE database_name = current_database()"
         )
-    except Exception as exc:  # noqa: BLE001  — sqlmesh adapter raises untyped errors
+    except Exception as exc:  # sqlmesh adapter raises untyped errors
         logger.debug(f"adapter introspection failed: {exc}")
         return "<unknown>"
     if not rows:
@@ -119,12 +119,12 @@ def _count(db: Database, table: str) -> int:
     valid = {row[0] for row in catalog_rows}
     if table not in valid:
         return 0
-    row = db.execute(f"SELECT COUNT(*) FROM {quote_ident(table)}").fetchone()  # noqa: S608  — identifier validated against catalog above
+    row = db.execute(f"SELECT COUNT(*) FROM {quote_ident(table)}").fetchone()  # noqa: S608  # identifier validated against catalog above
     return int(row[0]) if row else 0
 
 
 def assert_no_unencrypted_db_files(
-    db: Database,  # noqa: ARG001 — not used; Database first-arg is the standard signature
+    db: Database,  # not used; Database first-arg is the standard signature
     *,
     tmpdir: Path,
 ) -> AssertionResult:
@@ -149,7 +149,7 @@ def assert_no_unencrypted_db_files(
         try:
             with duckdb.connect(str(p), read_only=True) as conn:
                 conn.execute("SELECT 1").fetchone()
-        except Exception:  # noqa: BLE001, S112 — encrypted DBs raise untyped errors; that's the success path
+        except Exception:  # noqa: S112  # encrypted DBs raise untyped errors; that's the success path
             continue
         leaks.append(str(p.relative_to(tmpdir)))
 

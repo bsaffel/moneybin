@@ -275,7 +275,7 @@ def sync_link_status(
 
 
 @app.command("connect", hidden=True)
-def sync_connect_alias(  # noqa: D401 — Typer-registered alias; referenced by decorator
+def sync_connect_alias(  # Typer-registered alias; referenced by decorator
     institution: str | None = typer.Option(
         None,
         "--institution",
@@ -314,7 +314,7 @@ def sync_connect_alias(  # noqa: D401 — Typer-registered alias; referenced by 
 
 
 @app.command("connect-status", hidden=True)
-def sync_connect_status_alias(  # noqa: D401 — Typer-registered alias; referenced by decorator
+def sync_connect_status_alias(  # Typer-registered alias; referenced by decorator
     session_id: str = typer.Option(..., "--session-id", help="Session ID from link."),
     output: OutputFormat = output_option,
 ) -> None:
@@ -528,7 +528,7 @@ def sync_pull(
 @app.command("status")
 def sync_status(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — nothing to suppress yet
+    quiet: bool = quiet_option,  # nothing to suppress yet
     json_fields: str | None = typer.Option(
         None,
         "--json-fields",

@@ -290,7 +290,7 @@ def test_gsheet_connect_column_mapping_kv(mock_build: MagicMock) -> None:
 def test_gsheet_pull_single_connection_runs_refresh(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001  # patched for namespace presence
+    mock_sheets_cls: MagicMock,  # patched for namespace presence
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -331,9 +331,9 @@ def test_gsheet_pull_single_connection_runs_refresh(
 def test_gsheet_pull_nonzero_exit_on_failed_pull(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
-    mock_refresh: MagicMock,  # noqa: ARG001  # --no-refresh isolates the pull-exit path
+    mock_refresh: MagicMock,  # --no-refresh isolates the pull-exit path
 ) -> None:
     """A non-complete pull status makes `gsheet pull` exit 1 (CI/agent signal)."""
     service = MagicMock()
@@ -359,7 +359,7 @@ def test_gsheet_pull_nonzero_exit_on_failed_pull(
 def test_gsheet_pull_no_refresh_skips_pipeline(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -385,9 +385,9 @@ def test_gsheet_pull_no_refresh_skips_pipeline(
 def test_gsheet_pull_json_output(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
-    mock_refresh: MagicMock,  # noqa: ARG001
+    mock_refresh: MagicMock,
 ) -> None:
     service = MagicMock()
     service.pull_connection.return_value = PullResult(
@@ -421,7 +421,7 @@ def test_gsheet_pull_json_output(
 def test_gsheet_pull_reports_a_transfer_its_refresh_retired(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001  # patched for namespace presence
+    mock_sheets_cls: MagicMock,  # patched for namespace presence
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -461,7 +461,7 @@ def test_gsheet_pull_reports_a_transfer_its_refresh_retired(
 def test_gsheet_pull_json_carries_transfers_retired(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -495,7 +495,7 @@ def test_gsheet_pull_json_carries_transfers_retired(
 def test_gsheet_pull_reports_a_crashed_rates_step(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -539,7 +539,7 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
 def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -588,7 +588,7 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
 def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
     mock_refresh: MagicMock,
 ) -> None:
@@ -640,7 +640,7 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
 def test_gsheet_pull_json_omits_the_rates_stage_when_it_did_not_run(
     mock_oauth: MagicMock,
     mock_service_cls: MagicMock,
-    mock_sheets_cls: MagicMock,  # noqa: ARG001
+    mock_sheets_cls: MagicMock,
     mock_get_db: MagicMock,
 ) -> None:
     """An absent stage and a zero count are different answers; only one is true.

@@ -23,5 +23,5 @@ def migrate(conn: object) -> None:
     for table, column, column_type in _STEPS:
         logger.debug(f"V059: ADD COLUMN {table}.{column}")
         conn.execute(  # type: ignore[union-attr]
-            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"  # noqa: S608  # closed internal migration plan
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"  # closed internal migration plan
         )

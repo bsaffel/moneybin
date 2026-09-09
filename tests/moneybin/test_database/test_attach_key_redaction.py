@@ -28,7 +28,7 @@ from moneybin.database import (
 
 # Random-looking hex so no run of it can collide with the surrounding path.
 _KEY = "3f9c1a7d4e2b86055c0d9f31ae74b2c8d61f0a9573e4bc28d05a6e1f7b3c94d2"
-_DB_PATH = Path("/tmp/probe.duckdb")  # noqa: S108 — SQL string fixture, never opened
+_DB_PATH = Path("/tmp/probe.duckdb")  # noqa: S108  # SQL string fixture, never opened
 _MIN_RUN = 8
 
 
@@ -140,7 +140,7 @@ def test_a_decoy_in_the_database_path_does_not_shadow_the_real_key() -> None:
     scanning the statement can be shadowed by path text — and
     ``MONEYBIN_DATABASE__PATH`` is user-settable.
     """
-    decoy = Path("/tmp/ENCRYPTION_KEY 'decoy'/probe.duckdb")  # noqa: S108 — SQL fixture
+    decoy = Path("/tmp/ENCRYPTION_KEY 'decoy'/probe.duckdb")  # noqa: S108  # SQL fixture
     conn = duckdb.connect()
 
     with pytest.raises(duckdb.Error) as excinfo:

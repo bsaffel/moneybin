@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E golden paths for the transaction-curation surface.
 
 Subprocess-driven flows that exercise the new CLI commands and MCP tools end-to-end:
@@ -463,7 +462,7 @@ class TestMCPBulkCreate:
         account_id = _template_account_id(env)
 
         server_params = StdioServerParameters(
-            command="uv",  # noqa: S607 — uv is on PATH in dev environments
+            command="uv",  # uv is on PATH in dev environments
             args=["run", "moneybin", "mcp", "serve"],
             env={**os.environ, **FAST_ARGON2_ENV, **env},
         )

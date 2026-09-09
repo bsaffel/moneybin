@@ -248,7 +248,7 @@ def profile_show(
         typer.Argument(help="Profile name (defaults to active profile)"),
     ] = None,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
+    quiet: bool = quiet_option,  # show has no info chatter; only data lines
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()

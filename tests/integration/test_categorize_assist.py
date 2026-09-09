@@ -1,7 +1,5 @@
 """Integration tests for transactions_categorize_assist MCP tool."""
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -32,7 +30,7 @@ def _seed_uncategorized_transactions(db: Database, count: int = 3) -> None:
     core.fct_transactions is a SQLMesh VIEW in production, but tests don't run
     SQLMesh, so we create a bare table with the columns the service reads.
     """
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
             transaction_id  VARCHAR PRIMARY KEY,
@@ -51,7 +49,7 @@ def _seed_uncategorized_transactions(db: Database, count: int = 3) -> None:
         """
     )
     # app.transaction_categories is the LEFT JOIN target; ensure it exists empty
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS app.transaction_categories (
             transaction_id  VARCHAR PRIMARY KEY,
@@ -78,7 +76,7 @@ def _wire_db_to_assist(monkeypatch: pytest.MonkeyPatch, db: Database) -> None:
 
     @contextmanager
     def _db_ctx(*_a: object, **_kw: object):
-        yield db  # noqa: B023 — db is loop-invariant; test owns lifecycle
+        yield db  # db is loop-invariant; test owns lifecycle
 
     monkeypatch.setattr(_mod, "get_database", _db_ctx)
 

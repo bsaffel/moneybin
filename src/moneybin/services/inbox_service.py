@@ -227,7 +227,7 @@ class InboxService:
             os.O_WRONLY | os.O_CREAT | os.O_APPEND,
             _FILE_MODE,
         )
-        fh = os.fdopen(fd, "a")  # noqa: SIM115  # contextmanager handles close
+        fh = os.fdopen(fd, "a")  # contextmanager handles close
         try:
             try:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -585,7 +585,7 @@ class InboxService:
                 account_hint=account_hint if isinstance(account_hint, str) else None,
             )
             return
-        except Exception as e:  # noqa: BLE001 — surfaced as structured failure entry
+        except Exception as e:  # surfaced as structured failure entry
             self._handle_failure(src, rel_filename, e, year_month, result)
             return
         try:

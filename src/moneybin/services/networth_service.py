@@ -61,7 +61,7 @@ class NetworthService:
             FROM {REPORTS_NET_WORTH.full_name} AS n
             INNER JOIN latest AS l ON n.balance_date = l.balance_date
             ORDER BY n.currency_code
-        """  # noqa: S608  # parameterized via params
+        """  # parameterized via params
         rows = self._db.execute(sql, params).fetchall()
         if not rows:
             return NetWorthSnapshotPayload(
@@ -115,7 +115,7 @@ class NetworthService:
             INNER JOIN {DIM_ACCOUNTS.full_name} AS a ON d.account_id = a.account_id
             WHERE d.balance_date = ? AND a.include_in_net_worth AND NOT a.archived {where}
             ORDER BY a.display_name
-        """  # noqa: S608  # parameterized
+        """  # parameterized
         return [
             NetWorthAccountRow(
                 account_id=row[0],
@@ -178,7 +178,7 @@ class NetworthService:
                 CASE WHEN prev IS NULL OR prev = 0 THEN NULL
                      ELSE change_abs / prev END AS change_pct
             FROM with_change ORDER BY rank_in_currency, currency_code
-        """  # noqa: S608  # bucket_expr from allowlist; values parameterized
+        """  # bucket_expr from allowlist; values parameterized
         rows = self._db.execute(sql, [from_date, to_date]).fetchall()
         points = [
             NetWorthHistoryPoint(

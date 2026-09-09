@@ -23,7 +23,7 @@ def _insert_dim_account_inputs(db: Database, *, account_id: str) -> None:
             (account_id, account_type, source_file, extracted_at,
              source_type, source_origin)
         VALUES (?, 'CHECKING', 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [account_id],
     )
 
@@ -46,7 +46,7 @@ def _insert_ofx_transaction(
              source_origin, currency_code)
         VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, -10.00, 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, account_id, currency_code],
     )
 
@@ -180,7 +180,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                  source_origin, status, decided_by, decided_at)
             VALUES (?, ?, 'source_native', '1001', 'ofx', ?, 'accepted',
                     'system', CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"lnk_{origin}", canonical, origin],
         )
         db.execute(
@@ -189,7 +189,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                 (account_id, account_type, source_file, extracted_at,
                  source_type, source_origin)
             VALUES ('1001', 'CHECKING', ?, ?::TIMESTAMP, 'ofx', ?)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"ofx_{origin}", when, origin],
         )
         db.execute(
@@ -200,7 +200,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                  source_type, source_origin, currency_code)
             VALUES ('1001', ?::TIMESTAMP, ?::TIMESTAMP, 100.00, ?::TIMESTAMP,
                     ?, ?::TIMESTAMP, 'ofx', ?, ?)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [when, when, when, f"ofx_{origin}", when, origin, currency],
         )
 

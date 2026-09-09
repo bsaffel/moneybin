@@ -575,7 +575,7 @@ def _insert_account_link_decision(
                 confidence_score, match_signals, status, decided_by,
                 match_reason, decided_at
             ) VALUES (?, ?, ?, 0.85, ?, ?, 'auto', NULL, ?)
-            """,  # noqa: S608  # test input, not executing SQL
+            """,  # test input, not executing SQL
             [
                 decision_id,
                 provisional_account_id,
@@ -817,7 +817,7 @@ async def test_review_cursor_validates_key_shape_when_queue_is_empty() -> None:
 async def test_review_standard_registrar_renders_closed_contract() -> None:
     mcp = isolated_server(register_review_coarse_reads)
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"reviews"}
     tool = await listed_tool(mcp, "reviews")
     assert tool.outputSchema is None
@@ -1022,7 +1022,7 @@ def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
                 '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
                 '2026-07', '2026-Q3'
             )
-            """,  # noqa: S608  # test fixture data
+            """,  # test fixture data
             [transaction_id],
         )
         CategorizationService(db).create_category(category, actor="test")
@@ -1098,7 +1098,7 @@ def _seed_alternating_ordinary_decisions() -> dict[str, str]:
                 '2026-07-19', CURRENT_TIMESTAMP, 2026, 7, 19, 7,
                 '2026-07', '2026-Q3'
             )
-            """,  # noqa: S608  # test fixture data
+            """,  # test fixture data
             [second_transaction_id],
         )
         repo = MatchDecisionsRepo(db)
@@ -1609,7 +1609,7 @@ async def test_ordinary_batch_coalesces_shared_new_merchant_in_input_order() -> 
                 '2026-07-18', CURRENT_TIMESTAMP, 2026, 7, 18, 6,
                 '2026-07', '2026-Q3'
             )
-            """,  # noqa: S608  # test fixture data
+            """,  # test fixture data
             [second_transaction_id],
         )
     second_id = categorization_decision_id(second_transaction_id)
@@ -3319,7 +3319,7 @@ async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
 
     tools = {
         tool.name: tool
-        for tool in await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        for tool in await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     }
     assert set(tools) == {"reviews_decide", "identity_links_decide"}
     reviews_tool = await listed_tool(mcp, "reviews_decide")
@@ -3355,7 +3355,7 @@ def _seed_investment_history(security_id: str, label: str) -> None:
                 (investment_transaction_id, account_id, security_id, trade_date,
                  type, quantity, amount, currency_code)
             VALUES (?, 'ACC001', ?, DATE '2026-01-15', 'buy', 10, -1500.00, 'USD')
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [f"txn-{label}", security_id],
         )
         db.execute(
@@ -3364,7 +3364,7 @@ def _seed_investment_history(security_id: str, label: str) -> None:
                 (lot_id, account_id, security_id, acquisition_date,
                  original_quantity, remaining_quantity, currency_code, is_open)
             VALUES (?, 'ACC001', ?, DATE '2026-01-15', 10, 10, 'USD', TRUE)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [f"lot-{label}", security_id],
         )
 

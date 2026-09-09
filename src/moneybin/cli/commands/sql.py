@@ -48,7 +48,7 @@ def _sql_group() -> None:  # pyright: ignore[reportUnusedFunction]  # Typer keep
 def sql_query_command(
     query: str = typer.Argument(..., help="SQL query to execute (read-only)."),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — query emits result rows, not chatter
+    quiet: bool = quiet_option,  # query emits result rows, not chatter
     json_fields: str | None = json_fields_option,
 ) -> None:
     """Execute a read-only SQL query with privacy enforcement.

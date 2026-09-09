@@ -26,7 +26,7 @@ def _insert_plaid_account(db: Database, *, native_key: str) -> None:
              extracted_at, loaded_at)
         VALUES (?, 'depository', 'checking', 'TestBank', 'Acct', '0000',
                 'sync_test', 'plaid', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [native_key, _ITEM],
     )
 
@@ -42,7 +42,7 @@ def _insert_plaid_balance(
              extracted_at, loaded_at)
         VALUES (?, '2026-07-01'::DATE, 500.00, 500.00, ?, 'sync_test', 'plaid',
                 ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [native_key, currency_code, _ITEM],
     )
 
@@ -55,7 +55,7 @@ def _accept_link(db: Database, *, native_key: str, canonical_id: str) -> None:
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, 'plaid', ?, 'accepted', 'auto',
                 CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [f"link_{native_key}", canonical_id, native_key, _ITEM],
     )
 
@@ -67,7 +67,7 @@ def _insert_ofx_account(db: Database, *, account_id: str) -> None:
             (account_id, account_type, source_file, extracted_at,
              source_type, source_origin)
         VALUES (?, 'CHECKING', 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [account_id],
     )
 
@@ -88,7 +88,7 @@ def _insert_ofx_balance(
              source_file, extracted_at, source_type, source_origin, currency_code)
         VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, ?,
                 CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [account_id, on_date, balance, on_date, source_file, currency_code],
     )
 
@@ -110,7 +110,7 @@ def _insert_ofx_transaction_on(
              source_origin, currency_code)
         VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18, 2), 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, account_id, on_date, amount, currency_code],
     )
 

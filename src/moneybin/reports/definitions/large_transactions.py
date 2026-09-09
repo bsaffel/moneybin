@@ -216,7 +216,7 @@ def _blank_original_currency_analytics(
     ),
 )
 def large_transactions(
-    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    db: Database,  # contract handle; this runner builds pure SQL
     *,
     top: int = 25,
     anomaly: str = "none",

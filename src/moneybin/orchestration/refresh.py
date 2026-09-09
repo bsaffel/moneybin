@@ -359,7 +359,7 @@ def refresh(
             # nothing was examined.
             matching_skipped = True
             logger.debug("Matching skipped (views may not exist yet)", exc_info=True)
-        except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+        except Exception as exc:  # surface a real crash; never abort the pipeline
             matching_error = _step_error(exc, step="Matching")
         # One append covering all four branches rather than one per branch: the
         # counts are already accumulated in locals that every branch sets, and
@@ -523,14 +523,14 @@ def _run_gsheet_step(db: Database) -> list[Any]:
         )
         results = service.pull_all_healthy()
         return results
-    except Exception:  # noqa: BLE001 — best-effort; surfaces in logs only
+    except Exception:  # best-effort; surfaces in logs only
         # Distinguish "no connections → nothing to do" (debug) from
         # "connections exist but setup broke" (warning). A configured-but-
         # broken environment otherwise silently skips every scheduled pull
         # with no signal to the user.
         try:
             has_connections = bool(GSheetConnectionsRepo(db).list_healthy())
-        except Exception:  # noqa: BLE001 — repo probe is itself best-effort
+        except Exception:  # repo probe is itself best-effort
             has_connections = False
         if has_connections:
             logger.warning(
@@ -575,7 +575,7 @@ def _run_categorize_step(db: Database) -> StageOutcome:
         # an expected precondition, not a crash. No error surfaced.
         logger.debug("Categorization skipped (tables may not exist yet)", exc_info=True)
         return StageOutcome(step="categorize", ran=False)
-    except Exception as exc:  # noqa: BLE001 — surface a real crash; never abort the pipeline
+    except Exception as exc:  # surface a real crash; never abort the pipeline
         return StageOutcome(
             step="categorize", ran=True, error=_step_error(exc, step="Categorization")
         )
@@ -603,7 +603,7 @@ def _run_categorize_step(db: Database) -> StageOutcome:
                 "  💡 Run 'moneybin transactions categorize auto review' "
                 "to review proposed rules"
             )
-    except Exception:  # noqa: BLE001 — informational post-step read; never fail refresh
+    except Exception:  # informational post-step read; never fail refresh
         logger.debug("Auto-rule proposal stats unavailable", exc_info=True)
     return StageOutcome(
         step="categorize",
@@ -648,7 +648,7 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
 
     try:
         home_currency = ProfileSettingsRepo(db).get_home_currency()
-    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+    except Exception as exc:  # best-effort refresh stage
         return None, _step_error(exc, step="Rate backfill")
     if home_currency is None:
         logger.debug("Rate backfill skipped: no home currency is set")
@@ -674,7 +674,7 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
         # calling that a skipped step would claim nothing was attempted.
         logger.debug("Rate backfill skipped (core views may not exist yet)")
         return None, None
-    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+    except Exception as exc:  # best-effort refresh stage
         # Through _step_error like every sibling step, not the bare type name:
         # this string lands in CLI JSON and the MCP envelope, and a rates crash
         # can carry a provider URL with a currency pair in it.
@@ -706,12 +706,12 @@ def _run_identity_step(db: Database) -> tuple[StageOutcome, tuple[str, ...]]:
     # left a clean identity pass with no observable outcome.
     try:
         counts["accounts_linked"] = AccountLinksService(db).run()
-    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+    except Exception as exc:  # best-effort refresh stage
         logger.error(f"accounts identity backfill failed: {type(exc).__name__}")
         errors.append("accounts")
     try:
         harvest = MerchantLinksService(db).run()
-    except Exception as exc:  # noqa: BLE001  # best-effort refresh stage
+    except Exception as exc:  # best-effort refresh stage
         logger.error(f"merchants identity backfill failed: {type(exc).__name__}")
         errors.append("merchants")
     else:

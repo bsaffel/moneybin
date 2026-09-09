@@ -38,7 +38,7 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
         WHERE transfer_pair_id IS NOT NULL
         GROUP BY transfer_pair_id
         HAVING COUNT(*) = 2
-        """,  # noqa: S608 — TableRef constant
+        """,  # noqa: S608  # TableRef constant
     )
     predicted_pairs = _pair_set(
         db,
@@ -54,7 +54,7 @@ def score_transfer_detection(db: Database, *, threshold: float) -> EvaluationRes
         FROM predicted
         GROUP BY transfer_pair_id
         HAVING COUNT(*) = 2
-        """,  # noqa: S608 — TableRef constants
+        """,  # noqa: S608  # TableRef constants
     )
 
     tp = len(true_pairs & predicted_pairs)
@@ -92,7 +92,7 @@ def score_dedup(
     cross-source duplicates. The score is `1 - |delta|/expected`, clamped at 0.
     """
     actual_row = db.execute(
-        f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+        f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
     ).fetchone()
     actual = actual_row[0] if actual_row is not None else 0
     delta = abs(actual - expected_collapsed_count)

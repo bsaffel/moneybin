@@ -27,7 +27,7 @@ def test_dedup_overmerge_guard() -> None:
         # over-collapsed (which would yield one record with source_count=4) nor
         # failed to merge (two records with source_count=1).
         rows = db.execute(
-            "SELECT source_count FROM core.fct_transactions"  # noqa: S608 — no input
+            "SELECT source_count FROM core.fct_transactions"  # no input
         ).fetchall()
         counts = sorted(int(r[0]) for r in rows)
         return [

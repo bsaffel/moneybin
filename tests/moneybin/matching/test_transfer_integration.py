@@ -298,7 +298,7 @@ def _insert_transfer(
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES (?, ?, ?, 'bank', ?, ?, 'bank', ?, 0.95, '{}',
                   'transfer', '4', ?, 'accepted', NULL, 'user', ?)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [
             match_id,
             stid_a,
@@ -337,7 +337,7 @@ def _insert_dedup(
         ) VALUES (?, ?, 'ofx', 'bank', ?, 'csv', 'bank', ?, 0.95, '{}',
                   'dedup', '3', NULL, ?, NULL, 'auto',
                   CURRENT_TIMESTAMP)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [match_id, stid_a, stid_b, account_id, status],
     )
 
@@ -370,7 +370,7 @@ def _retirement_count(cause: str) -> float:
     from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 
     counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause=cause)
-    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return counter._value.get()  # pyright: ignore[reportPrivateUsage]
 
 
 def _seed_two_doomed_transfers(db: Database, *, edge_status: str = "accepted") -> None:
@@ -452,7 +452,7 @@ def _seed_a_stale_pending_transfer(
         ) VALUES ('tx_stale00001', 'csv_c', 'csv', 'bank', 'ofx_y', 'ofx',
                   'bank', 'checking', 0.95, '{}', 'transfer', '4', 'savings',
                   'pending', NULL, 'auto', '2026-02-01 00:00:00')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 
@@ -1433,6 +1433,6 @@ class TestPartialMatchRunDisclosure:
             TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
 
         # Not merely "some exception": the wrapper must not be what escaped.
-        with pytest.raises(BaseException) as excinfo:  # noqa: B017, PT011  # identity check
+        with pytest.raises(BaseException) as excinfo:  # identity check
             TransactionMatcher(db, MatchingSettings(), table="main._test_unioned").run()
         assert not isinstance(excinfo.value, MatchRunError)

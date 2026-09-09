@@ -374,7 +374,7 @@ def record_committed_alias_forwarding(result: AliasForwardResult) -> None:
     try:
         TRANSACTION_ID_ALIASES_WRITTEN_TOTAL.inc(result.aliases_written)
         TRANSACTION_CURATION_FORWARDED_TOTAL.inc(result.curation_rows_forwarded)
-    except Exception as exc:  # noqa: BLE001  # metrics must not escape post-commit
+    except Exception as exc:  # metrics must not escape post-commit
         logger.warning(
             f"Could not record committed alias-forwarding metric "
             f"at {exception_origin(exc)}"
@@ -387,7 +387,7 @@ def record_committed_curation_restore(rows_restored: int) -> None:
         return
     try:
         TRANSACTION_CURATION_RESTORED_TOTAL.inc(rows_restored)
-    except Exception as exc:  # noqa: BLE001  # metrics must not escape post-commit
+    except Exception as exc:  # metrics must not escape post-commit
         logger.warning(
             f"Could not record committed curation-restore metric "
             f"at {exception_origin(exc)}"

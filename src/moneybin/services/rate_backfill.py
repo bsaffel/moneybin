@@ -268,7 +268,7 @@ def _core_is_built(db: Database) -> bool:
     params = [part for ref in relations for part in (ref.schema, ref.name)]
     row = db.execute(
         # Fixed predicate count, values bound; no interpolation of caller input.
-        f"SELECT COUNT(*) FROM information_schema.tables WHERE {placeholders}",  # noqa: S608
+        f"SELECT COUNT(*) FROM information_schema.tables WHERE {placeholders}",
         params,
     ).fetchone()
     return bool(row and row[0] > 0)
@@ -352,7 +352,7 @@ def plan_rate_backfill(
         SELECT from_currency, earliest
           FROM needed
          ORDER BY from_currency
-        """,  # noqa: S608  # TableRef + parameterized values
+        """,  # TableRef + parameterized values
         [home],
     ).fetchall()
     windows: list[RateWindow] = []

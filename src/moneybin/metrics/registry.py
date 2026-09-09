@@ -1173,7 +1173,6 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_fx_accounting_rows": "Multi-currency integrity",
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
-    "moneybin_fx_accounting_rows": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",

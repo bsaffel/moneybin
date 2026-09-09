@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Integration test: MCP boot detects drift and exercises the self-heal path.
 
 Builds a SQLMesh-applied DB via ImportService and simulates a drifted live

@@ -650,7 +650,7 @@ class SecurityResolver:
         """Alias -> canonical MIC. Absent seed = every exchange unnormalizable."""
         try:
             rows = self._db.execute(
-                f"SELECT alias, mic FROM {SEED_EXCHANGE_MIC_MAP.full_name}"  # noqa: S608  # TableRef constant
+                f"SELECT alias, mic FROM {SEED_EXCHANGE_MIC_MAP.full_name}"  # TableRef constant
             ).fetchall()
         except duckdb.CatalogException:
             # Seed not materialized yet (first sync on a fresh DB): every
@@ -683,7 +683,7 @@ class SecurityResolver:
                        COALESCE(iso_currency_code, unofficial_currency_code)
                 FROM {PLAID_SECURITIES.full_name}
                 ORDER BY security_id
-                """  # noqa: S608  # TableRef constant
+                """  # TableRef constant
             ).fetchall()
         except duckdb.CatalogException:
             return []
@@ -774,7 +774,7 @@ class SecurityResolver:
             SELECT security_id, name, ticker, exchange, cusip, isin, created_by
             FROM {SECURITIES.full_name}
             ORDER BY security_id
-            """  # noqa: S608  # TableRef constant
+            """  # TableRef constant
         ).fetchall()
         return [_CatalogEntry(*row) for row in rows]
 

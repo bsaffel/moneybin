@@ -25,7 +25,7 @@ def _check_category(
     description: str,
 ) -> AssertionResult:
     """Assert category + categorized_by for a transaction looked up by source_id."""
-    row = db.execute(  # noqa: S608 — table name literal; value parameterized
+    row = db.execute(  # table name literal; value parameterized
         """
         SELECT t.category, t.categorized_by
         FROM core.fct_transactions AS t

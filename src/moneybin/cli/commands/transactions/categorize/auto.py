@@ -156,7 +156,7 @@ def categorize_auto_accept(
 @app.command("stats")
 def stats(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — stats has no informational chatter; only data
+    quiet: bool = quiet_option,  # stats has no informational chatter; only data
 ) -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService

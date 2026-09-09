@@ -168,7 +168,7 @@ def test_fk_audit_catches_an_orphan_account_id(db: Database) -> None:
         INSERT INTO core.fct_investment_transactions
             (investment_transaction_id, account_id, security_id, type, amount)
         VALUES ('buy_orphan', 'plaid_acc_X', 'sec_1', 'buy', -500.00)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     assert db.execute(_fk_audit_query()).fetchall() == [("buy_orphan",)]
 

@@ -111,10 +111,10 @@ def _count_categorized(db: Database) -> int:
 
     try:
         row = db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # TableRef constant
             f"WHERE category IS NOT NULL"
         ).fetchone()
-    except Exception:  # noqa: BLE001 — core views absent (transform mocked/not run)
+    except Exception:  # core views absent (transform mocked/not run)
         return 0
     return int(row[0]) if row else 0
 
@@ -141,10 +141,10 @@ def _count_transactions(db: Database) -> int:
     try:
         row = db.execute(
             f"SELECT (SELECT COUNT(*) FROM {OFX_TRANSACTIONS.full_name}) "
-            f"+ (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"  # noqa: S608  # TableRef constants
+            f"+ (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"  # TableRef constants
         ).fetchone()
         return int(row[0]) if row else 0
-    except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
+    except Exception:  # tables may not exist in a fresh DB
         return 0
 
 

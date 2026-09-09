@@ -34,7 +34,7 @@ def _insert_accepted_source_native(
             (link_id, account_id, ref_kind, ref_value, source_type,
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [link_id, account_id, ref_value, source_type, source_origin],
     )
 
@@ -52,7 +52,7 @@ def test_stg_tabular_translates_to_canonical_account_id(db: Database) -> None:
              import_id, extracted_at, loaded_at)
         VALUES (?, 'Checking', '/tmp/test.csv', 'csv', 'test_bank_tab',
                 'imp-tab-001', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -99,7 +99,7 @@ def test_stg_plaid_translates_to_canonical_account_id(db: Database) -> None:
              source_type, source_origin, extracted_at, loaded_at)
         VALUES (?, 'depository', 'Test Bank Plaid', 'sync_job_001',
                 'plaid', 'plaid-item-origin-001', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -146,7 +146,7 @@ def test_stg_ofx_translates_to_canonical_account_id(db: Database) -> None:
              source_type, source_origin, extracted_at, loaded_at)
         VALUES (?, 'CHECKING', 'Test Bank OFX', '/tmp/test.ofx',
                 'ofx', 'test_bank_ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(

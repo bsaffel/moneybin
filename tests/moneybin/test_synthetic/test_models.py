@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Tests for Pydantic YAML validation models and data loading."""
 
 from typing import Any

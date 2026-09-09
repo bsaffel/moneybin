@@ -27,7 +27,7 @@ def _set_comment(db: Database, schema: str, table: str, column: str, text: str) 
     # literal. Test input only; not user-supplied SQL.
     safe = text.replace("'", "''")
     db.execute(
-        f'COMMENT ON COLUMN "{schema}"."{table}"."{column}" IS \'{safe}\''  # noqa: S608  # test input, not executing SQL
+        f'COMMENT ON COLUMN "{schema}"."{table}"."{column}" IS \'{safe}\''  # test input, not executing SQL
     )
 
 

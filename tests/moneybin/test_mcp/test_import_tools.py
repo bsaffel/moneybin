@@ -56,7 +56,7 @@ async def test_import_workflow_registrar_preserves_seven_trust_boundaries() -> N
     registrar = import_tools_module.register_import_workflow_tools
     mcp = isolated_server(registrar)
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     names = {tool.name for tool in tools}
 
     assert names == {
@@ -2558,7 +2558,7 @@ async def test_import_confirm_coarse_answers_the_pdf_account_gate(
 
     with get_database(read_only=False) as db:
         db.conn.execute(
-            "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+            "INSERT INTO core.dim_accounts "  # test fixture
             "(account_id, display_name, institution_slug, last_four) "
             "VALUES (?, ?, ?, ?)",
             ["acct_twin01", "Chase Card", "chase", "1234"],

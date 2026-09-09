@@ -66,7 +66,7 @@ def transaction_db(db: Database) -> Database:
          'Coffee Shop', 'DEBIT', false, 'USD', 'ofx',
          '2026-02-10', CURRENT_TIMESTAMP,
          2026, 2, 10, 1, '2026-02', '2026-Q1')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Categorize one transaction
     conn.execute("""
@@ -75,7 +75,7 @@ def transaction_db(db: Database) -> Database:
              categorized_by)
         VALUES
         ('T1', 'Food & Drink', 'Coffee Shops', CURRENT_TIMESTAMP, 'user')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     return db
 
@@ -486,7 +486,7 @@ class TestAnnotationBatches:
             raise KeyboardInterrupt
 
         monkeypatch.setattr(
-            service._tags_repo,  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+            service._tags_repo,  # pyright: ignore[reportPrivateUsage]
             "add",
             interrupt,
         )
@@ -1051,7 +1051,7 @@ class TestSplits:
              'Big Box Store', 'DEBIT', false, 'USD', 'ofx',
              '2026-04-20', CURRENT_TIMESTAMP,
              2026, 4, 20, 6, '2026-04', '2026-Q2')
-            """  # noqa: S608  # test input, not executing SQL
+            """  # test input, not executing SQL
         )
         return "TSPLIT"
 

@@ -23,7 +23,7 @@ everywhere the suite runs.
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: S404 — a child pytest run is how this proves isolation
+import subprocess  # noqa: S404  # a child pytest run is how this proves isolation
 from pathlib import Path
 
 import pytest

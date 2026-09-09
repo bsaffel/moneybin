@@ -95,16 +95,16 @@ def test_ground_truth_coverage_passes_when_threshold_met(
 ) -> None:
     """Full coverage clears the 0.9 floor."""
     coverage_db.execute(
-        "INSERT INTO core.fct_transactions VALUES ('T1'),('T2'),('T3'),('T4'),('T5')"  # noqa: S608  # test input, not executing SQL
+        "INSERT INTO core.fct_transactions VALUES ('T1'),('T2'),('T3'),('T4'),('T5')"  # test input, not executing SQL
     )
     coverage_db.execute(
         "INSERT INTO prep.int_transactions__matched VALUES "
-        "('T1','S1'),('T2','S2'),('T3','S3'),('T4','S4'),('T5','S5')"  # noqa: S608  # test input, not executing SQL
+        "('T1','S1'),('T2','S2'),('T3','S3'),('T4','S4'),('T5','S5')"  # test input, not executing SQL
     )
     coverage_db.execute(
         "INSERT INTO synthetic.ground_truth VALUES "
         "('S1','grocery'),('S2','grocery'),('S3','grocery'),"
-        "('S4','grocery'),('S5','grocery')"  # noqa: S608  # test input, not executing SQL
+        "('S4','grocery'),('S5','grocery')"  # test input, not executing SQL
     )
     r = assert_ground_truth_coverage(coverage_db, min_coverage=0.9)
     assert r.passed, r.details
@@ -114,14 +114,14 @@ def test_ground_truth_coverage_passes_when_threshold_met(
 def test_ground_truth_coverage_fails_below_threshold(coverage_db: Database) -> None:
     """Half-labeled rows should fail a 0.9 threshold and report coverage=0.5."""
     coverage_db.execute(
-        "INSERT INTO core.fct_transactions VALUES ('T1'),('T2'),('T3'),('T4')"  # noqa: S608  # test input, not executing SQL
+        "INSERT INTO core.fct_transactions VALUES ('T1'),('T2'),('T3'),('T4')"  # test input, not executing SQL
     )
     coverage_db.execute(
         "INSERT INTO prep.int_transactions__matched VALUES "
-        "('T1','S1'),('T2','S2'),('T3','S3'),('T4','S4')"  # noqa: S608  # test input, not executing SQL
+        "('T1','S1'),('T2','S2'),('T3','S3'),('T4','S4')"  # test input, not executing SQL
     )
     coverage_db.execute(
-        "INSERT INTO synthetic.ground_truth VALUES ('S1','grocery'),('S2','grocery')"  # noqa: S608  # test input, not executing SQL
+        "INSERT INTO synthetic.ground_truth VALUES ('S1','grocery'),('S2','grocery')"  # test input, not executing SQL
     )
     r = assert_ground_truth_coverage(coverage_db, min_coverage=0.9)
     assert not r.passed
