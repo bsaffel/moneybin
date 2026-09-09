@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
+from typing import Any, TypedDict, cast
 from unittest.mock import MagicMock
 
 from ruamel.yaml import YAML
@@ -14,6 +15,17 @@ from moneybin.database import Database, sqlmesh_context
 _EXTERNAL_MODELS_PATH = (
     Path(__file__).parents[2] / "src" / "moneybin" / "sqlmesh" / "external_models.yaml"
 )
+
+
+class _ExternalModelDeclaration(TypedDict):
+    name: str
+    columns: dict[str, str]
+
+
+def _load_external_models() -> list[_ExternalModelDeclaration]:
+    """Load the fixed external-model declaration shape from YAML."""
+    loader = cast(Any, YAML(typ="safe"))
+    return cast(list[_ExternalModelDeclaration], loader.load(_EXTERNAL_MODELS_PATH))
 
 
 def _relation_name(name: str) -> str:
@@ -50,7 +62,7 @@ def test_external_models_match_initialized_raw_and_app_tables(
 
         declarations = [
             (_relation_name(str(entry["name"])), dict(entry["columns"]))
-            for entry in YAML(typ="safe").load(_EXTERNAL_MODELS_PATH)
+            for entry in _load_external_models()
             if _relation_name(str(entry["name"])).startswith(("raw.", "app."))
         ]
         assert len({name for name, _ in declarations}) == len(declarations)
