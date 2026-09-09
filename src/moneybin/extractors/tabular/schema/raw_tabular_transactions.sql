@@ -30,5 +30,7 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     deleted_from_source_at TIMESTAMP,                  -- For live tabular sources (gsheet): timestamp when this row was observed absent from the source on the most recent pull. NULL means the row is currently present in source (or the source is non-live like a one-shot CSV import).
+    to_amount DECIMAL(18, 2),                   -- Received-leg amount for a source-provided single-row currency conversion; NULL when absent
+    to_currency VARCHAR,                        -- Received-leg currency for a source-provided single-row currency conversion; NULL when absent
     PRIMARY KEY (transaction_id, account_id, source_file)
 );

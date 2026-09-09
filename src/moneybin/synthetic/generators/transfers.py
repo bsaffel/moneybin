@@ -69,6 +69,12 @@ class TransferGenerator:
             if amount <= 0:
                 continue
 
+            received = (
+                Decimal(str(config.received_amount))
+                if config.received_amount is not None
+                else amount
+            )
+
             self._pair_counter += 1
             pair_id = f"XFER{self._pair_counter:06d}"
 
@@ -90,7 +96,7 @@ class TransferGenerator:
             txns.append(
                 GeneratedTransaction(
                     date=txn_date,
-                    amount=amount,
+                    amount=received,
                     description=description,
                     account_name=config.to_account,
                     transfer_pair_id=pair_id,

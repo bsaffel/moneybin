@@ -93,7 +93,9 @@ def review_impl(
         return
 
     if interactive:
-        _not_implemented("the interactive review loop")
+        # Not a whole-command stub: `review` works, and only this mode is
+        # unfinished. `stubs.py` explains what that excludes it from.
+        _not_implemented("the interactive review loop", whole_command=False)
         return
 
     # Counts are the default: they are what `--help` describes, and the only

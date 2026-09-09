@@ -59,6 +59,7 @@ class MatchResult:
     auto_merged: int = 0
     pending_review: int = 0
     pending_transfers: int = 0
+    accepted_transfers: int = 0
     # Accepted transfers this run reversed because a dedup component now holds
     # both of their legs. Not part of has_matches: nothing was *found*, and a
     # caller reporting "no new matches" is still right. It is reported rather
@@ -124,7 +125,10 @@ class MatchRunError(Exception):
     def __init__(self, cause: BaseException, *, partial: MatchResult) -> None:
         """Wrap ``cause``, carrying the work that had already committed."""
         super().__init__(str(cause))
+        # Restatement can become the exception chain's cause; retain both failures.
+        self.cause = cause
         self.partial = partial
+        self.restatement_error: BaseException | None = None
 
 
 @dataclass
@@ -541,6 +545,7 @@ class TransactionMatcher:
 
             if auto_accept:
                 result.auto_merged += 1
+                result.accepted_transfers += 1
             else:
                 result.pending_transfers += 1
             tier_pending += 1

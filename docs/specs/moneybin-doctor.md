@@ -42,7 +42,7 @@ Adding a new invariant in the future: add a `.sql` file to `src/moneybin/sqlmesh
 |---|---|---|---|
 | `fct_transactions_fk_integrity.sql` | `fct_transactions_fk_integrity` | Every `fct_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
 | `fct_transactions_sign_convention.sql` | `fct_transactions_sign_convention` | `amount` is non-NULL and both derived columns agree with it: `transaction_direction` matches the sign, `amount_absolute` matches `ABS(amount)` (zero is a modeled 'zero' direction, not a violation; category is deliberately not policed against the sign) | Any NULL amount, or either derived column disagreeing |
-| `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair's legs cancel exactly, and both legs are still present in `core.fct_transactions` | Any pair whose legs do not sum to `0`, including a pair with a missing leg |
+| `bridge_transfers_balanced.sql` | `bridge_transfers_balanced` | Every transfer pair has a negative debit and positive credit, both legs remain in `core.fct_transactions`, and same-currency legs cancel exactly | Any pair with a missing leg or currency, invalid leg signs, or a nonzero same-currency sum |
 | `fct_investment_transactions_fk_integrity.sql` | `fct_investment_transactions_fk_integrity` | Every `fct_investment_transactions.account_id` resolves to `dim_accounts` | Any orphaned account_id |
 | `fct_investment_transactions_sign_convention.sql` | `fct_investment_transactions_sign_convention` | The investment ledger obeys the accounting sign convention | Any violation of the convention |
 | `fct_investment_transactions_uniqueness.sql` | `fct_investment_transactions_uniqueness` | Every `investment_transaction_id` appears once | Any duplicate id |
