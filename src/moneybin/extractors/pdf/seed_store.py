@@ -117,7 +117,7 @@ def write_pdf_seed(
         # import_id, so counting rows tagged with THIS import_id gives the
         # number actually inserted (excluding ignored duplicates).
         inserted_row = db.execute(
-            f"SELECT COUNT(*) FROM {PDF_SEEDS.full_name} WHERE import_id = ?",  # noqa: S608 — compile-time TableRef constant, value parameterized
+            f"SELECT COUNT(*) FROM {PDF_SEEDS.full_name} WHERE import_id = ?",  # noqa: S608  # compile-time TableRef constant, value parameterized
             [import_id],
         ).fetchone()
         inserted = int(inserted_row[0]) if inserted_row else 0
@@ -127,7 +127,7 @@ def write_pdf_seed(
         # re-imports with different content could otherwise break old rows on
         # CAST at query time.
         existing = db.execute(
-            f"SELECT data FROM {PDF_SEEDS.full_name} WHERE alias = ?",  # noqa: S608 — compile-time TableRef constant, value parameterized
+            f"SELECT data FROM {PDF_SEEDS.full_name} WHERE alias = ?",  # noqa: S608  # compile-time TableRef constant, value parameterized
             [alias],
         ).fetchall()
         all_rows_for_inference: list[dict[str, object]] = [

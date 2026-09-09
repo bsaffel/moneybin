@@ -373,7 +373,7 @@ def _run_runner(db: Database) -> ReportQuery:
     return ReportQuery("SELECT 1", [])
 
 
-def _run_spec(default_columns: DefaultColumns | None):  # noqa: ANN202 — test helper
+def _run_spec(default_columns: DefaultColumns | None):  # test helper
     return build_spec(
         _run_runner,
         report_id="test:run",

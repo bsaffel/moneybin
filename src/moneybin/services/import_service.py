@@ -2064,7 +2064,7 @@ class ImportService:
             safe_schema = exp.to_identifier(schema, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
             safe_table = exp.to_identifier(table, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
             row_count = self._db.execute(
-                f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers
+                f"SELECT COUNT(*) FROM {safe_schema}.{safe_table}"  # sqlglot-quoted catalog identifiers
             ).fetchone()
             count = row_count[0] if row_count else 0
 
@@ -2075,11 +2075,13 @@ class ImportService:
                 safe_date_col = exp.to_identifier(date_col, quoted=True).sql("duckdb")  # type: ignore[reportUnknownMemberType]  # sqlglot has no stubs
                 try:
                     dates = self._db.execute(
-                        f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # noqa: S608 — sqlglot-quoted catalog identifiers; date_col from hardcoded map
+                        f"SELECT MIN(CAST({safe_date_col} AS DATE)), MAX(CAST({safe_date_col} AS DATE)) FROM {safe_schema}.{safe_table}"  # sqlglot-quoted catalog identifiers; date_col from hardcoded map
                     ).fetchone()
                     if dates and dates[0]:
                         date_min, date_max = dates[0], dates[1]
-                except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty range
+                except (
+                    Exception
+                ):  # date range is best-effort; any DB failure returns empty range
                     logger.debug(f"Could not get date range for {schema}.{table}")
 
             results.append(
@@ -2122,12 +2124,14 @@ class ImportService:
                        MAX({date_expr}) AS max_date
                 FROM {table}
                 WHERE source_file = ?
-                """,  # noqa: S608 — table and date_expr are hardcoded by callers, not user input
+                """,  # table and date_expr are hardcoded by callers, not user input
                 [str(file_path)],
             ).fetchone()
             if result and result[0]:
                 return f"{result[0]} to {result[1]}"
-        except Exception:  # noqa: BLE001 — date range is best-effort; any DB failure returns empty string
+        except (
+            Exception
+        ):  # date range is best-effort; any DB failure returns empty string
             logger.debug(f"Could not determine date range from {table}", exc_info=True)
         return ""
 
@@ -3898,7 +3902,9 @@ class ImportService:
                 balance_pass_threshold=tabular_cfg.balance_pass_threshold,
                 balance_tolerance_cents=tabular_cfg.balance_tolerance_cents,
             )
-        except Exception as e:  # noqa: BLE001  # re-raised as ValueError after recording rejection in DB
+        except (
+            Exception
+        ) as e:  # re-raised as ValueError after recording rejection in DB
             extractor.finalize_import_batch(
                 import_id=import_id,
                 rows_total=len(df),
@@ -4062,7 +4068,7 @@ class ImportService:
                     in_outer_txn=in_outer_txn,
                 )
                 logger.info(f"Auto-saved format {source_origin!r} for future imports")
-            except Exception:  # noqa: BLE001 — format save is best-effort; import already succeeded
+            except Exception:  # format save is best-effort; import already succeeded
                 logger.debug("Could not auto-save format", exc_info=True)
 
         return result
@@ -4845,7 +4851,7 @@ class ImportService:
                 f"PDF format {name!r} recipe re-persisted with the user's sign "
                 f"override (import_id={import_id[:8]}...)"
             )
-        except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+        except Exception:  # format bump is bookkeeping; data is committed
             if in_outer_txn:
                 raise
             logger.warning(
@@ -4901,7 +4907,7 @@ class ImportService:
                 f"PDF format {name!r} recipe repaired by re-derivation "
                 f"(import_id={import_id[:8]}...)"
             )
-        except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+        except Exception:  # format bump is bookkeeping; data is committed
             if in_outer_txn:
                 raise
             logger.warning(
@@ -5193,7 +5199,7 @@ class ImportService:
                     f"DELETE FROM {PDF_SEEDS.full_name} WHERE import_id = ?",
                     [import_id],
                 )
-            except Exception:  # noqa: BLE001 — cleanup is best-effort
+            except Exception:  # cleanup is best-effort
                 logger.warning(
                     f"PDF cleanup DELETE failed for import_id={import_id[:8]}...",
                     exc_info=True,
@@ -5206,7 +5212,7 @@ class ImportService:
                     rows_total=0,
                     rows_imported=0,
                 )
-            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+            except Exception:  # failure-path finalize is best-effort
                 logger.warning(
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
@@ -5342,7 +5348,7 @@ class ImportService:
                 import_log.finalize_import(
                     self._db, import_id, status="failed", rows_total=0, rows_imported=0
                 )
-            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+            except Exception:  # failure-path finalize is best-effort
                 logger.warning(
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
@@ -5373,7 +5379,7 @@ class ImportService:
         current_file_refs = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
-                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                f"SELECT DISTINCT source_origin, account_id "  # TableRef + parameterized source path
                 f"FROM {TABULAR_TRANSACTIONS.full_name} "
                 "WHERE source_type = 'pdf' AND source_file = ?",
                 [str(canonical)],
@@ -5384,7 +5390,7 @@ class ImportService:
         legacy_identifier_refs = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
-                f"SELECT DISTINCT source_origin, account_id, account_number_masked "  # noqa: S608  # TableRef only
+                f"SELECT DISTINCT source_origin, account_id, account_number_masked "  # TableRef only
                 f"FROM {TABULAR_ACCOUNTS.full_name} "
                 "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
             ).fetchall()
@@ -5394,7 +5400,7 @@ class ImportService:
         legacy_alias_refs = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
-                f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                f"SELECT DISTINCT source_origin, account_id "  # TableRef only
                 f"FROM {TABULAR_ACCOUNTS.full_name} "
                 "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
             ).fetchall()
@@ -5405,7 +5411,7 @@ class ImportService:
             historical_ref,
             historical_account_id,
         ) in self._db.execute(
-            f"SELECT current.source_origin, current.ref_value, "  # noqa: S608  # TableRef + parameterized account id
+            f"SELECT current.source_origin, current.ref_value, "  # TableRef + parameterized account id
             "historical.account_id "
             f"FROM {ACCOUNT_LINKS.full_name} AS current "
             f"JOIN {ACCOUNT_LINKS.full_name} AS historical "
@@ -5560,7 +5566,7 @@ class ImportService:
                 transaction_ids = sorted(historical_ids)
                 historical_placeholders = ",".join(["?"] * len(transaction_ids))
                 historical_rows = self._db.execute(
-                    f"SELECT transaction_id, source_file FROM {TABULAR_TRANSACTIONS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+                    f"SELECT transaction_id, source_file FROM {TABULAR_TRANSACTIONS.full_name} "  # placeholders are code-owned; values parameterized
                     "WHERE source_type = 'pdf' AND source_origin = ? AND account_id = ? "
                     f"AND transaction_id IN ({historical_placeholders})",
                     [
@@ -5606,7 +5612,7 @@ class ImportService:
                 count_before_row = self._db.execute(
                     f"SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name} "
                     f"WHERE transaction_id IN ({placeholders}) "
-                    f"AND account_id = ? AND source_file = ?",  # noqa: S608  # placeholders are ?-bound; tx_ids is parameter list
+                    f"AND account_id = ? AND source_file = ?",  # placeholders are ?-bound; tx_ids is parameter list
                     [*tx_ids, account_id, src_file],
                 ).fetchone()
                 rows_already_present = count_before_row[0] if count_before_row else 0
@@ -5697,7 +5703,7 @@ class ImportService:
                         f"DELETE FROM {table_ref.full_name} WHERE import_id = ?",
                         [import_id],
                     )
-                except Exception:  # noqa: BLE001 — cleanup is best-effort
+                except Exception:  # cleanup is best-effort
                     logger.warning(
                         f"PDF cleanup DELETE failed on {table_ref.full_name} "
                         f"for import_id={import_id[:8]}...",
@@ -5707,7 +5713,7 @@ class ImportService:
                 import_log.finalize_import(
                     self._db, import_id, status="failed", rows_total=0, rows_imported=0
                 )
-            except Exception:  # noqa: BLE001 — failure-path finalize is best-effort
+            except Exception:  # failure-path finalize is best-effort
                 logger.warning(
                     f"PDF finalize_import(failed) raised for import_id={import_id[:8]}...",
                     exc_info=True,
@@ -5754,7 +5760,7 @@ class ImportService:
                 format_name=pdf_format_name,
                 format_source=pdf_format_source,
             )
-        except Exception:  # noqa: BLE001 — observability stamp must not roll back data
+        except Exception:  # observability stamp must not roll back data
             if in_outer_txn:
                 raise
             logger.warning(
@@ -5786,7 +5792,7 @@ class ImportService:
                 )
             try:
                 self._pdf_formats.record_use(decision.matched_format_name)
-            except Exception:  # noqa: BLE001 — observability bump must not roll back data
+            except Exception:  # observability bump must not roll back data
                 if in_outer_txn:
                     raise
                 logger.warning(
@@ -5873,7 +5879,7 @@ class ImportService:
                         f"PDF format {format_name!r} recipe re-derived and "
                         f"bumped to a new version (import_id={import_id[:8]}...)"
                     )
-                except Exception:  # noqa: BLE001 — format bump is bookkeeping; data is committed
+                except Exception:  # format bump is bookkeeping; data is committed
                     if in_outer_txn:
                         raise
                     logger.warning(
@@ -5881,7 +5887,7 @@ class ImportService:
                         f"(import_id={import_id[:8]}...) — stale recipe persists",
                         exc_info=True,
                     )
-            except Exception:  # noqa: BLE001 — format save is bookkeeping; data is committed
+            except Exception:  # format save is bookkeeping; data is committed
                 if in_outer_txn:
                     raise
                 logger.warning(
@@ -6286,7 +6292,7 @@ class ImportService:
                         confirmation_payload=confirmation_payload_dict(e.outcome),
                     )
                 )
-            except Exception as e:  # noqa: BLE001 — per-file failure must not abort batch
+            except Exception as e:  # per-file failure must not abort batch
                 error_message, error_code, error_hint, error_details = per_file_failure(
                     e
                 )
@@ -6345,7 +6351,7 @@ class ImportService:
         formats = merge_formats(builtin, load_formats_from_db(self._db))
         try:
             pdf_formats = PdfFormatsRepo(self._db).list_all()
-        except Exception:  # noqa: BLE001  # PDF catalog is optional to tabular reads.
+        except Exception:  # PDF catalog is optional to tabular reads.
             logger.debug("PDF formats unavailable; returning tabular formats only")
             pdf_formats = []
         return formats, builtin, pdf_formats
@@ -6598,7 +6604,7 @@ class ImportService:
                 # outcome intact.
                 try:
                     self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view}")
-                except Exception:  # noqa: BLE001 — DDL best-effort post-commit
+                except Exception:  # DDL best-effort post-commit
                     logger.warning(
                         f"DROP VIEW raw.{safe_view} failed during revert of "
                         f"import_id={import_id[:8]}...; view may be orphaned",
@@ -6617,7 +6623,7 @@ class ImportService:
     def list_labels(self, import_id: str) -> list[str]:
         """Return the labels currently attached to ``import_id`` (or empty)."""
         row = self._db.conn.execute(
-            f"SELECT labels FROM {IMPORTS.full_name} WHERE import_id = ?",  # noqa: S608  # TableRef constant
+            f"SELECT labels FROM {IMPORTS.full_name} WHERE import_id = ?",  # TableRef constant
             [import_id],
         ).fetchone()
         if row is None or row[0] is None:
@@ -6633,7 +6639,7 @@ class ImportService:
              WHERE label IS NOT NULL
              GROUP BY label
              ORDER BY n DESC, label ASC
-            """  # noqa: S608  # IMPORTS is a TableRef constant
+            """  # IMPORTS is a TableRef constant
         ).fetchall()
         return [(str(r[0]), int(r[1])) for r in rows]
 

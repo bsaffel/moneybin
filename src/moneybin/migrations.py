@@ -526,16 +526,20 @@ class MigrationRunner:
             self._db.execute("COMMIT")
             logger.debug(f"Applied {migration.filename} in {elapsed_ms}ms")
 
-        except Exception as exc:  # noqa: BLE001 — must catch all to record failure and re-raise as MigrationError
+        except (
+            Exception
+        ) as exc:  # must catch all to record failure and re-raise as MigrationError
             elapsed_ms = int((time.monotonic() - start) * 1000)
             try:
                 self._db.execute("ROLLBACK")
-            except Exception:  # noqa: BLE001 S110 — rollback is best-effort; original exc re-raised below
+            except Exception:  # noqa: S110  # rollback is best-effort; original exc re-raised below
                 pass
 
             try:
                 self._record_migration(migration, success=False, elapsed_ms=elapsed_ms)
-            except Exception:  # noqa: BLE001 S110 — failure tracking is best-effort; original exc re-raised below
+            except (
+                Exception
+            ):  # failure tracking is best-effort; original exc re-raised below
                 logger.warning("Failed to record migration failure in tracking table")
             raise MigrationError(
                 f"Migration {migration.filename} failed: {exc}"

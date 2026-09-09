@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Regression scenario: Plaid sync auto-refreshes core.dim_accounts.
 
 Mirrors test_scenario_import_dim_freshness.py for the sync path. Guards the

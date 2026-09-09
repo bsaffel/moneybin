@@ -176,7 +176,7 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
                     ),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        except Exception as exc:  # surface as structured failure
             results.append(
                 AssertionResult(
                     name=f"rows_{view}_at_least_{min_rows}",
@@ -208,7 +208,7 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
                     ),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        except Exception as exc:  # surface as structured failure
             results.append(
                 AssertionResult(
                     name="recurring_subscriptions_confidence_in_unit_interval",
@@ -239,7 +239,7 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
                     ),
                 )
             )
-        except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        except Exception as exc:  # surface as structured failure
             results.append(
                 AssertionResult(
                     name="net_worth_has_distinct_dates",
@@ -283,7 +283,7 @@ def _runner_assertions(db: Database) -> list[AssertionResult]:
             catalog.execute(
                 db, report_id=report.report_id, parameters=parameters, limit=5
             )
-        except Exception as exc:  # noqa: BLE001 — surface as structured failure
+        except Exception as exc:  # surface as structured failure
             results.append(
                 AssertionResult(
                     name=name,

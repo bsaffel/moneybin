@@ -30,7 +30,7 @@ async def test_register_privacy_tools_registers_expected() -> None:
 
     srv = FastMCP("test")
     register_privacy_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"privacy", "privacy_consent_set"}
 
 
@@ -203,7 +203,7 @@ async def test_consent_standard_registrar_advertises_closed_destructive_contract
 ):
     mcp = isolated_server(register_privacy_coarse_writes)
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"privacy_consent_set"}
     tool = await listed_tool(mcp, "privacy_consent_set")
     assert tool.outputSchema is None

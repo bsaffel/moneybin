@@ -31,7 +31,7 @@ def txn_db(db: Database) -> Database:
          'test.qfx', '2026-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('A2', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
          'other.qfx', '2026-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     conn.execute("""
         INSERT INTO core.fct_transactions (
@@ -64,7 +64,7 @@ def txn_db(db: Database) -> Database:
          '2026-02-10', CURRENT_TIMESTAMP,
          2026, 2, 10, 1, '2026-02', '2026-Q1',
          NULL, NULL, NULL, NULL, NULL)
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     return db
 
@@ -480,7 +480,7 @@ class TestTransactionGet:
              '2026-04-01', CURRENT_TIMESTAMP,
              2026, 4, 1, 2, '2026-04', '2026-Q2',
              'Groceries', NULL, NULL, NULL, NULL)
-        """)  # noqa: S608  # test input, not executing SQL
+        """)  # test input, not executing SQL
         result = TransactionService(db).get(uncategorized_only=True)
         assert len(result.transactions) == 1
         assert result.transactions[0].transaction_id == "T_src"
@@ -506,7 +506,7 @@ class TestTransactionGet:
              '2026-04-10', CURRENT_TIMESTAMP,
              2026, 4, 10, 3, '2026-04', '2026-Q2',
              'coffee shop', NULL, NULL, NULL)
-        """)  # noqa: S608  # test input, not executing SQL
+        """)  # test input, not executing SQL
         result = TransactionService(db).get(description="coffee")
         assert len(result.transactions) == 1
         assert result.transactions[0].transaction_id == "M1"

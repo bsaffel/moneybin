@@ -120,7 +120,7 @@ class CategorizationQueries:
         """
         try:
             self._db.execute(
-                f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 0"  # noqa: S608  # TableRef constant
+                f"SELECT 1 FROM {FCT_TRANSACTIONS.full_name} LIMIT 0"  # TableRef constant
             )
         except duckdb.CatalogException:
             return False
@@ -169,7 +169,7 @@ class CategorizationQueries:
                 FROM {CATEGORIES.full_name}
                 {where}
                 ORDER BY category, subcategory
-                """  # noqa: S608  # constant clause, not user input
+                """  # constant clause, not user input
             ).fetchall()
         except duckdb.CatalogException:
             return CategoriesPayload(categories=[])
@@ -234,7 +234,7 @@ class CategorizationQueries:
                 FROM {CATEGORIZATION_RULES.full_name}
                 WHERE is_active = ?
                 ORDER BY priority ASC, created_at ASC, rule_id ASC
-                """,  # noqa: S608  # TableRef + parameterized value
+                """,  # TableRef + parameterized value
                 [active],
             ).fetchall()
         except duckdb.CatalogException:
@@ -327,7 +327,7 @@ class CategorizationQueries:
             SELECT {columns}
             FROM {CORE_UNCATEGORIZED_QUEUE.full_name}
             WHERE ABS(amount) >= ?
-        """  # noqa: S608  # TableRef constant + fixed column list
+        """  # TableRef constant + fixed column list
         params: list[object] = [min_amount]
         if account_id is not None:
             sql += " AND account_id = ?"
@@ -352,7 +352,7 @@ class CategorizationQueries:
                     FROM ({sql})
                 )
                 ORDER BY rank_in_currency, currency_code
-            """  # noqa: S608  # fixed column list over the query built above
+            """  # fixed column list over the query built above
         else:
             # txn_date is currency-agnostic, so a cap drops the oldest rows
             # across every currency alike rather than one currency's in full.
@@ -396,7 +396,7 @@ class CategorizationQueries:
                        rule_id, source_type
                 FROM {TRANSACTION_CATEGORIES.full_name}
                 ORDER BY categorized_at DESC NULLS LAST, transaction_id DESC
-                """  # noqa: S608  # TableRef constant, no user values
+                """  # TableRef constant, no user values
             )
             columns = [desc[0] for desc in result.description]
             return [dict(zip(columns, row, strict=True)) for row in result.fetchall()]
@@ -457,7 +457,7 @@ class CategorizationQueries:
                   AND COALESCE(d.account_id_b, d.account_id) = m.account_id
                 WHERE d.match_status = 'pending' AND d.reversed_at IS NULL
                   AND d.match_type = 'transfer'
-                """  # noqa: S608  # TableRef constants + literal predicates, no user input
+                """  # TableRef constants + literal predicates, no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             # CatalogException: pre-matching (no matches run yet) or
@@ -481,10 +481,10 @@ class CategorizationQueries:
         """
         try:
             row = self._db.execute(
-                f"SELECT COUNT(*) FROM {CORE_UNCATEGORIZED_QUEUE.full_name}"  # noqa: S608  # TableRef constant, no user input interpolated
+                f"SELECT COUNT(*) FROM {CORE_UNCATEGORIZED_QUEUE.full_name}"  # TableRef constant, no user input interpolated
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # noqa: BLE001 — the view is absent before first refresh
+        except Exception:  # the view is absent before first refresh
             return 0
 
     def coverage(self) -> CategorizationCoverage:
@@ -507,7 +507,7 @@ class CategorizationQueries:
                 COUNT(*) AS categorizable,
                 COUNT(*) FILTER (WHERE t.category IS NULL) AS uncategorized
             {_CATEGORIZABLE_POPULATION}
-            """  # noqa: S608  # TableRef constants, no user input interpolated
+            """  # TableRef constants, no user input interpolated
         ).fetchone()
         categorizable = int(row[0]) if row else 0
         uncategorized = int(row[1]) if row else 0
@@ -586,7 +586,7 @@ class CategorizationQueries:
                 WHERE t.category IS NOT NULL
                 GROUP BY 1
                 ORDER BY cnt DESC
-                """  # noqa: S608  # TableRef constant
+                """  # TableRef constant
             ).fetchall()
             for source, count in source_rows:
                 stats[f"by_{source}"] = count
@@ -625,7 +625,7 @@ class CategorizationQueries:
                       SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                       WHERE {plaid_bridge_match_predicate("s.category_detailed", "s.plaid_category")}
                   )
-                """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
+                """  # TableRef constants + code-constant bridge predicate; no user input
             ).fetchone()
             if unmapped_result is not None:
                 stats["plaid_unmapped"] = unmapped_result[0]

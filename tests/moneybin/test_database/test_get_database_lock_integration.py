@@ -345,7 +345,7 @@ def test_concurrent_write_opens_serialize_across_threads(configured_db: Path) ->
                 b_outcome["result"] = "acquired"
         except DatabaseLockError:
             b_outcome["result"] = "blocked"
-        except Exception as exc:  # noqa: BLE001 — surface unexpected errors for diagnosis
+        except Exception as exc:  # surface unexpected errors for diagnosis
             b_outcome["result"] = f"error:{type(exc).__name__}"
 
     ta = threading.Thread(target=thread_a)

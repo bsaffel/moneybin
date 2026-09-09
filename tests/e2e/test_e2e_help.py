@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E help tests — every command group responds to --help without errors.
 
 Most cases run in-process via Typer's CliRunner since `--help` is pure

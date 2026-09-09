@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """MCP import_files tool: list-shaped, end-of-batch apply (integration)."""
 
 from __future__ import annotations

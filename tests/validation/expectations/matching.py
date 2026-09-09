@@ -64,7 +64,7 @@ def verify_match_decision(
         FROM {FCT_TRANSACTION_PROVENANCE.full_name} AS p
         LEFT JOIN {MATCH_DECISIONS.full_name} AS md ON md.match_id = p.match_id
         WHERE (p.source_transaction_id, p.source_type) IN (VALUES {placeholders})
-    """  # noqa: S608 — placeholders is a typed-list count, values are bound via ?
+    """  # noqa: S608  # placeholders is a typed-list count, values are bound via ?
     rows = db.execute(sql, params).fetchall()
 
     found_pairs = {(r[0], r[1]) for r in rows}
@@ -102,7 +102,7 @@ def verify_match_decision(
 
     gold_id = gold_ids[0]
     confidence_row = db.execute(
-        f"SELECT match_confidence FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608 — TableRef constant, no user input
+        f"SELECT match_confidence FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant, no user input
         "WHERE transaction_id = ?",
         [gold_id],
     ).fetchone()
@@ -144,7 +144,7 @@ def verify_transfers_match_ground_truth(
           ON m.source_transaction_id = g.source_transaction_id
         LEFT JOIN {FCT_TRANSACTIONS.full_name} t
           ON t.transaction_id = m.transaction_id
-    """).fetchall()  # noqa: S608 — TableRef constants
+    """).fetchall()  # noqa: S608  # TableRef constants
 
     pairs: dict[Any, list[tuple[Any, Any]]] = {}
     for gold_pair_id, source_id, _txn_id, predicted_pair in rows:

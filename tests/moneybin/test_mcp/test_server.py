@@ -232,7 +232,7 @@ def test_startup_repairs_partial_preview_schema_and_removes_orphan(
             expires_at=now + timedelta(minutes=5),
             actor="mcp",
         )
-        db.execute(f"DROP TABLE {missing_table}")  # noqa: S608  # parametrized code-owned table names
+        db.execute(f"DROP TABLE {missing_table}")  # parametrized code-owned table names
 
     assert server.purge_expired_import_previews_at_boot() == purged
 

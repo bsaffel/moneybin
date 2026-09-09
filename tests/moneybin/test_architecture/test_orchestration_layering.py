@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Structural guardrail: orchestrators compose services, not the other way round.
 
 `moneybin.orchestration` sits one layer above `moneybin.services`. The refresh
@@ -23,7 +22,7 @@ silence: one pins what the scan looks at, the other pins what it detects.
 from __future__ import annotations
 
 import ast
-import subprocess  # noqa: S404 — clean-interpreter import check
+import subprocess  # noqa: S404  # clean-interpreter import check
 import sys
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -514,7 +513,7 @@ def test_orchestrator_import_stays_light() -> None:
         ")\n"
         "print('LOADED:' + ','.join(loaded))\n"
     )
-    result = subprocess.run(  # noqa: S603 — controlled snippet, not user input
+    result = subprocess.run(  # noqa: S603  # controlled snippet, not user input
         [sys.executable, "-c", snippet],
         capture_output=True,
         text=True,

@@ -96,12 +96,12 @@ def refresh_account_link_pending_gauge(db: Database) -> None:
     """
     try:
         row = db.execute(
-            f"SELECT COUNT(DISTINCT provisional_account_id) "  # noqa: S608  # TableRef constant, no user input
+            f"SELECT COUNT(DISTINCT provisional_account_id) "  # TableRef constant, no user input
             f"FROM {ACCOUNT_LINK_DECISIONS.full_name} "
             "WHERE status = 'pending' AND reversed_at IS NULL"
         ).fetchone()
         ACCOUNT_LINK_REVIEW_PENDING.set(int(row[0]) if row else 0)
-    except Exception as exc:  # noqa: BLE001  # telemetry must not abort its caller's tail
+    except Exception as exc:  # telemetry must not abort its caller's tail
         # Type, not message: this query names the profile database, so a DuckDB
         # connection or encryption error can carry that path into the durable
         # log, and SanitizedLogFormatter masks known PII patterns, not paths.
@@ -173,7 +173,7 @@ def fetch_core_display_names(
             "SELECT account_id, CASE "
             "WHEN display_name = 'Account ' || account_id "
             "THEN '…' || NULLIF(TRIM(last_four), '') "
-            f"ELSE display_name END FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+            f"ELSE display_name END FROM {DIM_ACCOUNTS.full_name} "  # TableRef constant + parameterized values
             f"WHERE account_id IN ({placeholders})",
             ids,
         ).fetchall()
@@ -339,7 +339,7 @@ def fetch_display_names(db: Database, account_ids: Iterable[str]) -> dict[str, s
                  AND link.ref_value = raw.account_id
                 WHERE link.account_id IN ({placeholders})
             ) WHERE rn = 1
-            """,  # noqa: S608  # TableRef constants + parameterized values
+            """,  # TableRef constants + parameterized values
             missing,
         ).fetchall()
     except duckdb.CatalogException:
@@ -762,7 +762,7 @@ class AccountResolver:
         """
         try:
             row = self._db.execute(
-                f"SELECT institution_slug, last_four, display_name, "  # noqa: S608  # TableRef + parameterized value
+                f"SELECT institution_slug, last_four, display_name, "  # TableRef + parameterized value
                 f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
                 "WHERE account_id = ? LIMIT 1",
                 [account_id],
@@ -786,7 +786,7 @@ class AccountResolver:
                 "propose_existing degrading to last-four/institution signals only"
             )
             fallback_row = self._db.execute(
-                f"SELECT institution_slug, last_four "  # noqa: S608  # TableRef + parameterized value
+                f"SELECT institution_slug, last_four "  # TableRef + parameterized value
                 f"FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
@@ -865,7 +865,7 @@ class AccountResolver:
         the answer decides which key the ``SourceAccount`` gets.
         """
         row = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
             [source_type, source_origin, key],
@@ -949,7 +949,7 @@ class AccountResolver:
         ``ref_value`` only breaks ties, so the answer is still total.
         """
         rows = self._db.execute(
-            f"SELECT ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT ref_value FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND account_id = ? AND source_type = ? AND source_origin = ? "
             "ORDER BY decided_at, ref_value",
@@ -986,7 +986,7 @@ class AccountResolver:
             return set()
         placeholders = ",".join(["?"] * len(candidates))
         rows = self._db.execute(
-            f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # placeholders are code-owned; values parameterized
+            f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # placeholders are code-owned; values parameterized
             "WHERE account_id = ref_value "
             "AND source_type = ? AND source_origin = ? "
             f"AND account_id IN ({placeholders})",
@@ -1032,7 +1032,7 @@ class AccountResolver:
         backfill rather than by an import.
         """
         row = self._db.execute(
-            f"SELECT COUNT(*) AS total, "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT COUNT(*) AS total, "  # TableRef + parameterized value
             "COUNT(*) FILTER (WHERE status = 'accepted') AS accepted "
             f"FROM {ACCOUNT_LINKS.full_name} WHERE account_id = ?",
             [account_id],
@@ -1041,7 +1041,7 @@ class AccountResolver:
             return bool(row[1])
         try:
             row = self._db.execute(
-                f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                f"SELECT 1 FROM {DIM_ACCOUNTS.full_name} "  # TableRef + parameterized value
                 "WHERE account_id = ? LIMIT 1",
                 [account_id],
             ).fetchone()
@@ -1096,7 +1096,7 @@ class AccountResolver:
         # (account-identity-resolution.md): a mutable label is a Tier-B
         # suggestion, not a hard auto-adopt key.
         row = self._db.execute(
-            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? AND source_origin = ? AND ref_value = ? LIMIT 1",
             [src.source_type, src.source_origin, src.source_account_key],
@@ -1105,7 +1105,7 @@ class AccountResolver:
             return str(row[0]), "source_native"
         if src.persistent_token:
             row = self._db.execute(
-                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
                 "WHERE status = 'accepted' AND ref_kind = 'persistent_token' "
                 "AND ref_value = ? LIMIT 1",
                 [src.persistent_token],
@@ -1115,7 +1115,7 @@ class AccountResolver:
         scoped = self._scoped_full_number(src)
         if scoped is not None:
             row = self._db.execute(
-                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
                 "WHERE status = 'accepted' AND ref_kind = 'full_number' "
                 "AND ref_value = ? LIMIT 1",
                 [scoped],
@@ -1125,7 +1125,7 @@ class AccountResolver:
             scope, separator, identifier = scoped.partition(":")
             if separator and len(scope) == 9 and scope.isdigit():
                 rows = self._db.execute(
-                    f"SELECT account_id, ref_value FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+                    f"SELECT account_id, ref_value FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized value
                     "WHERE status = 'accepted' AND ref_kind = 'full_number' "
                     "AND STARTS_WITH(ref_value, ?)",
                     [f"{scope}:"],
@@ -1170,7 +1170,7 @@ class AccountResolver:
             if not ref_value:
                 continue
             existing = self._db.execute(
-                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized values
+                f"SELECT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef + parameterized values
                 "WHERE status = 'accepted' AND ref_kind = ? AND ref_value = ? LIMIT 1",
                 [ref_kind, ref_value],
             ).fetchone()
@@ -1263,7 +1263,7 @@ class AccountResolver:
                 return _dedupe_candidates(out, legacy_candidates)
             try:
                 name_rows = self._db.execute(
-                    f"SELECT account_id, display_name, last_four, institution_slug, "  # noqa: S608  # TableRef + parameterized values
+                    f"SELECT account_id, display_name, last_four, institution_slug, "  # TableRef + parameterized values
                     f"display_name_is_user_set FROM {DIM_ACCOUNTS.full_name} "
                     "WHERE account_id != ? ORDER BY account_id",
                     [exclude_account_id],
@@ -1391,7 +1391,7 @@ class AccountResolver:
             return []
         target_inst = _institution_key(src.institution) if src.institution else None
         rows = self._db.execute(
-            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # TableRef + parameterized values
             "WHERE last_four = ? AND account_id != ? ORDER BY account_id",
             [src.last_four, exclude_account_id],
         ).fetchall()
@@ -1524,14 +1524,14 @@ class AccountResolver:
             materialized_ids = {
                 str(row[0])
                 for row in self._db.execute(
-                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef only
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}"  # TableRef only
                 ).fetchall()
             }
         except duckdb.CatalogException:
             materialized_ids = set()
         try:
             rows = self._db.execute(
-                f"SELECT DISTINCT link.account_id, raw.account_number_masked, "  # noqa: S608  # TableRef constants + parameterized account id
+                f"SELECT DISTINCT link.account_id, raw.account_number_masked, "  # TableRef constants + parameterized account id
                 f"raw.institution_name FROM {TABULAR_ACCOUNTS.full_name} AS raw "
                 f"JOIN {ACCOUNT_LINKS.full_name} AS link "
                 "ON link.status = 'accepted' AND link.ref_kind = 'source_native' "
@@ -1593,7 +1593,7 @@ class AccountResolver:
         if not legacy_key or legacy_key == src.source_account_key:
             return []
         rows = self._db.execute(
-            f"SELECT account_id, source_origin, ref_value "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id, source_origin, ref_value "  # TableRef + parameterized values
             f"FROM {ACCOUNT_LINKS.full_name} "
             "WHERE status = 'accepted' AND ref_kind = 'source_native' "
             "AND source_type = ? ORDER BY account_id, source_origin, ref_value",
@@ -1603,7 +1603,7 @@ class AccountResolver:
             identifier_refs = {
                 (str(row[0]), str(row[1]))
                 for row in self._db.execute(
-                    f"SELECT DISTINCT source_origin, account_id, "  # noqa: S608  # TableRef only
+                    f"SELECT DISTINCT source_origin, account_id, "  # TableRef only
                     f"account_number_masked FROM {TABULAR_ACCOUNTS.full_name} "
                     "WHERE source_type = 'pdf' AND account_number_masked IS NOT NULL"
                 ).fetchall()
@@ -1616,7 +1616,7 @@ class AccountResolver:
             alias_refs = {
                 (str(row[0]), str(row[1]))
                 for row in self._db.execute(
-                    f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef only
+                    f"SELECT DISTINCT source_origin, account_id "  # TableRef only
                     f"FROM {TABULAR_ACCOUNTS.full_name} "
                     "WHERE source_type = 'pdf' AND account_number_masked IS NULL"
                 ).fetchall()
@@ -1643,7 +1643,7 @@ class AccountResolver:
                     {
                         (str(row[0]), str(row[1]))
                         for row in self._db.execute(
-                            f"SELECT DISTINCT source_origin, account_id "  # noqa: S608  # TableRef + parameterized source path
+                            f"SELECT DISTINCT source_origin, account_id "  # TableRef + parameterized source path
                             f"FROM {TABULAR_TRANSACTIONS.full_name} "
                             "WHERE source_type = 'pdf' AND source_file = ?",
                             [src.source_file],
@@ -1696,7 +1696,7 @@ class AccountResolver:
         if not target_inst or not src.last_four:
             return []
         rows = self._db.execute(
-            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # TableRef + parameterized values
             "WHERE account_id != ? AND last_four IS NOT NULL AND last_four != ? "
             "ORDER BY account_id",
             [exclude_account_id, src.last_four],
@@ -1752,7 +1752,7 @@ class AccountResolver:
         forced = src.last_four is None
         cap = None if forced else _FALLBACK_CANDIDATE_CAP
         rows = self._db.execute(
-            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT account_id, institution_slug FROM {DIM_ACCOUNTS.full_name} "  # TableRef + parameterized value
             "WHERE account_id != ? ORDER BY institution_slug, account_id",
             [exclude_account_id],
         ).fetchall()

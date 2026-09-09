@@ -83,7 +83,7 @@ def assert_empty_input_safe(
     """Invoke ``run`` (with empty input pre-loaded); assert no crash and tables empty."""
     try:
         run()
-    except Exception as exc:  # noqa: BLE001 — surface any failure as a result
+    except Exception as exc:  # surface any failure as a result
         return AssertionResult(
             name="empty_input_safe",
             passed=False,
@@ -115,7 +115,7 @@ def assert_malformed_input_rejected(
     """
     try:
         run()
-    except Exception as exc:  # noqa: BLE001 — surface any failure as a result
+    except Exception as exc:  # surface any failure as a result
         if not isinstance(exc, expected_exception_type):
             return AssertionResult(
                 name="malformed_input_rejected",

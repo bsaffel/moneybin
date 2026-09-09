@@ -70,7 +70,7 @@ def _has_transfer_decision(db: Database, match_ids: Sequence[str]) -> bool:
         FROM {MATCH_DECISIONS.full_name}
         WHERE match_id IN ({placeholders}) AND match_type = 'transfer'
         LIMIT 1
-        """,  # noqa: S608  # placeholders and TableRef are code-supplied
+        """,  # placeholders and TableRef are code-supplied
         list(match_ids),
     ).fetchone()
     return row is not None

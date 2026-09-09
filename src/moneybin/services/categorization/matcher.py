@@ -287,7 +287,7 @@ class CategorizationMatcher:
                 ORDER BY
                     {match_shape_case_sql("match_type")} DESC,
                     created_at ASC
-                """,  # noqa: S608  # MERCHANTS is a TableRef constant; CASE generated from _MATCH_SHAPE_SCORES
+                """,  # MERCHANTS is a TableRef constant; CASE generated from _MATCH_SHAPE_SCORES
             ).fetchall()
         except duckdb.CatalogException:
             return None
@@ -389,7 +389,7 @@ class CategorizationMatcher:
                 LEFT JOIN {BRIDGE_MERCHANT_ENTITIES.full_name} m
                     ON t.transaction_id = m.transaction_id
                 {where_with_entity}
-        """  # noqa: S608 — table names are compile-time TableRef constants
+        """  # table names are compile-time TableRef constants
         without_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
                        t.memo, NULL AS merchant_entity_id, t.source_type,
@@ -397,7 +397,7 @@ class CategorizationMatcher:
                 FROM {FCT_TRANSACTIONS.full_name} t
                 {cat_join}
                 {where}
-        """  # noqa: S608 — table names are compile-time TableRef constants
+        """  # table names are compile-time TableRef constants
         for query in (with_entity, without_entity):
             try:
                 rows = self._db.execute(query).fetchall()
@@ -435,14 +435,14 @@ class CategorizationMatcher:
                 LEFT JOIN {BRIDGE_MERCHANT_ENTITIES.full_name} m
                     ON t.transaction_id = m.transaction_id
                 WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values parameterized
+        """  # table names are compile-time TableRef constants; values parameterized
         without_entity = f"""
                 SELECT t.transaction_id, t.description, t.amount, t.account_id,
                        t.memo, NULL AS merchant_entity_id, t.source_type,
                        t.merchant_name, NULL AS merchant_entity_source_type
                 FROM {FCT_TRANSACTIONS.full_name} t
                 WHERE t.transaction_id IN ({placeholders})
-        """  # noqa: S608 — table names are compile-time TableRef constants; values parameterized
+        """  # table names are compile-time TableRef constants; values parameterized
         for query in (with_entity, without_entity):
             try:
                 rows = self._db.execute(query, list(transaction_ids)).fetchall()

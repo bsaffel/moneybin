@@ -36,7 +36,7 @@ def serialize_payload(value: Any) -> Any:
     if isinstance(value, BaseModel):
         try:
             return serialize_payload(value.model_dump())
-        except Exception:  # noqa: BLE001,S110  # preserve existing fallback contract
+        except Exception:  # preserve existing fallback contract
             return value
     if isinstance(value, Mapping):
         mapping = cast(Mapping[Any, Any], value)

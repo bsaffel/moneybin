@@ -367,7 +367,7 @@ class ExportService:
                         "checksums": dict(receipt.checksums),
                     },
                 )
-        except Exception as exc:  # noqa: BLE001  # never fail a published export
+        except Exception as exc:  # never fail a published export
             # A swallowed failure still has to be countable: the run itself
             # reports outcome="success" (correctly — the artifact is
             # published), so without this the only signal is a log line.

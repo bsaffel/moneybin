@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess  # noqa: S404 — subprocess used for lsof/ps; static args only
+import subprocess  # noqa: S404  # subprocess used for lsof/ps; static args only
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
     """
     own_pid = os.getpid()
     try:
-        result = subprocess.run(  # noqa: S603 — lsof with static args
+        result = subprocess.run(  # noqa: S603  # lsof with static args
             ["lsof", "-F", "pcn", str(db_path)],  # noqa: S607
             capture_output=True,
             text=True,
@@ -35,7 +35,7 @@ def find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
     except subprocess.TimeoutExpired:
         logger.debug(f"lsof timed out inspecting {db_path}")
         return []
-    except Exception:  # noqa: BLE001 — lsof can fail in containers/sandbox
+    except Exception:  # lsof can fail in containers/sandbox
         logger.debug(f"lsof failed inspecting {db_path}", exc_info=True)
         return []
 
@@ -69,7 +69,7 @@ def find_blocking_processes(db_path: Path) -> list[dict[str, str | int]]:
                     timeout=3,
                 )
                 cmdline = ps_result.stdout.strip()
-            except Exception:  # noqa: BLE001
+            except Exception:
                 cmdline = current_cmd
             processes.append({
                 "pid": current_pid,

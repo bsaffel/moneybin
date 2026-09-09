@@ -46,7 +46,7 @@ def count_pending_merchant_link_decisions(db: Database) -> int:
     """
     try:
         row = db.execute(
-            f"SELECT COUNT(*) FROM (SELECT DISTINCT source_type, ref_value "  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM (SELECT DISTINCT source_type, ref_value "  # TableRef constant
             f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
             "WHERE status = 'pending' AND reversed_at IS NULL)"
         ).fetchone()
@@ -92,7 +92,7 @@ class MerchantResolver:
         from moneybin.tables import MERCHANT_LINKS
 
         rows = self._db.execute(
-            f"SELECT source_type, ref_value, merchant_id FROM {MERCHANT_LINKS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT source_type, ref_value, merchant_id FROM {MERCHANT_LINKS.full_name} "  # TableRef constant
             "WHERE status = 'accepted'"
         ).fetchall()
         return {(str(r[0]), str(r[1])): str(r[2]) for r in rows}
@@ -109,7 +109,7 @@ class MerchantResolver:
         try:
             rows = self._db.execute(
                 "SELECT source_type, ref_value "
-                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
+                f"FROM {MERCHANT_LINK_DECISIONS.full_name} "  # TableRef constant
                 "WHERE status = 'pending' AND reversed_at IS NULL"
             ).fetchall()
         except duckdb.CatalogException:
@@ -127,7 +127,7 @@ class MerchantResolver:
         """
         try:
             rows = self._db.execute(
-                f"SELECT source_type, ref_value, candidate_merchant_id "  # noqa: S608  # TableRef constant
+                f"SELECT source_type, ref_value, candidate_merchant_id "  # TableRef constant
                 f"FROM {MERCHANT_LINK_DECISIONS.full_name} "
                 "WHERE status = 'rejected' AND reversed_at IS NULL"
             ).fetchall()
@@ -255,7 +255,7 @@ class MerchantResolver:
         """
         try:
             row = self._db.execute(
-                f"SELECT 1 FROM {MERCHANT_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+                f"SELECT 1 FROM {MERCHANT_LINK_DECISIONS.full_name} "  # TableRef constant + parameterized values
                 "WHERE ref_value = ? AND source_type = ? AND candidate_merchant_id = ? "
                 "AND status IN ('pending', 'rejected') AND reversed_at IS NULL LIMIT 1",
                 [ref_value, source_type, candidate_merchant_id],
@@ -339,7 +339,7 @@ class MerchantResolver:
                 WHERE mt.merchant_entity_id IS NOT NULL AND c.merchant_id IS NOT NULL
                 GROUP BY mt.merchant_entity_source_type, mt.merchant_entity_id,
                          c.merchant_id
-                """  # noqa: S608  # TableRef constants, no user values
+                """  # TableRef constants, no user values
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             return HarvestResult(bound=0, conflicts=0)

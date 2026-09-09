@@ -9,7 +9,7 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
-import subprocess  # noqa: S404 — subprocess is intentional; we invoke the moneybin entrypoint directly
+import subprocess  # noqa: S404  # subprocess is intentional; we invoke the moneybin entrypoint directly
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -81,11 +81,9 @@ FAST_ARGON2_ENV = {
     "FASTMCP_CHECK_FOR_UPDATES": "off",
 }
 
-TEST_ENCRYPTION_KEY = (
-    "e2e-test-key-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"  # noqa: S105 — test-only key, not a real secret
-)
+TEST_ENCRYPTION_KEY = "e2e-test-key-0123456789abcdef0123456789abcdef0123456789abcdef0123456789ab"  # test-only key, not a real secret
 
-TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105 — test-only passphrase, not a real secret
+TEST_PASSPHRASE = "e2e-test-passphrase-1234"  # noqa: S105  # test-only passphrase, not a real secret
 
 # Fallback MONEYBIN_HOME for tests that don't provide their own env.
 # Prevents the first-run setup wizard from intercepting CLI commands.
@@ -143,7 +141,7 @@ def run_cli(
         }
     full_env = {**os.environ, **FAST_ARGON2_ENV, **env}
 
-    result = subprocess.run(  # noqa: S603 — input is controlled test commands, not user input
+    result = subprocess.run(  # noqa: S603  # input is controlled test commands, not user input
         cmd,
         capture_output=True,
         text=True,

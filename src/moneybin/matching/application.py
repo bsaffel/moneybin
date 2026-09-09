@@ -248,7 +248,7 @@ def record_committed_match_effects(effects: MatchApplicationEffects) -> None:
     try:
         record_dedup_retirements(effects.reconciliation_reversals or 0)
         record_committed_alias_forwarding(effects.alias_forwarding)
-    except Exception as exc:  # noqa: BLE001  # metrics must not escape post-commit
+    except Exception as exc:  # metrics must not escape post-commit
         logger.warning(
             f"Could not record committed matching metric at {exception_origin(exc)}"
         )

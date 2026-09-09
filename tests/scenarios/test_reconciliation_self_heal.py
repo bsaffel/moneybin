@@ -61,7 +61,7 @@ def test_reconciliation_self_heal() -> None:
         # --- Phase 1: load partial fixture + balance assertions ---
         run_step("load_fixtures", scenario.setup, db, env=env)
 
-        db.execute(  # noqa: S608 — table name literal; values parameterized
+        db.execute(  # table name literal; values parameterized
             """
             INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
             VALUES (?, ?, ?), (?, ?, ?)
@@ -78,7 +78,7 @@ def test_reconciliation_self_heal() -> None:
 
         run_step("transform", scenario.setup, db, env=env)
 
-        row = db.execute(  # noqa: S608 — table/column literals; values parameterized
+        row = db.execute(  # table/column literals; values parameterized
             """
             SELECT reconciliation_delta
             FROM core.fct_balances_daily
@@ -125,7 +125,7 @@ def test_reconciliation_self_heal() -> None:
                 restate_models=["core.fct_balances_daily"],
             )
 
-        row = db.execute(  # noqa: S608
+        row = db.execute(
             """
             SELECT reconciliation_delta
             FROM core.fct_balances_daily

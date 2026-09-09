@@ -187,7 +187,7 @@ class TestPreV024Compatibility:
             "WHERE schema_name = 'app' AND table_name = 'audit_log'"
         ).fetchall()
         for (name,) in idx:
-            db.execute(f"DROP INDEX app.{name}")  # noqa: S608  # catalog name, test-only
+            db.execute(f"DROP INDEX app.{name}")  # catalog name, test-only
         db.execute("ALTER TABLE app.audit_log DROP COLUMN undoes_operation_id")
         db.execute("ALTER TABLE app.audit_log DROP COLUMN is_undo")
         events = AuditService(db).list_events()

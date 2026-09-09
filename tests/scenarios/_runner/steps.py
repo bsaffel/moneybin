@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess  # noqa: S404 — explicit command list, never shell=True
+import subprocess  # noqa: S404  # explicit command list, never shell=True
 from collections.abc import Callable
 
 from moneybin.database import Database, sqlmesh_context
@@ -136,7 +136,7 @@ def _step_transform_via_subprocess(
     # The runner re-fetches a fresh connection after each step.
     db.close()
     proc = subprocess.run(
-        ["uv", "run", "moneybin", "transform", "apply"],  # noqa: S603, S607  # explicit command list; uv resolved via PATH
+        ["uv", "run", "moneybin", "transform", "apply"],  # noqa: S607  # explicit command list; uv resolved via PATH
         env={**os.environ, **env},
         capture_output=True,
         text=True,

@@ -177,7 +177,7 @@ def load_active_rules(
         "SELECT rule_id, name, merchant_pattern, match_type, min_amount, "
         "max_amount, account_id, category, subcategory, priority, updated_at, "
         "created_at "
-        f"FROM {CATEGORIZATION_RULES.full_name} WHERE is_active = true"  # noqa: S608  # TableRef constant
+        f"FROM {CATEGORIZATION_RULES.full_name} WHERE is_active = true"  # TableRef constant
     )
     params: list[object] = []
     if match_type is not None:
@@ -382,7 +382,7 @@ class RuleConflictsService:
                     AND r.updated_at = c.existing_rule_updated_at
               )
             ORDER BY c.detected_at ASC, c.conflict_id ASC
-            """  # noqa: S608  # TableRef constants, no user input interpolated
+            """  # TableRef constants, no user input interpolated
         ).fetchall()
         conflicts = [_conflict_row(row) for row in rows]
         if not conflicts:
@@ -429,7 +429,7 @@ class RuleConflictsService:
             FROM {RULE_CONFLICTS.full_name}
             WHERE status = 'resolved'
             ORDER BY resolved_at DESC, conflict_id ASC
-            """  # noqa: S608  # TableRef constant, no user input interpolated
+            """  # TableRef constant, no user input interpolated
         ).fetchall()
         return [_conflict_row(row) for row in rows]
 
@@ -442,7 +442,7 @@ class RuleConflictsService:
     def count_history(self) -> int:
         """Return the exact number of settled conflicts."""
         row = self._db.execute(
-            f"SELECT COUNT(*) FROM {RULE_CONFLICTS.full_name} WHERE status = 'resolved'"  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM {RULE_CONFLICTS.full_name} WHERE status = 'resolved'"  # TableRef constant
         ).fetchone()
         return int(row[0]) if row else 0
 

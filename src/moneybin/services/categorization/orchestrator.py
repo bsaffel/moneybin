@@ -224,7 +224,7 @@ class CategorizationOrchestrator:
             valid_category_set = {
                 row[0]
                 for row in self._db.execute(
-                    f"SELECT DISTINCT category FROM {CATEGORIES.full_name} WHERE is_active"  # noqa: S608  # CATEGORIES is a TableRef constant
+                    f"SELECT DISTINCT category FROM {CATEGORIES.full_name} WHERE is_active"  # CATEGORIES is a TableRef constant
                 ).fetchall()
             }
         except duckdb.CatalogException:
@@ -306,7 +306,7 @@ class CategorizationOrchestrator:
                 )
                 for row in (rows or [])
             }
-        except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        except Exception:  # best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch transaction rows", exc_info=True)
 
         # Phase 3 — fetch merchants and active rules once for the whole batch.
@@ -318,12 +318,12 @@ class CategorizationOrchestrator:
             cached_merchants: list[Merchant] = (
                 list(raw_merchants) if raw_merchants is not None else []
             )
-        except Exception:  # noqa: BLE001 — best-effort; degrades to no merchant resolution
+        except Exception:  # best-effort; degrades to no merchant resolution
             logger.warning("Could not batch-fetch merchants", exc_info=True)
             cached_merchants = []
         try:
             cached_rules = self._matcher.fetch_active_rules()
-        except Exception:  # noqa: BLE001 — best-effort; degrades to no rule cover checks
+        except Exception:  # best-effort; degrades to no rule cover checks
             logger.warning("Could not batch-fetch active rules", exc_info=True)
             cached_rules = []
 
@@ -375,7 +375,7 @@ class CategorizationOrchestrator:
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
-                    except Exception:  # noqa: BLE001 — merchant lookup is best-effort
+                    except Exception:  # merchant lookup is best-effort
                         logger.debug(
                             f"Could not resolve merchant for {txn_id}",
                             exc_info=True,
@@ -448,7 +448,7 @@ class CategorizationOrchestrator:
                         merchant_id=merchant_id,
                         context=ctx,
                     )
-                except Exception:  # noqa: BLE001 — auto-rule learning is best-effort
+                except Exception:  # auto-rule learning is best-effort
                     logger.warning("auto-rule recording failed", exc_info=True)
 
                 # Exemplar accumulator (categorization-matching-mechanics.md
@@ -493,12 +493,12 @@ class CategorizationOrchestrator:
                                 exemplars=[match_text],
                             )
                             ctx.register_new_merchant(new_row)
-                    except Exception:  # noqa: BLE001 — exemplar accumulation is best-effort; categorization proceeds without it
+                    except Exception:  # exemplar accumulation is best-effort; categorization proceeds without it
                         logger.debug(
                             f"Could not accumulate exemplar for {txn_id}",
                             exc_info=True,
                         )
-            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+            except Exception:  # DuckDB raises untyped errors on constraint violations
                 errors += 1
                 logger.exception(f"categorize_items failed for transaction {txn_id!r}")
                 error_details.append({
@@ -512,7 +512,7 @@ class CategorizationOrchestrator:
         if applied:
             try:
                 auto_rule_svc.check_overrides()
-            except Exception:  # noqa: BLE001 — override check is best-effort
+            except Exception:  # override check is best-effort
                 logger.debug("auto-rule override check failed", exc_info=True)
 
         CATEGORIZE_ITEMS_TOTAL.labels(outcome="applied").inc(applied)
@@ -556,7 +556,7 @@ class CategorizationOrchestrator:
             bindings = resolver.load_bindings()
             rejected = resolver.load_rejected()
             pending = resolver.load_pending()
-        except Exception:  # noqa: BLE001 — best-effort; degrades to no entity resolution
+        except Exception:  # best-effort; degrades to no entity resolution
             logger.warning("Could not initialize merchant resolver", exc_info=True)
             return None, {}, set(), set()
         return resolver, bindings, rejected, pending
@@ -596,7 +596,7 @@ class CategorizationOrchestrator:
                 pending=pending,
                 applier=applier,
             )
-        except Exception:  # noqa: BLE001 — entity resolution is best-effort
+        except Exception:  # entity resolution is best-effort
             logger.debug("merchant entity resolution failed", exc_info=True)
             return current_merchant_id, False
         if res.merchant_id is None:
@@ -969,7 +969,7 @@ class CategorizationOrchestrator:
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
                 ) = 1
-                """  # noqa: S608 — TableRef constants + code-constant bridge predicate; no user input
+                """  # TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             return []

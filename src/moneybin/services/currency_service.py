@@ -275,7 +275,7 @@ class CurrencyService:
                 PARTITION BY rate_date ORDER BY priority, observed_at DESC, source
             ) = 1
             ORDER BY rate_date DESC
-            """,  # noqa: S608  # TableRef + parameterized values
+            """,  # TableRef + parameterized values
             params,
         ).fetchall()
         return [
@@ -374,7 +374,7 @@ class CurrencyService:
         # breaks the tie so the choice is deterministic rather than whatever the
         # scan happened to reach first.
         cached = self._db.execute(
-            f"SELECT rate, source_type FROM {EXCHANGE_RATES.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT rate, source_type FROM {EXCHANGE_RATES.full_name} "  # TableRef + parameterized values
             "WHERE from_currency = ? AND to_currency = ? AND rate_date = ? "
             "ORDER BY loaded_at DESC, source_type LIMIT 1",
             [base, quote, day],
@@ -391,7 +391,7 @@ class CurrencyService:
         day the user has already corrected.
         """
         row = self._db.execute(
-            f"SELECT rate FROM {EXCHANGE_RATE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT rate FROM {EXCHANGE_RATE_OVERRIDES.full_name} "  # TableRef + parameterized values
             "WHERE from_currency = ? AND to_currency = ? AND rate_date = ?",
             [base, quote, day],
         ).fetchone()

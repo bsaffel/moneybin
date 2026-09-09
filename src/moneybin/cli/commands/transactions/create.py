@@ -45,7 +45,9 @@ def transactions_create(
     currency: str | None = typer.Option(
         None, "--currency", help="ISO 4217 currency code"
     ),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),  # noqa: ARG001 — no interactive prompt yet; flag reserved for parity
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip confirmation"
+    ),  # no interactive prompt yet; flag reserved for parity
     output: OutputFormat = output_option,
 ) -> None:
     """Create a single manual transaction."""

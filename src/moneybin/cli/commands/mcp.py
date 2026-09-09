@@ -681,7 +681,7 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 @app.command("list-tools")
 def mcp_list_tools(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list-tools has no info chatter; only data lines
+    quiet: bool = quiet_option,  # list-tools has no info chatter; only data lines
 ) -> None:
     """List all registered MCP tools.
 
@@ -696,7 +696,7 @@ def mcp_list_tools(
     init_db()
     # Bypass visibility filters so list-tools shows every registered tool,
     # including extended-namespace tools that are hidden by default.
-    tools = asyncio.run(mcp._list_tools())  # noqa: SLF001 — public API filters by visibility  # pyright: ignore[reportPrivateUsage]
+    tools = asyncio.run(mcp._list_tools())  # public API filters by visibility  # pyright: ignore[reportPrivateUsage]
 
     sorted_tools = sorted(tools, key=lambda t: t.name)
 

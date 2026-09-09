@@ -45,7 +45,7 @@ def migrate(conn: object) -> None:
     for column, comment in _COLUMN_COMMENTS:
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN app.profile_settings.{column} "  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN app.profile_settings.{column} "  # static identifier + escaped literal
             f"IS '{escaped}'"
         )
 

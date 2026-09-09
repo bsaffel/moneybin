@@ -41,7 +41,7 @@ def _resolve_canonical_name(db: Database, merchant_id: str) -> str:
     """
     try:
         row = db.execute(
-            f"SELECT canonical_name FROM {MERCHANTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+            f"SELECT canonical_name FROM {MERCHANTS.full_name} "  # TableRef constant + parameterized value
             "WHERE merchant_id = ? LIMIT 1",
             [merchant_id],
         ).fetchone()
@@ -205,7 +205,7 @@ class MerchantLinksService:
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [decision["ref_value"], decision["source_type"], decision_id],
         ).fetchone()
         sibling_count = int(sibling_count_row[0]) if sibling_count_row else 0
@@ -236,7 +236,7 @@ class MerchantLinksService:
         """
         try:
             row = self._db.execute(
-                f"SELECT 1 FROM {MERCHANTS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+                f"SELECT 1 FROM {MERCHANTS.full_name} "  # TableRef constant + parameterized value
                 "WHERE merchant_id = ? LIMIT 1",
                 [merchant_id],
             ).fetchone()
@@ -263,7 +263,7 @@ class MerchantLinksService:
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [ref_value, source_type, exclude],
         ).fetchall()
         for (sid,) in sibling_rows:
@@ -313,7 +313,7 @@ class MerchantLinksService:
 
         refresh_merchant_link_pending_gauge(self._db)
 
-    def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
+    def set(  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
         decision_id: str,
         *,

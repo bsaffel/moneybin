@@ -74,7 +74,7 @@ def migrate(conn: object) -> None:
         escaped = comment.replace("'", "''")
         safe_column = exp.to_identifier(column, quoted=True).sql("duckdb")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN app.ai_consent_grants.{safe_column} "  # noqa: S608  # quoted identifier + escaped literal
+            f"COMMENT ON COLUMN app.ai_consent_grants.{safe_column} "  # quoted identifier + escaped literal
             f"IS '{escaped}'"
         )
 

@@ -65,7 +65,7 @@ def _insert_plaid_account(
              extracted_at, loaded_at)
         VALUES (?, ?, NULL, ?, ?, '/tmp/sync.json', 'plaid', ?,
                 ?::TIMESTAMP, ?::TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             native_key,
             account_type,
@@ -83,7 +83,7 @@ def _insert_plaid_account(
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, 'plaid', ?, 'accepted', 'auto',
                 CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [f"link-{native_key}", canonical_id, native_key, source_origin],
     )
 

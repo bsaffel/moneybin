@@ -52,13 +52,13 @@ def _seed_annotation_transactions() -> None:
              'Grocer', 'DEBIT', false, 'USD', 'ofx',
              '2026-07-02', CURRENT_TIMESTAMP,
              2026, 7, 2, 4, '2026-07', '2026-Q3')
-            """  # noqa: S608  # test input, not executing SQL
+            """  # test input, not executing SQL
         )
         db.execute(
             """
             INSERT INTO app.transaction_tags (transaction_id, tag, applied_by)
             VALUES ('TX_RENAME', 'food', 'test')
-            """  # noqa: S608  # test input, not executing SQL
+            """  # test input, not executing SQL
         )
 
 
@@ -114,7 +114,7 @@ async def test_annotation_batch_applies_all_variants(mcp_db: object) -> None:
             Decimal("-10"),
         ]
         assert service.list_tags("TX_RENAME") == ["dining"]
-        events = service._audit.events_for_operation(  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # audit verification
+        events = service._audit.events_for_operation(  # pyright: ignore[reportPrivateUsage]  # audit verification
             response.data.operation_id
         )
         rename_parent = next(event for event in events if event.action == "tag.rename")
@@ -315,7 +315,7 @@ async def test_annotation_coarse_registrar_exposes_only_batch_tool() -> None:
 
     names = {
         tool.name
-        for tool in await server._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # test server inventory
+        for tool in await server._list_tools()  # pyright: ignore[reportPrivateUsage]  # test server inventory
     }
     assert names == {"transactions_annotate"}
 
@@ -530,7 +530,7 @@ async def test_matches_run_lets_a_crash_that_committed_nothing_through_bare(
 
     with pytest.raises(MatchRunError):
         transactions_matches_run()
-    with pytest.raises(BaseException) as excinfo:  # noqa: B017, PT011  # identity check
+    with pytest.raises(BaseException) as excinfo:  # identity check
         transactions_matches_run()
     assert not isinstance(excinfo.value, UserError)
 
@@ -539,7 +539,7 @@ async def test_matches_run_lets_a_crash_that_committed_nothing_through_bare(
 async def test_standard_registrar_has_no_review_aliases() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"transactions", "transactions_annotate"}
 
 
@@ -565,7 +565,7 @@ async def test_matches_pending_component_key_present(mcp_db: object) -> None:
                     match_type, match_tier, account_id_b, match_status,
                     match_reason, decided_by, decided_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,  # noqa: S608  # test input, not executing SQL
+                """,  # test input, not executing SQL
                 [
                     match_id,
                     stid_a,
@@ -629,7 +629,7 @@ async def test_matches_pending_dedup_group_count_zero_for_transfer_scope(
                 match_type, match_tier, account_id_b, match_status,
                 match_reason, decided_by, decided_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,  # noqa: S608  # test input, not executing SQL
+            """,  # test input, not executing SQL
             [
                 "td_ab",
                 "t1",

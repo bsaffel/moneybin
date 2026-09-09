@@ -48,7 +48,7 @@ def budget_db(db: Database) -> Database:
          'Bakery', 'DEBIT', false, 'USD', 'ofx',
          '2026-04-12', CURRENT_TIMESTAMP,
          2026, 4, 12, 5, '2026-04', '2026-Q2')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Categorize transactions
     conn.execute("""
@@ -58,7 +58,7 @@ def budget_db(db: Database) -> Database:
         VALUES
         ('T1', 'Food & Drink', 'Coffee Shops', CURRENT_TIMESTAMP, 'user'),
         ('T2', 'Food & Drink', 'Bakeries', CURRENT_TIMESTAMP, 'user')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     return db
 

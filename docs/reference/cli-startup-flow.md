@@ -82,10 +82,11 @@ def mcp_list_prompts(...) -> None:
 
 A plain comment naming the cost is the whole convention — there is no
 suppression to add. Ruff's `select` omits `PL`, so a `# noqa: PLC0415` would
-suppress nothing, and `test_no_inert_pylint_suppression_markers` rejects it. The
-pattern itself is greppable by structure: an `import` indented inside a
-function body. The same applies to anything that pulls a parser, ORM, or large
-package graph: `fastmcp`, `sqlmesh`, `polars`.
+suppress nothing, and `RUF100` (in `select`) rejects any inert `noqa` in
+`ruff check .`, not just this one. The pattern itself is greppable by
+structure: an `import` indented inside a function body. The same applies to
+anything that pulls a parser, ORM, or large package graph: `fastmcp`,
+`sqlmesh`, `polars`.
 
 The non-obvious failure mode: `from x import Y` at module top of any command file (including transitive imports from helper modules those files load) loads the heavy graph for *every* invocation — `--help`, autocomplete, every E2E subprocess. The CLI feels fine in isolation but the test suite slows by a factor of N over time. The CI guard described below catches regressions early.
 

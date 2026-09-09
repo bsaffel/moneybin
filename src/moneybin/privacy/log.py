@@ -191,7 +191,7 @@ def write_privacy_event(event: dict[str, Any]) -> None:
                     except OSError:
                         pass
                     raise
-    except Exception as exc:  # noqa: BLE001 — fail-soft: a missing audit row must
+    except Exception as exc:  # fail-soft: a missing audit row must
         # never break a tool call. json.dumps can raise TypeError/ValueError on a
         # non-serializable event; file I/O raises OSError/PermissionError; the
         # cross-process rotation race raises FileNotFoundError. All are logged
