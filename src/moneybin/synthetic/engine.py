@@ -42,7 +42,7 @@ class GeneratorEngine:
             YAML file does not exist.
     """
 
-    def __init__(self, persona_name: str, seed: int, years: int | None = None) -> None:  # noqa: D107 — args documented in class docstring
+    def __init__(self, persona_name: str, seed: int, years: int | None = None) -> None:  # noqa: D107  # args documented in class docstring
         self._persona_name = persona_name
         self._seed = seed
         self._rng = SeededRandom(seed)

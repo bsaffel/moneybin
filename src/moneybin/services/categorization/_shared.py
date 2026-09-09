@@ -535,7 +535,7 @@ def resolve_category_id(
     if category is None:
         return None
     row = db.execute(
-        f"SELECT category_id FROM {CATEGORIES.full_name} "  # noqa: S608  # TableRef constant
+        f"SELECT category_id FROM {CATEGORIES.full_name} "  # TableRef constant
         "WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?",
         [category, subcategory],
     ).fetchone()

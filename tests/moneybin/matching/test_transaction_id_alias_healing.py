@@ -112,7 +112,7 @@ def pipeline_db(db: Database) -> Generator[Database, None, None]:
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
     for name in _PREP_MODELS:
-        db.execute(  # noqa: S608  # model body read from the repo file, not user input
+        db.execute(  # model body read from the repo file, not user input
             f"CREATE OR REPLACE VIEW prep.{name} AS\n{_model_body('prep', name)}"
         )
     # core.fct_transactions' dimension joins are all LEFT and irrelevant here, so
@@ -123,7 +123,7 @@ def pipeline_db(db: Database) -> Generator[Database, None, None]:
     db.execute(CORE_DIM_CATEGORIES_STUB_DDL)
     db.execute(CORE_DIM_MERCHANTS_STUB_DDL)
     db.execute(
-        "CREATE OR REPLACE VIEW core.fct_transactions AS\n"  # noqa: S608  # model body read from the repo file
+        "CREATE OR REPLACE VIEW core.fct_transactions AS\n"  # model body read from the repo file
         f"{_model_body('core', 'fct_transactions')}"
     )
     db.execute(
@@ -346,7 +346,7 @@ def _aliases(db: Database) -> dict[str, str]:
 
 def _categories_fk_status(db: Database) -> str:
     """The doctor's verdict on ``app_transaction_categories_fk``."""
-    return DoctorService(db)._run_transaction_categories_fk().status  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return DoctorService(db)._run_transaction_categories_fk().status  # pyright: ignore[reportPrivateUsage]
 
 
 def _accept_dedup(
@@ -870,7 +870,7 @@ class TestHealingSkipsBeforeTheFactViewExists:
         """
         db.execute("CREATE SCHEMA IF NOT EXISTS prep")
         for name in _PREP_MODELS:
-            db.execute(  # noqa: S608  # model body read from the repo file
+            db.execute(  # model body read from the repo file
                 f"CREATE OR REPLACE VIEW prep.{name} AS\n{_model_body('prep', name)}"
             )
         _curate(db, "deadbeefdeadbeef")
@@ -920,7 +920,7 @@ def _splits_by_transaction(db: Database) -> dict[str, list[str]]:
 def _build_transaction_lines_view(db: Database) -> None:
     """Add the shipped split-expansion view on top of the fact model."""
     db.execute(
-        "CREATE OR REPLACE VIEW core.fct_transaction_lines AS\n"  # noqa: S608  # model body read from the repo file
+        "CREATE OR REPLACE VIEW core.fct_transaction_lines AS\n"  # model body read from the repo file
         f"{_model_body('core', 'fct_transaction_lines')}"
     )
 
@@ -936,7 +936,7 @@ def _published_line_total(db: Database) -> Decimal:
 
 def _splits_fk_status(db: Database) -> str:
     """The doctor's verdict on ``app_transaction_splits_fk``."""
-    return DoctorService(db)._run_transaction_splits_fk().status  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return DoctorService(db)._run_transaction_splits_fk().status  # pyright: ignore[reportPrivateUsage]
 
 
 class TestSplitsAreNeverMovedOntoAnAlreadySplitTransaction:

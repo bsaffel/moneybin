@@ -424,7 +424,7 @@ async def test_every_replaced_callback_is_explicitly_internal_and_unregistered()
         module = importlib.import_module(module_name)
         module_callbacks = cast(
             tuple[Callable[..., object], ...],
-            module._LEGACY_INTERNAL_CALLBACKS,  # noqa: SLF001
+            module._LEGACY_INTERNAL_CALLBACKS,
         )
         callbacks.extend(module_callbacks)
 
@@ -585,5 +585,5 @@ def test_nothing_is_hidden_from_connecting_clients() -> None:
     from moneybin.mcp.server import init_db, mcp
 
     init_db()
-    registered = {tool.name for tool in asyncio.run(mcp._list_tools())}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # public API filters by visibility; we want the raw registry
+    registered = {tool.name for tool in asyncio.run(mcp._list_tools())}  # pyright: ignore[reportPrivateUsage]  # public API filters by visibility; we want the raw registry
     assert registered == _visible_tool_names()

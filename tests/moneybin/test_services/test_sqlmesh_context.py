@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Tests for sqlmesh_context — encrypted DB injection into SQLMesh."""
 
 from pathlib import Path

@@ -64,7 +64,7 @@ class TestV022CreateAppAiConsentGrants:
             migrated_db.execute(
                 "INSERT INTO app.ai_consent_grants "
                 "(grant_id, feature_category, backend, consent_mode, grant_prompt) "
-                "VALUES ('g1', 'mcp-data-sharing', 'anthropic', 'forever', 'prompt')"  # noqa: S608  # test input, not executing user SQL
+                "VALUES ('g1', 'mcp-data-sharing', 'anthropic', 'forever', 'prompt')"  # test input, not executing user SQL
             )
 
     def test_consent_mode_check_accepts_valid(self, migrated_db: Database) -> None:

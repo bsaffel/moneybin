@@ -49,7 +49,7 @@ from moneybin.services.account_service import (
     suggest_subtype,
 )
 from moneybin.services.balance_service import (
-    BalanceService,  # noqa: F401 — re-exported for patch targets in tests  # type: ignore[reportUnusedImport]
+    BalanceService,  # noqa: F401  # re-exported for patch targets in tests  # type: ignore[reportUnusedImport]
 )
 
 from . import balance, links
@@ -65,7 +65,7 @@ app = typer.Typer(
 @app.command("list")
 def accounts_list(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,  # list has no informational chatter; only data
     include_archived: bool = typer.Option(
         False, "--include-archived", help="Include archived accounts in the listing"
     ),
@@ -160,7 +160,7 @@ def accounts_summary(
 def accounts_get(
     account_id: str = typer.Argument(..., help="Account ID"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001
+    quiet: bool = quiet_option,
 ) -> None:
     """Show one account's full settings + dim record."""
     with handle_cli_errors(cli_actor="accounts_get", payload_type=AccountDetail):

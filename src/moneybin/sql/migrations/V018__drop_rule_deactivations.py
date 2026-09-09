@@ -20,5 +20,5 @@ logger = logging.getLogger(__name__)
 
 def migrate(conn: object) -> None:
     """Drop app.rule_deactivations."""
-    conn.execute("DROP TABLE IF EXISTS app.rule_deactivations")  # type: ignore[union-attr]  # noqa: S608  # allowlisted literal
+    conn.execute("DROP TABLE IF EXISTS app.rule_deactivations")  # type: ignore[union-attr]  # allowlisted literal
     logger.info("V018: dropped app.rule_deactivations")

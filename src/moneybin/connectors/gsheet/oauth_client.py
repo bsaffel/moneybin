@@ -38,8 +38,12 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_SHEETS_READ_SCOPE = "https://www.googleapis.com/auth/spreadsheets.readonly"
 GOOGLE_SHEETS_WRITE_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
-GSHEET_GRANTED_SCOPES_KEY = "gsheet:granted_scopes"  # noqa: S105  # keyring metadata name, not a secret value
-GSHEET_WRITE_GRANTED_SCOPES_KEY = "gsheet:write_granted_scopes"  # noqa: S105  # keyring metadata name, not a secret value
+GSHEET_GRANTED_SCOPES_KEY = (
+    "gsheet:granted_scopes"  # keyring metadata name, not a secret value
+)
+GSHEET_WRITE_GRANTED_SCOPES_KEY = (
+    "gsheet:write_granted_scopes"  # keyring metadata name, not a secret value
+)
 GSHEET_CLIENT_ID_KEY = "gsheet:client_id"
 GSHEET_WRITE_CLIENT_ID_KEY = "gsheet:write_client_id"
 
@@ -253,7 +257,7 @@ class GoogleOAuthClient:
                 access_type="offline",
                 include_granted_scopes="true" if require_write else "false",
             )
-        except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
+        except Exception as exc:  # google-auth raises untyped errors
             # str(exc) on google_auth_oauthlib errors can include OAuth
             # state params, redirect URIs, or CSRF token fragments — keep
             # the typed exception message generic so downstream
@@ -412,7 +416,7 @@ class GoogleOAuthClient:
         )
         try:
             creds.refresh(Request())  # type: ignore[reportUnknownMemberType]
-        except Exception as exc:  # noqa: BLE001  # google-auth raises untyped errors
+        except Exception as exc:  # google-auth raises untyped errors
             # Same sanitization discipline as authorize() — google-auth
             # error text can carry token fragments / endpoint URLs, so the
             # chain goes to debug-only, not error-level logs.

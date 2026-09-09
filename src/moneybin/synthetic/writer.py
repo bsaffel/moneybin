@@ -75,7 +75,7 @@ class SyntheticWriter:
         db: Database instance.
     """
 
-    def __init__(self, db: Database) -> None:  # noqa: D107 — args documented in class docstring
+    def __init__(self, db: Database) -> None:  # noqa: D107  # args documented in class docstring
         self._db = db
 
     def _create_synthetic_schema(self) -> None:

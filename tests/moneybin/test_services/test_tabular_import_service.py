@@ -1701,7 +1701,7 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
 
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.dim_accounts "  # test input, not executing user SQL
         "(account_id, account_type, institution_name, source_type) "
         "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
     )
@@ -1719,7 +1719,7 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
         auto_accept=True,
     )
     keys_first = db.execute(
-        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # test input, not executing user SQL
         "WHERE source_file = ?",
         [str(export)],
     ).fetchall()
@@ -1739,7 +1739,7 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
     )
 
     keys_second = db.execute(
-        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # test input, not executing user SQL
         "WHERE source_file = ?",
         [str(export)],
     ).fetchall()
@@ -1747,7 +1747,7 @@ def test_pinned_reimport_without_a_name_keeps_the_same_native_key(
         f"the grown export re-keyed the account: {keys_first} -> {keys_second}"
     )
     repeated = db.execute(
-        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # test input, not executing user SQL
         "WHERE source_file = ? AND amount = -52.30",
         [str(export)],
     ).fetchone()
@@ -1945,7 +1945,7 @@ def _pinned_keys_for(db: Database, export: Path) -> list[str]:
     return [
         r[0]
         for r in db.execute(
-            "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+            "SELECT DISTINCT account_id FROM raw.tabular_transactions "  # test input, not executing user SQL
             "WHERE source_file = ?",
             [str(export)],
         ).fetchall()
@@ -1969,7 +1969,7 @@ def test_supplying_account_name_later_does_not_re_key_a_pinned_import(
 
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.dim_accounts "  # test input, not executing user SQL
         "(account_id, account_type, institution_name, source_type) "
         "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
     )
@@ -2007,7 +2007,7 @@ def test_supplying_account_name_later_does_not_re_key_a_pinned_import(
         f"{_pinned_keys_for(db, export)}"
     )
     repeated = db.execute(
-        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # test input, not executing user SQL
         "WHERE source_file = ? AND amount = -52.30",
         [str(export)],
     ).fetchone()
@@ -2116,7 +2116,7 @@ def test_a_third_pinned_reimport_of_a_growing_export_still_reuses_the_key(
 
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.dim_accounts "  # test input, not executing user SQL
         "(account_id, account_type, institution_name, source_type) "
         "VALUES ('acct_pinned01', 'CHECKING', 'Bank', 'csv')"
     )
@@ -2146,7 +2146,7 @@ def test_a_third_pinned_reimport_of_a_growing_export_still_reuses_the_key(
         f"the export re-keyed across three imports: {keys_by_round}"
     )
     repeated = db.execute(
-        "SELECT COUNT(*) FROM raw.tabular_transactions "  # noqa: S608  # test input, not executing user SQL
+        "SELECT COUNT(*) FROM raw.tabular_transactions "  # test input, not executing user SQL
         "WHERE source_file = ? AND amount = -52.30",
         [str(export)],
     ).fetchone()

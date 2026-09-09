@@ -59,7 +59,7 @@ def test_networth_correctness() -> None:
         # Seed balance assertions computed from fixture data (hand-derived).
         # checking: start=$5,000; all txns total -$100 → end=$4,900
         # savings:  start=$5,000; Jan txns total +$510 → Jan end=$5,510
-        db.execute(  # noqa: S608 — table literal; values parameterized
+        db.execute(  # table literal; values parameterized
             """
             INSERT INTO app.balance_assertions (account_id, assertion_date, balance)
             VALUES
@@ -73,7 +73,7 @@ def test_networth_correctness() -> None:
         run_step("transform", scenario.setup, db, env=env)
 
         for date_str, expected in _EXPECTED:
-            row = db.execute(  # noqa: S608 — table name literal; date value parameterized
+            row = db.execute(  # table name literal; date value parameterized
                 "SELECT net_worth FROM reports.net_worth WHERE balance_date = ?",
                 [date_str],
             ).fetchone()

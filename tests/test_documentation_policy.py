@@ -523,7 +523,7 @@ def _resolve_invocation(
     while index < len(tokens):
         token = tokens[index]
         index += 1
-        if token in {"--help", ""}:  # noqa: S105  # CLI argument, not a secret
+        if token in {"--help", ""}:  # CLI argument, not a secret
             saw_help = saw_help or token == "--help"  # noqa: S105  # ditto
             continue
         if token == "--":  # noqa: S105  # end of options: the rest are positionals
@@ -535,7 +535,7 @@ def _resolve_invocation(
                 positionals = 0
                 seen_options = set()
             continue
-        if token in {"*", "…", "..."}:  # noqa: S105  # CLI argument, not a secret
+        if token in {"*", "…", "..."}:  # CLI argument, not a secret
             return None  # a wildcard or elision: nothing checkable past it
         if (
             token.startswith("-")

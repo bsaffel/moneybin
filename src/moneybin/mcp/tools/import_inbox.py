@@ -36,7 +36,7 @@ def _uncategorized_count() -> int:
     try:
         with get_database(read_only=True) as db:
             return CategorizationQueries(db).count_uncategorized()
-    except Exception:  # noqa: BLE001 — never surface DB errors in summary hint
+    except Exception:  # never surface DB errors in summary hint
         return 0
 
 

@@ -1537,7 +1537,7 @@ def _branch_scopes(tree: exp.Expr, branches: list[exp.Select]) -> list[Scope | N
     """
     try:
         root = build_scope(tree)
-    except Exception as e:  # noqa: BLE001  # sqlglot raises untyped errors on exotic ASTs
+    except Exception as e:  # sqlglot raises untyped errors on exotic ASTs
         # Identifier-free: the exception text can carry SQL fragments (PII).
         logger.debug(f"sql_lineage: scope analysis unavailable ({type(e).__name__})")
         return [None] * len(branches)

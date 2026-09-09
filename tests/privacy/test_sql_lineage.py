@@ -134,7 +134,7 @@ def test_the_snapshot_covers_exactly_the_schemas_the_gate_admits(
     for schema in sorted(ALLOWED_QUERY_SCHEMAS) + list(_FENCED_SCHEMAS):
         populated_db.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')
         populated_db.execute(
-            f'CREATE TABLE IF NOT EXISTS "{schema}".snapshot_probe (marker VARCHAR)'  # noqa: S608  # schema names come from a frozenset constant, not user input
+            f'CREATE TABLE IF NOT EXISTS "{schema}".snapshot_probe (marker VARCHAR)'  # schema names come from a frozenset constant, not user input
         )
     # A prep model is a VIEW, not a table — `duckdb_columns()` covers both, and
     # nothing downstream of the snapshot distinguishes them.
@@ -1334,7 +1334,7 @@ def _reconstructing_case(column: str, position: int) -> str:
         f"WHEN substr({column}, {position}, 1) = '{digit}' THEN '{digit}'"
         for digit in range(10)
     )
-    return f"CASE {branches} ELSE '?' END"  # noqa: S608  # test input string, not executing SQL
+    return f"CASE {branches} ELSE '?' END"  # test input string, not executing SQL
 
 
 def test_a_case_branch_returning_the_tested_literal_still_masks(
@@ -2240,7 +2240,7 @@ def test_scope_input_max_carries_floored(
     )
     assert select is not None
 
-    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+    def always_floored(key: tuple[str, str, str]) -> DataClass:
         return DataClass.FLOORED
 
     monkeypatch.setattr(lin, "_class_of_key", always_floored)
@@ -2257,7 +2257,7 @@ def test_table_scope_max_carries_floored(
     snapshot = get_current_schema_snapshot(populated_db)
     tree = parse_cached("SELECT class FROM core.dim_categories")
 
-    def always_floored(key: tuple[str, str, str]) -> DataClass:  # noqa: ARG001
+    def always_floored(key: tuple[str, str, str]) -> DataClass:
         return DataClass.FLOORED
 
     monkeypatch.setattr(lin, "_class_of_key", always_floored)

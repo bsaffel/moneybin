@@ -391,7 +391,7 @@ def _get_candidates(
             )
             {source_filter}
         ORDER BY desc_sim DESC
-    """  # noqa: S608 — table name validated above; date_window_days is parameterized
+    """  # noqa: S608  # table name validated above; date_window_days is parameterized
 
     rows = db.execute(query, [date_window_days]).fetchall()
 

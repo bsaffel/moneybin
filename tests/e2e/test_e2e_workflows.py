@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E workflow tests — multi-step user flows run as subprocesses."""
 
 from __future__ import annotations

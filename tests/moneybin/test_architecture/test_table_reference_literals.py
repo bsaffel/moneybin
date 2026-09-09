@@ -1044,7 +1044,7 @@ def _tables_in_text(text: str) -> list[tuple[str, str, str]]:
         statements = sqlglot.parse(
             text, dialect="duckdb", error_level=ErrorLevel.IGNORE
         )
-    except Exception:  # noqa: BLE001  # tolerant parse over arbitrary fragments is best-effort
+    except Exception:  # tolerant parse over arbitrary fragments is best-effort
         return []
 
     found: list[tuple[str, str, str]] = []
@@ -2073,7 +2073,7 @@ def test_module_constant_used_at_module_scope_is_still_reported(
     rather than narrowed to one scope.
     """
     source = (
-        'QUERY = "SELECT * FROM core.fct_transactions"\n'  # noqa: S608  # fixture
+        'QUERY = "SELECT * FROM core.fct_transactions"\n'  # fixture
         "db.execute(QUERY)\n"
     )
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.fct_transactions")]
@@ -2091,14 +2091,14 @@ def test_a_lambda_parameter_default_is_scanned(tmp_path: Path) -> None:
     (below) was caught the whole time — a contributor factoring a one-line
     helper into a lambda silently lost the guard.
     """
-    source = 'f = lambda db, query="SELECT * FROM core.foo": db.execute(query)\n'  # noqa: S608  # fixture, never executed
+    source = 'f = lambda db, query="SELECT * FROM core.foo": db.execute(query)\n'  # fixture, never executed
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
 
 
 def test_a_def_parameter_default_is_scanned(tmp_path: Path) -> None:
     """Control for the lambda case — the two must not diverge again."""
     source = (
-        'def f(db, query="SELECT * FROM core.foo"):\n'  # noqa: S608  # fixture, never executed
+        'def f(db, query="SELECT * FROM core.foo"):\n'  # fixture, never executed
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == [(1, "FROM", "core.foo")]
@@ -2116,7 +2116,7 @@ def test_a_class_body_does_not_resolve_names_from_module_scope(
     design notes call the real cost.
     """
     source = (
-        'query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        'query = "SELECT * FROM core.foo"\n'  # fixture, never executed
         "\n"
         "class C:\n"
         "    query = build()\n"
@@ -2133,7 +2133,7 @@ def test_a_class_body_literal_is_still_reported(tmp_path: Path) -> None:
     """
     source = (
         "class C:\n"
-        '    query = "SELECT * FROM core.foo"\n'  # noqa: S608  # fixture, never executed
+        '    query = "SELECT * FROM core.foo"\n'  # fixture, never executed
         "    db.execute(query)\n"
     )
     assert _scan_source(tmp_path, source) == [(2, "FROM", "core.foo")]
@@ -2147,8 +2147,8 @@ def test_two_statements_naming_one_table_get_distinct_keys(
 ) -> None:
     """Same file, same (clause, table), different statements — different keys."""
     source = (
-        'db.execute("SELECT a FROM core.foo")\n'  # noqa: S608  # fixture, never executed
-        'db.execute("SELECT b FROM core.foo")\n'  # noqa: S608  # fixture, never executed
+        'db.execute("SELECT a FROM core.foo")\n'  # fixture, never executed
+        'db.execute("SELECT b FROM core.foo")\n'  # fixture, never executed
     )
     found = _scan_source_keyed(tmp_path, source)
     assert [(lineno, clause, table) for lineno, clause, table, _ in found] == [
@@ -2174,11 +2174,11 @@ def test_an_exemption_does_not_transfer_to_a_different_statement(
     """
     reviewed = _scan_source_keyed(
         tmp_path,
-        'db.execute("SELECT a FROM core.foo")\n',  # noqa: S608  # fixture, never executed
+        'db.execute("SELECT a FROM core.foo")\n',  # fixture, never executed
     )
     replacement = _scan_source_keyed(
         tmp_path,
-        'db.execute("DELETE FROM core.foo WHERE x")\n',  # noqa: S608  # fixture, never executed
+        'db.execute("DELETE FROM core.foo WHERE x")\n',  # fixture, never executed
     )
     assert reviewed[0][2] == replacement[0][2] == "core.foo"
     assert reviewed[0][3] != replacement[0][3]
@@ -2196,7 +2196,7 @@ def test_reflowing_a_statement_keeps_its_key(tmp_path: Path) -> None:
     """
     flat = _scan_source_keyed(
         tmp_path,
-        'db.execute("SELECT a FROM core.foo WHERE b")\n',  # noqa: S608  # fixture, never executed
+        'db.execute("SELECT a FROM core.foo WHERE b")\n',  # fixture, never executed
     )
     reflowed = _scan_source_keyed(
         tmp_path,

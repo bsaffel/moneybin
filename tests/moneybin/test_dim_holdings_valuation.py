@@ -81,7 +81,7 @@ def _seed_security(db: Database, *, security_id: str = _DEFAULT_SECURITY_ID) -> 
         INSERT INTO app.securities (security_id, name, security_type, ticker)
         VALUES (?, 'Vanguard Total Stock Market ETF', 'etf', 'VTI')
         ON CONFLICT DO NOTHING
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [security_id],
     )
 
@@ -129,7 +129,7 @@ def _seed_position(
         ) VALUES (?, ?, ?, ?, 'VTI', ?,
                   ?::DATE, ?, ?, ?, 0.00, 'test', ?, ?,
                   COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             transaction_id,
             f"imp_{transaction_id}",
@@ -174,7 +174,7 @@ def _seed_price(
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?, ?, 'plaid', 'item_1', ?, 'raw',
                 COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [provider_key, price_date, quote_currency, close, extracted_at],
     )
     db.execute(
@@ -185,7 +185,7 @@ def _seed_price(
         VALUES (?, ?, 'plaid_security_id', ?, 'plaid',
                 'accepted', 'auto', CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [f"link_{provider_key}", security_id, provider_key],
     )
 
@@ -224,7 +224,7 @@ def _seed_broker_snapshot(
         ) VALUES (?, ?, CURRENT_DATE, 1, DATE '2026-01-01', 'plaid',
                   COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
         ON CONFLICT DO NOTHING
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [source_origin, source_file, extracted_at],
     )
     db.execute(
@@ -237,7 +237,7 @@ def _seed_broker_snapshot(
         ) VALUES (?, ?, CURRENT_DATE, 120.00, CURRENT_DATE, NULL, NULL, ?,
                   'USD', DATE '2026-01-01', ?, 'plaid', ?,
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [account_id, security_id, quantity, source_file, source_origin],
     )
 
@@ -278,7 +278,7 @@ def _seed_plaid_buy(
         ) VALUES (?, ?, ?, 'buy', 'buy', ?,
                   ?, 100.00, 1000.00, 0.00, 'USD', 'sync_test', 'plaid', ?,
                   CURRENT_TIMESTAMP, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             f"itx_buy_{account_id}",
             account_id,
@@ -307,7 +307,7 @@ def _seed_liquidated_snapshot(db: Database, *, source_origin: str) -> None:
             transactions_window_start, source_type, extracted_at, loaded_at
         ) VALUES (?, 'sync_job_liquidated', CURRENT_DATE, 0,
                   DATE '2026-01-01', 'plaid', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [source_origin],
     )
 
@@ -339,7 +339,7 @@ def _seed_split_reject(
         ) VALUES (?, ?, ?, 'transfer', 'split', ?,
                   4, NULL, 0.00, NULL, 'USD', 'sync_test', 'plaid', ?,
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             f"itx_split_{account_id}",
             account_id,
@@ -525,7 +525,7 @@ def valuation_cases_template(
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, CURRENT_DATE, 'GBP', 'plaid', ?, 95.00, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [_provider_key(security("other_currency")), origin("other_currency")],
     )
     _seed_price(
@@ -1747,7 +1747,7 @@ def test_both_overlap_implementations_agree_on_the_same_ledger(
     ).fetchall()
     sql_side = {str(r[0]) for r in holdings_rows if r[1] == "source_overlap"}
     open_accounts = {str(r[0]) for r in holdings_rows}
-    python_side = InvestmentService(db)._source_overlap_accounts()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # the claim under test is that two implementations agree
+    python_side = InvestmentService(db)._source_overlap_accounts()  # pyright: ignore[reportPrivateUsage]  # the claim under test is that two implementations agree
 
     # Preconditions: both sides really evaluated something, and the fixture
     # holds accounts of each verdict — a green comparison of two empty sets

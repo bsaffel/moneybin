@@ -252,7 +252,7 @@ async def test_sync_link_mcp_tool_registered() -> None:
     register_sync_tools(srv)
     tools = {
         tool.name: tool
-        for tool in await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        for tool in await srv._list_tools()  # pyright: ignore[reportPrivateUsage]
     }
 
     assert "sync_link" in tools
@@ -264,7 +264,7 @@ async def test_sync_status_mcp_tool_registered() -> None:
     """The consolidated sync_status tool handles link-session polling."""
     srv = FastMCP("test")
     register_sync_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"sync_link", "sync_status", "sync_pull", "sync_disconnect"}
 
 

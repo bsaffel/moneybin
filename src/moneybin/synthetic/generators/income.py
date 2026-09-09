@@ -27,7 +27,7 @@ class IncomeGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(  # noqa: D107 — args documented in class docstring
+    def __init__(  # noqa: D107  # args documented in class docstring
         self,
         incomes: list[IncomeConfig],
         start_year: int,

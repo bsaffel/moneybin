@@ -115,7 +115,7 @@ def _tracked_corpus() -> list[Path]:
     raises anywhere else. That is not a gap: the wheel ships no tests, so every
     context that can run this file is a checkout.
     """
-    listed = subprocess.run(  # noqa: S603  # fixed argv, no user input
+    listed = subprocess.run(  # fixed argv, no user input
         ["git", "ls-files"],  # noqa: S607  # git resolved from PATH, as everywhere in CI
         cwd=ROOT,
         capture_output=True,

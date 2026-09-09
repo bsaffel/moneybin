@@ -125,7 +125,7 @@ def _bypass_insert(
 ) -> None:
     """Insert a user_categories row WITHOUT an audit row (simulated bypass)."""
     db.execute(
-        "INSERT INTO app.user_categories "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.user_categories "  # test input, not executing user SQL
         "(category_id, category, subcategory, is_active, created_at, updated_at) "
         "VALUES (?, ?, ?, true, now()::TIMESTAMP - (? * INTERVAL 1 DAY), "
         "now()::TIMESTAMP - (? * INTERVAL 1 DAY))",
@@ -150,7 +150,7 @@ def test_audit_coverage_passes_for_repo_mutated_row(db: Database) -> None:
 def test_audit_coverage_flags_account_links_bypass(db: Database) -> None:
     """The GREATEST(decided_at, reversed_at) watermark catches a raw account_links write."""
     db.execute(
-        "INSERT INTO app.account_links "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.account_links "  # test input, not executing user SQL
         "(link_id, account_id, ref_kind, ref_value, source_type, source_origin, "
         "status, decided_by, decided_at) VALUES "
         "('bypasslink', 'acct1', 'source_native', 'checking', 'ofx', 'wf', "
@@ -187,7 +187,7 @@ def test_audit_coverage_flags_audited_then_bypassed(db: Database) -> None:
     cid = UserCategoriesRepo(db).insert(category="WasAudited", actor="user").target_id
     assert cid is not None
     db.execute(
-        "UPDATE app.user_categories "  # noqa: S608  # test input, not executing user SQL
+        "UPDATE app.user_categories "  # test input, not executing user SQL
         "SET updated_at = now()::TIMESTAMP + INTERVAL 1 DAY WHERE category_id = ?",
         [cid],
     )
@@ -225,7 +225,7 @@ def test_audit_coverage_passes_for_repo_mutated_merchant(db: Database) -> None:
 
 def test_audit_coverage_flags_bypass_merchant(db: Database) -> None:
     db.execute(
-        "INSERT INTO app.user_merchants "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.user_merchants "  # test input, not executing user SQL
         "(merchant_id, match_type, canonical_name, created_by, updated_at) "
         "VALUES ('bypassM', 'oneOf', 'Sneaky', 'ai', now()::TIMESTAMP)"
     )
@@ -239,7 +239,7 @@ def test_user_merchants_orphan_warns_for_unreferenced_merchant(db: Database) -> 
     # window, warns (never fails — deletion-by-design leaves merchants behind).
     mid = _insert_merchant(UserMerchantsRepo(db), name="Stale Co")
     db.execute(
-        "UPDATE app.user_merchants "  # noqa: S608  # test input, not executing user SQL
+        "UPDATE app.user_merchants "  # test input, not executing user SQL
         "SET updated_at = now()::TIMESTAMP - INTERVAL 30 DAY WHERE merchant_id = ?",
         [mid],
     )
@@ -278,7 +278,7 @@ def test_audit_coverage_passes_for_repo_mutated_proposal(db: Database) -> None:
 
 def test_audit_coverage_flags_bypass_proposal(db: Database) -> None:
     db.execute(
-        "INSERT INTO app.proposed_rules "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.proposed_rules "  # test input, not executing user SQL
         "(proposed_rule_id, merchant_pattern, category, status, proposed_at) "
         "VALUES ('bypassP', 'P', 'Dining', 'tracking', now()::TIMESTAMP)"
     )
@@ -331,7 +331,7 @@ def test_audit_coverage_passes_for_repo_mutated_categorization(db: Database) -> 
 def test_transaction_categories_fk_flags_orphan(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.fct_transactions "  # test input, not executing user SQL
         "(transaction_id, account_id, transaction_date, amount, source_type) "
         "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
     )
@@ -360,7 +360,7 @@ def test_transaction_categories_fk_flags_orphan(db: Database) -> None:
 def test_transaction_categories_fk_passes_when_all_resolve(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.fct_transactions "  # test input, not executing user SQL
         "(transaction_id, account_id, transaction_date, amount, source_type) "
         "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
     )
@@ -399,7 +399,7 @@ def test_transaction_splits_fk_flags_orphan(db: Database) -> None:
     """
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.fct_transactions "  # test input, not executing user SQL
         "(transaction_id, account_id, transaction_date, amount, source_type) "
         "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
     )
@@ -416,7 +416,7 @@ def test_transaction_splits_fk_flags_orphan(db: Database) -> None:
 def test_transaction_splits_fk_passes_when_all_resolve(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.fct_transactions "  # test input, not executing user SQL
         "(transaction_id, account_id, transaction_date, amount, source_type) "
         "VALUES ('t_ok', 'a1', DATE '2026-01-01', -5.00, 'csv')"
     )
@@ -496,7 +496,7 @@ def test_audit_coverage_flags_bypass_reverse_match_decision(db: Database) -> Non
     # a plain decided_at watermark would miss it.
     _insert_match(MatchDecisionsRepo(db), match_id="mrev")
     db.execute(
-        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "UPDATE app.match_decisions "  # test input, not executing user SQL
         "SET reversed_at = now()::TIMESTAMP, reversed_by = 'user', "
         "match_status = 'reversed' WHERE match_id = 'mrev'"
     )
@@ -515,7 +515,7 @@ def test_audit_coverage_flags_bypass_decided_at_after_reverse(db: Database) -> N
     _insert_match(repo, match_id="mpost")
     repo.reverse("mpost", reversed_by="user", actor="cli")  # audited reverse
     db.execute(
-        "UPDATE app.match_decisions "  # noqa: S608  # test input, not executing user SQL
+        "UPDATE app.match_decisions "  # test input, not executing user SQL
         "SET decided_at = now()::TIMESTAMP + INTERVAL 1 HOUR WHERE match_id = 'mpost'"
     )
     result = DoctorService(db)._run_app_audit_coverage(
@@ -550,7 +550,7 @@ def test_audit_coverage_rejects_non_allowlisted_pk_expr(db: Database) -> None:
 def test_match_decisions_account_fk_flags_orphan(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # noqa: S608  # test input
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # test input
     )
     repo = MatchDecisionsRepo(db)
     _insert_match(repo, match_id="m_ok", account_id="a1")
@@ -563,7 +563,7 @@ def test_match_decisions_account_fk_flags_orphan(db: Database) -> None:
 def test_match_decisions_account_fk_flags_orphan_counterparty(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # noqa: S608  # test input
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1')"  # test input
     )
     repo = MatchDecisionsRepo(db)
     # account_id resolves, but the transfer counterparty account_id_b does not.
@@ -576,7 +576,7 @@ def test_match_decisions_account_fk_flags_orphan_counterparty(db: Database) -> N
 def test_match_decisions_account_fk_passes_when_all_resolve(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1'), ('a2')"  # noqa: S608  # test input
+        "INSERT INTO core.dim_accounts (account_id) VALUES ('a1'), ('a2')"  # test input
     )
     repo = MatchDecisionsRepo(db)
     _insert_match(repo, match_id="m1", account_id="a1")
@@ -722,7 +722,7 @@ def test_audit_coverage_passes_for_repo_mutated_account_settings(db: Database) -
 
 def test_audit_coverage_flags_bypass_account_settings(db: Database) -> None:
     db.execute(
-        "INSERT INTO app.account_settings (account_id, display_name) "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.account_settings (account_id, display_name) "  # test input, not executing user SQL
         "VALUES ('bypassA', 'Sneaky')"
     )
     result = DoctorService(db)._run_app_audit_coverage(ACCOUNT_SETTINGS, "account_id")
@@ -744,7 +744,7 @@ def test_audit_coverage_flags_bypass_balance_assertion(db: Database) -> None:
     # Raw insert, no audit — the composite pk_expr must reconstruct the same
     # target_id the repo would emit ("account_id|YYYY-MM-DD") to flag it.
     db.execute(
-        "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.balance_assertions (account_id, assertion_date, balance) "  # test input, not executing user SQL
         "VALUES ('bypassB', DATE '2026-05-01', 5.00)"
     )
     result = DoctorService(db)._run_app_audit_coverage(
@@ -776,7 +776,7 @@ def test_audit_coverage_passes_for_repo_mutated_security(db: Database) -> None:
 
 def test_audit_coverage_flags_bypass_security(db: Database) -> None:
     db.execute(
-        "INSERT INTO app.securities (security_id, name, security_type) "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.securities (security_id, name, security_type) "  # test input, not executing user SQL
         "VALUES ('bypass_sec', 'Sneaky Corp', 'equity')"
     )
     result = DoctorService(db)._run_app_audit_coverage(SECURITIES, "security_id")
@@ -801,7 +801,7 @@ def test_audit_coverage_passes_for_repo_mutated_lot_selection(db: Database) -> N
 
 def test_audit_coverage_flags_bypass_lot_selection(db: Database) -> None:
     db.execute(
-        "INSERT INTO app.lot_selections "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.lot_selections "  # test input, not executing user SQL
         "(investment_transaction_id, lot_id, quantity) "
         "VALUES ('bypass_sell', 'lot_x', 3)"
     )
@@ -823,7 +823,7 @@ def test_account_settings_account_fk_flags_orphan(db: Database) -> None:
 def test_account_settings_account_fk_passes_when_resolved(db: Database) -> None:
     create_core_tables(db)
     db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.dim_accounts "  # test input, not executing user SQL
         "(account_id, account_type, institution_name, source_type) "
         "VALUES ('real_acct', 'CHECKING', 'Bank', 'ofx')"
     )
@@ -963,7 +963,7 @@ def test_dim_accounts_reserved_display_name_passes_after_the_override_is_cleared
     create_core_tables(db)
     _seed_source_account(db, "acct_cleared", account_label="Vacation Fund")
     db.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO core.dim_accounts "  # test input, not executing user SQL
         "(account_id, display_name, display_name_is_user_set) "
         "VALUES ('acct_cleared', 'unnamed account', TRUE)"
     )
@@ -1488,7 +1488,7 @@ def test_pdf_formats_fingerprint_shape_passes_for_repo_saved_row(
 def _bypass_price_override(db: Database, *, security_id: str) -> None:
     """Insert a price mark WITHOUT an audit row (simulated bypass)."""
     db.execute(
-        "INSERT INTO app.security_price_overrides "  # noqa: S608  # test input, not executing user SQL
+        "INSERT INTO app.security_price_overrides "  # test input, not executing user SQL
         "(security_id, price_date, quote_currency, close, note) "
         "VALUES (?, DATE '2026-07-12', 'USD', 214.55, 'sneaky')",
         [security_id],

@@ -113,7 +113,7 @@ def migrate(conn: object) -> None:
         # list, not user input.
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN app.merchant_links.{column} "  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN app.merchant_links.{column} "  # static identifier + escaped literal
             f"IS '{escaped}'"
         )
 
@@ -123,7 +123,7 @@ def migrate(conn: object) -> None:
     for column, comment in _MERCHANT_LINK_DECISIONS_COLUMN_COMMENTS:
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN app.merchant_link_decisions.{column} "  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN app.merchant_link_decisions.{column} "  # static identifier + escaped literal
             f"IS '{escaped}'"
         )
 

@@ -135,7 +135,7 @@ def test_rejects_invalid_reversed_by(db: Database) -> None:
     repo = AccountLinksRepo(db)
     _insert(repo, link_id="l1")
     with pytest.raises(duckdb.ConstraintException):
-        db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+        db.conn.execute(  # test input, not executing user SQL
             "UPDATE app.account_links SET reversed_by = 'bogus' WHERE link_id = 'l1'"
         )
 
@@ -251,7 +251,7 @@ def test_repoint_raises_for_non_accepted_link(db: Database) -> None:
     """Can only re-point an accepted link; a reversed link raises."""
     repo = AccountLinksRepo(db)
     _insert(repo, link_id="lnk00000001", account_id="acct_canonical_1")
-    db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+    db.conn.execute(  # test input, not executing user SQL
         "UPDATE app.account_links SET status = 'reversed' WHERE link_id = 'lnk00000001'"
     )
     with pytest.raises(ValueError, match="can only re-point"):

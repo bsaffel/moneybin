@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Tests for all synthetic data generators."""
 
 from datetime import date

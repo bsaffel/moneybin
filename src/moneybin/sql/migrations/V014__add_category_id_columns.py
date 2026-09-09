@@ -153,7 +153,7 @@ def migrate(conn: object) -> None:
 
     for fk_col, table, _text_col, _subcategory_pred in active_backfills:
         logger.info(f"V014: ADD COLUMN IF NOT EXISTS {table}.{fk_col}")
-        conn.execute(  # type: ignore[union-attr]  # noqa: S608  # constants from _BACKFILLS, no user input
+        conn.execute(  # type: ignore[union-attr]  # constants from _BACKFILLS, no user input
             f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {fk_col} VARCHAR"
         )
 

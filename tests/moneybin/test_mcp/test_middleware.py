@@ -117,7 +117,7 @@ async def test_middleware_unit_returns_tool_result_with_accepted_list() -> None:
     )
 
     async def call_next(
-        context: MiddlewareContext[mt.CallToolRequestParams],  # noqa: ARG001
+        context: MiddlewareContext[mt.CallToolRequestParams],
     ) -> ToolResult:
         # Trigger the same ValidationError fastmcp would raise on bad kwargs.
         raise ValidationError.from_exception_data(

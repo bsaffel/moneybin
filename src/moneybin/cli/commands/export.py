@@ -369,7 +369,7 @@ def export_report(
 @destination_app.command("list")
 def destination_list(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001  # list output is data-only
+    quiet: bool = quiet_option,  # list output is data-only
 ) -> None:
     """List derived and saved export destinations with readiness."""
     from moneybin.config import get_settings

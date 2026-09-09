@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """`moneybin import preview` on a PDF.
 
 Preview routed every file through the *tabular* format detector, so a PDF was

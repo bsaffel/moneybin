@@ -139,10 +139,10 @@ def _select_winning_observations(group: pd.DataFrame) -> pd.DataFrame:
 )
 def execute(
     context: ExecutionContext,
-    start: datetime,  # noqa: ARG001 — FULL kind ignores start/end
-    end: datetime,  # noqa: ARG001
-    execution_time: datetime,  # noqa: ARG001
-    **kwargs: t.Any,  # noqa: ARG001
+    start: datetime,  # FULL kind ignores start/end
+    end: datetime,
+    execution_time: datetime,
+    **kwargs: t.Any,
 ) -> Iterator[pd.DataFrame]:
     """Build the per-account daily balance spine with carry-forward and reconciliation deltas."""
     # context.resolve_table() resolves the internal versioned name (e.g.
@@ -264,7 +264,7 @@ def execute(
                 carry = obs_balance
                 carry_currency = obs_currency
             else:
-                assert carry is not None, (  # noqa: S101 — invariant, not user input
+                assert carry is not None, (  # noqa: S101  # invariant, not user input
                     "interpolated branch reached before first observation — "
                     "spine should always start at the first observed date"
                 )

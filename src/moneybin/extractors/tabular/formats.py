@@ -238,7 +238,7 @@ def load_formats_from_db(db: Database) -> dict[str, TabularFormat]:
             ORDER BY name
             """  # noqa: S608  # TABULAR_FORMATS is a TableRef constant
         ).fetchall()
-    except Exception:  # noqa: BLE001  # table may not exist before first migration
+    except Exception:  # table may not exist before first migration
         logger.debug("app.tabular_formats not available; returning empty format set")
         return {}
 

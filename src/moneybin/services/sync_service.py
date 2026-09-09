@@ -150,7 +150,7 @@ class SyncService:
             # loss-free. So a failure must not flip this pull's success.
             try:
                 self.client.ack(trigger_resp.job_id)
-            except Exception as e:  # noqa: BLE001  # best-effort post-load ack
+            except Exception as e:  # best-effort post-load ack
                 logger.warning(
                     f"Ack failed after pull (job_id={trigger_resp.job_id}): {e}"
                 )
@@ -161,7 +161,7 @@ class SyncService:
             # soft-fail pattern). A subsequent pull re-resolves idempotently.
             try:
                 self._resolve_accounts(sync_data)
-            except Exception as e:  # noqa: BLE001  # best-effort post-load metadata
+            except Exception as e:  # best-effort post-load metadata
                 logger.warning(f"Account resolution failed after pull: {e}")
             # Security identity resolution. Unlike account resolution above,
             # there is NO staging COALESCE fallback for securities — B1's
@@ -194,7 +194,7 @@ class SyncService:
                 resolver = SecurityResolver(self.db, actor="system")
                 resolution = resolver.resolve_all()
                 resolution_writes = resolver.writes
-            except Exception as e:  # noqa: BLE001  # reported via security_resolution_error, not raised
+            except Exception as e:  # reported via security_resolution_error, not raised
                 security_resolution_error = str(e)
                 logger.warning(f"Security resolution failed after pull: {e}")
             overlap = self._investment_source_overlap()
@@ -354,7 +354,7 @@ class SyncService:
                   WHERE m.account_id = COALESCE(al.account_id, p.account_id)
                 )
                 ORDER BY account_id
-                """  # noqa: S608  # TableRef constants
+                """  # TableRef constants
             ).fetchall()
         except duckdb.CatalogException:  # tables may not exist on fresh DBs
             return []
@@ -371,7 +371,7 @@ class SyncService:
         """
         try:
             row = self.db.execute(
-                f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT COUNT(*) FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "  # TableRef constant
                 "WHERE subtype = 'opening_bootstrap'"
             ).fetchone()
         except duckdb.CatalogException:  # core view absent before first transform

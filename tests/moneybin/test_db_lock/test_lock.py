@@ -208,7 +208,7 @@ def test_f2_different_thread_contends_at_fcntl_not_reentrancy(tmp_path: Path) ->
         try:
             with write_lock(db_path, deadline=deadline, operation_type="migration"):
                 b_outcome["result"] = "acquired"
-        except BaseException as exc:  # noqa: BLE001  # capture any exit
+        except BaseException as exc:  # capture any exit
             b_outcome["result"] = exc
 
     a = threading.Thread(target=thread_a)
@@ -378,7 +378,7 @@ def test_out_of_lifo_reentrant_close_releases_lock(tmp_path: Path) -> None:
         try:
             with write_lock(db_path, deadline=d, operation_type="interactive"):
                 acquired.set()
-        except BaseException:  # noqa: BLE001, S110 — a leak surfaces via the assert below
+        except BaseException:  # noqa: S110  # a leak surfaces via the assert below
             pass
 
     t = threading.Thread(target=other)

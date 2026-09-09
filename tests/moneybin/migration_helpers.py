@@ -70,6 +70,8 @@ def run_migration(db: Database, migrate_fn: Callable[[object], None]) -> None:
         # original migration error.
         try:
             db.execute("ROLLBACK")
-        except Exception as rollback_exc:  # noqa: BLE001 — log and continue; original error re-raised below
+        except (
+            Exception
+        ) as rollback_exc:  # log and continue; original error re-raised below
             logger.debug(f"ROLLBACK after migration failure raised: {rollback_exc!r}")
         raise

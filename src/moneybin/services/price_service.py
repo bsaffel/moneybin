@@ -345,7 +345,7 @@ class PriceService:
             JOIN {DIM_HOLDINGS.full_name} AS h ON h.security_id = s.security_id
             WHERE h.quantity <> 0
             ORDER BY s.security_id
-        """  # noqa: S608  # TableRef constants only
+        """  # TableRef constants only
         try:
             rows = self._db.execute(sql).fetchall()
         except duckdb.CatalogException:
@@ -640,7 +640,7 @@ class PriceService:
             return self._canonical_quote_currency(explicit)
         try:
             rows = self._db.execute(
-                f"SELECT DISTINCT UPPER(currency_code) FROM {DIM_HOLDINGS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT DISTINCT UPPER(currency_code) FROM {DIM_HOLDINGS.full_name} "  # TableRef constant
                 "WHERE security_id = ? AND quantity <> 0 "
                 "AND currency_code IS NOT NULL",
                 [security_id],
@@ -654,7 +654,7 @@ class PriceService:
             return currencies[0]
         if not currencies:
             declared = self._db.execute(
-                f"SELECT UPPER(currency_code) FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT UPPER(currency_code) FROM {SECURITIES.full_name} "  # TableRef constant
                 "WHERE security_id = ? AND currency_code IS NOT NULL",
                 [security_id],
             ).fetchone()
@@ -827,7 +827,7 @@ class PriceService:
         where = " AND ".join(clauses)
         try:
             rows = self._db.execute(
-                f"SELECT price_date, quote_currency, close, source_type, price_basis "  # noqa: S608  # TableRef + parameterized values
+                f"SELECT price_date, quote_currency, close, source_type, price_basis "  # TableRef + parameterized values
                 f"FROM {FCT_SECURITY_PRICES.full_name} WHERE {where} "
                 "ORDER BY price_date DESC, quote_currency",
                 params,
@@ -1035,7 +1035,7 @@ class PriceService:
         reused)", so this is a real condition rather than a defensive one.
         """
         row = self._db.execute(
-            f"SELECT COUNT(*) FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM {SECURITIES.full_name} "  # TableRef constant
             "WHERE UPPER(TRIM(ticker)) = ?",
             [ticker.strip().upper()],
         ).fetchone()
@@ -1055,7 +1055,7 @@ class PriceService:
         """
         try:
             row = self._db.execute(
-                f"SELECT ref_value, decided_by FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT ref_value, decided_by FROM {SECURITY_LINKS.full_name} "  # TableRef constant
                 "WHERE status = 'accepted' AND security_id = ? AND ref_kind = ? "
                 "AND source_type = ? "
                 "ORDER BY decided_by = 'auto', ref_value LIMIT 1",
@@ -1098,7 +1098,7 @@ class PriceService:
     ) -> None:
         """Reverse the accepted auto-binding whose catalog value moved."""
         row = self._db.execute(
-            f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # TableRef constant
             "WHERE status = 'accepted' AND security_id = ? AND ref_kind = ? "
             "AND source_type = ? AND decided_by = 'auto' LIMIT 1",
             [security_id, ref_kind, source_type],
@@ -1128,7 +1128,7 @@ class PriceService:
         """
         try:
             reversed_row = self._db.execute(
-                f"SELECT 1 FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT 1 FROM {SECURITY_LINKS.full_name} "  # TableRef constant
                 "WHERE status = 'reversed' AND security_id = ? AND ref_kind = ? "
                 "AND source_type = ? AND ref_value = ? "
                 "AND reversed_by IS DISTINCT FROM ? LIMIT 1",
@@ -1137,7 +1137,7 @@ class PriceService:
             if reversed_row is not None:
                 return True
             undone = self._db.execute(
-                f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # TableRef constant
                 "WHERE is_undo AND action = ? "
                 "AND json_extract_string(before_value, '$.security_id') = ? "
                 "AND json_extract_string(before_value, '$.ref_kind') = ? "
@@ -1175,7 +1175,7 @@ class PriceService:
             return None
         try:
             row = self._db.execute(
-                f"SELECT status FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT status FROM {SECURITY_LINK_DECISIONS.full_name} "  # TableRef constant
                 "WHERE ref_kind = ? AND ref_value = ? AND source_type = ? "
                 "AND candidate_security_id = ? AND (status = 'pending' OR "
                 "(status = 'rejected' AND reversed_at IS NULL)) LIMIT 1",

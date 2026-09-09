@@ -657,7 +657,7 @@ def _seed_chase_twin(db: Database, account_id: str = "acct_existing01") -> None:
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture insert
+        "INSERT INTO core.dim_accounts "  # test fixture insert
         "(account_id, display_name, institution_slug, last_four) "
         "VALUES (?, ?, ?, ?)",
         [account_id, "Chase Card", "chase", "1234"],

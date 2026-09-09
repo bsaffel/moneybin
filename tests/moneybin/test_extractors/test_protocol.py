@@ -97,8 +97,8 @@ def test_in_tree_extractor_conforms_to_protocol(cls: type) -> None:
     """
     extractor = _build_extractor(cls)
     assert isinstance(extractor, Provider)
-    assert isinstance(extractor.name, str) and extractor.name  # noqa: PT018
-    assert isinstance(extractor.source_type, str) and extractor.source_type  # noqa: PT018
+    assert isinstance(extractor.name, str) and extractor.name
+    assert isinstance(extractor.source_type, str) and extractor.source_type
     assert isinstance(extractor.config, ProviderConfig)
 
 

@@ -36,7 +36,7 @@ def categories_list(
         help="Include inactive categories.",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list emits result rows only
+    quiet: bool = quiet_option,  # list emits result rows only
 ) -> None:
     """List all categories."""
     from moneybin.services.categorization import CategorizationService

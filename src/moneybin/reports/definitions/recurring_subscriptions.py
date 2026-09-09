@@ -157,7 +157,7 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
     ),
 )
 def recurring_subscriptions(
-    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    db: Database,  # contract handle; this runner builds pure SQL
     *,
     min_confidence: float = 0.5,
     status: str = "active",

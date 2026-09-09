@@ -38,7 +38,7 @@ def _seed_test_data(db: Database) -> None:
             extracted_at TIMESTAMP,
             loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Raw OFX accounts
     db.execute("""
@@ -52,7 +52,7 @@ def _seed_test_data(db: Database) -> None:
             extracted_at TIMESTAMP,
             loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Raw tabular transactions
     db.execute("""
@@ -68,7 +68,7 @@ def _seed_test_data(db: Database) -> None:
             import_id VARCHAR,
             loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Match decisions table
     db.execute("""
@@ -94,7 +94,7 @@ def _seed_test_data(db: Database) -> None:
             reversed_by VARCHAR,
             PRIMARY KEY (match_id)
         )
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Seed source priority table
     db.execute("""
@@ -102,7 +102,7 @@ def _seed_test_data(db: Database) -> None:
             source_type VARCHAR PRIMARY KEY,
             priority INTEGER NOT NULL
         )
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Insert OFX transaction — payee trimmed to same value as CSV description
     # so jaro_winkler similarity = 1.0, confidence >= high_confidence_threshold
@@ -177,7 +177,7 @@ def _create_test_unioned_view(db: Database) -> None:
             source_file,
             'USD' AS currency_code
         FROM raw.tabular_transactions
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
 
 @pytest.mark.integration

@@ -16,10 +16,10 @@ def _register_adapters() -> None:
     the point, the binding is discarded.
     """
     from moneybin.connectors.gsheet.adapters import (
-        raw_seed as _raw_seed,  # noqa: F401
+        raw_seed as _raw_seed,
     )
     from moneybin.connectors.gsheet.adapters import (
-        transactions as _transactions,  # noqa: F401
+        transactions as _transactions,
     )
 
     _ = (_transactions, _raw_seed)
