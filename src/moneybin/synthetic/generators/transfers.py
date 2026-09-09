@@ -23,7 +23,7 @@ class TransferGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(self, transfers: list[TransferConfig], rng: SeededRandom) -> None:  # noqa: D107 — args documented in class docstring
+    def __init__(self, transfers: list[TransferConfig], rng: SeededRandom) -> None:  # noqa: D107  # args documented in class docstring
         self._transfers = transfers
         self._rng = rng
         self._pair_counter = 0

@@ -40,7 +40,7 @@ def stubbed_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the bootstrap + preflight catalog check with no-ops."""
 
     @contextmanager
-    def _fake_env(scenario: Scenario, *, keep_tmpdir: bool = False) -> Any:  # noqa: ARG001
+    def _fake_env(scenario: Scenario, *, keep_tmpdir: bool = False) -> Any:
         yield (object(), "fake-scenario", {})
 
     def _passing_catalog(_db: object) -> AssertionResult:
@@ -54,7 +54,9 @@ def stubbed_runner(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(runner_mod, "get_database", lambda: object())
 
 
-def test_run_scenario_invokes_extra_assertions(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+def test_run_scenario_invokes_extra_assertions(
+    stubbed_runner: None,
+) -> None:  # fixture activation
     """extra_assertions results are appended after standard assertions."""
     scenario = _make_scenario()
     sentinel = AssertionResult(name="extra_check", passed=True, details={"k": "v"})
@@ -69,7 +71,9 @@ def test_run_scenario_invokes_extra_assertions(stubbed_runner: None) -> None:  #
     assert result.passed
 
 
-def test_extra_assertion_failure_propagates_to_result(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+def test_extra_assertion_failure_propagates_to_result(
+    stubbed_runner: None,
+) -> None:  # fixture activation
     """A failing extra assertion flips result.passed to False."""
     scenario = _make_scenario()
     failing = AssertionResult(name="extra_fail", passed=False, error="boom")
@@ -83,7 +87,9 @@ def test_extra_assertion_failure_propagates_to_result(stubbed_runner: None) -> N
     assert "extra_fail" in result.failure_summary()
 
 
-def test_extra_assertions_crash_halts_scenario(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+def test_extra_assertions_crash_halts_scenario(
+    stubbed_runner: None,
+) -> None:  # fixture activation
     """An exception inside the callback halts the scenario with a clean reason."""
     scenario = _make_scenario()
 
@@ -122,7 +128,9 @@ evaluations:
 """
 
 
-def test_runner_marks_crashed_assertions_and_evaluations(stubbed_runner: None) -> None:  # noqa: ARG001 — fixture activation
+def test_runner_marks_crashed_assertions_and_evaluations(
+    stubbed_runner: None,
+) -> None:  # fixture activation
     """A caught crash is recorded as a crash, not as a verdict or a low score.
 
     Without the flag both render identically to the one summary CI ever sees,
@@ -148,7 +156,7 @@ _LEAKY_MESSAGE = "txn 4111111111111111 differed by 42.00"
 
 
 def test_assertion_crash_records_the_type_not_the_message(
-    stubbed_runner: None,  # noqa: ARG001 — fixture activation
+    stubbed_runner: None,  # fixture activation
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An assertion queries scenario rows, so its crash text cannot be echoed.
@@ -175,7 +183,7 @@ def test_assertion_crash_records_the_type_not_the_message(
 
 
 def test_evaluation_crash_records_the_type_not_the_message(
-    stubbed_runner: None,  # noqa: ARG001 — fixture activation
+    stubbed_runner: None,  # fixture activation
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Same contract on the evaluation branch, which records into breakdown."""

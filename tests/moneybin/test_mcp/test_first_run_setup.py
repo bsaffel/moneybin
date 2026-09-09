@@ -38,7 +38,7 @@ def _fake_mw_context(ctx: MagicMock | None) -> MagicMock:
 async def test_passthrough_when_already_configured() -> None:
     """Once configured, the middleware does not elicit; it calls through."""
     mw = FirstRunSetupMiddleware()
-    mw._configured = True  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    mw._configured = True  # pyright: ignore[reportPrivateUsage]
     call_next = AsyncMock(return_value="tool-result")
     ctx = _fake_ctx(supports_elicit=False)
 
@@ -98,7 +98,7 @@ async def test_bootstrap_and_proceed_on_accept() -> None:
     boot.assert_called_once_with("Brandon", verbose=False)
     call_next.assert_awaited_once()
     assert result == "tool-result"
-    assert mw._configured is True  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert mw._configured is True  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
@@ -243,7 +243,7 @@ async def test_setup_envelope_when_bootstrap_raises() -> None:
     )
     call_next.assert_not_called()
     # Stays unconfigured so the next call retries setup (transient failures self-heal).
-    assert mw._configured is False  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    assert mw._configured is False  # pyright: ignore[reportPrivateUsage]
 
 
 def test_bootstrap_adopts_existing_profile_on_collision() -> None:

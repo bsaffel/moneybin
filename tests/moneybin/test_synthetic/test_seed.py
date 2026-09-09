@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Tests for the SeededRandom wrapper."""
 
 import statistics

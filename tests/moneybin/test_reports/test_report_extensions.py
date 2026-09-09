@@ -103,7 +103,7 @@ def registered_report_command_names(app: typer.Typer) -> set[str]:
     return {command.name for command in app.registered_commands if command.name}
 
 
-async def listed_tools():  # noqa: ANN201 — FastMCP's component type is internal
+async def listed_tools():  # FastMCP's component type is internal
     """Return the frozen live FastMCP registry."""
     from moneybin.mcp.server import mcp, register_core_tools
 

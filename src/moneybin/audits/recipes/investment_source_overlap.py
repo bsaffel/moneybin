@@ -39,8 +39,8 @@ from moneybin.errors import RecoveryAction
 
 
 def recipe(
-    affected_ids: list[str],  # noqa: ARG001 — the remedy is per-source, not per-account
-    context: RecipeContext,  # noqa: ARG001 — pure recipe
+    affected_ids: list[str],  # the remedy is per-source, not per-account
+    context: RecipeContext,  # pure recipe
 ) -> list[RecoveryAction]:
     """Emit the one remedy that can leave a single ledger on the account."""
     return [

@@ -22,7 +22,7 @@ class RecurringGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(  # noqa: D107 — args documented in class docstring
+    def __init__(  # noqa: D107  # args documented in class docstring
         self,
         charges: list[RecurringConfig],
         start_year: int,

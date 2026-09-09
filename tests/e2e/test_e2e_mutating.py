@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E smoke tests — commands that mutate state.
 
 Each test creates its own isolated profile so mutations don't affect

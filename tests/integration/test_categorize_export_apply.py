@@ -4,8 +4,6 @@ Tests the full CLI bridge workflow:
   export-uncategorized → simulate LLM decisions → commit-from-file
 """
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 import json
@@ -33,7 +31,7 @@ def _make_db_with_uncategorized(
     store = _make_secret_store()
     db = Database(tmp_path / "test.duckdb", secret_store=store, read_only=False)
 
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
             transaction_id  VARCHAR PRIMARY KEY,
@@ -51,7 +49,7 @@ def _make_db_with_uncategorized(
         )
         """
     )
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS app.transaction_categories (
             transaction_id  VARCHAR PRIMARY KEY,
@@ -90,7 +88,7 @@ def _invoke_categorize(
 
     @contextmanager
     def _db_ctx(*_a: object, **_kw: object):
-        yield db  # noqa: B023 — db is loop-invariant; test owns lifecycle
+        yield db  # db is loop-invariant; test owns lifecycle
 
     monkeypatch.setattr(_categorize_mod, "get_database", _db_ctx)
     monkeypatch.setattr(_apply_mod, "get_database", _db_ctx)

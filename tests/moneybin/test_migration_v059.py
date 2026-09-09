@@ -22,8 +22,8 @@ _TABLES = (
 def pre_v059_db(db: Database) -> Database:
     """Four populated pre-V059 tables without the received-leg columns."""
     for table in _TABLES:
-        db.execute(f"DROP TABLE {table}")  # noqa: S608  # closed internal table set
-        db.execute(  # noqa: S608  # closed internal table set
+        db.execute(f"DROP TABLE {table}")  # closed internal table set
+        db.execute(  # closed internal table set
             f"CREATE TABLE {table} (source_transaction_id VARCHAR, amount DECIMAL(18, 2))"
         )
         db.execute(
@@ -42,7 +42,7 @@ def test_v059_adds_nullable_received_leg_without_rewriting_rows(
     columns = {
         row[1]
         for row in pre_v059_db.execute(
-            f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
+            f"PRAGMA table_info('{table}')"  # closed internal table set
         ).fetchall()
     }
     assert {"to_amount", "to_currency"} <= columns
@@ -60,7 +60,7 @@ def test_v059_upgrade_column_order_matches_fresh_schema(
     fresh_schema = [
         (row[1], row[2])
         for row in db.execute(
-            f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
+            f"PRAGMA table_info('{table}')"  # closed internal table set
         ).fetchall()
     ]
     schema, table_name = table.split(".")
@@ -70,10 +70,10 @@ def test_v059_upgrade_column_order_matches_fresh_schema(
         f"SELECT * EXCLUDE (to_amount, to_currency) FROM {table} LIMIT 0"
     )
     db.execute(
-        f"DROP TABLE {table} CASCADE"  # noqa: S608  # isolated test database
+        f"DROP TABLE {table} CASCADE"  # isolated test database
     )
     db.execute(
-        f"ALTER TABLE {pre_v059_table} RENAME TO {table_name}"  # noqa: S608  # closed internal table set
+        f"ALTER TABLE {pre_v059_table} RENAME TO {table_name}"  # closed internal table set
     )
 
     run_migration(db, migrate)
@@ -81,7 +81,7 @@ def test_v059_upgrade_column_order_matches_fresh_schema(
     upgraded_schema = [
         (row[1], row[2])
         for row in db.execute(
-            f"PRAGMA table_info('{table}')"  # noqa: S608  # closed internal table set
+            f"PRAGMA table_info('{table}')"  # closed internal table set
         ).fetchall()
     ]
     assert upgraded_schema == fresh_schema

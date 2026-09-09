@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Tests for the synthetic data writer."""
 
 from __future__ import annotations

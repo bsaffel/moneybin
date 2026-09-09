@@ -1,4 +1,3 @@
-# ruff: noqa: S101,S106
 """Integration tests for cross-subsystem interactions.
 
 These tests exercise real encrypted databases, real loaders, and real

@@ -205,7 +205,7 @@ def reports_explain(
     handle: str = typer.Argument(..., help="Report ID or name, any tier."),
     param: list[str] | None = typer.Option(None, "--param", help=_PARAM_BIND_HELP),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001  # the evidence IS the output
+    quiet: bool = quiet_option,  # the evidence IS the output
 ) -> None:
     """Show a report's query, class map, lineage, freshness, and portability.
 

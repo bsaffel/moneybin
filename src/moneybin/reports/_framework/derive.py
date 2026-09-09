@@ -699,7 +699,7 @@ def _describe_result_columns(
         # Security: `query_sql` passed `validate_read_only_query` in step 1 and
         # is intentionally user SQL that cannot be parameterized. DESCRIBE reads
         # the projection's schema and returns no rows from it.
-        cursor = db.execute(f"DESCRIBE {query_sql}", bindings)  # noqa: S608
+        cursor = db.execute(f"DESCRIBE {query_sql}", bindings)
         rows = cursor.fetchall()
     except duckdb.Error as e:
         # DuckDB's binder error echoes the statement it bound, so only its type

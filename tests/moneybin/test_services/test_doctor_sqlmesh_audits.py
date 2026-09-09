@@ -86,7 +86,7 @@ def _seed_clean_data(db: Database) -> None:
         ) VALUES ('ACC1', '111', 'CHECKING', 'Bank', 'fid', 'ofx',
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     db.execute(
         """
@@ -111,7 +111,7 @@ def _seed_clean_data(db: Database) -> None:
         ('T_CREDIT', 'ACC1', '2026-01-03', 100.00, 100.00, 'income',
          'Transfer in', 'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP,
          CURRENT_TIMESTAMP, 2026, 1, 3, 5, '2026-01', '2026-Q1')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     db.execute(
         """
@@ -119,7 +119,7 @@ def _seed_clean_data(db: Database) -> None:
             (transfer_id, debit_transaction_id, credit_transaction_id,
              date_offset_days, amount)
         VALUES ('XFER1', 'T_DEBIT', 'T_CREDIT', 0, 100.00)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     db.execute(
         """
@@ -128,7 +128,7 @@ def _seed_clean_data(db: Database) -> None:
         VALUES
             ('INV_BUY', 'ACC1', 'SEC1', 'buy', -500.00),
             ('INV_SELL', 'ACC1', 'SEC1', 'sell', 600.00)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 

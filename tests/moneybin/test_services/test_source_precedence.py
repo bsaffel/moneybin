@@ -41,7 +41,7 @@ def fresh_txn(real_db: Database) -> str:
          memo, source_type, is_transfer)
         VALUES (?, 'acct_test', '2026-05-10', -10.00, 'STARBUCKS #1234',
                 NULL, 'ofx', false)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [txn_id],
     )
     return txn_id
@@ -314,7 +314,7 @@ def test_auto_rule_backfill_routes_through_write_categorization(
             (proposed_rule_id, merchant_pattern, match_type, category, subcategory,
              trigger_count, status, proposed_at, sample_txn_ids)
         VALUES (?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP, ?)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [proposal_id, "starbucks", "contains", "Coffee Shops", None, 5, []],
     )
 

@@ -93,7 +93,7 @@ def migrate(conn: object) -> None:
         # list, not user input.
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN raw.gsheet_seeds.{column} "  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN raw.gsheet_seeds.{column} "  # static identifier + escaped literal
             f"IS '{escaped}'"
         )
 

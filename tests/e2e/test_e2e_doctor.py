@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E tests for `moneybin system doctor`.
 
 doctor is read-only, so it uses the shared e2e_profile fixture (no mutations).

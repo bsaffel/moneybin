@@ -25,7 +25,7 @@ app.add_typer(links.app, name="links")
 @app.command("list")
 def merchants_list(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list emits result rows only
+    quiet: bool = quiet_option,  # list emits result rows only
 ) -> None:
     """List all merchant mappings."""
     from moneybin.services.categorization import CategorizationService

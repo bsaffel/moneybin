@@ -41,7 +41,7 @@ def investments_securities_list(
         help="Filter by security_type (equity, etf, mutual_fund, bond, crypto, cash, other)",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,  # list has no informational chatter; only data
 ) -> None:
     """List the securities catalog."""
     with handle_cli_errors(

@@ -258,7 +258,7 @@ class TestV014RuleDeactivations:
     def test_backfills_new_category_id(self, v014_db: Database) -> None:
         # Create the table manually — schema.py no longer includes it (dropped in V018).
         # This simulates an existing install where the table was created before V018.
-        v014_db.execute(  # noqa: S608  # building test fixture DDL, not executing user SQL
+        v014_db.execute(  # building test fixture DDL, not executing user SQL
             """
             CREATE TABLE IF NOT EXISTS app.rule_deactivations (
                 deactivation_id VARCHAR PRIMARY KEY,

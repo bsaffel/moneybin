@@ -90,7 +90,7 @@ def migrate(conn: object) -> None:
             "WHERE schema_name = 'app' AND table_name = 'audit_log'"
         ).fetchall()
         for index_name, _create_sql in saved_indexes:
-            conn.execute(f'DROP INDEX IF EXISTS app."{index_name}"')  # type: ignore[union-attr]  # noqa: S608  # catalog-sourced identifier, quoted
+            conn.execute(f'DROP INDEX IF EXISTS app."{index_name}"')  # type: ignore[union-attr]  # catalog-sourced identifier, quoted
         logger.info("V024: ALTER COLUMN is_undo SET NOT NULL")
         conn.execute(  # type: ignore[union-attr]
             "ALTER TABLE app.audit_log ALTER COLUMN is_undo SET NOT NULL"

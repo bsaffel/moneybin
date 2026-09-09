@@ -338,7 +338,7 @@ def matches_backfill(
         with handle_cli_errors():
             with get_database(read_only=False) as db:
                 count = db.execute(
-                    f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
+                    f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608  # TableRef constant
                 ).fetchone()
                 total = count[0] if count else 0
                 logger.info(

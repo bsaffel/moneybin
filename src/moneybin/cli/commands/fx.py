@@ -54,7 +54,7 @@ def fx_rate(
         None, help="Date the rate applies to (YYYY-MM-DD). Default: today."
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — the one line printed is the answer, not chatter
+    quiet: bool = quiet_option,  # the one line printed is the answer, not chatter
 ) -> None:
     """Show the rate for one currency pair on one date, and where it came from.
 
@@ -68,7 +68,9 @@ def fx_rate(
     """
     # Parsed before the connection so a typo costs no database open, and so it
     # exits 2 (usage) rather than 1 (the command ran and failed).
-    requested = parse_cli_date(rate_date, "RATE_DATE") if rate_date else date.today()  # noqa: DTZ011  # a calendar date, not an instant
+    requested = (
+        parse_cli_date(rate_date, "RATE_DATE") if rate_date else date.today()
+    )  # a calendar date, not an instant
     with handle_cli_errors(cli_actor="fx_rate", payload_type=FxRatePayload):
         # polars is not cold-start cheap
         from moneybin.services.currency_service import (
@@ -107,7 +109,7 @@ def fx_list(
         None, "--since", help="Only show rates from this ISO date forward"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,  # list has no informational chatter; only data
 ) -> None:
     """Show the stored rate series for one pair, newest first.
 

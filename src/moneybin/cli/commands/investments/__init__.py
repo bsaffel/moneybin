@@ -226,7 +226,7 @@ def investments_list(
         None, "--to", help="End trade date YYYY-MM-DD (inclusive)"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,  # list has no informational chatter; only data
 ) -> None:
     """List ledger events from the canonical investment-transaction fact table.
 
@@ -489,7 +489,7 @@ def investments_gains(
         None, "--term", help="Filter by holding term: short or long"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — the one note here is a disclosure
+    quiet: bool = quiet_option,  # the one note here is a disclosure
     wide: bool = wide_option,
 ) -> None:
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.

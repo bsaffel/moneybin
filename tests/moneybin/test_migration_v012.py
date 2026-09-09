@@ -56,7 +56,9 @@ def _create_seed_merchants_view(db: Database, table: str) -> None:
     `DROP TABLE IF EXISTS` on a view raises CatalogException).
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS seeds")
-    db.execute(f"CREATE TABLE IF NOT EXISTS seeds.{table}__phys (merchant_id VARCHAR)")  # noqa: S608  # allowlisted literal
+    db.execute(
+        f"CREATE TABLE IF NOT EXISTS seeds.{table}__phys (merchant_id VARCHAR)"
+    )  # allowlisted literal
     db.execute(f"CREATE VIEW seeds.{table} AS SELECT * FROM seeds.{table}__phys")  # noqa: S608  # allowlisted literal
 
 

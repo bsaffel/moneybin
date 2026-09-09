@@ -279,7 +279,9 @@ def parse_cli_date(value: str, flag: str) -> date:
     positional (``DATE``) and an option (``--since``) alike.
     """
     try:
-        return datetime.strptime(value, "%Y-%m-%d").date()  # noqa: DTZ007  # a calendar date, not an instant
+        return datetime.strptime(
+            value, "%Y-%m-%d"
+        ).date()  # a calendar date, not an instant
     except ValueError:
         typer.echo(
             f"error: {flag} must be an ISO date (YYYY-MM-DD), got {value!r}", err=True
@@ -357,7 +359,7 @@ def sqlmesh_command(
         logger.info(f"✅ {success or f'{label} completed'}")
     except typer.Exit:
         raise
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         user_error = classify_user_error(e)
         if user_error is not None:
             logger.error(f"❌ {user_error.message}")

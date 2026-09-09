@@ -48,13 +48,13 @@ class TestBuildAttachSql:
     def test_default_has_no_read_only(self) -> None:
         from moneybin.database import build_attach_sql
 
-        sql = build_attach_sql(Path("/tmp/db.duckdb"), "key123")  # noqa: S108 — hardcoded path for SQL string test, not an actual file
+        sql = build_attach_sql(Path("/tmp/db.duckdb"), "key123")  # noqa: S108  # hardcoded path for SQL string test, not an actual file
         assert "READ_ONLY" not in sql
 
     def test_read_only_true_appends_flag(self) -> None:
         from moneybin.database import build_attach_sql
 
-        sql = build_attach_sql(Path("/tmp/db.duckdb"), "key123", read_only=True)  # noqa: S108 — hardcoded path for SQL string test, not an actual file
+        sql = build_attach_sql(Path("/tmp/db.duckdb"), "key123", read_only=True)  # noqa: S108  # hardcoded path for SQL string test, not an actual file
         assert "READ_ONLY" in sql
         # Verify it's inside the options parens, after ENCRYPTION_KEY
         assert "(TYPE DUCKDB, ENCRYPTION_KEY 'key123', READ_ONLY)" in sql
@@ -888,7 +888,7 @@ class TestSqlmeshContext:
                 pass
         except TypeError as e:
             pytest.fail(f"sqlmesh_context signature mismatch: {e}")
-        except Exception:  # noqa: BLE001, S110 — expected: no sqlmesh project in test env
+        except Exception:  # noqa: S110  # expected: no sqlmesh project in test env
             pass
         finally:
             db.close()

@@ -144,7 +144,7 @@ class AssistBridge:
                     LEFT JOIN {TRANSACTION_CATEGORIES.full_name} tc USING (transaction_id)
                     WHERE {where_sql}
                     LIMIT ?
-                    """,  # noqa: S608  # where_sql composed from constants and parameter placeholders
+                    """,  # where_sql composed from constants and parameter placeholders
                     params + [effective_limit],
                 ).fetchall()
             except duckdb.CatalogException:

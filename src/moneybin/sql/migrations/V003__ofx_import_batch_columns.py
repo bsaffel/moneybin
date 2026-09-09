@@ -40,7 +40,7 @@ def migrate(conn: object) -> None:
                 continue
             if column == "source_type":
                 conn.execute(  # type: ignore[union-attr]
-                    f"ALTER TABLE {qualified_table} ADD COLUMN {column} VARCHAR DEFAULT 'ofx'"  # noqa: S608  # identifiers from compile-time allowlist, not user input
+                    f"ALTER TABLE {qualified_table} ADD COLUMN {column} VARCHAR DEFAULT 'ofx'"  # identifiers from compile-time allowlist, not user input
                 )
                 # Backfill existing rows; DEFAULT only applies to new inserts.
                 conn.execute(  # type: ignore[union-attr]
@@ -48,5 +48,5 @@ def migrate(conn: object) -> None:
                 )
             else:
                 conn.execute(  # type: ignore[union-attr]
-                    f"ALTER TABLE {qualified_table} ADD COLUMN {column} VARCHAR"  # noqa: S608  # identifiers from compile-time allowlist, not user input
+                    f"ALTER TABLE {qualified_table} ADD COLUMN {column} VARCHAR"  # identifiers from compile-time allowlist, not user input
                 )

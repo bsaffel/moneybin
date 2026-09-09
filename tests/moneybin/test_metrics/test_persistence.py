@@ -24,7 +24,7 @@ def mock_db() -> MagicMock:
     """
     import duckdb
 
-    conn = duckdb.connect()  # noqa: S113  # Protocol-level test; see docstring
+    conn = duckdb.connect()  # Protocol-level test; see docstring
     conn.execute("CREATE SCHEMA IF NOT EXISTS app")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS app.metrics (

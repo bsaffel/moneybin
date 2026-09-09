@@ -175,7 +175,7 @@ def _apply_column_comments(
         # from the static lists above, not user input.
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN {table}.{column} IS '{escaped}'"  # noqa: S608  # static identifier + escaped literal
+            f"COMMENT ON COLUMN {table}.{column} IS '{escaped}'"  # static identifier + escaped literal
         )
 
 

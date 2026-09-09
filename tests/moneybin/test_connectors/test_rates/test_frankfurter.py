@@ -478,7 +478,7 @@ def test_the_error_never_echoes_the_provider_body() -> None:
         return_value=httpx.Response(500, text="secret upstream detail")
     )
 
-    with pytest.raises(Exception) as exc:  # noqa: PT011  # feed base, asserted below
+    with pytest.raises(Exception) as exc:  # feed base, asserted below
         FrankfurterRateAdapter().fetch("USD", "EUR", _FRIDAY)
 
     assert "secret upstream detail" not in str(exc.value)

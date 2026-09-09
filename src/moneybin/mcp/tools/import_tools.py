@@ -476,7 +476,7 @@ def import_files(
             # `actions[]` builder below picks up the per-file
             # confirmation_payload state and surfaces the same
             # `_confirmation_actions` hints the legacy flat envelope had.
-        except Exception as e:  # noqa: BLE001 — surface as per-file failure
+        except Exception as e:  # surface as per-file failure
             # Single-file path bypasses BatchImportResult's per-file catch-
             # all, so non-confirmation exceptions (FileNotFoundError,
             # ValueError, schema mismatches, …) would propagate as a
@@ -1479,7 +1479,7 @@ def import_formats() -> ResponseEnvelope[ImportFormatsPayload]:
         with get_database(read_only=True) as db:
             formats, builtin, pdf_formats = ImportService(db).list_formats()
             pdf_format_rows = [pdf_format_row(pf) for pf in pdf_formats]
-    except Exception:  # noqa: BLE001 -- DB may not exist; fall back to built-in only
+    except Exception:
         from moneybin.extractors.tabular.formats import (
             load_builtin_formats,
         )

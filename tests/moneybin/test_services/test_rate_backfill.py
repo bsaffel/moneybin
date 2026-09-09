@@ -596,7 +596,7 @@ def test_planning_against_an_unbuilt_core_raises_the_named_precondition(
         "core.fct_investment_transactions",
         "core.dim_holdings",
     ):
-        db.execute(f"DROP TABLE IF EXISTS {relation}")  # noqa: S608  # fixed literals
+        db.execute(f"DROP TABLE IF EXISTS {relation}")  # fixed literals
 
     with pytest.raises(RateBackfillNotReadyError):
         run_rate_backfill(
@@ -619,7 +619,7 @@ def test_a_drifted_core_schema_is_reported_rather_than_silently_skipped(
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
     db.execute("ALTER TABLE core.fct_transactions RENAME currency_code TO ccy")
 
-    with pytest.raises(Exception) as caught:  # noqa: B017, PT011  # asserted below
+    with pytest.raises(Exception) as caught:  # asserted below
         run_rate_backfill(
             db, home_currency="USD", through=_TODAY, adapter=_SpanAdapter()
         )

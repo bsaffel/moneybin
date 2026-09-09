@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Batch import behavior: per-file results + end-of-batch transform apply."""
 
 from __future__ import annotations

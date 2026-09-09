@@ -588,7 +588,9 @@ def test_connect_seed_alias_collision_refused(in_memory_db: Database) -> None:
     )
     # DuckDB raises a generic ConstraintException (subclass of Exception)
     # when the UNIQUE constraint on alias fires.
-    with pytest.raises(Exception, match="(?i)unique|constraint"):  # noqa: B017, BLE001  # DuckDB raises generic Exception subclass
+    with pytest.raises(
+        Exception, match="(?i)unique|constraint"
+    ):  # DuckDB raises generic Exception subclass
         svc.connect(
             ConnectionRequest(
                 url="https://docs.google.com/spreadsheets/d/ssB/edit#gid=0",

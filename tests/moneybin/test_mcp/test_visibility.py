@@ -44,7 +44,7 @@ async def test_full_surface_visible_at_connect() -> None:
 
     all_registered = {
         t.name
-        for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+        for t in await mcp._list_tools()  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
     }
 
     assert visible == all_registered, (
@@ -108,7 +108,7 @@ async def test_every_tool_name_matches_anthropic_openai_pattern() -> None:
     pattern = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
     names = [
         t.name
-        for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+        for t in await mcp._list_tools()  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
     ]
     bad = [n for n in names if not pattern.match(n)]
     assert not bad, (
@@ -141,7 +141,7 @@ async def test_identity_decide_description_covers_both_security_acceptances() ->
 
     tool = next(
         t
-        for t in await mcp._list_tools()  # noqa: SLF001  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
+        for t in await mcp._list_tools()  # fastmcp internal — public list_tools() filters by visibility  # pyright: ignore[reportPrivateUsage]
         if t.name == "identity_links_decide"
     )
     description = (tool.description or "").lower()

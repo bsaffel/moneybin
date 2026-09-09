@@ -69,7 +69,7 @@ def _restored_profile():
     from moneybin import config as _config
     from moneybin.config import clear_settings_cache, set_current_profile
 
-    saved = _config._current_profile  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
+    saved = _config._current_profile  # pyright: ignore[reportPrivateUsage]  # internal save/restore
     try:
         yield
     finally:
@@ -77,7 +77,7 @@ def _restored_profile():
         if saved is not None:
             set_current_profile(saved)
         else:
-            _config._current_profile = None  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001 — internal save/restore
+            _config._current_profile = None  # pyright: ignore[reportPrivateUsage]  # internal save/restore
 
 
 def _build_env(tmp: str) -> dict[str, str]:
@@ -172,7 +172,7 @@ def run_scenario(
                 # needs the write lock). Re-open only when that happens.
                 if db._closed:  # pyright: ignore[reportPrivateUsage]
                     db = get_database(read_only=False)
-        except Exception as exc:  # noqa: BLE001 — surface as halted result
+        except Exception as exc:  # surface as halted result
             # Don't use logger.exception — tracebacks may include local
             # variables holding amounts/descriptions (PII rule).
             logger.error(
@@ -217,7 +217,7 @@ def run_scenario(
         if extra_assertions is not None:
             try:
                 extra = list(extra_assertions(db))
-            except Exception as exc:  # noqa: BLE001 — surface as halted
+            except Exception as exc:  # surface as halted
                 logger.error(
                     f"scenario {scenario.name} extra_assertions crashed: "
                     f"{type(exc).__name__}"
@@ -283,7 +283,7 @@ def _run_assertion(
     try:
         fn = _resolve_assertion(spec.fn)
         result = fn(db, **args)
-    except Exception as exc:  # noqa: BLE001 — surface as structured failure
+    except Exception as exc:  # surface as structured failure
         logger.error(f"assertion {spec.name} crashed: {type(exc).__name__}")
         logger.debug("assertion traceback", exc_info=True)
         return AssertionResult(
@@ -309,7 +309,7 @@ def _run_evaluation(spec: EvaluationSpec, db: Database) -> EvaluationResult:
     try:
         fn = resolve_evaluation(spec.fn)
         return fn(db, threshold=spec.threshold.min, **spec.args)
-    except Exception as exc:  # noqa: BLE001 — surface as structured failure
+    except Exception as exc:  # surface as structured failure
         logger.error(f"evaluation {spec.name} crashed: {type(exc).__name__}")
         logger.debug("evaluation traceback", exc_info=True)
         return EvaluationResult(

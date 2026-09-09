@@ -46,7 +46,7 @@ def _link(
             (link_id, account_id, ref_kind, ref_value, source_type,
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [link_id, account_id, ref_value, source_type, source_origin],
     )
 
@@ -69,7 +69,7 @@ def _ofx_account(
              extracted_at, loaded_at)
         VALUES (?, ?, ?, ?, ?, '/tmp/v.ofx', 'ofx',
                 ?, '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [
             native_key,
             routing_number,
@@ -97,7 +97,7 @@ def _tabular_account(
         VALUES (?, 'Vocab Acct', ?, 'Vocab Bank', '/tmp/v.csv', 'csv',
                 ?, 'imp-v-001', '2024-01-01'::TIMESTAMP,
                 '2024-01-01'::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key, account_type, source_origin],
     )
 
@@ -138,7 +138,7 @@ def _plaid_account(
              extracted_at, loaded_at)
         VALUES (?, ?, ?, ?, ?, ?, 'plaid://mb21-account-type', 'plaid', ?,
                 '2024-01-01'::TIMESTAMP, '2024-01-01'::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [
             native_key,
             account_type,
@@ -258,7 +258,7 @@ def account_type_cases_template(
         """
         INSERT INTO app.account_settings (account_id, account_subtype, updated_at)
         VALUES (?, 'money market', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [_case_id("subtype_override")],
     )
 

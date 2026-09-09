@@ -199,7 +199,7 @@ async def _accepted_params(
         params: dict[str, Any] = tool.parameters or {}
         props: dict[str, Any] = params.get("properties") or {}
         return sorted(props.keys())
-    except Exception:  # noqa: BLE001 — middleware must not raise on lookup
+    except Exception:  # middleware must not raise on lookup
         logger.debug(
             f"Could not resolve accepted params for {tool_name}", exc_info=True
         )

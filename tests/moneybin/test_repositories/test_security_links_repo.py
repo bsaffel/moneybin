@@ -432,7 +432,7 @@ def test_rejects_invalid_reversed_by(db: Database) -> None:
     repo = SecurityLinkDecisionsRepo(db)
     _propose(repo, decision_id="dec_bad_reversed_by")
     with pytest.raises(duckdb.ConstraintException):
-        db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+        db.conn.execute(  # test input, not executing user SQL
             "UPDATE app.security_link_decisions SET reversed_by = 'bogus' "
             "WHERE decision_id = 'dec_bad_reversed_by'"
         )

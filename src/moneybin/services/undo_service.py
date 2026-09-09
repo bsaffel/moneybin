@@ -303,7 +303,7 @@ class UndoService:
         for repo in touched.values():
             try:
                 repo.refresh_pending_gauge()
-            except Exception:  # noqa: BLE001 — telemetry never fails a committed undo
+            except Exception:  # telemetry never fails a committed undo
                 logger.warning(
                     f"⚠️ Could not refresh the review-queue gauge for "
                     f"{type(repo).__name__} after undo {operation_id}; the count "
@@ -367,7 +367,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -404,7 +404,7 @@ class UndoService:
              {having}
              ORDER BY MAX(occurred_at) DESC, operation_id DESC
              {limit_sql}
-            """,  # noqa: S608  # WHERE built from literal clauses; values parameterized
+            """,  # WHERE built from literal clauses; values parameterized
             params,
         ).fetchall()
         liveness = self._build_undo_liveness()
@@ -432,7 +432,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -454,7 +454,7 @@ class UndoService:
                 GROUP BY operation_id
                 {having}
             )
-            """,  # noqa: S608  # fixed predicate fragments; values parameterized
+            """,  # fixed predicate fragments; values parameterized
             params,
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -580,7 +580,7 @@ class UndoService:
         refuses with ``recovery_no_path``.
         """
         row = self._db.conn.execute(
-            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL "
             "AND before_value IS DISTINCT FROM after_value LIMIT 1",
             [operation_id],
@@ -621,7 +621,7 @@ class UndoService:
         still live?" — see :class:`_UndoLiveness`.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE undoes_operation_id IS NOT NULL"
         ).fetchall()
         children: dict[str, list[str]] = {}
@@ -638,7 +638,7 @@ class UndoService:
         every row's full before/after payload.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL",
             [operation_id],
         ).fetchall()
@@ -686,7 +686,7 @@ class UndoService:
                AND a.is_undo = FALSE
              GROUP BY a.operation_id
              ORDER BY latest DESC
-            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
+            """,  # AUDIT_LOG is a TableRef constant, values parameterized
             [operation_id, operation_id],
         ).fetchall()
         return [str(r[0]) for r in rows if not liveness.is_undone(str(r[0]))]
