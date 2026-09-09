@@ -111,7 +111,6 @@ def _active_agent_instruction_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
         if (
             relative.name in {"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
             or (posix.startswith(".claude/") and relative.suffix == ".md")
-            or (posix.startswith(".cursor/rules/") and relative.suffix == ".mdc")
             or posix
             in {
                 ".github/ai-review-protocol.md",
@@ -169,7 +168,6 @@ def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
         _REPO_ROOT / ".claude" / "skills",
     ):
         expected.update(root.rglob("*.md"))
-    expected.update((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
     expected.update((_REPO_ROOT / "design-system" / "components").rglob("*.prompt.md"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
     expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
