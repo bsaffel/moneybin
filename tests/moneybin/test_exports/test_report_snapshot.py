@@ -358,7 +358,7 @@ def test_a_redacted_builtin_report_export_keeps_its_reviewed_sql(
     repo-authored SQL are withheld together or not at all.
     """
 
-    def runner(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
+    def runner(db: Database) -> ReportQuery:  # report contract handle
         """Reviewed query binding its filter rather than inlining it.
 
         Args:
@@ -805,7 +805,7 @@ def test_prepare_report_exports_every_row_without_the_mcp_response_cap(
     rows = [{"value": value} for value in range(5)]
 
     def executor(
-        database: Database,  # noqa: ARG001  # service contract handle
+        database: Database,  # service contract handle
         parameters: Mapping[str, JsonValue],
         limit: int | None,
     ) -> CatalogReportExecution:
@@ -880,7 +880,7 @@ def test_prepare_service_report_uses_one_raw_execution_for_each_output_policy(
     calls = 0
 
     def executor(
-        database: Database,  # noqa: ARG001  # service contract handle
+        database: Database,  # service contract handle
         parameters: Mapping[str, JsonValue],
         limit: int | None,
     ) -> CatalogReportExecution:

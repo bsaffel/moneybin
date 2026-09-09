@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 def recipe(
     affected_ids: list[str],
-    context: RecipeContext,  # noqa: ARG001 — pure recipe; signature mandated by registry
+    context: RecipeContext,  # pure recipe; signature mandated by registry
 ) -> list[RecoveryAction]:
     """Produce one executable repair per orphan note or tagged transaction."""
     actions: list[RecoveryAction] = []

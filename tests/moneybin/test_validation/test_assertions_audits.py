@@ -22,7 +22,7 @@ _TXN_COLUMNS = (
 def _seed_pair(db: Database, credit_amount: str) -> None:
     create_core_tables(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_DEBIT', 'ACC1', '2026-01-03', -100.00, 100.00, 'expense', 'Out', "
         "'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, "
         "2026, 1, 3, 5, '2026-01', '2026-Q1'), "
@@ -37,7 +37,7 @@ def _seed_pair(db: Database, credit_amount: str) -> None:
             (transfer_id, debit_transaction_id, credit_transaction_id,
              date_offset_days, amount)
         VALUES ('XFER1', 'T_DEBIT', 'T_CREDIT', 0, 100.00)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 

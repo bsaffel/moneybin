@@ -103,7 +103,7 @@ class TestCurationToolRegistration:
     async def test_all_tools_register(self) -> None:
         srv = FastMCP("test")
         register_curation_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {"transactions_create"}
 
 

@@ -10,7 +10,7 @@ was missing from a three-day-old server.
 
 from __future__ import annotations
 
-import subprocess  # noqa: S404 — reads HEAD to derive the expected value
+import subprocess  # noqa: S404  # reads HEAD to derive the expected value
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -68,7 +68,7 @@ async def test_source_checkout_reports_the_commit_it_is_running(
     so it would not have separated #386 from #387 — the exact distinction whose
     absence caused the misdiagnosis. The commit is the load-bearing half.
     """
-    head = subprocess.run(  # noqa: S603 — git with static args
+    head = subprocess.run(  # noqa: S603  # git with static args
         ["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"],  # noqa: S607
         capture_output=True,
         text=True,
@@ -158,12 +158,12 @@ def test_revision_survives_a_checkout_path_containing_a_space(tmp_path: Path) ->
         ["-c", "user.email=t@example.com", "-c", "user.name=t"]
         + ["commit", "-q", "--allow-empty", "-m", "x"],
     ):
-        subprocess.run(  # noqa: S603 — git with static args
+        subprocess.run(  # noqa: S603  # git with static args
             ["git", "-C", str(repo), *command],  # noqa: S607
             capture_output=True,
             check=True,
         )
-    head = subprocess.run(  # noqa: S603 — git with static args
+    head = subprocess.run(  # noqa: S603  # git with static args
         ["git", "-C", str(repo), "rev-parse", "HEAD"],  # noqa: S607
         capture_output=True,
         text=True,

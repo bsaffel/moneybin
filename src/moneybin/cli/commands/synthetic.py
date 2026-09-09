@@ -43,7 +43,7 @@ def _run_generate(
     from moneybin.synthetic.engine import GeneratorEngine
     from moneybin.synthetic.writer import SyntheticWriter
 
-    actual_seed = seed if seed is not None else random.randint(1, 9999)  # noqa: S311 — not crypto, just a reproducibility seed
+    actual_seed = seed if seed is not None else random.randint(1, 9999)  # noqa: S311  # not crypto, just a reproducibility seed
 
     logger.info(
         f"⚙️  Generating {persona!r} persona into profile {profile!r} "
@@ -76,7 +76,7 @@ def _run_generate(
                                 + (SELECT COUNT(*) FROM {TABULAR_TRANSACTIONS.full_name})"""  # noqa: S608  # TableRef constants
                     ).fetchone()
                     existing_count = row[0] if row else 0
-                except Exception:  # noqa: BLE001,S110 — tables may not exist in a fresh DB
+                except Exception:  # tables may not exist in a fresh DB
                     existing_count = 0
 
                 if existing_count > 0:
@@ -122,7 +122,7 @@ def _run_generate(
                     logger.info("⚙️  Running transforms to materialize pipeline...")
                     try:
                         ImportService(db).run_transforms()
-                    except Exception:  # noqa: BLE001 — SQLMesh failures are non-fatal here
+                    except Exception:  # SQLMesh failures are non-fatal here
                         logger.debug("SQLMesh transform failed", exc_info=True)
                         logger.warning(
                             "⚠️  Transforms failed — raw data is intact, "

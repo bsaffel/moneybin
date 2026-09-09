@@ -202,7 +202,7 @@ def _last_rebuilt_at(db: Database, models: Iterable[str]) -> datetime | None:
             """,  # noqa: S608  # TableRef constant; names are `?` placeholders
             names,
         ).fetchone()
-    except Exception:  # noqa: BLE001 — the view is absent until the first apply
+    except Exception:  # the view is absent until the first apply
         return None
     if row is None or row[0] is None or row[1] != len(names):
         return None

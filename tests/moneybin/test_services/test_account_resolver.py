@@ -149,7 +149,7 @@ def test_a_merge_is_believed_before_core_catches_up(db: Database) -> None:
     )
     # Core has NOT been refreshed since the merge: the row is still there.
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_merged_away", "Stale Materialization"],
     )
 
@@ -397,7 +397,7 @@ def _seed_dim_account(
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
         "institution_slug, display_name, display_name_is_user_set) "
-        "VALUES (?, ?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "VALUES (?, ?, ?, ?, ?, ?)",  # test fixture insert
         [
             account_id,
             last_four,
@@ -2252,7 +2252,7 @@ def test_partial_pdf_legacy_link_is_only_a_candidate(db: Database) -> None:
     """An issuer-plus-last-four legacy link is evidence, not a strong ref."""
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four) VALUES "
         "('acct_legacy_pdf', 'Legacy Chase account', 'chase', '9999'), "
         "('acct_current_pdf', 'Current Chase account', 'chase', '1234')"
@@ -2422,7 +2422,7 @@ def test_current_pdf_signal_replaces_legacy_signal_for_same_account(
     """Legacy evidence never hides a current signal for the same account."""
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four) "
         "VALUES ('acct_pdf', 'Current Chase account', 'chase', '1234')"
     )
@@ -2573,12 +2573,12 @@ def test_a_stale_migration_missing_display_name_is_user_set_keeps_last_four_cand
     )
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["source_acct", "7777", None, None, "Everyday Spending"],
     )
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
     )
     resolver = AccountResolver(db, actor="system")
@@ -2612,12 +2612,12 @@ def test_propose_existing_degrades_gracefully_on_a_stale_migration(
     )
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["source_acct", "7777", None, None, "Everyday Spending"],
     )
     db.conn.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, "
-        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "institution_slug, display_name) VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["twin_acct", "7777", "CHASE", "chase", "Vacation Fund"],
     )
     resolver = AccountResolver(db, actor="system")

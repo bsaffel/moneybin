@@ -139,7 +139,7 @@ def fetch_ledger_spans(
     placeholders = ", ".join("?" * len(ids))
     try:
         rows = db.execute(
-            f"SELECT account_id, MIN(transaction_date), MAX(transaction_date) "  # noqa: S608  # TableRef constant + parameterized values
+            f"SELECT account_id, MIN(transaction_date), MAX(transaction_date) "  # TableRef constant + parameterized values
             f"FROM {FCT_TRANSACTIONS.full_name} "
             f"WHERE account_id IN ({placeholders}) GROUP BY account_id",
             list(ids),
@@ -233,7 +233,7 @@ def probe_incoming_ledger_overlap(
                 )),
                 (SELECT MIN(transaction_date) FROM comparable),
                 (SELECT MAX(transaction_date) FROM comparable)
-            """,  # noqa: S608  # TableRef and VALUES shape are code-owned; values parameterized
+            """,  # TableRef and VALUES shape are code-owned; values parameterized
             parameters,
         ).fetchone()
     except duckdb.CatalogException:
@@ -360,7 +360,7 @@ def probe_ledger_overlap(
                 )),
                 (SELECT MIN(transaction_date) FROM comparable),
                 (SELECT MAX(transaction_date) FROM comparable)
-            """,  # noqa: S608  # TableRef constants + parameterized values
+            """,  # TableRef constants + parameterized values
             [
                 against_account_id,
                 account_id,

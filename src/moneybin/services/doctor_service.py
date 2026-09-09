@@ -328,7 +328,9 @@ class DoctorService:
             actions = recipe_fn(
                 result.affected_ids, recipe_registry.RecipeContext(db=self._db)
             )
-        except Exception:  # noqa: BLE001 — per-invariant isolation; one recipe must not abort the report
+        except (
+            Exception
+        ):  # per-invariant isolation; one recipe must not abort the report
             logger.warning(
                 f"Recipe for {result.name!r} raised; leaving recovery_actions=None",
                 exc_info=True,
@@ -356,7 +358,9 @@ class DoctorService:
         """
         try:
             presence = model_presence(self._db)
-        except Exception as e:  # noqa: BLE001 — per-invariant isolation; an unreadable catalog is not a fresh profile
+        except (
+            Exception
+        ) as e:  # per-invariant isolation; an unreadable catalog is not a fresh profile
             return InvariantResult(
                 name="transform_model_presence",
                 status="skipped",
@@ -607,13 +611,13 @@ class DoctorService:
         )
         if full:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name}"
             )
             sample_params: list[object] = []
         else:
             sampled_sql = (
-                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # noqa: S608  # TableRef + sqlglot-quoted pk + trusted watermark_sql
+                f"SELECT {safe_pk} AS pk, {watermark_sql} AS updated_at "  # TableRef + sqlglot-quoted pk + trusted watermark_sql
                 f"FROM {table_ref.full_name} "
                 f"WHERE {watermark_sql} >= (now()::TIMESTAMP - (? * INTERVAL 1 DAY)) "
                 f"ORDER BY {watermark_sql} DESC LIMIT ?"
@@ -643,10 +647,10 @@ class DoctorService:
                       AND a.occurred_at >= s.updated_at
                 )
                 ORDER BY s.pk
-                """,  # noqa: S608  # TableRef constants, parameterized values
+                """,  # TableRef constants, parameterized values
                 [*sample_params, table_ref.schema, table_ref.name],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -683,9 +687,9 @@ class DoctorService:
                 GROUP BY category, subcategory
                 HAVING COUNT(*) > 1
                 ORDER BY category, subcategory
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -731,10 +735,10 @@ class DoctorService:
                     WHERE c.merchant_id = m.merchant_id
                   )
                 ORDER BY m.merchant_id
-                """,  # noqa: S608  # TableRef constants, parameterized value
+                """,  # TableRef constants, parameterized value
                 [settings.audit_coverage_lookback_days],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -812,9 +816,9 @@ class DoctorService:
                 LEFT JOIN valid_txn v ON v.transaction_id = g.transaction_id
                 WHERE v.transaction_id IS NULL
                 ORDER BY aid
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — per-invariant isolation; one audit's failure must not abort the whole DoctorReport
+        except Exception as e:  # per-invariant isolation; one audit's failure must not abort the whole DoctorReport
             # Matches every other ``_run_*`` method in this file: any failure
             # (missing core.fct_transactions on first run, app-table column
             # drift, lock contention) returns ``skipped`` so the rest of the
@@ -864,9 +868,9 @@ class DoctorService:
                 FROM {STG_PLAID_INVESTMENT_TRANSACTIONS.full_name}
                 WHERE review_reason IS NOT NULL
                 ORDER BY investment_transaction_id
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — view absent before first transform
+        except Exception as e:  # view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -909,9 +913,9 @@ class DoctorService:
                        reason
                 FROM {STG_PLAID_OPENING_LOT_REVIEW.full_name}
                 ORDER BY account_id, security_key
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — view absent before first transform
+        except Exception as e:  # view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -969,9 +973,9 @@ class DoctorService:
                     'adjustment', 'loan payment', 'rebalance'
                 )
                 ORDER BY investment_transaction_id
-                """  # noqa: S608  # TableRef constant
+                """  # TableRef constant
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core view absent before first transform
+        except Exception as e:  # core view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1034,9 +1038,9 @@ class DoctorService:
                     )
                   )
                 ORDER BY account_id, security_id
-                """  # noqa: S608  # TableRef constant
+                """  # TableRef constant
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — view absent before first transform
+        except Exception as e:  # view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1093,9 +1097,9 @@ class DoctorService:
                 JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
                   ON m.account_id = COALESCE(al.account_id, p.account_id)
                 ORDER BY account_id
-                """  # noqa: S608  # TableRef constants
+                """  # TableRef constants
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — raw tables absent on fresh DBs
+        except Exception as e:  # raw tables absent on fresh DBs
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1144,9 +1148,9 @@ class DoctorService:
                 WHERE c.security_id IS NULL
                   AND p.source_security_key IS NOT NULL
                 ORDER BY c.investment_transaction_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core/staging view absent before first transform
+        except Exception as e:  # core/staging view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1223,9 +1227,9 @@ class DoctorService:
                 GROUP BY r.provider_key
                 HAVING COUNT(DISTINCT l.security_id) > 1
                 ORDER BY r.provider_key
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — raw/app tables absent before first sync
+        except Exception as e:  # raw/app tables absent before first sync
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1283,9 +1287,9 @@ class DoctorService:
                 WHERE d.account_id IS NULL
                   AND COALESCE(h.quantity, 0) > 0
                 ORDER BY h.account_id, security_key
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
+        except Exception as e:  # staging/core view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1356,9 +1360,9 @@ class DoctorService:
                   AND erp.security_id = d.security_id
                 WHERE d.provider_reported_quantity IS NULL
                 ORDER BY d.account_id, d.security_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — staging/core view absent before first transform
+        except Exception as e:  # staging/core view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1435,10 +1439,10 @@ class DoctorService:
                       AND o.quote_currency = a.quote_currency
                   )
                 ORDER BY a.security_id
-                """,  # noqa: S608  # TableRef constants + bound parameter, no user input
+                """,  # TableRef constants + bound parameter, no user input
                 [tolerance],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+        except Exception as e:  # staging view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1496,9 +1500,9 @@ class DoctorService:
                 FROM {DIM_HOLDINGS.full_name}
                 WHERE valuation_status = 'unpriced'
                 ORDER BY security_id
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core view absent before first transform
+        except Exception as e:  # core view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1562,9 +1566,9 @@ class DoctorService:
                   AND h.days_since_observed IS NOT NULL
                 GROUP BY h.security_id, s.security_type
                 ORDER BY h.security_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core views absent before first transform
+        except Exception as e:  # core views absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1649,9 +1653,9 @@ class DoctorService:
                     WHERE s.source_type = p.source_type
                 )
                 ORDER BY p.source_type
-                """  # noqa: S608  # TableRef constants + fixed view name, no user input
+                """  # TableRef constants + fixed view name, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — staging view absent before first transform
+        except Exception as e:  # staging view absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1695,9 +1699,9 @@ class DoctorService:
                     WHERE r.rule_id = p.rule_id
                   )
                 ORDER BY p.proposed_rule_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1742,9 +1746,9 @@ class DoctorService:
                 ) t ON t.transaction_id = c.transaction_id
                 WHERE t.transaction_id IS NULL
                 ORDER BY c.transaction_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+        except Exception as e:  # core.fct_transactions may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1790,9 +1794,9 @@ class DoctorService:
                 ) t ON t.transaction_id = s.transaction_id
                 WHERE t.transaction_id IS NULL
                 ORDER BY s.split_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.fct_transactions may not exist yet
+        except Exception as e:  # core.fct_transactions may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1840,9 +1844,9 @@ class DoctorService:
                         WHERE a.account_id = m.account_id_b
                       ))
                 ORDER BY m.match_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+        except Exception as e:  # core.dim_accounts may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1881,9 +1885,9 @@ class DoctorService:
                     WHERE a.account_id = s.account_id
                 )
                 ORDER BY s.account_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+        except Exception as e:  # core.dim_accounts may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -1927,9 +1931,9 @@ class DoctorService:
                 FROM {ACCOUNT_SETTINGS.full_name}
                 WHERE display_name IS NOT NULL
                 ORDER BY account_id
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2056,10 +2060,10 @@ class DoctorService:
                   AND w.account_label <> ?
                   AND s.display_name IS NULL
                 ORDER BY w.account_id
-                """,  # noqa: S608  # TableRef constants; the label is a bound parameter
+                """,  # TableRef constants; the label is a bound parameter
                 [UNNAMED_ACCOUNT_LABEL],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — prep may not be built yet
+        except Exception as e:  # prep may not be built yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2122,9 +2126,9 @@ class DoctorService:
                     WHERE a.account_id = b.account_id
                 )
                 ORDER BY b.account_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.dim_accounts may not exist yet
+        except Exception as e:  # core.dim_accounts may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2163,9 +2167,9 @@ class DoctorService:
                     WHERE c.category_id = b.category_id
                   )
                 ORDER BY b.budget_id
-                """  # noqa: S608  # TableRef constants, no user input
+                """  # TableRef constants, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core.dim_categories may not exist yet
+        except Exception as e:  # core.dim_categories may not exist yet
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2203,9 +2207,9 @@ class DoctorService:
                 SELECT name, CAST(extraction_recipe AS VARCHAR)
                 FROM {PDF_FORMATS.full_name}
                 ORDER BY name
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2226,7 +2230,7 @@ class DoctorService:
         for name_, recipe_json in rows:
             try:
                 Recipe.model_validate_json(recipe_json)
-            except Exception:  # noqa: BLE001 — pydantic ValidationError + JSONDecodeError + bound-validator ValueErrors
+            except Exception:  # pydantic ValidationError + JSONDecodeError + bound-validator ValueErrors
                 bad.append(str(name_))
         if bad:
             return InvariantResult(
@@ -2265,9 +2269,9 @@ class DoctorService:
                    OR times_used < 0
                    OR (last_used_at IS NOT NULL AND last_used_at < created_at)
                 ORDER BY name
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2313,9 +2317,9 @@ class DoctorService:
                 SELECT name, CAST(layout_fingerprint AS VARCHAR)
                 FROM {PDF_FORMATS.full_name}
                 ORDER BY name
-                """  # noqa: S608  # TableRef constant, no user input
+                """  # TableRef constant, no user input
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — table may not exist before first write
+        except Exception as e:  # table may not exist before first write
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2339,10 +2343,10 @@ class DoctorService:
     def _get_transaction_count(self) -> int:
         try:
             row = self._db.execute(
-                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # TableRef constant
             ).fetchone()
             return int(row[0]) if row else 0
-        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+        except Exception:  # core schema may not exist before first transform
             logger.debug(
                 "core.fct_transactions not available; transaction count unavailable"
             )
@@ -2358,7 +2362,7 @@ class DoctorService:
         """
         try:
             outcomes = run_standalone_audits(self._db)
-        except Exception as e:  # noqa: BLE001 — SQLMesh raises broad exceptions
+        except Exception as e:  # SQLMesh raises broad exceptions
             logger.warning(f"Transform audit discovery failed: {e}")
             return [
                 InvariantResult(
@@ -2421,19 +2425,19 @@ class DoctorService:
         """
         try:
             raw_total = self._scalar_int(
-                f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # noqa: S608 — TableRef constant
+                f"SELECT COUNT(*) FROM {INT_TRANSACTIONS_UNIONED.full_name}"  # TableRef constant
             )
             core_count = self._scalar_int(
-                f"SELECT COUNT(DISTINCT transaction_id) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+                f"SELECT COUNT(DISTINCT transaction_id) FROM {FCT_TRANSACTIONS.full_name}"  # TableRef constant
             )
             dedup_absorbed = self._scalar_int(
                 f"""
                 SELECT COUNT(*) - COUNT(DISTINCT match_group_id)
                 FROM {INT_TRANSACTIONS_MATCHED.full_name}
                 WHERE match_group_id IS NOT NULL
-                """  # noqa: S608 — TableRef constant; = SUM(group_size - 1) over components
+                """  # TableRef constant; = SUM(group_size - 1) over components
             )
-        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+        except Exception as e:  # degrade gracefully; surface cause at DEBUG
             # Expected case: prep/core views absent before the first transform.
             # Bind + exc_info so a real fault (renamed column, permissions) is
             # diagnosable rather than masked by the static skip detail.
@@ -2603,14 +2607,14 @@ class DoctorService:
                 FROM qualifying
                 GROUP BY account_a, account_b
                 ORDER BY account_a, account_b
-                """,  # noqa: S608 — TableRef constants, parameterized values
+                """,  # TableRef constants, parameterized values
                 [
                     settings.matching.date_window_days,
                     settings.doctor.duplicate_account_min_distinct_amounts,
                     settings.doctor.duplicate_account_overlap_ratio,
                 ],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — core views absent before first transform
+        except Exception as e:  # core views absent before first transform
             return InvariantResult(
                 name=name,
                 status="skipped",
@@ -2968,10 +2972,10 @@ class DoctorService:
                 )
                 GROUP BY r.account_id
                 ORDER BY r.account_id
-                """,  # noqa: S608 — TableRef constants, parameterized values
+                """,  # TableRef constants, parameterized values
                 [settings.matching.date_window_days],
             ).fetchall()
-        except Exception as e:  # noqa: BLE001 — prep views absent before first transform
+        except Exception as e:  # prep views absent before first transform
             # `detail` is returned verbatim by doctor and system_status over
             # both surfaces, and this query joins on amounts, dates, and
             # descriptions — so a conversion failure can carry a user's row in
@@ -3050,7 +3054,7 @@ class DoctorService:
                     WHERE currency_code IS NULL
                     ORDER BY transaction_id
                     LIMIT 100
-                    """  # noqa: S608 — TableRef constant, not user input
+                    """  # TableRef constant, not user input
                 ).fetchall()
             ]
             unknown_accounts = [
@@ -3062,7 +3066,7 @@ class DoctorService:
                     WHERE currency_code IS NULL
                     ORDER BY account_id
                     LIMIT 100
-                    """  # noqa: S608 — TableRef constant, not user input
+                    """  # TableRef constant, not user input
                 ).fetchall()
             ]
             currencies = [
@@ -3078,14 +3082,14 @@ class DoctorService:
                     )
                     WHERE currency_code IS NOT NULL
                     ORDER BY currency_code
-                    """  # noqa: S608 — TableRef constants, not user input
+                    """  # TableRef constants, not user input
                 ).fetchall()
             ]
             unknown_balances = self._scalar_int(
                 f"""
                 SELECT COUNT(*) FROM {FCT_BALANCES.full_name}
                 WHERE currency_code IS NULL
-                """  # noqa: S608 — TableRef constant, not user input
+                """  # TableRef constant, not user input
             )
             # Counted separately from the id lists above, which are capped at
             # 100 so the envelope stays bounded. Deriving the count from
@@ -3095,15 +3099,15 @@ class DoctorService:
                 f"""
                 SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}
                 WHERE currency_code IS NULL
-                """  # noqa: S608 — TableRef constant, not user input
+                """  # TableRef constant, not user input
             )
             unknown_account_count = self._scalar_int(
                 f"""
                 SELECT COUNT(*) FROM {DIM_ACCOUNTS.full_name}
                 WHERE currency_code IS NULL
-                """  # noqa: S608 — TableRef constant, not user input
+                """  # TableRef constant, not user input
             )
-        except Exception as e:  # noqa: BLE001 — degrade gracefully; surface cause at DEBUG
+        except Exception as e:  # degrade gracefully; surface cause at DEBUG
             logger.debug(f"currency_integrity skipped: {e}", exc_info=True)
             return InvariantResult(
                 name=name,
@@ -3183,7 +3187,7 @@ class DoctorService:
         """
         try:
             coverage = CategorizationService(self._db).coverage()
-        except Exception:  # noqa: BLE001 — core schema may not exist before first transform
+        except Exception:  # core schema may not exist before first transform
             return InvariantResult(
                 name="categorization_coverage",
                 status="skipped",

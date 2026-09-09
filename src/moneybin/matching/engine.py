@@ -471,7 +471,7 @@ class TransactionMatcher:
             WHERE match_status IN ('accepted', 'pending')
               AND reversed_at IS NULL
               AND match_type = 'transfer'
-            """  # noqa: S608 — TableRef constant; no interpolated values
+            """  # noqa: S608  # TableRef constant; no interpolated values
         ).fetchall()
         ids: set[tuple[str, str, str]] = set()
         for row in rows:

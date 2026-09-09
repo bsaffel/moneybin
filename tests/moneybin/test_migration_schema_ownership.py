@@ -149,7 +149,7 @@ def violations_in_sql(sql: str) -> list[str]:
     """Descriptions of writes to SQLMesh-owned relations in one SQL string."""
     try:
         statements = sqlglot.parse(sql, dialect="duckdb")
-    except Exception:  # noqa: BLE001 — sqlglot raises varied parse/token errors on non-SQL
+    except Exception:  # sqlglot raises varied parse/token errors on non-SQL
         return _fallback(sql)
 
     out: list[str] = []

@@ -440,12 +440,12 @@ def logs_command(
 
     if prune:
         # older_than presence enforced by guard above; type narrows here.
-        assert older_than is not None  # noqa: S101 — type-narrowing aid
+        assert older_than is not None  # noqa: S101  # type-narrowing aid
         _do_prune(log_dir, older_than, dry_run=dry_run, quiet=quiet)
         return
 
     # stream presence and validity enforced by guards above; type narrows here.
-    assert stream is not None  # noqa: S101 — type-narrowing aid
+    assert stream is not None  # noqa: S101  # type-narrowing aid
 
     _do_view(
         log_dir=log_dir,

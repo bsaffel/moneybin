@@ -40,7 +40,9 @@ def _reset_to_pre_v010_state(db: Database) -> None:
     """
     for table in ("user_categories", "user_merchants"):
         if column_exists(db, "app", table, "updated_at"):
-            db.execute(f"ALTER TABLE app.{table} DROP COLUMN updated_at")  # noqa: S608  # table is hardcoded allowlist, not user input
+            db.execute(
+                f"ALTER TABLE app.{table} DROP COLUMN updated_at"
+            )  # table is hardcoded allowlist, not user input
 
     db.execute(
         "ALTER TABLE app.category_overrides ALTER COLUMN updated_at DROP NOT NULL"

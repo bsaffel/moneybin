@@ -127,7 +127,9 @@ def merchants_create(
                     actor="mcp",
                 )
                 created += 1
-            except Exception as exc:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+            except (
+                Exception
+            ) as exc:  # DuckDB raises untyped errors on constraint violations
                 skipped += 1
                 logger.error(
                     f"create_merchants failed with {type(exc).__name__} "

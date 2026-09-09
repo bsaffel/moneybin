@@ -653,13 +653,13 @@ def apply_core_table_comments(database: Database) -> None:
     """
     for table, comment in CORE_TABLE_COMMENTS.items():
         escaped = comment.replace("'", "''")
-        database.execute(  # noqa: S608  # static module constants, not user input
+        database.execute(  # static module constants, not user input
             f"COMMENT ON TABLE {table} IS '{escaped}'"
         )
     for table, cols in CORE_COLUMN_COMMENTS.items():
         for col, comment in cols.items():
             escaped = comment.replace("'", "''")
-            database.execute(  # noqa: S608  # static module constants, not user input
+            database.execute(  # static module constants, not user input
                 f"COMMENT ON COLUMN {table}.{col} IS '{escaped}'"
             )
 
@@ -686,7 +686,9 @@ def install_uncategorized_queue_view(db: Database) -> None:
     start = raw.index("MODEL")
     end = raw.index(");", start) + 2
     body = raw[end:].strip()
-    db.execute(f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}")  # noqa: S608  # model body read from the repo file, not user input
+    db.execute(
+        f"CREATE OR REPLACE VIEW core.uncategorized_queue AS\n{body}"
+    )  # model body read from the repo file, not user input
 
 
 def seed_pending_dedup_pair(db: Database) -> None:

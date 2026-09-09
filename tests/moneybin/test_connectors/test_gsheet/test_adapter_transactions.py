@@ -28,7 +28,7 @@ def _seed_dim_account(db: Database, *, account_id: str, display_name: str) -> No
     """
     db.execute(
         "INSERT INTO core.dim_accounts (account_id, display_name, "
-        "display_name_is_user_set) VALUES (?, ?, TRUE)",  # noqa: S608  # test fixture insert
+        "display_name_is_user_set) VALUES (?, ?, TRUE)",  # test fixture insert
         [account_id, display_name],
     )
 

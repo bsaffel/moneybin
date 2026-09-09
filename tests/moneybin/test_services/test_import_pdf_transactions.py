@@ -187,7 +187,7 @@ def _seed_chase_twin(db: Database, account_id: str = "acct_existing01") -> None:
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four) "
         "VALUES (?, ?, ?, ?)",
         [account_id, "Chase Card", "chase", "1234"],
@@ -1436,7 +1436,7 @@ def test_distinct_full_pdf_account_numbers_with_same_last_four_do_not_collide(
     assert first_link is not None
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four) "
         "VALUES (?, ?, ?, ?)",
         [first_link[0], "First Chase account", "chase", "7890"],
@@ -2556,7 +2556,7 @@ def test_partial_pdf_confirmation_reports_ledger_overlap(
         ("existing-paycheck", "2024-01-21", "150.00"),
     ):
         db.execute(
-            "INSERT INTO core.fct_transactions "  # noqa: S608  # test fixture
+            "INSERT INTO core.fct_transactions "  # test fixture
             "(transaction_id, account_id, transaction_date, amount, currency_code) "
             "VALUES (?, ?, ?, ?, ?)",
             [transaction_id, "acct_existing01", transaction_date, amount, None],
@@ -2602,7 +2602,7 @@ def test_pdf_gate_observes_the_measured_overlap_of_the_candidate_it_surfaces(
         ("existing-paycheck", "2024-01-21", "150.00"),
     ):
         db.execute(
-            "INSERT INTO core.fct_transactions "  # noqa: S608  # test fixture
+            "INSERT INTO core.fct_transactions "  # test fixture
             "(transaction_id, account_id, transaction_date, amount, currency_code) "
             "VALUES (?, ?, ?, ?, ?)",
             [transaction_id, "acct_existing01", transaction_date, amount, None],
@@ -2951,7 +2951,7 @@ def test_account_id_pin_keeps_the_statements_own_key(
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     doc = _standard_doc()
@@ -3011,7 +3011,7 @@ def test_account_id_pin_refuses_a_document_already_bound_elsewhere(
         ("acct_other01", "Other"),
     ):
         db.conn.execute(
-            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
             [account_id, name],
         )
     doc = _standard_doc()
@@ -3087,7 +3087,7 @@ def test_a_regenerated_pinned_statement_does_not_double_count(
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     doc = _standard_doc()
@@ -3163,7 +3163,7 @@ def test_a_regenerated_pinned_statement_dedups_when_the_account_holds_many_keys(
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     for link_id, key in (
@@ -3222,7 +3222,7 @@ def test_account_id_pin_refuses_a_bound_document_even_when_the_target_has_a_key(
         ("acct_other01", "Other"),
     ):
         db.conn.execute(
-            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+            "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
             [account_id, name],
         )
     # The pin target already answers to a document key, so reuse is live.
@@ -3270,7 +3270,7 @@ def test_account_id_pin_refuses_a_bound_document_even_when_the_target_has_a_key(
 def _stamp_link(db: Database, *, link_id: str, decided_at: str) -> None:
     """Force one link's decision time, so ordering is not a race on the clock."""
     db.conn.execute(
-        "UPDATE app.account_links SET decided_at = ? WHERE link_id = ?",  # noqa: S608  # test fixture
+        "UPDATE app.account_links SET decided_at = ? WHERE link_id = ?",  # test fixture
         [decided_at, link_id],
     )
 
@@ -3292,7 +3292,7 @@ def test_the_pinned_key_pick_does_not_move_when_a_newer_key_is_added(
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     # Sort order and decision order disagree, so only one of the two rules can
@@ -3353,7 +3353,7 @@ def test_a_pinned_import_still_records_the_documents_own_digest(
 
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     _accept_pdf_link(
@@ -3413,7 +3413,7 @@ def test_a_borrowed_pin_key_survives_reimporting_the_same_regenerated_statement(
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name) VALUES (?, ?)",  # test fixture
         ["acct_pinned01", "Chase Card"],
     )
     doc = _standard_doc()

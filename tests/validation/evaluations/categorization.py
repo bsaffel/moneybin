@@ -33,7 +33,7 @@ def score_categorization(db: Database, *, threshold: float) -> EvaluationResult:
         JOIN {GROUND_TRUTH.full_name} gt
           ON gt.source_transaction_id = m.source_transaction_id
         WHERE gt.expected_category IS NOT NULL
-        """  # noqa: S608 — TableRef constants
+        """  # noqa: S608  # TableRef constants
     ).fetchall()
 
     if not rows:

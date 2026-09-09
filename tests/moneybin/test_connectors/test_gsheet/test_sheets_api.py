@@ -705,9 +705,9 @@ def test_sheets_client_wires_api_timeout_into_httplib2() -> None:
     fake_oauth.get_access_token.return_value = "fake_token"
     client = SheetsClient(oauth=fake_oauth, timeout_seconds=7.5)
 
-    service = client._build_service()  # pyright: ignore[reportPrivateUsage]  # noqa: SLF001
+    service = client._build_service()  # pyright: ignore[reportPrivateUsage]
     # google_auth_httplib2.AuthorizedHttp wraps an httplib2.Http on .http
-    http = service._http.http  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]  # noqa: SLF001
+    http = service._http.http  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
     assert isinstance(http, httplib2.Http)
     assert http.timeout == 7.5
 

@@ -191,7 +191,7 @@ def _find_list_params(fn: Callable[..., Any]) -> list[str]:
     sig = inspect.signature(fn)
     try:
         type_hints = typing.get_type_hints(fn)
-    except Exception:  # noqa: BLE001 — eval failure shouldn't block decoration
+    except Exception:  # eval failure shouldn't block decoration
         return []
     list_params: list[str] = []
 
@@ -741,7 +741,7 @@ def mcp_tool(
                     )
                     try:
                         interrupt_and_reset_database(_conn_for_this_call[0])
-                    except Exception as cleanup_exc:  # noqa: BLE001 — cleanup must not raise
+                    except Exception as cleanup_exc:  # cleanup must not raise
                         logger.error(
                             f"interrupt_and_reset_database failed during {fn.__name__} "
                             f"timeout cleanup: {type(cleanup_exc).__name__}"

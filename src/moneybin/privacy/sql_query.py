@@ -278,7 +278,7 @@ def _fetch(
     # Security: the caller validated the query is read-only and free of
     # file-access vectors; the entire string is intentionally user SQL and
     # cannot be parameterized.
-    result = db.execute(query)  # noqa: S608 — read-only, validated by caller
+    result = db.execute(query)  # read-only, validated by caller
     columns = [desc[0] for desc in result.description]
     rows = result.fetchmany(max_rows + 1)
     truncated = len(rows) > max_rows

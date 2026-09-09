@@ -1,7 +1,5 @@
 """Integration tests for `moneybin transactions categorize assist` CLI command."""
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 import json
@@ -30,7 +28,7 @@ def _make_db_with_uncategorized(tmp_path: Path) -> tuple[Database, MagicMock]:
         no_auto_upgrade=True,
         read_only=False,
     )
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
             transaction_id   VARCHAR PRIMARY KEY,
@@ -49,7 +47,7 @@ def _make_db_with_uncategorized(tmp_path: Path) -> tuple[Database, MagicMock]:
         """
     )
     # app.transaction_categories is the LEFT JOIN target in AssistBridge
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS app.transaction_categories (
             transaction_id  VARCHAR PRIMARY KEY,

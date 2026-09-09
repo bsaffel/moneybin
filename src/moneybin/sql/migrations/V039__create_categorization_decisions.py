@@ -128,7 +128,7 @@ def migrate(conn: object) -> None:
     for column, comment in _COMMENTS:
         escaped = comment.replace("'", "''")
         db.execute(
-            f"COMMENT ON COLUMN app.categorization_decisions.{column} "  # noqa: S608  # Static identifier + escaped literal
+            f"COMMENT ON COLUMN app.categorization_decisions.{column} "  # Static identifier + escaped literal
             f"IS '{escaped}'"
         )
     rows: list[

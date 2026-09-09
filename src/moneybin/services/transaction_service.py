@@ -613,7 +613,7 @@ class TransactionService:
     def _annotation_transaction_amount(self, transaction_id: str) -> Decimal:
         """Resolve one annotation transaction and return its signed amount."""
         row = self._db.conn.execute(
-            f"SELECT amount FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # noqa: S608  # TableRef constant
+            f"SELECT amount FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # TableRef constant
             [transaction_id],
         ).fetchone()
         if row is None:
@@ -631,7 +631,7 @@ class TransactionService:
             SELECT note_id, transaction_id, text, author, created_at
               FROM {TRANSACTION_NOTES.full_name}
              WHERE note_id = ?
-            """,  # noqa: S608  # TableRef constant
+            """,  # TableRef constant
             [note_id],
         ).fetchone()
         if row is None:
@@ -738,7 +738,7 @@ class TransactionService:
 
         placeholders = ", ".join("?" * len(accounts))
         exact_rows = self._db.execute(
-            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id IN ({placeholders})",  # noqa: S608  # TableRef constant
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} WHERE account_id IN ({placeholders})",  # TableRef constant
             accounts,
         ).fetchall()
         exact_ids = {str(r[0]) for r in exact_rows}
@@ -1026,7 +1026,7 @@ class TransactionService:
             params.extend([after[0], after[0], after[1]])
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         total_row = self._db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {count_where}",  # noqa: S608  # TableRef + fixed predicates
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} {count_where}",  # TableRef + fixed predicates
             count_params,
         ).fetchone()
         total_count = int(total_row[0]) if total_row is not None else 0
@@ -1040,7 +1040,7 @@ class TransactionService:
             {where}
             ORDER BY transaction_date DESC, transaction_id
             LIMIT ? OFFSET ?
-            """,  # noqa: S608  # TableRef + fixed predicates
+            """,  # TableRef + fixed predicates
             [*params, limit, offset],
         ).fetchall()
         return OperationalTransactionResult(
@@ -1370,7 +1370,7 @@ class TransactionService:
             SELECT note_id, transaction_id, text, author, created_at
               FROM {TRANSACTION_NOTES.full_name}
              WHERE note_id = ?
-            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
+            """,  # TRANSACTION_NOTES is a TableRef constant
             [note_id],
         ).fetchone()
         if row is None:  # defensive — insert just succeeded
@@ -1390,7 +1390,7 @@ class TransactionService:
             SELECT note_id, transaction_id, text, author, created_at
               FROM {TRANSACTION_NOTES.full_name}
              WHERE note_id = ?
-            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
+            """,  # TRANSACTION_NOTES is a TableRef constant
             [note_id],
         ).fetchone()
         if row is None:
@@ -1427,7 +1427,7 @@ class TransactionService:
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef constant
+                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # TableRef constant
                     "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
@@ -1464,7 +1464,7 @@ class TransactionService:
         try:
             for tag in tags:
                 existed = self._db.conn.execute(
-                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # noqa: S608  # TableRef constant
+                    f"SELECT 1 FROM {TRANSACTION_TAGS.full_name} "  # TableRef constant
                     "WHERE transaction_id = ? AND tag = ?",
                     [transaction_id, tag],
                 ).fetchone()
@@ -1596,7 +1596,7 @@ class TransactionService:
               FROM {TRANSACTION_TAGS.full_name}
              WHERE tag = ?
              ORDER BY transaction_id
-            """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
+            """,  # TRANSACTION_TAGS is a TableRef constant
             [old_tag],
         ).fetchall()
         target_ids = tuple(str(row[0]) for row in rows)
@@ -1610,7 +1610,7 @@ class TransactionService:
                       FROM {TRANSACTION_TAGS.full_name}
                      WHERE tag = ?
                  )
-                """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
+                """,  # TRANSACTION_TAGS is a TableRef constant
                 [new_tag, old_tag],
             ).fetchall()
             if conflicts:
@@ -1663,7 +1663,7 @@ class TransactionService:
             SELECT tag FROM {TRANSACTION_TAGS.full_name}
              WHERE transaction_id = ?
              ORDER BY tag
-            """,  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
+            """,  # TRANSACTION_TAGS is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [str(r[0]) for r in rows]
@@ -1680,7 +1680,7 @@ class TransactionService:
               FROM {TRANSACTION_TAGS.full_name}
              GROUP BY tag
              ORDER BY tag
-            """  # noqa: S608  # TRANSACTION_TAGS is a TableRef constant
+            """  # TRANSACTION_TAGS is a TableRef constant
         ).fetchall()
         return [(str(r[0]), int(r[1])) for r in rows]
 
@@ -1692,7 +1692,7 @@ class TransactionService:
               FROM {TRANSACTION_NOTES.full_name}
              WHERE transaction_id = ?
              ORDER BY created_at, note_id
-            """,  # noqa: S608  # TRANSACTION_NOTES is a TableRef constant
+            """,  # TRANSACTION_NOTES is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [_row_to_note(r) for r in rows]
@@ -1736,7 +1736,7 @@ class TransactionService:
                 SELECT COALESCE(MAX(ord) + 1, 0)
                   FROM {TRANSACTION_SPLITS.full_name}
                  WHERE transaction_id = ?
-                """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
+                """,  # TRANSACTION_SPLITS is a TableRef constant
                 [transaction_id],
             ).fetchone()
             next_ord = int(ord_row[0]) if ord_row is not None else 0
@@ -1763,7 +1763,7 @@ class TransactionService:
                    note, ord, created_at, created_by
               FROM {TRANSACTION_SPLITS.full_name}
              WHERE split_id = ?
-            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
+            """,  # TRANSACTION_SPLITS is a TableRef constant
             [split_id],
         ).fetchone()
         if row is None:  # defensive — insert just succeeded
@@ -1926,7 +1926,7 @@ class TransactionService:
               FROM {TRANSACTION_SPLITS.full_name}
              WHERE transaction_id = ?
              ORDER BY ord, split_id
-            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
+            """,  # TRANSACTION_SPLITS is a TableRef constant
             [transaction_id],
         ).fetchall()
         current = tuple(
@@ -1988,7 +1988,7 @@ class TransactionService:
               FROM {TRANSACTION_SPLITS.full_name}
              WHERE transaction_id = ?
              ORDER BY ord, split_id
-            """,  # noqa: S608  # TRANSACTION_SPLITS is a TableRef constant
+            """,  # TRANSACTION_SPLITS is a TableRef constant
             [transaction_id],
         ).fetchall()
         return [_row_to_split(r) for r in rows]

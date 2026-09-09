@@ -490,7 +490,7 @@ class AccountService:
             FROM {DIM_ACCOUNTS.full_name}
             {where_sql}
             ORDER BY institution_name, account_type, account_id
-        """  # noqa: S608  # field list is allowlisted above (literal strings)
+        """  # field list is allowlisted above (literal strings)
         rows = self._db.execute(sql, params).fetchall()
         account_summaries = [
             AccountSummary(
@@ -540,7 +540,7 @@ class AccountService:
             SELECT {field_list}
             FROM {DIM_ACCOUNTS.full_name}
             WHERE account_id = ?
-            """,  # noqa: S608  # field list is allowlisted above (literal strings)
+            """,  # field list is allowlisted above (literal strings)
             [account_id],
         ).fetchone()
         if row is None:
@@ -913,7 +913,7 @@ class AccountService:
         contract.
         """
         row = self._db.execute(
-            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT account_id FROM {DIM_ACCOUNTS.full_name} "  # TableRef constant
             "WHERE account_id = ? AND NOT COALESCE(archived, false)",
             [account_ref],
         ).fetchone()
@@ -925,7 +925,7 @@ class AccountService:
             SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name}
             WHERE LOWER(display_name) = LOWER(?)
               AND NOT COALESCE(archived, false)
-            """,  # noqa: S608  # TableRef constant
+            """,  # TableRef constant
             [account_ref],
         ).fetchall()
         # Every account core could not name carries the same label, so the
@@ -945,7 +945,7 @@ class AccountService:
             )
 
         candidates = self._db.execute(
-            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT account_id, display_name FROM {DIM_ACCOUNTS.full_name} "  # TableRef constant
             "WHERE NOT COALESCE(archived, false) "
             "ORDER BY display_name LIMIT ?",
             [_RESOLVE_STRICT_CANDIDATE_CAP + 1],

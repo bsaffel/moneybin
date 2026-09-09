@@ -132,10 +132,10 @@ def flush_to_duckdb(
             rows,
         )
         db.commit()
-    except Exception:  # noqa: BLE001  # best-effort flush; DB may be unavailable
+    except Exception:  # best-effort flush; DB may be unavailable
         try:
             db.rollback()
-        except Exception:  # noqa: BLE001, S110  # rollback is best-effort; nothing useful to log
+        except Exception:  # noqa: S110  # rollback is best-effort; nothing useful to log
             pass
         logger.debug("Failed to flush metrics batch", exc_info=True)
         return
@@ -177,7 +177,7 @@ def load_from_duckdb(
                 """  # noqa: S608  # METRICS is a TableRef constant, no user input
             ).fetchall(),
         )
-    except Exception:  # noqa: BLE001  # table may not exist yet; silently skip
+    except Exception:  # table may not exist yet; silently skip
         logger.debug("No metrics table found or empty — skipping restore")
         return
 
@@ -212,7 +212,7 @@ def load_from_duckdb(
         try:
             collector.labels(**labels).inc(value)  # type: ignore[attr-defined]  # prometheus_client Counter API
             restored += 1
-        except Exception:  # noqa: BLE001  # best-effort restore; log and continue
+        except Exception:  # best-effort restore; log and continue
             logger.debug(f"Failed to restore {metric_name}", exc_info=True)
 
     logger.debug(f"Restored {restored} counter(s) from app.metrics")

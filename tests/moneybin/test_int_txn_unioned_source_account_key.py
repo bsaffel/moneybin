@@ -32,7 +32,7 @@ def _insert_accepted_source_native(
             (link_id, account_id, ref_kind, ref_value, source_type,
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [link_id, account_id, ref_value, source_type, source_origin],
     )
 
@@ -54,7 +54,7 @@ def test_int_transactions_unioned_carries_source_account_key(
         VALUES ('fitid-union-001', ?, 'DEBIT', CURRENT_TIMESTAMP,
                 -25.00, '/tmp/test_union.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-union-001', 'ofx', 'test_bank_union')
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(

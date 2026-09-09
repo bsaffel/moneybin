@@ -109,7 +109,7 @@ from moneybin.tables import REPORTS_CASH_FLOW
     ),
 )
 def cash_flow(
-    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    db: Database,  # contract handle; this runner builds pure SQL
     *,
     from_month: str | None = None,
     to_month: str | None = None,
@@ -179,7 +179,7 @@ def cash_flow(
     if to_month:
         grouped += " AND year_month <= substr(?, 1, 7)"
         params.append(Binding(to_month, DataClass.TXN_DATE))
-    grouped += f" GROUP BY {group_cols}"  # noqa: S608  # group_cols allowlist
+    grouped += f" GROUP BY {group_cols}"  # group_cols allowlist
 
     # `by="account"` / `"category"` puts several rows in one month per currency,
     # so sorting currency-major hands the row cap that whole month's budget in

@@ -37,7 +37,7 @@ def _seed_existing_account(db: Database, *, account_id: str, display_name: str) 
     """
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts (account_id, display_name, "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts (account_id, display_name, "  # test fixture
         "display_name_is_user_set) VALUES (?, ?, TRUE)",
         [account_id, display_name],
     )
@@ -63,7 +63,7 @@ def _seed_twin(
     """Seed the weak institution+last4 match that makes a file's identity a question."""
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four, "
         "display_name_is_user_set) VALUES (?, ?, ?, ?, TRUE)",
         [account_id, display_name, twin["institution_slug"], twin["last_four"]],
@@ -145,7 +145,7 @@ def _seed_both_multi_bank_twins(db: Database) -> None:
     """A weak twin for each account, so both identities are real questions."""
     create_core_tables(db)
     db.conn.execute(
-        "INSERT INTO core.dim_accounts "  # noqa: S608  # test fixture
+        "INSERT INTO core.dim_accounts "  # test fixture
         "(account_id, display_name, institution_slug, last_four, "
         "display_name_is_user_set) VALUES (?, ?, ?, ?, TRUE), (?, ?, ?, ?, TRUE)",
         [

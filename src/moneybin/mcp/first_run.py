@@ -85,7 +85,7 @@ class FirstRunSetupMiddleware(Middleware):
 
         try:
             _bootstrap_profile(name, verbose=self._verbose)
-        except Exception:  # noqa: BLE001 — middleware must not raise; bootstrap touches DB/keychain/FS
+        except Exception:  # middleware must not raise; bootstrap touches DB/keychain/FS
             logger.error(
                 "First-run profile bootstrap failed; returning setup envelope",
                 exc_info=True,

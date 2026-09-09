@@ -41,7 +41,7 @@ def _insert_price(
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?, ?,
                 COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [key, price_date, quote_currency, source, origin, close, basis, extracted_at],
     )
 
@@ -65,7 +65,7 @@ def _accept_link(
             (link_id, security_id, ref_kind, ref_value, source_type,
              status, decided_by, decided_at)
         VALUES (?, ?, ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             f"link_{key}",
             canonical_id,
@@ -83,7 +83,7 @@ def _seed_security(db: Database, *, security_id: str) -> None:
         INSERT INTO app.securities (security_id, name, security_type, ticker)
         VALUES (?, 'Vanguard Total Stock Market ETF', 'etf', 'VTI')
         ON CONFLICT DO NOTHING
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [security_id],
     )
 
@@ -108,7 +108,7 @@ def _insert_override(
         INSERT INTO app.security_price_overrides
             (security_id, price_date, quote_currency, close, updated_at)
         VALUES (?, ?::DATE, ?, ?, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [security_id, price_date, quote_currency, close, updated_at],
     )
 
@@ -139,7 +139,7 @@ def _insert_manual_trade(
             created_by, investment_transaction_id, currency_code, created_at
         ) VALUES (?, ?, 'imp_1', 'acc_1', ?, 'VTI', ?, ?::DATE, ?, ?, -1000.00, 0.00,
                   'test', ?, ?, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             txn_id,
             origin,

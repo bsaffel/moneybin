@@ -13,7 +13,7 @@ from moneybin.extractors.tabular.transforms import (
     transform_dataframe,
 )
 
-_SOURCE_FILE = "test.csv"  # noqa: S108  # not a real temp file path, just a test fixture value
+_SOURCE_FILE = "test.csv"  # not a real temp file path, just a test fixture value
 
 
 def _make_df(**columns: list[str]) -> pl.DataFrame:

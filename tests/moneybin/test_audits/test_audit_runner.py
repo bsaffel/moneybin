@@ -90,13 +90,13 @@ def _seed_account(db: Database) -> None:
         ) VALUES ('ACC1', '111', 'CHECKING', 'Bank', 'fid', 'ofx',
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 
 def _insert_transactions(db: Database, *rows: str) -> None:
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES {', '.join(rows)}"  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES {', '.join(rows)}"  # noqa: S608  # test input, not user data
     )
 
 
@@ -104,7 +104,7 @@ def _insert_transfer(
     db: Database, transfer_id: str, debit_id: str, credit_id: str, amount: str
 ) -> None:
     db.execute(
-        "INSERT INTO core.bridge_transfers (transfer_id, debit_transaction_id, "  # noqa: S608 — test input, not user data
+        "INSERT INTO core.bridge_transfers (transfer_id, debit_transaction_id, "  # noqa: S608  # test input, not user data
         "credit_transaction_id, date_offset_days, amount) VALUES "
         f"('{transfer_id}', '{debit_id}', '{credit_id}', 0, {amount})"
     )
@@ -164,7 +164,7 @@ def test_balanced_transfers_flags_a_pair_whose_legs_carry_no_amount(
     """NULL + NULL is not zero — a comparison on the sum alone would pass it."""
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_DEBIT', 'ACC1', '2026-01-03', NULL, NULL, NULL, 'Out', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 3, 5, '2026-01', '2026-Q1'), "
@@ -257,7 +257,7 @@ def test_sign_convention_flags_an_absolute_that_contradicts_its_amount(
 ) -> None:
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_ABS', 'ACC1', '2026-01-01', -50.00, 49.00, 'expense', 'Row', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 1, 3, '2026-01', '2026-Q1')"
@@ -269,7 +269,7 @@ def test_sign_convention_flags_an_absolute_that_contradicts_its_amount(
 def test_sign_convention_flags_a_null_amount(db: Database) -> None:
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_NULL', 'ACC1', '2026-01-01', NULL, NULL, NULL, 'Row', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 1, 3, '2026-01', '2026-Q1')"

@@ -241,7 +241,7 @@ class GSheetPullService:
             connection_id = row["connection_id"]
             try:
                 results.append(self.pull_connection(connection_id))
-            except Exception:  # noqa: BLE001  # per-connection isolation
+            except Exception:  # per-connection isolation
                 # security.md: log full detail internally, return a generic
                 # message to callers. str(exc) could surface DuckDB error
                 # text, stack-trace fragments, or internal field values.

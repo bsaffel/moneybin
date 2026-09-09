@@ -137,7 +137,7 @@ def _scan() -> dict[str, set[str]]:
             for node in ast.walk(tree):
                 if not _raises_user_error(node):
                     continue
-                assert isinstance(node, ast.Call)  # noqa: S101  # narrowed above
+                assert isinstance(node, ast.Call)  # narrowed above
                 message = node.args[0] if node.args else None
                 hint = next(
                     (kw.value for kw in node.keywords if kw.arg == "hint"), None

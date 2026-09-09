@@ -593,7 +593,7 @@ class MatchApplier:
                 f"SELECT merchant_id FROM {USER_MERCHANTS.full_name} "
                 "WHERE canonical_name = ? AND match_type = 'oneOf' "
                 "AND category = ? AND subcategory IS NOT DISTINCT FROM ? "
-                "LIMIT 1",  # noqa: S608  # TableRef constant
+                "LIMIT 1",  # TableRef constant
                 [canonical_name, category, subcategory],
             ).fetchone()
         except duckdb.CatalogException:
@@ -643,7 +643,7 @@ class MatchApplier:
                 SELECT len(exemplars)
                 FROM {USER_MERCHANTS.full_name}
                 WHERE merchant_id = ?
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [merchant_id],
             ).fetchone()
             if row is not None:
@@ -803,7 +803,7 @@ class MatchApplier:
                 created += 1
                 rule_ids.append(rule_id)
                 active = load_active_rules(self._db)
-            except Exception:  # noqa: BLE001 — DuckDB raises untyped errors on constraint violations
+            except Exception:  # DuckDB raises untyped errors on constraint violations
                 skipped += 1
                 logger.exception(f"create_rules failed for rule {item.name!r}")
                 error_details.append({
@@ -853,7 +853,7 @@ class MatchApplier:
                    max_amount, account_id, category, subcategory, priority, is_active,
                    category_id, created_by, created_at, updated_at
             FROM {CATEGORIZATION_RULES.full_name}
-            """  # noqa: S608  # TableRef constant
+            """  # TableRef constant
         ).fetchall()
         by_id = {str(row[0]): row for row in rows}
         candidates = [
@@ -1285,7 +1285,7 @@ class MatchApplier:
             SELECT 1 FROM {CATEGORIES.full_name}
             WHERE category = ? AND subcategory IS NOT DISTINCT FROM ?
             LIMIT 1
-            """,  # noqa: S608  # TableRef constant, no user input interpolated
+            """,  # TableRef constant, no user input interpolated
             [category, subcategory],
         ).fetchone()
         if existing:
@@ -1326,7 +1326,7 @@ class MatchApplier:
             FROM {table.full_name}
             WHERE category_id = ?
             ORDER BY {order_by}
-            """,  # noqa: S608  # TableRef + quoted code-owned identifiers
+            """,  # TableRef + quoted code-owned identifiers
             [category_id],
         )
         columns = tuple(str(description[0]) for description in cursor.description)
@@ -1365,7 +1365,7 @@ class MatchApplier:
             SELECT *
             FROM {USER_CATEGORIES.full_name}
             WHERE category_id = ?
-            """,  # noqa: S608  # TableRef constant
+            """,  # TableRef constant
             [category_id],
         )
         columns = tuple(
@@ -1378,7 +1378,7 @@ class MatchApplier:
                 SELECT 1
                 FROM {CATEGORIES.full_name}
                 WHERE category_id = ? AND is_default = TRUE
-                """,  # noqa: S608  # TableRef constant
+                """,  # TableRef constant
                 [category_id],
             ).fetchone()
             if default:
@@ -1500,7 +1500,7 @@ class MatchApplier:
             SELECT category_id, category, subcategory, description,
                    is_default, is_active
             FROM {CATEGORIES.full_name}
-            """  # noqa: S608  # TableRef constant
+            """  # TableRef constant
         ).fetchall()
         merchant_rows = self._db.execute(
             f"""
@@ -1508,7 +1508,7 @@ class MatchApplier:
                    category, subcategory, category_id, created_by,
                    exemplars, created_at, updated_at
             FROM {USER_MERCHANTS.full_name}
-            """  # noqa: S608  # TableRef constant
+            """  # TableRef constant
         ).fetchall()
         category_by_id = {str(row[0]): row for row in category_rows}
         category_candidates_by_name: dict[
@@ -1937,7 +1937,7 @@ class MatchApplier:
                 exists in either ``app.user_categories`` or the seeded defaults.
         """
         cat = self._db.execute(
-            f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",  # noqa: S608  # TableRef constant
+            f"SELECT is_default FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
             [category_id],
         ).fetchone()
         if not cat:
@@ -2059,7 +2059,7 @@ class MatchApplier:
         # blocked by user" from "ai blocked by rule" etc.
         existing = self._db.execute(
             f"SELECT categorized_by FROM {TRANSACTION_CATEGORIES.full_name} "
-            "WHERE transaction_id = ?",  # noqa: S608  # TRANSACTION_CATEGORIES is a TableRef constant
+            "WHERE transaction_id = ?",  # TRANSACTION_CATEGORIES is a TableRef constant
             [transaction_id],
         ).fetchone()
         CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL.labels(
@@ -2109,7 +2109,7 @@ class MatchApplier:
                 for transaction_id, categorized_by in self._db.execute(
                     f"SELECT transaction_id, categorized_by "
                     f"FROM {TRANSACTION_CATEGORIES.full_name} "
-                    f"WHERE transaction_id IN ({placeholders})",  # noqa: S608  # TableRef + parameterized values
+                    f"WHERE transaction_id IN ({placeholders})",  # TableRef + parameterized values
                     skipped_ids,
                 ).fetchall()
             }
