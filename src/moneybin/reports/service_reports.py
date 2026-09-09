@@ -1,4 +1,11 @@
-"""Service-backed reports that share the SQL report catalog/result contract."""
+"""Service-backed reports that share the SQL report catalog/result contract.
+
+DEPRECATED: service-backed reports. The kind is being retired, not extended —
+`docs/specs/reports-net-worth-sql-surface.md` (M2B.2) moves the two reports here
+onto SQL and deletes `ServiceReportSpec`, the `catalog.py` executor branch, and
+the `sql_unavailable` / `service_backed` arms of `explain.py`. Do not add a
+report here; `.claude/rules/reports.md` routes a new one to the SQL path.
+"""
 
 from __future__ import annotations
 

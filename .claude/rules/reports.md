@@ -12,13 +12,14 @@ the `reports` MCP tool, the CLI, `export report`, `reports explain` — reads th
 spec and nothing else. What varies between report *kinds* is only where the spec
 comes from.
 
-Four kinds ship today. Pick the row you are writing, then read its section.
+Four kinds ship today, and one of them is on its way out. Pick the row you are
+writing, then read its section.
 
 | Kind | Where the spec comes from | Who declares the classes |
 |---|---|---|
 | **Materialized** SQL-backed | An `@report` runner in the repo | The author, verified against derivation in CI |
 | **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
-| **Service-backed** | A hand-written `ServiceReportSpec` | The author, against an independently reviewed map |
+| **Service-backed** — ⚠️ being retired | A hand-written `ServiceReportSpec` | The author, against an independently reviewed map |
 | **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
 
 ## A new report is SQL-backed — anything else needs explicit approval first
@@ -40,6 +41,17 @@ What the non-SQL path costs, so the ask is a real decision:
   source to derive lineage from, so the second source of truth becomes a
   hand-written map in `test_service_report_privacy_maps_match_independent_contract`
   — see "Service-backed reports use an independent reviewed class map" below.
+
+**Those four citations are scheduled for deletion.**
+[`reports-net-worth-sql-surface.md`](../../docs/specs/reports-net-worth-sql-surface.md)
+§Files to Delete removes `ServiceReportSpec`, the service executor branch in
+`_framework/catalog.py`, and the `sql_unavailable` / `service_backed` arms in
+`explain.py` — the exact primitives named above. When that lands, the
+service-backed row leaves this table and **the successor to a report that cannot
+be SQL is a new design, approved as one** — not a kind you can reach for by
+naming an API. Nothing in the repo will offer the non-SQL path; the paragraph
+above stops describing a choice and becomes a hard stop. Until then the row
+stands as written, so a report already on it stays readable.
 
 `core:networth` and `core:networth_history` are the only two, they predate the
 framework, and their arithmetic was always SQL (`reports.net_worth`) — they are
