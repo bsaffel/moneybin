@@ -31,9 +31,9 @@ repos:
       # are excluded so a commit touching agent config or env files never needs
       # a sandbox bypass.
       - id: trailing-whitespace
-        exclude: '^(\.claude/|\.mcp\.json$|\.env)'
+        exclude: '^(\.claude/|\.mcp\.json$|\.env($|\.))'
       - id: end-of-file-fixer
-        exclude: '^(\.claude/|\.mcp\.json$|\.env)'
+        exclude: '^(\.claude/|\.mcp\.json$|\.env($|\.))'
       - id: check-yaml
       - id: check-added-large-files
         args: ['--maxkb=1000']
