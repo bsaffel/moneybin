@@ -137,7 +137,7 @@ this spec's to close.
     at 1.0) are materialized, so no rung needs a branch for the common case and
     no single-currency user sees a NULL converted column.
 12. **Observability.** The rate spine's row and coverage counts join the existing
-    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:357-403`; the two
+    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:397-445`; the two
     migrated reports keep the report-execution metrics every catalog report
     already emits.
 13. **A report's id, its view, and its CLI command share one name.** The name
@@ -283,12 +283,25 @@ already resolved by `core.fct_security_prices`.
 
 Grain `(from_currency, to_currency, effective_date)`. Mirrors
 `core.fct_balances_daily`: a dense daily spine over an observation model.
-Densifies the **provider arm** of `core.fct_exchange_rates` — published rates
-and identity rows only. User overrides are applied above it, at read time, by
-`core.fct_exchange_rates_effective`; see that model for why. `rate_source` here
-is therefore `provider` or `identity`, never `override`. The observation-grain
-model above keeps resolving precedence for its own consumers; this one takes the
-half that is safe to materialize.
+Densifies the provider observations in `prep.stg_exchange_rates` — published
+rates and identity rows only. User overrides are applied above it, at read time,
+by `core.fct_exchange_rates_effective`; see that model for why. `rate_source`
+here is therefore `provider` or `identity`, never `override`. The
+observation-grain model above keeps resolving precedence for its own consumers;
+this one takes the half that is safe to materialize.
+
+**It densifies the staged rows rather than `core.fct_exchange_rates`, and the
+choice of upstream is load-bearing.** That view resolves precedence at
+observation grain, so on a date carrying both a provider quote and an override
+it emits the override alone: the provider row is gone, and no provider arm
+survives on that date to densify. The spine would carry an older quote across
+it. Nothing looks wrong while the override stands, because
+`core.fct_exchange_rates_effective` wins that day at read time regardless.
+Delete the override, though, and the effective view falls back to a spine whose
+`rate` and `published_date` for that day were never the provider's, and it stays
+wrong until the next `sqlmesh run` rebuilds this table. An override applies the
+moment it is written; its deletion has to take effect just as immediately, and
+only a spine built from the unresolved provider rows does that.
 
 ```
 from_currency         VARCHAR        -- Grain. ISO 4217, upper
@@ -327,10 +340,10 @@ Four properties define it:
   with `days_since_published` counting up.
 
   **It runs no further, and `_covers_window_end` is not a precedent for running
-  further.** That function (`src/moneybin/services/rate_backfill.py:479-502`)
+  further.** That function (`src/moneybin/services/rate_backfill.py:484-507`)
   tolerates a trailing gap of `MAX_BACKWARD_RESOLUTION_DAYS` to decide whether
   to *warn* that a feed has stopped; it prices nothing. The only place that
-  constant bounds a rate is `currency_service.py:529`, which rejects a
+  constant bounds a rate is `currency_service.py:549`, which rejects a
   provider's own response dated too far before the day asked about. Borrowing it
   as a carry-forward window would price an ordinary Tuesday from a quote up to
   14 days old — the substitution `currency_service.py:197-205` forbids by name.
