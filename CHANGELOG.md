@@ -1743,6 +1743,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
+- **The storefront names the custody difference against Finances in ChatGPT.**
+  `docs/comparison.md` gains a "not the best fit" row for the reader who wants
+  zero setup and does not mind a bank feed living in a vendor's database,
+  `docs/audience.md` gains a "coming later" persona for the ChatGPT user who
+  wants the same conversation with the data in a file they hold, and the
+  README's client list names the ChatGPT desktop app in place of Gemini CLI.
+  Every claim is custody, not privacy: the model still sees the rows it
+  queries.
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
   total with an `s` appended whether or not it measured time — so
