@@ -100,16 +100,18 @@ this spec's to close.
 5. **A rate is never manufactured.** Outside a pair's own observation window the
    rate spine has no row, so a join misses rather than matching an invented
    rate. Requirement 12 of `multi-currency.md` forbids substituting today's rate
-   or 1.0; this extends the same rule to the shape of the table. The window's
-   trailing edge is the one place it is not the last observation: it runs
-   `MAX_BACKWARD_RESOLUTION_DAYS` further, the same allowance
-   `CurrencyService` and the backfill already grant a feed that has not
-   published yet today — see §Rate models.
+   or 1.0; this extends the same rule to the shape of the table. The trailing
+   edge is the one place the window runs past the last observation, and only as
+   far as `_last_publication_day` already hops: a Friday quote prices Saturday
+   and Sunday, because no reference rate is published on a weekend. A weekday
+   past the last observation is ambiguous — a holiday, a stopped feed, or a date
+   nobody has fetched yet — so the rows stop there and the total goes NULL
+   rather than carrying a stale quote forward. See §Rate models.
 6. **Carry-forward is bounded and visible.** A rate row states the day the
    provider actually priced it (`published_date`) beside the day it is being
    applied to (`effective_date`), plus the distance between them. Carry-forward
-   spans genuine non-publication days and the bounded trailing allowance of
-   Requirement 5, never an unbounded gap.
+   spans genuine non-publication days inside the window and the weekend hop at
+   its trailing edge, never an unbounded gap.
 7. **An unpriced currency makes the total NULL, not smaller.**
    `reports.net_worth.net_worth` is NULL when any contributing currency
    is unpriced on that date, with the unpriced currency count beside it. A
@@ -135,7 +137,7 @@ this spec's to close.
     at 1.0) are materialized, so no rung needs a branch for the common case and
     no single-currency user sees a NULL converted column.
 12. **Observability.** The rate spine's row and coverage counts join the existing
-    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:357-401`; the two
+    `FX_RATE_*` family in `src/moneybin/metrics/registry.py:357-403`; the two
     migrated reports keep the report-execution metrics every catalog report
     already emits.
 13. **A report's id, its view, and its CLI command share one name.** The name
@@ -307,37 +309,42 @@ opposite meanings across two layers.
 
 Four properties define it:
 
-- **Window-bounded fill, with the same trailing allowance the backfill grants.**
+- **Window-bounded fill, with a weekend hop at the trailing edge.**
   For a real pair, rows start at that pair's first observation — before the
   first quote there is no row at all, so a join misses visibly rather than
   matching a manufactured rate. An unbounded fill would invent a rate for a
   delisted pair, a discontinued peg, or a provider that stopped publishing.
 
-  Ending the rows at the *last* observation would be wrong, though, and wrong in
-  a way the rest of the system already knows about. `_covers_window_end`
-  (`src/moneybin/services/rate_backfill.py:479-502`) deliberately tolerates a
-  trailing gap of `MAX_BACKWARD_RESOLUTION_DAYS` — 14 days — because, in its own
-  words, the provider "has no rate for a weekend and often none for today until
-  the afternoon," and an exact bound "would warn on every healthy profile." A
-  spine that stops at the last quote disagrees with that: a Saturday balance
-  finds no Friday rate, and the headline `net_worth` goes NULL on a profile the
-  backfill, `system doctor`, and the user all consider healthy.
+  Ending the rows *on* the last observation would be wrong too, but only by the
+  two days a weekend costs. `CurrencyService.resolve_rate` misses the exact day
+  and then tries `_last_publication_day`, which hops a weekend and nothing else,
+  "because no reference rate is ever published on one." So a Saturday balance is
+  priced from Friday's quote today, and a spine that stopped on Friday would
+  take that away and NULL the headline `net_worth` on a healthy profile.
 
-  So the effective range runs forward through the balance dates the rungs
-  require, for as long as the last observation is within
-  `MAX_BACKWARD_RESOLUTION_DAYS` of them, carrying the last published rate with
-  `days_since_published` counting up. Past that allowance the rows stop and the
-  join misses, which is the genuinely-stopped series the bound is for. One
-  constant defines a healthy trailing edge for both the backfill and the spine,
-  so the two cannot drift into disagreeing about the same feed.
+  So the effective range runs the two days past a last observation that falls on
+  a Friday, and stops on the observation otherwise, carrying the published rate
+  with `days_since_published` counting up.
+
+  **It runs no further, and `_covers_window_end` is not a precedent for running
+  further.** That function (`src/moneybin/services/rate_backfill.py:479-502`)
+  tolerates a trailing gap of `MAX_BACKWARD_RESOLUTION_DAYS` to decide whether
+  to *warn* that a feed has stopped; it prices nothing. The only place that
+  constant bounds a rate is `currency_service.py:529`, which rejects a
+  provider's own response dated too far before the day asked about. Borrowing it
+  as a carry-forward window would price an ordinary Tuesday from a quote up to
+  14 days old — the substitution `currency_service.py:197-205` forbids by name.
 - **Carry-forward across non-publication days only.** Within the window, a day
   with no observation takes the last published rate, and `published_date` /
-  `days_since_published` state that it did. This is precisely the stored
-  requested-to-published mapping that
+  `days_since_published` state that it did. Interior gaps carry safely because
+  observations bracket them on both sides: the provider was publishing before
+  and after, so the gap is a closure rather than a date nobody fetched. That is
+  the stored requested-to-published mapping
   `src/moneybin/services/currency_service.py:197-205` names as the way to close
-  the weekday-holiday gap — and it does so without the widening that same
-  comment forbids, because the hop is recorded per row rather than performed at
-  lookup time.
+  the weekday-holiday gap — without the widening that same comment forbids,
+  because the hop is recorded per row rather than performed at lookup time. Past
+  the last observation nothing brackets the gap, which is why the trailing edge
+  above stops at the weekend rather than carrying on.
 - **Identity rows are materialized.** For every currency appearing in
   `core.dim_accounts`, an `X → X` row at 1.0 with `rate_source = 'identity'` and
   `days_since_published = 0`, spanning the date domain of
@@ -356,11 +363,36 @@ written into three report views — is the substitution Requirement 5 forbids.
 
 #### `core.fct_exchange_rates_effective` (VIEW)
 
-Same grain, and **the model the three rungs actually join**. It overlays
-`app.exchange_rate_overrides` onto the dense spine at read time: where the user
-has recorded a rate for a pair and date, that rate wins and `rate_source`
-reads `override`; everywhere else the published or identity row passes through
-unchanged.
+Same grain, and **the model the three rungs actually join**. It applies override
+precedence at read time to the *observation each row carried forward from*, not
+only to the calendar day the override is filed under — it densifies the winning
+observation rather than overlaying corrections at their recorded dates.
+
+That distinction is the whole correctness of the model. `resolve_rate` consults
+`_stored_rate` twice — once for the exact day, once for `_last_publication_day`
+of it — and `_stored_rate` is override-first both times. A user who corrects
+Friday's quote is therefore already pricing Saturday today. An overlay matched on
+`effective_date` alone would leave Saturday carrying the *provider's* Friday
+rate, so the SQL reports would ignore the correction on exactly the days
+carry-forward exists to cover.
+
+Three rules, in this precedence, reproduce `_stored_rate`:
+
+1. **An override on the `effective_date` itself wins** — `_stored_rate`'s
+   exact-day check. `published_date` becomes that day and
+   `days_since_published` is 0: the user priced the day itself.
+2. **Otherwise an override on the row's `published_date` wins** — the same check
+   reached through the carry-forward. A corrected Friday prices the Saturday and
+   Sunday carrying from it, and a corrected quote prices every interior
+   non-publication day carrying from it. `published_date` and
+   `days_since_published` keep the hop they already recorded.
+3. **An override on a pair and date the spine does not cover contributes its own
+   row** — `_stored_rate` answers from the override table whether or not a
+   provider ever priced that day, so a correction is never invisible because the
+   provider was silent. Rows carry forward from it under the same rules as an
+   observation.
+
+Every row an override wins reads `rate_source = 'override'`.
 
 The split exists because the two halves have opposite freshness requirements. A
 materialized override is a regression against the path this spec replaces:
@@ -696,25 +728,41 @@ AGENTS.md's AX bias both point at.
 
 ### Tier 1 — Unit
 
-- **Rate spine window bounds.** A pair whose observations stop produces no row
-  more than `MAX_BACKWARD_RESOLUTION_DAYS` past the last one, and none at all
-  before the first — asserted on both edges. This is the guard for Requirement
-  5, and the one most likely to regress into an unbounded fill.
+- **Rate spine window bounds.** A pair last quoted on a Tuesday produces no row
+  for the Wednesday after it, and no row at all before its first observation —
+  asserted on both edges. This is the guard for Requirement 5, and the one most
+  likely to regress into an unbounded fill; assert the Wednesday specifically,
+  because a 14-day allowance is the exact regression that has to stay failing.
 - **Healthy trailing edge.** A pair last quoted on a Friday still prices a
   Saturday and Sunday balance, with `days_since_published` at 1 and 2 and a
-  non-NULL `net_worth`. The companion to the bound above: together they pin the
-  allowance at the same width `_covers_window_end` uses, so a feed the backfill
-  calls healthy is never one the spine leaves unpriced.
+  non-NULL `net_worth`, and produces no row for the Monday after. The companion
+  to the bound above: together they pin the trailing edge to exactly the weekend
+  `_last_publication_day` hops.
 - **Override precedence is live.** Writing an `app.exchange_rate_overrides` row
   changes `core.fct_exchange_rates_effective` and the three rungs on the next
   query, with **no `sqlmesh run` in between**, and `rate_source` reads
   `override`. This is the regression guard for the FULL-table shape this spec
   rejected; without it, materializing the override is an easy and invisible
   simplification for a later author to make.
+- **An override carries forward with the day it corrects.** Correcting a Friday
+  quote changes the Saturday and Sunday rows that carry from it, and correcting
+  the observation before an interior gap changes every day in that gap. Assert
+  the carried days, not only the corrected one: an overlay keyed on
+  `effective_date` alone passes on the corrected day and silently serves the
+  provider's rate on every day carrying from it.
+- **An override on an unpriced day is still visible.** A correction for a pair
+  and date the provider never priced produces a row, because `_stored_rate`
+  answers from the override table before consulting the cache.
 - **Override precedence agrees with `resolve_rate`.** For the same pair and
   date, `core.fct_exchange_rates_effective` returns what
   `CurrencyService.resolve_rate` returns — the parity check that keeps the two
-  places expressing this ordering from drifting apart.
+  places expressing this ordering from drifting apart. Assert it on an exact
+  publication day and on a weekend date — the two lookups `_stored_rate`
+  performs. An interior weekday gap is deliberately *not* a parity case: the
+  spine answers it from the recorded hop while `resolve_rate` re-fetches, which
+  is the weekday-holiday gap `currency_service.py:197-205` describes as open.
+  Assert that intended divergence by name, so a later author does not read it as
+  a parity failure and close it by widening the Python lookup.
 - **Carry-forward provenance.** A non-publication day inside the window carries
   the prior rate with `published_date` set to the publication day and
   `days_since_published` equal to the gap.
