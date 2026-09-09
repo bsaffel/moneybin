@@ -91,22 +91,24 @@ _SNAPSHOT_COLUMNS = (
     ),
 )
 
-# Parallel to _SNAPSHOT_COLUMNS **by position alone** — nothing here names a
-# column. Reorder one without the other and every column is handed the type of
-# whichever column took its slot, silently. `test_column_ordering.py` is the
-# only thing between that and a caller.
-_SNAPSHOT_COLUMN_TYPES = (
-    "VARCHAR",
-    "VARCHAR",
-    "VARCHAR",
-    "VARCHAR",
-    "DATE",
-    "BIGINT",
-    "DECIMAL(18,2)",
-    "DECIMAL(18,2)",
-    "DECIMAL(18,2)",
-    "DECIMAL(18,2)",
-)
+# Keyed by column name and projected through _SNAPSHOT_COLUMNS, so reordering
+# that tuple carries the types with it — the same shape
+# `_execute_networth_history` uses for `_HISTORY_COLUMNS`.
+_SNAPSHOT_COLUMN_TYPES_BY_NAME = {
+    "account_id": "VARCHAR",
+    "account_name": "VARCHAR",
+    "currency_code": "VARCHAR",
+    "observation_source": "VARCHAR",
+    "balance_date": "DATE",
+    "account_count": "BIGINT",
+    "account_balance": "DECIMAL(18,2)",
+    "total_assets": "DECIMAL(18,2)",
+    "total_liabilities": "DECIMAL(18,2)",
+    "net_worth": "DECIMAL(18,2)",
+}
+_SNAPSHOT_COLUMN_TYPES = [
+    _SNAPSHOT_COLUMN_TYPES_BY_NAME[column.name] for column in _SNAPSHOT_COLUMNS
+]
 _SNAPSHOT_CLASSES = {column.name: column.data_class for column in _SNAPSHOT_COLUMNS}
 _SNAPSHOT_SEMANTICS = ReportSemantics(
     unit="currency",
