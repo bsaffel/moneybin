@@ -847,13 +847,13 @@ class ToySettings(BaseSettings):
     logging: Nested = Field(default_factory=Nested, description="Log settings.")
 
 
-def test_configuration_page_marks_the_sections_the_profile_passes_whole() -> None:
-    """`database`, `data`, and `logging` come from the profile, not the environment."""
+def test_configuration_page_does_not_mark_profile_sections_as_environment_inert() -> (
+    None
+):
+    """Profile defaults do not prevent environment configuration."""
     page = render_configuration(ToySettings)
     note = "so the variables below are not read today"
-    assert page.count(note) == 1
-    assert page.index("## logging") < page.index(note)
-    assert "profile set" not in page
+    assert note not in page
 
 
 def test_configuration_page_derives_env_names_from_field_names() -> None:
