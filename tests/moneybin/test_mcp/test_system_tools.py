@@ -244,7 +244,7 @@ async def test_system_status_exports_yields_during_synchronous_readiness(
         yielded.set()
         release.set()
 
-    def fake_get_database(*, read_only: bool) -> DatabaseContext:  # noqa: ARG001
+    def fake_get_database(*, read_only: bool) -> DatabaseContext:
         return DatabaseContext()
 
     monkeypatch.setattr(
@@ -705,7 +705,7 @@ async def test_register_system_coarse_reads_registers_only_replacements() -> Non
     register_system_coarse_reads(server)
     names = {
         tool.name
-        for tool in await server._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        for tool in await server._list_tools()  # pyright: ignore[reportPrivateUsage]
     }
 
     assert names == {"system_status", "system_audit"}
@@ -779,7 +779,7 @@ async def test_register_system_tools() -> None:
     """register_system_tools registers system_status with a FastMCP server."""
     srv = FastMCP("test")
     register_system_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert "system_status" in names
 
 
@@ -856,12 +856,12 @@ async def test_system_doctor_orphan_state_emits_executable_actions(
 
     with get_database(read_only=False) as db:
         db.execute(
-            "INSERT INTO app.transaction_notes "  # noqa: S608  # test input
+            "INSERT INTO app.transaction_notes "  # test input
             "(note_id, transaction_id, text, author) "
             "VALUES ('orphn1', 'missing_txn_a', 'x', 'mcp')"
         )
         db.execute(
-            "INSERT INTO app.transaction_tags "  # noqa: S608  # test input
+            "INSERT INTO app.transaction_tags "  # test input
             "(transaction_id, tag, applied_by) "
             "VALUES ('missing_txn_b', 'z', 'mcp')"
         )
@@ -1088,7 +1088,7 @@ async def test_audit_get_hint_for_marker_only(mcp_db: object) -> None:
 async def test_register_undo_tools() -> None:
     srv = FastMCP("test")
     register_system_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"system_status", "system_audit", "system_audit_undo"}
 
 

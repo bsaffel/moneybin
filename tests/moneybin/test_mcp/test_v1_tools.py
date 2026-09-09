@@ -57,7 +57,7 @@ class TestCategorizePendingGet:
                     DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
                     'USD', 'TINY', NULL, 'Tiny',
                     CAST(25 AS INTEGER), 125.0, 'ofx', NULL
-            """)  # noqa: S608  # test input, not executing dynamic SQL
+            """)  # test input, not executing dynamic SQL
 
     @pytest.mark.unit
     async def test_returns_all_rows_default_sort_date(self, mcp_db: Path) -> None:
@@ -131,7 +131,7 @@ class TestCategorizePendingGet:
                     CAST(200.0 AS DOUBLE) AS priority_score,
                     'ofx' AS source_type,
                     CAST(NULL AS VARCHAR) AS source_id
-            """)  # noqa: S608  # test input, not executing dynamic SQL
+            """)  # test input, not executing dynamic SQL
         parsed = (transactions_categorize_pending(account="Alpha")).to_dict()
         ids = [row["transaction_id"] for row in parsed["data"]["transactions"]]
         assert ids == ["TA"]

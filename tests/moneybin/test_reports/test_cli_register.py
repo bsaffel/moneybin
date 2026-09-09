@@ -57,7 +57,7 @@ def _runner(db: Database, *, top: int = 25) -> ReportQuery:
     return ReportQuery("SELECT 1", [])
 
 
-def _spec():  # noqa: ANN202 — test helper
+def _spec():  # test helper
     return build_spec(
         _runner,
         report_id="test:balance_drift",
@@ -70,7 +70,7 @@ def _spec():  # noqa: ANN202 — test helper
     )
 
 
-def _multi_command_app():  # noqa: ANN202 — test helper
+def _multi_command_app():  # test helper
     """A Typer app with the report command plus a sibling.
 
     Typer collapses a single-command app (the subcommand name becomes
@@ -110,7 +110,7 @@ def _windowed_runner(
     return ReportQuery("SELECT 1", [])
 
 
-def _windowed_app():  # noqa: ANN202 — test helper
+def _windowed_app():  # test helper
     app = typer.Typer()
     spec = build_spec(
         _windowed_runner,
@@ -565,7 +565,7 @@ _MONEY_COLUMNS = (
 )
 
 
-def _money_spec():  # noqa: ANN202 — test helper
+def _money_spec():  # test helper
     return build_spec(
         _money_runner,
         report_id="test:money",
@@ -582,7 +582,7 @@ def _money_spec():  # noqa: ANN202 — test helper
     )
 
 
-def _money_app():  # noqa: ANN202 — test helper
+def _money_app():  # test helper
     app = typer.Typer()
     register_report_cli(_money_spec(), app)
     app.command("noop")(lambda: None)
@@ -747,7 +747,7 @@ def _wide_runner(db: Database, *, by: str = "account-and-category") -> ReportQue
     return ReportQuery("SELECT 1", [])
 
 
-def _wide_spec(  # noqa: ANN202 — test helper
+def _wide_spec(  # test helper
     default_columns: DefaultColumns | None = None,
 ):
     return build_spec(

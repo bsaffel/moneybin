@@ -115,7 +115,7 @@ def _process_command(pid: int) -> str:
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return f"pid {pid}"
-    except Exception:  # noqa: BLE001  # ps failures are non-fatal — fall back
+    except Exception:  # ps failures are non-fatal — fall back
         return f"pid {pid}"
     return result.stdout.strip() or f"pid {pid}"
 

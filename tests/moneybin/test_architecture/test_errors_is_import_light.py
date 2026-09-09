@@ -20,7 +20,7 @@ polluted by everything the test suite imported.
 from __future__ import annotations
 
 import json
-import subprocess  # noqa: S404 — clean-interpreter import check
+import subprocess  # noqa: S404  # clean-interpreter import check
 import sys
 
 # Everything `import moneybin.errors` may pull in: the package root, the

@@ -148,7 +148,7 @@ def _seed_category_overrides(db: Database, spec: FixtureSpec) -> None:
     the override and leaves it untouched.
     """
     _upsert_sql = (
-        f"INSERT INTO {TRANSACTION_CATEGORIES.full_name}"  # noqa: S608 — TableRef constant; values parameterized
+        f"INSERT INTO {TRANSACTION_CATEGORIES.full_name}"  # noqa: S608  # TableRef constant; values parameterized
         " (transaction_id, category, subcategory, categorized_by)"
         " VALUES (?, ?, ?, ?)"
         " ON CONFLICT (transaction_id) DO UPDATE SET"

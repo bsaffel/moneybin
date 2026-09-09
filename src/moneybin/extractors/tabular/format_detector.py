@@ -298,7 +298,9 @@ def _read_sample_lines(
                 text = "".join(chunks)
         else:
             text = source_bytes.decode(encoding, errors="replace")
-    except Exception:  # noqa: BLE001 — broad catch intentional: best-effort sampling, failure handled by caller
+    except (
+        Exception
+    ):  # broad catch intentional: best-effort sampling, failure handled by caller
         logger.debug(f"Could not read sample lines from {path}", exc_info=True)
         return []
     physical_lines = _PHYSICAL_LINE_BREAK_RE.split(text, maxsplit=n)

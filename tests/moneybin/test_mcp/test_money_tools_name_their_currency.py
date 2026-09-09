@@ -164,13 +164,13 @@ async def money_payloads() -> dict[str, Any]:
 
     register_core_tools()
     result: dict[str, Any] = {}
-    for tool in await mcp._list_tools():  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    for tool in await mcp._list_tools():  # pyright: ignore[reportPrivateUsage]
         fn = getattr(tool, "fn", None)
         if fn is None:
             continue
         try:
             hints = typing.get_type_hints(inspect.unwrap(fn), include_extras=True)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             # Every @mcp_tool is required to carry a resolvable
             # ResponseEnvelope[T] annotation, so this should be unreachable.
             # Fail loudly rather than skipping: a tool silently dropped from the

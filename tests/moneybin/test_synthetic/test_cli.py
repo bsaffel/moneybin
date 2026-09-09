@@ -1,4 +1,4 @@
-# ruff: noqa: S101,S106,S108
+# ruff: noqa: S108
 """Tests for synthetic data CLI commands."""
 
 from __future__ import annotations

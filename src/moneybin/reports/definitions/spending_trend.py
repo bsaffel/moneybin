@@ -184,7 +184,7 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
     default_columns=_default_columns,
 )
 def spending_trend(
-    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    db: Database,  # contract handle; this runner builds pure SQL
     *,
     from_month: str | None = None,
     to_month: str | None = None,

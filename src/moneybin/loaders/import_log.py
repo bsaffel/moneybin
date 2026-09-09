@@ -303,7 +303,7 @@ def get_import_history_page(
             FROM {IMPORT_LOG.full_name}
             ORDER BY started_at DESC, import_id DESC
             LIMIT 1
-            """  # noqa: S608  # TableRef constant
+            """  # TableRef constant
         ).fetchone()
         if head is None:
             return ImportHistoryPage(
@@ -323,7 +323,7 @@ def get_import_history_page(
             FROM {IMPORT_LOG.full_name}
             WHERE started_at < CAST(? AS TIMESTAMP)
                OR (started_at = CAST(? AS TIMESTAMP) AND import_id <= ?)
-            """,  # noqa: S608  # TableRef constant + parameterized keyset bound
+            """,  # TableRef constant + parameterized keyset bound
             [snapshot_started_at, snapshot_started_at, snapshot_import_id],
         ).fetchone()
         snapshot_total = int(count_row[0]) if count_row is not None else 0
@@ -345,7 +345,7 @@ def get_import_history_page(
               )
             ORDER BY started_at DESC, import_id DESC
             LIMIT ?
-            """,  # noqa: S608  # TableRef constant + parameterized snapshot head
+            """,  # TableRef constant + parameterized snapshot head
         [
             snapshot_started_at,
             snapshot_started_at,

@@ -86,7 +86,7 @@ def test_system_status_json_uses_typed_privacy_and_redaction_path(
         always_active,
     )
 
-    def capture_redaction(payload: object, consent: object) -> object:  # noqa: ARG001
+    def capture_redaction(payload: object, consent: object) -> object:
         redacted_payloads.append(payload)
         return payload
 

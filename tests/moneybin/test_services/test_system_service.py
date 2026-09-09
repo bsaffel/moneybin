@@ -30,7 +30,7 @@ _INSERT_TRANSACTIONS = """
     ('T2', 'ACC001', '2026-04-15', 5000.00, 5000.00, 'income', 'Employer',
      'CREDIT', false, false, 'USD', 'ofx', '2026-04-15', CURRENT_TIMESTAMP,
      2026, 4, 15, 1, '2026-04', '2026-Q2')
-"""  # noqa: S608  # test input, not executing SQL
+"""  # test input, not executing SQL
 
 
 @pytest.fixture()
@@ -47,7 +47,7 @@ def system_db(db: Database) -> Database:
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE)
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
     # categorize_pending counts core.uncategorized_queue, the one definition of
@@ -139,7 +139,7 @@ def test_status_last_import_at_populated(system_db: Database) -> None:
          '2026-04-01', '2026-04-01 12:00:00'),
         ('id2', 'b.csv', 'csv', 'test', '[]', 'complete',
          '2026-04-10', '2026-04-10 09:00:00')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
     svc = SystemService(db=system_db)
     result = svc.status()
     assert result.last_import_at == date(2026, 4, 10)

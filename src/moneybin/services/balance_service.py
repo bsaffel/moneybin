@@ -104,7 +104,7 @@ def _assertion_sql(tail: str, *, with_currency: bool) -> str:
         FROM {BALANCE_ASSERTIONS.full_name} a
         {join}
         {tail}
-    """  # noqa: S608  # tail is literal SQL; values bound via the params list
+    """  # tail is literal SQL; values bound via the params list
 
 
 def _assertion_snapshot_from_db(
@@ -350,7 +350,7 @@ class BalanceService:
                    currency_code
             FROM ranked WHERE _rn = 1
             ORDER BY account_id
-        """  # noqa: S608  # placeholders parameterized via params list above
+        """  # placeholders parameterized via params list above
         return BalanceObservationListPayload(
             observations=[
                 _observation_row_from_db(row)
@@ -407,7 +407,7 @@ class BalanceService:
             WHERE reconciliation_delta IS NOT NULL
               AND ABS(reconciliation_delta) > ? {where}
             ORDER BY account_id, balance_date DESC
-        """  # noqa: S608  # placeholders parameterized
+        """  # placeholders parameterized
         return BalanceObservationListPayload(
             observations=[
                 _observation_row_from_db(row)

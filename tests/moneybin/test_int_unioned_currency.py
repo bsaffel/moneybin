@@ -36,7 +36,7 @@ def _insert_ofx_transaction(
              source_origin, currency_code, to_amount, to_currency)
         VALUES (?, ?, 'DEBIT', ?::TIMESTAMP, ?::DECIMAL(18,2), 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?, ?, ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             txn_id,
             account_id,
@@ -68,7 +68,7 @@ def _insert_manual_transaction(
              to_currency)
         VALUES (?, 'manual_test_import', ?, ?::DATE, ?::DECIMAL(18,2),
                 'Test Manual Entry', 'cli', ?, ?, ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             txn_id,
             account_id,
@@ -98,7 +98,7 @@ def _insert_tabular_transaction(
         VALUES (?, ?, '2026-07-01'::DATE, -10.00, 'Test Tabular Entry',
                 'USD', ?, ?, 'tabular_test', 'csv', 'test_bank',
                 'tabular_test_import')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, account_id, to_amount, to_currency],
     )
 
@@ -119,7 +119,7 @@ def _insert_plaid_transaction(
              source_origin)
         VALUES (?, ?, '2026-07-01'::DATE, 10.00, 'Test Plaid Entry',
                 'USD', ?, ?, 'plaid_test', 'test_bank')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, account_id, to_amount, to_currency],
     )
 

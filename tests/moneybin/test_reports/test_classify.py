@@ -17,7 +17,7 @@ from moneybin.tables import TableRef
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 
-def _stub_runner(db: Database) -> ReportQuery:  # noqa: ARG001 — contract handle, unused
+def _stub_runner(db: Database) -> ReportQuery:  # contract handle, unused
     return ReportQuery("SELECT 1", [])
 
 

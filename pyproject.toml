@@ -264,6 +264,7 @@ select = [
     "D",   # pydocstring
     "S",   # flake8-bandit (security)
     "T20", # flake8-print
+    "RUF100", # unused-noqa: a noqa directive that suppresses nothing
 ]
 ignore = [
     "E501", # line too long, handled by line-length

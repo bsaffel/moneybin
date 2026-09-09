@@ -40,7 +40,7 @@ def test_v046_leaves_existing_batches_matchable_by_path(db: Database) -> None:
         "INSERT INTO raw.import_log "
         "(import_id, source_file, source_type, source_origin, "
         " account_names, status) "
-        "VALUES ('legacy-01', '/tmp/legacy.ofx', 'ofx', 'wells_fargo', "  # noqa: S108  # test fixture path
+        "VALUES ('legacy-01', '/tmp/legacy.ofx', 'ofx', 'wells_fargo', "  # test fixture path
         " '[\"checking\"]', 'complete')"
     )
 

@@ -20,7 +20,7 @@ Marked @pytest.mark.e2e — run via:
 from __future__ import annotations
 
 import os
-import subprocess  # noqa: S404 — subprocess is intentional; we test real cross-process DuckDB locking
+import subprocess  # noqa: S404  # subprocess is intentional; we test real cross-process DuckDB locking
 import sys
 import textwrap
 import time
@@ -55,7 +55,7 @@ def _make_env(db_path: Path, encryption_key: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 # The encryption key used for all tests in this module.
-_TEST_KEY = "concurrent-access-test-key-abc123"  # noqa: S105 — test-only key
+_TEST_KEY = "concurrent-access-test-key-abc123"  # test-only key
 _MARKER_TIMEOUT = 15.0
 
 
@@ -126,14 +126,14 @@ def test_two_read_only_connections_coexist(
 
     script = textwrap.dedent(_READ_ONLY_WORKER)
 
-    p1 = subprocess.Popen(  # noqa: S603 — controlled test script
+    p1 = subprocess.Popen(  # noqa: S603  # controlled test script
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         env=env,
     )
-    p2 = subprocess.Popen(  # noqa: S603 — controlled test script
+    p2 = subprocess.Popen(  # noqa: S603  # controlled test script
         [sys.executable, "-c", script],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -221,7 +221,7 @@ def test_write_write_contention_retries(
     sys.exit(0)
     """
 
-    pa = subprocess.Popen(  # noqa: S603 — controlled test script
+    pa = subprocess.Popen(  # noqa: S603  # controlled test script
         [sys.executable, "-c", textwrap.dedent(worker_a)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -230,7 +230,7 @@ def test_write_write_contention_retries(
     )
     try:
         _wait_for_marker(signal_path)
-        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+        pb = subprocess.Popen(  # noqa: S603  # controlled test script
             [sys.executable, "-c", textwrap.dedent(worker_b)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -331,7 +331,7 @@ def test_read_only_holder_blocks_write_then_succeeds(
     sys.exit(0)
     """
 
-    pa = subprocess.Popen(  # noqa: S603 — controlled test script
+    pa = subprocess.Popen(  # noqa: S603  # controlled test script
         [sys.executable, "-c", textwrap.dedent(worker_a)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -340,7 +340,7 @@ def test_read_only_holder_blocks_write_then_succeeds(
     )
     try:
         _wait_for_marker(signal_path)
-        pb = subprocess.Popen(  # noqa: S603 — controlled test script
+        pb = subprocess.Popen(  # noqa: S603  # controlled test script
             [sys.executable, "-c", textwrap.dedent(worker_b)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

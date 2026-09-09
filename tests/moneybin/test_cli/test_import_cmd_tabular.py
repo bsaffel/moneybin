@@ -1,4 +1,3 @@
-# ruff: noqa: S101,S106
 """Tests for tabular import CLI commands.
 
 Tests CLI-specific functionality: argument parsing, exit codes, error handling.

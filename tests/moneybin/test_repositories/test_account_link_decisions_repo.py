@@ -86,7 +86,7 @@ def test_rejects_invalid_reversed_by(db: Database) -> None:
     repo = AccountLinkDecisionsRepo(db)
     _insert(repo)
     with pytest.raises(duckdb.ConstraintException):
-        db.conn.execute(  # noqa: S608  # test input, not executing user SQL
+        db.conn.execute(  # test input, not executing user SQL
             "UPDATE app.account_link_decisions SET reversed_by = 'bogus' "
             "WHERE decision_id = 'dec00000001'"
         )
@@ -386,7 +386,7 @@ def _drop_display_name_columns(db: Database) -> None:
         "WHERE schema_name = 'app' AND table_name = 'account_link_decisions'"
     ).fetchall()
     for (name,) in idx:
-        db.execute(f"DROP INDEX app.{name}")  # noqa: S608  # catalog name, test-only
+        db.execute(f"DROP INDEX app.{name}")  # catalog name, test-only
     db.execute(
         "ALTER TABLE app.account_link_decisions DROP COLUMN candidate_display_name"
     )

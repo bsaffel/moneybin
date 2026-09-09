@@ -89,8 +89,8 @@ def test_login_happy_path(sync_client: SyncClient) -> None:
         return_value=httpx.Response(
             200,
             json={
-                "access_token": "eyJ-jwt",  # noqa: S106  # test fixture, not a real credential
-                "refresh_token": "v1.refresh",  # noqa: S106  # test fixture, not a real credential
+                "access_token": "eyJ-jwt",  # test fixture, not a real credential
+                "refresh_token": "v1.refresh",  # test fixture, not a real credential
                 "expires_in": 3600,
                 "token_type": "Bearer",
                 "id_token": "eyJ-id",
@@ -124,8 +124,8 @@ def test_login_pending_then_success(sync_client: SyncClient) -> None:
             httpx.Response(
                 200,
                 json={
-                    "access_token": "eyJ-jwt",  # noqa: S106  # test fixture, not a real credential
-                    "refresh_token": "v1.refresh",  # noqa: S106  # test fixture, not a real credential
+                    "access_token": "eyJ-jwt",  # test fixture, not a real credential
+                    "refresh_token": "v1.refresh",  # test fixture, not a real credential
                     "expires_in": 3600,
                     "token_type": "Bearer",
                     "id_token": "eyJ-id",
@@ -158,8 +158,8 @@ def test_login_slow_down_increases_interval(sync_client: SyncClient) -> None:
             httpx.Response(
                 200,
                 json={
-                    "access_token": "eyJ-jwt",  # noqa: S106  # test fixture, not a real credential
-                    "refresh_token": "v1.refresh",  # noqa: S106  # test fixture, not a real credential
+                    "access_token": "eyJ-jwt",  # test fixture, not a real credential
+                    "refresh_token": "v1.refresh",  # test fixture, not a real credential
                     "expires_in": 3600,
                     "token_type": "Bearer",
                     "id_token": "eyJ-id",
@@ -272,8 +272,8 @@ def test_authed_request_refreshes_on_401_then_retries(sync_client: SyncClient) -
         return_value=httpx.Response(
             200,
             json={
-                "access_token": "new-jwt",  # noqa: S106  # test fixture, not a real credential
-                "refresh_token": "new-refresh",  # noqa: S106  # test fixture, not a real credential
+                "access_token": "new-jwt",  # test fixture, not a real credential
+                "refresh_token": "new-refresh",  # test fixture, not a real credential
                 "expires_in": 3600,
                 "token_type": "Bearer",
             },
@@ -608,8 +608,8 @@ def test_login_sends_profile_id_when_set(
         return_value=httpx.Response(
             200,
             json={
-                "access_token": "jwt",  # noqa: S106  # test fixture, not a real credential
-                "refresh_token": "ref",  # noqa: S106  # test fixture, not a real credential
+                "access_token": "jwt",  # test fixture, not a real credential
+                "refresh_token": "ref",  # test fixture, not a real credential
                 "expires_in": 3600,
                 "token_type": "Bearer",
             },
@@ -647,8 +647,8 @@ def test_login_omits_profile_id_when_not_set(
         return_value=httpx.Response(
             200,
             json={
-                "access_token": "jwt",  # noqa: S106  # test fixture, not a real credential
-                "refresh_token": "ref",  # noqa: S106  # test fixture, not a real credential
+                "access_token": "jwt",  # test fixture, not a real credential
+                "refresh_token": "ref",  # test fixture, not a real credential
                 "expires_in": 3600,
                 "token_type": "Bearer",
             },

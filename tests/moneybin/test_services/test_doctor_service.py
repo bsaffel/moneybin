@@ -106,7 +106,7 @@ def doctor_db(db: Database) -> Database:
         ) VALUES ('ACC1', '111', 'CHECKING', 'Bank', 'fid', 'ofx',
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     # is_transfer is written rather than left NULL: production computes it from
     # two LEFT JOINs onto core.bridge_transfers and the expression never yields
     # NULL, while a NULL here meets `NOT is_transfer` as NULL and silently drops
@@ -129,7 +129,7 @@ def doctor_db(db: Database) -> Database:
          'CREDIT', false, 'USD', 'ofx', FALSE,
          CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 1, 2, 4, '2026-01', '2026-Q1')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     return db
 
 
@@ -150,7 +150,9 @@ def _seed_prep_unioned(db: Database, row_count: int) -> None:
     db.execute(_UNIONED_FULL_DDL)
     raw = _MATCHED_MODEL_FILE.read_text()
     body = re.sub(r"^MODEL\s*\(.*?\);\s*", "", raw, flags=re.DOTALL).strip()
-    db.execute(f"CREATE OR REPLACE VIEW prep.int_transactions__matched AS\n{body}")  # noqa: S608 — model body from repo file, not user input
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.int_transactions__matched AS\n{body}"
+    )  # model body from repo file, not user input
     for i in range(row_count):
         db.execute(
             """
@@ -159,7 +161,7 @@ def _seed_prep_unioned(db: Database, row_count: int) -> None:
                 transaction_date, amount, description, currency_code,
                 source_type, source_origin, is_pending
             ) VALUES (?, 'ACC1', 'ACC1', '2026-01-01', -50.00, 'Test', 'USD', 'ofx', 'bank', false)
-            """,  # noqa: S608 — test input, not user data
+            """,  # test input, not user data
             [f"u{i}"],
         )
 
@@ -187,7 +189,7 @@ def _insert_match_decision(
             account_id_b, match_status, match_reason, decided_by, decided_at, reversed_at
         ) VALUES (?, 'u0', 'ofx', 'bank', 'u1', 'ofx', 'bank', 'ACC1',
                   0.95, '{}', ?, '3', NULL, ?, NULL, 'auto', CURRENT_TIMESTAMP, ?)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [match_id, match_type, match_status, reversed_at],
     )
 
@@ -211,14 +213,14 @@ _FK_SQL = """
     LEFT JOIN core.dim_accounts AS a ON t.account_id = a.account_id
     WHERE a.account_id IS NULL
     ORDER BY t.transaction_id
-"""  # noqa: S608 — test SQL
+"""  # test SQL
 
 _SIGN_SQL = """
     SELECT transaction_id
     FROM core.fct_transactions
     WHERE amount IS NULL
     ORDER BY transaction_id
-"""  # noqa: S608 — test SQL; mirrors fct_transactions_sign_convention.sql (zero is a modeled direction, not a violation)
+"""  # test SQL; mirrors fct_transactions_sign_convention.sql (zero is a modeled direction, not a violation)
 
 _TRANSFER_SQL = """
     SELECT bt.debit_transaction_id
@@ -227,7 +229,7 @@ _TRANSFER_SQL = """
     JOIN core.fct_transactions AS c ON bt.credit_transaction_id = c.transaction_id
     WHERE ABS(d.amount + c.amount) > 0.01
     ORDER BY bt.debit_transaction_id
-"""  # noqa: S608 — test SQL
+"""  # test SQL
 
 _CLEAN_AUDITS = {
     "fct_transactions_fk_integrity": (_FK_SQL, "duckdb"),
@@ -288,7 +290,7 @@ def test_fk_integrity_fails_orphaned_account(
         ('ORPHAN', 'GHOST_ACC', '2026-02-01', -10.00, 10.00, 'expense', 'Ghost',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 2, 1, 6, '2026-02', '2026-Q1')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -320,7 +322,7 @@ def test_sign_convention_fails_null_amount(
         ('NULL_AMT', 'ACC1', '2026-03-01', NULL, NULL, 'expense', 'Unresolved',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 3, 1, 6, '2026-03', '2026-Q1')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -359,7 +361,7 @@ def test_sign_convention_passes_zero_amount(
         ('ZERO', 'ACC1', '2026-03-01', 0.00, 0.00, 'zero', 'Waived fee',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 3, 1, 6, '2026-03', '2026-Q1')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -393,7 +395,7 @@ def test_verbose_false_returns_empty_affected_ids(
         ('ORPHAN2', 'NO_ACC', '2026-04-01', -5.00, 5.00, 'expense', 'Ghost',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 4, 1, 2, '2026-04', '2026-Q2')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -556,7 +558,9 @@ def _create_matched_view(db: Database) -> None:
     db.execute(_UNIONED_FULL_DDL)
     raw = _MATCHED_MODEL_FILE.read_text()
     body = re.sub(r"^MODEL\s*\(.*?\);\s*", "", raw, flags=re.DOTALL).strip()
-    db.execute(f"CREATE OR REPLACE VIEW prep.int_transactions__matched AS\n{body}")  # noqa: S608 — model body from repo file, not user input
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.int_transactions__matched AS\n{body}"
+    )  # model body from repo file, not user input
 
 
 def _insert_unioned_row_for_matched(
@@ -574,7 +578,7 @@ def _insert_unioned_row_for_matched(
             transaction_date, amount, description, currency_code,
             source_type, source_origin, is_pending
         ) VALUES (?, ?, ?, '2026-01-01', -50.00, 'Test', 'USD', ?, 'bank', false)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [source_transaction_id, account_id, account_id, source_type],
     )
 
@@ -599,7 +603,7 @@ def _insert_cycle_match_decision(
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES (?, ?, ?, 'bank', ?, ?, 'bank', ?, 0.95, '{}',
                   'dedup', '3', NULL, 'accepted', 'test', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [match_id, stid_a, st_a, stid_b, st_b, account_id],
     )
 
@@ -689,7 +693,7 @@ def test_dedup_reconciliation_counts_group_size_minus_one(
                   'Merged', 'DEBIT', false, 'USD', 'csv',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   2026, 1, 1, 3, '2026-01', '2026-Q1')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _dedup_result(doctor_db, monkeypatch)
@@ -705,7 +709,7 @@ def test_categorization_coverage_passes_when_all_categorized(
         UPDATE core.fct_transactions
         SET category = 'Food & Drink'
         WHERE transaction_id IN ('T1', 'T2')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -737,7 +741,7 @@ def test_categorization_coverage_ignores_archived_accounts(
         UPDATE core.fct_transactions
         SET category = 'Food & Drink'
         WHERE transaction_id IN ('T1', 'T2')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute(
         "INSERT INTO core.dim_accounts "
         "(account_id, display_name, currency_code, archived) "
@@ -758,7 +762,7 @@ def test_categorization_coverage_ignores_archived_accounts(
                       'Old charge', 'DEBIT', false, 'USD', 'ofx',
                       FALSE, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                       2026, 1, 3, 5, '2026-01', '2026-Q1')
-            """,  # noqa: S608 — test input, not user data
+            """,  # test input, not user data
             [f"T_CLOSED_{i}"],
         )
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
@@ -973,7 +977,7 @@ def test_fk_detail_message_contains_count(
         ('BAD2', 'NONE', '2026-05-02', -2.00, 2.00, 'expense', 'Bad2',
          'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 5, 2, 5, '2026-05', '2026-Q2')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -1009,13 +1013,13 @@ def test_bridge_transfers_balanced_fails_unbalanced_pair(
         ('CREDIT1', 'ACC1', '2026-04-01', 99.00, 99.00, 'income', 'Transfer in',
          'CREDIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
          2026, 4, 1, 2, '2026-04', '2026-Q2')
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute("""
         INSERT INTO core.bridge_transfers (
             transfer_id, debit_transaction_id, credit_transaction_id,
             date_offset_days, amount
         ) VALUES ('XFR1', 'DEBIT1', 'CREDIT1', 0, 100.00)
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
 
     @contextmanager
@@ -1472,7 +1476,7 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
             investment_transaction_id, account_id, transaction_date, amount,
             source_file, source_origin
         ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     db.execute(
         """
@@ -1481,14 +1485,14 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
             status, decided_by, decided_at
         ) VALUES ('lnk1', 'ACC1', 'source_native', 'plaid_acc1', 'plaid', 'item1',
                    'accepted', 'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     db.execute(
         """
         INSERT INTO raw.manual_investment_transactions (
             source_transaction_id, import_id, account_id, type, trade_date, created_by
         ) VALUES ('manual_1', 'imp1', 'ACC1', 'buy', '2026-01-02', 'cli')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "fail"
@@ -1511,7 +1515,7 @@ def test_source_overlap_pass_when_only_one_source(
             investment_transaction_id, account_id, transaction_date, amount,
             source_file, source_origin
         ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
     assert result.status == "pass"
@@ -2064,7 +2068,7 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
         """
         INSERT INTO app.securities (security_id, name, security_type, currency_code)
         VALUES ('sec_real', 'Real Test Security', 'equity', 'USD')
-        """  # noqa: S608  # test fixture, not executing user SQL
+        """  # test fixture, not executing user SQL
     )
     db.execute(
         """
@@ -2076,7 +2080,7 @@ def test_investment_checks_bind_to_real_transform_output(db: Database) -> None:
                 '2026-01-01'::DATE, 10::DECIMAL(28,10), -1000.00::DECIMAL(18,2),
                 0::DECIMAL(18,2), 'USD', '2026-01-01 09:00:00'::TIMESTAMP,
                 'cli', 'inv_buy_real')
-        """  # noqa: S608  # test fixture, not executing user SQL
+        """  # test fixture, not executing user SQL
     )
 
     result = TransformService(db).apply()
@@ -2756,7 +2760,7 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2781,11 +2785,11 @@ def test_currency_integrity_counts_and_names_a_third_currency(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute("""
         UPDATE core.dim_accounts SET currency_code = 'GBP'
         WHERE account_id = 'ACC1'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2809,7 +2813,7 @@ def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2833,7 +2837,7 @@ def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = NULL
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2849,7 +2853,7 @@ def test_currency_integrity_fails_on_a_transaction_with_unknown_currency(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = NULL
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2874,11 +2878,11 @@ def test_currency_integrity_prefixes_each_affected_id_with_its_grain(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = NULL
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute("""
         UPDATE core.dim_accounts SET currency_code = NULL
         WHERE account_id = 'ACC1'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2911,7 +2915,7 @@ def test_currency_integrity_fails_on_a_balance_with_unknown_currency(
                'b.qfx'::VARCHAR AS source_ref,
                CURRENT_TIMESTAMP AS updated_at,
                NULL::VARCHAR AS currency_code
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2927,7 +2931,7 @@ def test_currency_integrity_fails_on_an_account_with_unknown_currency(
     doctor_db.execute("""
         UPDATE core.dim_accounts SET currency_code = NULL
         WHERE account_id = 'ACC1'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2943,11 +2947,11 @@ def test_currency_integrity_reports_unknown_currency_over_mere_mixing(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'
         WHERE transaction_id = 'T1'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = NULL
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -2963,11 +2967,11 @@ def test_currency_integrity_records_what_it_observed(
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'
         WHERE transaction_id = 'T1'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = NULL
         WHERE transaction_id = 'T2'
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     _currency_result(doctor_db, monkeypatch)
 
@@ -3005,7 +3009,7 @@ def test_currency_integrity_counts_past_the_reported_id_cap(
                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                2026, 1, 3, 5, '2026-01', '2026-Q1'
         FROM GENERATE_SERIES(1, 150) AS t(i)
-    """)  # noqa: S608 — test input, not user data
+    """)  # test input, not user data
 
     result = _currency_result(doctor_db, monkeypatch)
 
@@ -3039,7 +3043,7 @@ def _insert_overlap_account(
         ) VALUES (?, 'CHECKING', 'Bank', ?, 'ofx', 'a.qfx',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   ?, 'USD', FALSE, TRUE)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [account_id, institution_slug, account_id],
     )
 
@@ -3070,7 +3074,7 @@ def _insert_amount_ladder(
         SELECT ? || '_' || i, ?, DATE '2026-01-01' + CAST(i + ? AS INTEGER),
                ? * i, ?, 'ofx'
         FROM GENERATE_SERIES(?, ?) AS t(i)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [
             account_id,
             account_id,
@@ -3096,7 +3100,7 @@ def _insert_repeated_amount(
         SELECT ? || '_r' || i, ?, DATE '2026-01-01' + CAST(i AS INTEGER), ?,
                'USD', 'ofx'
         FROM GENERATE_SERIES(1, ?) AS t(i)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [account_id, account_id, amount, rows],
     )
 
@@ -3386,7 +3390,7 @@ def _insert_unioned_row(
             transaction_date, amount, description, currency_code,
             source_type, source_origin, source_file, is_pending
         ) VALUES (?, ?, ?, ?, ?, 'Coffee', 'USD', ?, ?, ?, false)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [
             stid,
             account_id,
@@ -3517,7 +3521,7 @@ def test_cross_source_pair_the_matcher_already_ruled_on_passes(
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank', 'ACC1',
                   0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL, 'user',
                   CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3599,7 +3603,7 @@ def test_a_rejection_against_a_different_partner_does_not_suppress(
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
                   'user', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3638,7 +3642,7 @@ def test_a_rejection_suppresses_on_the_matchers_key_not_on_origin(
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv1', 'csv', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'rejected', NULL,
                   'user', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3673,7 +3677,7 @@ def test_an_accepted_decision_on_only_one_side_does_not_suppress(
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'csv_other', 'csv', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3710,7 +3714,7 @@ def test_decisions_in_disjoint_components_do_not_suppress(
                  ('m2', 'csv1', 'csv', 'bank', 'ofx_other', 'ofx', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3748,7 +3752,7 @@ def test_two_rows_already_in_one_component_suppress(
                  ('m2', 'csv1', 'csv', 'bank', 'mid', 'plaid', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3768,7 +3772,7 @@ _TWO_PAIRED_COMPONENTS = """
              ('m2', 'csv2', 'csv', 'bank', 'ofx2', 'ofx', 'bank',
               'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
               'auto', CURRENT_TIMESTAMP)
-"""  # noqa: S608 — test input, not user data
+"""  # test input, not user data
 
 
 @pytest.mark.unit
@@ -3855,7 +3859,7 @@ def test_a_shared_file_on_two_seed_only_rows_does_not_suppress(
                  ('m2', 'plaid1', 'plaid', 'bank', 'csv_seed2', 'csv', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -3921,7 +3925,7 @@ def test_a_rejected_pairs_own_endpoints_register_no_source_guard(
                  ('m2', 'ofx_e', 'ofx', 'bank', 'plaid_b', 'plaid', 'bank',
                   'ACC1', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -4018,7 +4022,7 @@ def test_a_transfer_decision_does_not_count_as_dedup_consideration(
         ) VALUES ('m1', 'ofx1', 'ofx', 'bank', 'elsewhere', 'ofx', 'bank',
                   'ACC1', 0.9, '{}', 'transfer', NULL, 'ACC9', 'accepted',
                   NULL, 'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)
@@ -4053,7 +4057,7 @@ def test_another_accounts_decision_on_the_same_native_id_does_not_suppress(
         ) VALUES ('m1', 'shared_id', 'ofx', 'bank', 'other', 'csv', 'bank',
                   'ACC2', 0.9, '{}', 'dedup', '3', NULL, 'accepted', NULL,
                   'auto', CURRENT_TIMESTAMP)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     result = _unproposed_result(doctor_db, monkeypatch)

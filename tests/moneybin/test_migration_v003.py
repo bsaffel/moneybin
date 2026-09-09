@@ -11,8 +11,10 @@ class TestV003Migration:
         # Drop the new columns to simulate pre-migration state.
         for col in ("import_id", "source_type", "source_origin"):
             try:
-                db.execute(f"ALTER TABLE raw.ofx_transactions DROP COLUMN {col}")  # noqa: S608  # test input, not executing SQL
-            except Exception:  # noqa: BLE001, S110  # DuckDB raises untyped errors on missing columns
+                db.execute(
+                    f"ALTER TABLE raw.ofx_transactions DROP COLUMN {col}"
+                )  # test input, not executing SQL
+            except Exception:  # noqa: S110  # DuckDB raises untyped errors on missing columns
                 pass  # column already absent
 
         migrate(db._conn)  # pyright: ignore[reportPrivateUsage]
@@ -36,8 +38,10 @@ class TestV003Migration:
         # Drop columns to simulate pre-migration state, then insert a legacy row.
         for col in ("import_id", "source_type", "source_origin"):
             try:
-                db.execute(f"ALTER TABLE raw.ofx_transactions DROP COLUMN {col}")  # noqa: S608  # test input, not executing SQL
-            except Exception:  # noqa: BLE001, S110  # DuckDB raises untyped errors on missing columns
+                db.execute(
+                    f"ALTER TABLE raw.ofx_transactions DROP COLUMN {col}"
+                )  # test input, not executing SQL
+            except Exception:  # noqa: S110  # DuckDB raises untyped errors on missing columns
                 pass
         db.execute(
             """

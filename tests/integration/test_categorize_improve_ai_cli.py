@@ -1,7 +1,5 @@
 """Integration tests for `moneybin transactions categorize improve-ai` CLI command."""
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 import json
@@ -97,7 +95,7 @@ def _invoke(
 
     @contextmanager
     def _db_ctx(*_a: object, **_kw: object):
-        yield db  # noqa: B023 — db is loop-invariant in this helper
+        yield db  # db is loop-invariant in this helper
 
     monkeypatch.setattr(_categorize_mod, "get_database", _db_ctx)
     monkeypatch.setattr("moneybin.secrets.SecretStore", lambda: store)

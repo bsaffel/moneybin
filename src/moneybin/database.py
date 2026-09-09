@@ -268,7 +268,7 @@ def build_attach_sql(
     if read_only:
         options += ", READ_ONLY"
     return (
-        f"ATTACH '{safe_path}' AS {safe_alias} "  # noqa: S608 — trusted internal values, single-quote escaped, alias sqlglot-quoted
+        f"ATTACH '{safe_path}' AS {safe_alias} "  # trusted internal values, single-quote escaped, alias sqlglot-quoted
         f"({options})"
     )
 
@@ -753,7 +753,9 @@ class Database:
                         # spurious migration-failed error to the caller.
                         try:
                             self.checkpoint("post_migration")
-                        except Exception as e:  # noqa: BLE001 — checkpoint is best-effort durability, not correctness
+                        except (
+                            Exception
+                        ) as e:  # checkpoint is best-effort durability, not correctness
                             logger.warning(
                                 f"post_migration checkpoint failed "
                                 f"(migrations applied): {type(e).__name__}"
@@ -882,7 +884,7 @@ class Database:
             ctx.state_sync.get_versions(validate=True)
             logger.debug("sqlmesh migrate completed and durable state verified")
             return True
-        except Exception:  # noqa: BLE001 — sqlmesh migration failures are non-fatal
+        except Exception:  # sqlmesh migration failures are non-fatal
             logger.debug(
                 "sqlmesh migrate failed or durable state did not advance",
                 exc_info=True,
@@ -996,19 +998,19 @@ class Database:
         try:
             if on_conflict == "replace":
                 result = self.conn.execute(
-                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                    f"CREATE OR REPLACE TABLE {safe_ref} AS SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "upsert":
                 result = self.conn.execute(
-                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR REPLACE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             elif on_conflict == "ignore":
                 result = self.conn.execute(
-                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                    f"INSERT OR IGNORE INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             else:
                 result = self.conn.execute(
-                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608 — sqlglot-quoted identifier from trusted caller
+                    f"INSERT INTO {safe_ref} BY NAME SELECT * FROM _ingest_tmp"  # noqa: S608  # sqlglot-quoted identifier from trusted caller
                 )
             # DuckDB returns a single-row "Count" for each of these statements.
             # It is read inside the try so the temp view is still registered.
@@ -1126,7 +1128,7 @@ class Database:
             if self._conn is not None:
                 try:
                     self._conn.close()
-                except Exception:  # noqa: BLE001 S110  # intentional broad catch on close; pass is correct here
+                except Exception:  # noqa: S110  # intentional broad catch on close; pass is correct here
                     pass
                 self._conn = None
             # Clear the global write-conn slot AFTER closing the connection.
@@ -1156,7 +1158,7 @@ class Database:
         if self._conn is not None:
             try:
                 self._conn.interrupt()
-            except Exception:  # noqa: BLE001, S110 — interrupt is best-effort; pass is correct here
+            except Exception:  # noqa: S110  # interrupt is best-effort; pass is correct here
                 pass
             # Explicit DETACH so DuckDB's process-level file registry releases
             # the path entry before close(). USE memory first: DuckDB prohibits
@@ -1165,12 +1167,14 @@ class Database:
             # was running (the common case for Python-level sleeps); even if they
             # fail, the subsequent close() releases the handle.
             try:
-                self._conn.execute("USE memory")  # noqa: S608 — hardcoded literal, not user input
-            except Exception:  # noqa: BLE001, S110 — best-effort; pass is correct here
+                self._conn.execute("USE memory")  # hardcoded literal, not user input
+            except Exception:  # noqa: S110  # best-effort; pass is correct here
                 pass
             try:
-                self._conn.execute(f'DETACH "{_DATABASE_ALIAS}"')  # noqa: S608 — alias is a hardcoded internal literal
-            except Exception:  # noqa: BLE001, S110 — DETACH is best-effort; pass is correct here
+                self._conn.execute(
+                    f'DETACH "{_DATABASE_ALIAS}"'
+                )  # alias is a hardcoded internal literal
+            except Exception:  # noqa: S110  # DETACH is best-effort; pass is correct here
                 pass
         self.close()
 
@@ -1211,7 +1215,7 @@ def database_key_error_hint(db_path: Path | None = None) -> str:
     if db_path is None:
         try:
             db_path = get_settings().database.path
-        except Exception:  # noqa: BLE001 — fallback if settings can't load
+        except Exception:  # fallback if settings can't load
             return "💡 Run 'moneybin db init' to create the database"
     if not db_path.exists():
         return "💡 Run 'moneybin db init' to create the database first"
@@ -1618,7 +1622,7 @@ def sqlmesh_context(
 
             try:
                 sync_classification_comments(conn)
-            except Exception:  # noqa: BLE001 — sync errors must not break sqlmesh flows
+            except Exception:  # sync errors must not break sqlmesh flows
                 logger.debug(
                     "Privacy classification sync after sqlmesh_context failed",
                     exc_info=True,
@@ -1775,15 +1779,15 @@ def init_db(
             else:
                 try:
                     store.delete_key(_KEY_NAME)
-                except Exception:  # noqa: BLE001, S110 — best-effort rollback
-                    pass  # noqa: S110
+                except Exception:  # noqa: S110  # best-effort rollback
+                    pass
             if prev_salt is not None:
                 store.set_key(SALT_NAME, prev_salt)
             else:
                 try:
                     store.delete_key(SALT_NAME)
-                except Exception:  # noqa: BLE001, S110 — best-effort rollback
-                    pass  # noqa: S110
+                except Exception:  # noqa: S110  # best-effort rollback
+                    pass
             # If we just created an encrypted DB file but Database() then
             # raised (e.g., during schema/migration), remove the orphan so
             # retries aren't locked out by a file with no matching key.
@@ -1861,8 +1865,8 @@ def init_db(
             if key_was_persisted_now:
                 try:
                     store.delete_key(_KEY_NAME)
-                except Exception:  # noqa: BLE001, S110 — best-effort rollback
-                    pass  # noqa: S110
+                except Exception:  # noqa: S110  # best-effort rollback
+                    pass
                 if not db_existed and db_path.exists():
                     try:
                         db_path.unlink()

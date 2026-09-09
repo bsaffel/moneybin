@@ -56,7 +56,7 @@ def _insert_security(db: Database) -> None:
         """
         INSERT INTO app.securities (security_id, name, security_type, currency_code)
         VALUES (?, 'Test Security', 'equity', 'USD')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [_SECURITY_ID],
     )
 
@@ -82,7 +82,7 @@ def _insert_investment_txn(
         VALUES (?, 'import_test', ?, ?, ?, ?::DATE,
                 ?::DECIMAL(28,10), ?::DECIMAL(18,2), 0::DECIMAL(18,2), 'USD',
                 ?::TIMESTAMP, 'cli', ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             source_txn_id,
             _ACCOUNT_ID,
@@ -284,7 +284,7 @@ def test_transform_specific_id_selection_redirects_consumption(db: Database) -> 
         INSERT INTO app.securities
             (security_id, name, security_type, currency_code, cost_basis_method)
         VALUES (?, 'Test Security', 'equity', 'USD', 'specific')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [_SECURITY_ID],
     )
     _insert_investment_txn(
@@ -330,7 +330,7 @@ def test_transform_specific_id_selection_redirects_consumption(db: Database) -> 
         """
         INSERT INTO app.lot_selections (investment_transaction_id, lot_id, quantity)
         VALUES ('inv_sell_1', ?, 5)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [newer_lot_id],
     )
 
@@ -366,7 +366,7 @@ def test_transform_method_change_retroactively_rewrites_realized_gains(
         INSERT INTO app.securities
             (security_id, name, security_type, currency_code, cost_basis_method)
         VALUES (?, 'Test Security', 'equity', 'USD', 'fifo')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [_SECURITY_ID],
     )
     _insert_investment_txn(
@@ -411,7 +411,7 @@ def test_transform_method_change_retroactively_rewrites_realized_gains(
     assert fifo_cost_basis[0] == Decimal("50.00")
 
     db.execute(
-        "UPDATE app.securities SET cost_basis_method = 'hifo' WHERE security_id = ?",  # noqa: S608  # test fixture, not executing user SQL
+        "UPDATE app.securities SET cost_basis_method = 'hifo' WHERE security_id = ?",  # test fixture, not executing user SQL
         [_SECURITY_ID],
     )
     result = TransformService(db).apply()

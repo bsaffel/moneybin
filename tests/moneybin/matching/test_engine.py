@@ -219,7 +219,7 @@ class TestFetchActiveDedupDecisions:
              'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?)
             """,
             [now, now],
-        )  # noqa: S608  # test fixture data, not user input
+        )  # test fixture data, not user input
 
         # Insert a fresh pair that the matcher will create a new decision for.
         _insert(
@@ -311,7 +311,7 @@ class TestFetchActiveDedupDecisions:
              'acct1', 0.99, '{}', 'dedup', '3', 'accepted', 'auto', ?)
             """,
             [now, now],
-        )  # noqa: S608  # test fixture data, not user input
+        )  # test fixture data, not user input
 
         settings = MatchingSettings()
         matcher = TransactionMatcher(db, settings, table="main._test_unioned")

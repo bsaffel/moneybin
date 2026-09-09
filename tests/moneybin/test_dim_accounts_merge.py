@@ -49,7 +49,7 @@ def _insert_accepted_source_native(
             (link_id, account_id, ref_kind, ref_value, source_type,
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [link_id, account_id, ref_value, source_type, source_origin],
     )
 
@@ -73,7 +73,7 @@ def _insert_ofx_account(
              extracted_at, loaded_at)
         VALUES (?, ?, ?, ?, ?, '/tmp/test.ofx', 'ofx', ?,
                 ?::TIMESTAMP, ?::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [
             native_key,
             routing_number,
@@ -107,7 +107,7 @@ def _insert_tabular_account(
              source_origin, import_id, extracted_at, loaded_at)
         VALUES (?, ?, ?, ?, ?, ?, '/tmp/test.csv', 'csv', ?, 'imp-tab-001',
                 ?::TIMESTAMP, ?::TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [
             native_key,
             account_name,

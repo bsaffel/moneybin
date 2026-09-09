@@ -25,11 +25,11 @@ def verify_gold_record_count(
             SELECT COUNT(DISTINCT transaction_id)
             FROM {FCT_TRANSACTION_PROVENANCE.full_name}
             WHERE source_transaction_id IN ({placeholders})
-        """  # noqa: S608 — placeholders count derived from typed list; values bound
+        """  # noqa: S608  # placeholders count derived from typed list; values bound
         row = db.execute(sql, fixture_ids).fetchone()
     else:
         row = db.execute(
-            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608 — TableRef constant
+            f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
         ).fetchone()
     actual = int(row[0]) if row is not None else 0
     return ExpectationResult(
@@ -52,7 +52,7 @@ def verify_category_for_transaction(
 ) -> ExpectationResult:
     """Verify a transaction's category (and optionally its categorizer source)."""
     row = db.execute(
-        "SELECT category, categorized_by "  # noqa: S608 — TableRef constant
+        "SELECT category, categorized_by "  # noqa: S608  # TableRef constant
         f"FROM {FCT_TRANSACTIONS.full_name} "
         "WHERE transaction_id = ?",
         [transaction_id],
@@ -97,7 +97,7 @@ def verify_provenance_for_transaction(
     )
     rows: list[tuple[Any, ...]] = sorted(
         db.execute(
-            "SELECT source_transaction_id, source_type "  # noqa: S608 — TableRef constant
+            "SELECT source_transaction_id, source_type "  # noqa: S608  # TableRef constant
             f"FROM {FCT_TRANSACTION_PROVENANCE.full_name} "
             "WHERE transaction_id = ?",
             [transaction_id],

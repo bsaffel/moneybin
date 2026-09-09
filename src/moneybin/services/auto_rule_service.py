@@ -405,7 +405,7 @@ class AutoRuleService:
             return {}
         try:
             rows = self._db.execute(
-                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name}"  # noqa: S608  # TableRef constant
+                f"SELECT description, memo FROM {FCT_TRANSACTIONS.full_name}"  # TableRef constant
             ).fetchall()
         except duckdb.CatalogException:
             # Pre-first-import: no fact table, so nothing can match. This is a
@@ -1035,7 +1035,7 @@ class AutoRuleService:
                 SELECT proposed_rule_id, status
                 FROM {PROPOSED_RULES.full_name}
                 WHERE proposed_rule_id IN ({placeholders})
-                """,  # noqa: S608  # placeholders are generated, values parameterized
+                """,  # placeholders are generated, values parameterized
                 proposed_rule_ids,
             ).fetchall()
         except duckdb.CatalogException:

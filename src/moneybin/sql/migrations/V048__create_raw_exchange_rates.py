@@ -64,5 +64,5 @@ def migrate(conn: object) -> None:
     for column, comment in _COLUMN_COMMENTS:
         escaped = comment.replace("'", "''")
         conn.execute(  # type: ignore[union-attr]
-            f"COMMENT ON COLUMN raw.exchange_rates.{column} IS '{escaped}'"  # noqa: S608  # code-supplied column/comment constants, not user input
+            f"COMMENT ON COLUMN raw.exchange_rates.{column} IS '{escaped}'"  # code-supplied column/comment constants, not user input
         )

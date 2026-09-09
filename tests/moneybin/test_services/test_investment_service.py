@@ -49,7 +49,7 @@ def _add_account(db: Database, account_id: str = "acct_brokerage") -> str:
         INSERT INTO core.dim_accounts
             (account_id, account_type, institution_name, source_type)
         VALUES (?, 'investment', 'Fidelity', 'manual')
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [account_id],
     )
     return account_id
@@ -114,7 +114,7 @@ def _seed_disposal_and_lots(
             (investment_transaction_id, account_id, security_id, trade_date,
              type, quantity)
         VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -10)
-        """  # noqa: S608  # test fixture insert, static SQL
+        """  # test fixture insert, static SQL
     )
     db.conn.executemany(
         """
@@ -122,7 +122,7 @@ def _seed_disposal_and_lots(
             (lot_id, account_id, security_id, acquisition_date, original_quantity,
              remaining_quantity)
         VALUES (?, 'acct_brokerage', 'sec_1', ?, ?, ?)
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [
             ["lot_a", date(2024, 1, 10), Decimal("6"), Decimal("6")],
             ["lot_b", date(2024, 3, 20), Decimal("6"), Decimal("6")],
@@ -151,7 +151,7 @@ def _raw_rows(db: Database, account_id: str = "acct_brokerage") -> list[Any]:
           FROM raw.manual_investment_transactions
          WHERE account_id = ?
          ORDER BY created_at, source_transaction_id
-        """,  # noqa: S608  # test read, static SQL
+        """,  # test read, static SQL
         [account_id],
     ).fetchall()
 
@@ -408,7 +408,7 @@ class TestSetSecurity:
             """
             SELECT name, ticker, exchange, cusip, cost_basis_method
               FROM app.securities WHERE security_id = ?
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             [sid],
         ).fetchone()
         assert row == (
@@ -840,7 +840,7 @@ def _manual_investment_import_rows(db: Database) -> list[Any]:
         SELECT status, rows_total, rows_imported, completed_at
           FROM raw.import_log
          WHERE format_name = 'manual_investment_entry'
-        """  # noqa: S608  # test read, static SQL
+        """  # test read, static SQL
     ).fetchall()
 
 
@@ -1129,7 +1129,7 @@ class TestSplitAndTransfer:
 def _selected_lots(db: Database) -> list[Any]:
     return db.conn.execute(
         "SELECT lot_id, quantity FROM app.lot_selections "
-        "WHERE investment_transaction_id = 'sell_1' ORDER BY lot_id"  # noqa: S608  # test read, static SQL
+        "WHERE investment_transaction_id = 'sell_1' ORDER BY lot_id"  # test read, static SQL
     ).fetchall()
 
 
@@ -1168,7 +1168,7 @@ class TestSelectLots:
             INSERT INTO core.fct_investment_transactions
                 (investment_transaction_id, account_id, security_id, type, quantity)
             VALUES ('buy_1', 'acct_brokerage', 'sec_1', 'buy', 10)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         with pytest.raises(UserError, match="disposal|sell"):
             db_service(db).select_lots("buy_1", [("lot_a", Decimal("1"))], actor="cli")
@@ -1199,7 +1199,7 @@ class TestSelectLots:
             INSERT INTO core.fct_investment_lots
                 (lot_id, account_id, security_id, remaining_quantity)
             VALUES ('lot_other', 'acct_brokerage', 'sec_2', 10)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots(
@@ -1221,7 +1221,7 @@ class TestSelectLots:
                 (lot_id, account_id, security_id, acquisition_date,
                  remaining_quantity)
             VALUES ('lot_future', 'acct_brokerage', 'sec_1', '2024-07-01', 10)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots(
@@ -1239,7 +1239,7 @@ class TestSelectLots:
                 (lot_id, account_id, security_id, acquisition_date,
                  original_quantity, remaining_quantity)
             VALUES ('lot_sameday', 'acct_brokerage', 'sec_1', '2024-06-15', 10, 10)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db_service(db).select_lots(
             "sell_1", [("lot_sameday", Decimal("5"))], actor="cli"
@@ -1263,7 +1263,7 @@ class TestSelectLots:
                  type, quantity)
             VALUES ('sell_earlier', 'acct_brokerage', 'sec_1', '2024-04-01',
                     'sell', -6)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.execute(
             """
@@ -1275,11 +1275,11 @@ class TestSelectLots:
             VALUES ('rg_1', 'acct_brokerage', 'sec_1', 'sell_earlier', 'lot_a',
                     6, '2024-01-10', '2024-04-01', 600.00, 500.00, 100.00,
                     'short', 'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.execute(
             "UPDATE core.fct_investment_lots SET remaining_quantity = 0 "
-            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
+            "WHERE lot_id = 'lot_a'"  # test fixture update, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
@@ -1300,7 +1300,7 @@ class TestSelectLots:
                  type, quantity)
             VALUES ('sell_earlier', 'acct_brokerage', 'sec_1', '2024-04-01',
                     'sell', -4)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.execute(
             """
@@ -1312,11 +1312,11 @@ class TestSelectLots:
             VALUES ('rg_1', 'acct_brokerage', 'sec_1', 'sell_earlier', 'lot_a',
                     4, '2024-01-10', '2024-04-01', 400.00, 333.33, 66.67,
                     'short', 'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.execute(
             "UPDATE core.fct_investment_lots SET remaining_quantity = 2 "
-            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
+            "WHERE lot_id = 'lot_a'"  # test fixture update, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")
@@ -1340,11 +1340,11 @@ class TestSelectLots:
                  type, quantity)
             VALUES ('transfer_out_earlier', 'acct_brokerage', 'sec_1',
                     '2024-04-01', 'transfer_out', -4)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.execute(
             "UPDATE core.fct_investment_lots SET remaining_quantity = 2 "
-            "WHERE lot_id = 'lot_a'"  # noqa: S608  # test fixture update, static SQL
+            "WHERE lot_id = 'lot_a'"  # test fixture update, static SQL
         )
         with pytest.raises(UserError, match="position|lot"):
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("3"))], actor="cli")
@@ -1447,7 +1447,7 @@ class TestSelectLots:
         _set_account_default_method(db, "specific")
         db.conn.execute(
             "UPDATE core.fct_investment_transactions SET security_id = NULL "
-            "WHERE investment_transaction_id = 'sell_1'"  # noqa: S608  # test fixture update, static SQL
+            "WHERE investment_transaction_id = 'sell_1'"  # test fixture update, static SQL
         )
         with pytest.raises(UserError) as exc:
             db_service(db).select_lots("sell_1", [("lot_a", Decimal("6"))], actor="cli")
@@ -1523,7 +1523,7 @@ def _insert_event(
             (investment_transaction_id, account_id, security_id, trade_date,
              type, subtype, quantity, amount, currency_code, source_type)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [
             investment_transaction_id,
             account_id,
@@ -1585,7 +1585,7 @@ def _insert_lot(
              cost_basis_remaining, cost_basis_method, currency_code, is_open,
              basis_incomplete)
         VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, 'fifo', ?, ?, ?)
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [
             lot_id,
             account_id,
@@ -1625,7 +1625,7 @@ def _insert_gain(
              quantity, acquisition_date, disposal_date, proceeds, cost_basis,
              gain_loss, term, cost_basis_method, basis_incomplete, currency_code)
         VALUES (?, ?, ?, ?, ?, 5, '2024-01-01'::DATE, ?, ?, ?, ?, ?, 'fifo', ?, ?)
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [
             realized_gain_id,
             account_id,
@@ -1715,7 +1715,7 @@ def _replace_holdings_view(db: Database, rows: list[_Holding]) -> None:
         select_sql = _holding_select(_Holding()) + " WHERE FALSE"
     else:
         select_sql = " UNION ALL ".join(_holding_select(h) for h in rows)
-    db.execute(  # noqa: S608  # test fixture view, literal test data only
+    db.execute(  # test fixture view, literal test data only
         f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
     )
 

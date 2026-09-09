@@ -11,7 +11,11 @@ from moneybin.extractors.tabular.account_label import parse_account_label
     ("label", "expected_name", "expected_last4"),
     [
         ("Everyday Spending (...7777)", "Everyday Spending", "7777"),
-        ("Checking ····7777", "Checking", "7777"),  # noqa: RUF001  # U+00B7 mask dots are the input under test
+        (
+            "Checking ····7777",
+            "Checking",
+            "7777",
+        ),  # U+00B7 mask dots are the input under test
         ("Savings x7777", "Savings", "7777"),
         ("Card ending in 7777", "Card", "7777"),
         ("Card ending 7777", "Card", "7777"),

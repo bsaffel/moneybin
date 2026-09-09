@@ -67,7 +67,7 @@ _CLASSES = {column.name: column.data_class for column in _COLUMNS}
 
 def _transport_report() -> ServiceReportSpec:
     def execute(
-        db: Database,  # noqa: ARG001  # contract handle
+        db: Database,  # contract handle
         parameters: Mapping[str, JsonValue],
         limit: int | None,
     ) -> CatalogReportExecution:

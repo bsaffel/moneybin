@@ -21,7 +21,7 @@ async def test_register_profile_tools_registers_expected() -> None:
 
     srv = FastMCP("test")
     register_profile_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"profile", "profile_set"}
 
 

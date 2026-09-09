@@ -1,4 +1,3 @@
-# ruff: noqa: S101,S106
 """Tests for the smart-import confirmation flow in the CLI.
 
 Tests the --confirm / --mapping flags on `import files` and the new

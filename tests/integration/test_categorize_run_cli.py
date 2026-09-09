@@ -1,7 +1,5 @@
 """Integration tests for `moneybin transactions categorize run` CLI command."""
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 import json

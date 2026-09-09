@@ -97,10 +97,10 @@ from moneybin.metrics.registry import set_fx_accounting_rows
 )
 def execute(
     context: ExecutionContext,
-    start: datetime,  # noqa: ARG001 — FULL kind ignores start/end
-    end: datetime,  # noqa: ARG001
-    execution_time: datetime,  # noqa: ARG001
-    **kwargs: t.Any,  # noqa: ARG001
+    start: datetime,  # FULL kind ignores start/end
+    end: datetime,
+    execution_time: datetime,
+    **kwargs: t.Any,
 ) -> Iterator[pd.DataFrame]:
     """Emit one explicitly typed row per trusted Currency conversion."""
     rows = load_conversion_rows(context)

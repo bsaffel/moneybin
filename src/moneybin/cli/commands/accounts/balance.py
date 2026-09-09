@@ -42,7 +42,7 @@ app = typer.Typer(
 @app.command("show")
 def accounts_balance_show(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — show has no informational chatter
+    quiet: bool = quiet_option,  # show has no informational chatter
     account: str | None = typer.Option(
         None, "--account", help="Filter to a single account_id"
     ),
@@ -84,7 +84,7 @@ def accounts_balance_history(
     from_date: str | None = typer.Option(None, "--from"),
     to_date: str | None = typer.Option(None, "--to"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — history has no informational chatter
+    quiet: bool = quiet_option,  # history has no informational chatter
 ) -> None:
     """Per-account balance history (daily series)."""
     with handle_cli_errors(
@@ -118,7 +118,9 @@ def accounts_balance_assert(
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
     amount: str = typer.Argument(..., help="Balance amount as decimal"),
     notes: str | None = typer.Option(None, "--notes"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+    yes: bool = typer.Option(
+        False, "--yes", "-y"
+    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Assert a balance for an account on a specific date."""
     parsed_date: _date
@@ -144,7 +146,7 @@ def accounts_balance_assert(
 def accounts_balance_list(
     account: str | None = typer.Option(None, "--account"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter
+    quiet: bool = quiet_option,  # list has no informational chatter
 ) -> None:
     """List balance assertions, optionally filtered by account."""
     with handle_cli_errors(
@@ -171,7 +173,9 @@ def accounts_balance_list(
 def accounts_balance_assertion_delete(
     account_id: str = typer.Argument(...),
     assertion_date: str = typer.Argument(..., help="ISO date (YYYY-MM-DD)"),
-    yes: bool = typer.Option(False, "--yes", "-y"),  # noqa: ARG001 — accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
+    yes: bool = typer.Option(
+        False, "--yes", "-y"
+    ),  # accepted for forward compat; no confirmation prompt today, but scripts pass --yes defensively
 ) -> None:
     """Delete a balance assertion. Silent no-op if no row exists."""
     parsed_date: _date
@@ -190,7 +194,7 @@ def accounts_balance_reconcile(
     account: str | None = typer.Option(None, "--account"),
     threshold: str = typer.Option("0.01", "--threshold"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — reconcile has no informational chatter
+    quiet: bool = quiet_option,  # reconcile has no informational chatter
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None

@@ -70,7 +70,7 @@ def _insert_transactions() -> None:
                 'merchant_restaurant', 'Restaurant', 'contains',
                 'Restaurant', 'Food & Drink', NULL, 'test', [],
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
 
 
@@ -107,7 +107,7 @@ async def test_transactions_get_no_cursor_when_empty(mcp_db: object) -> None:
 async def test_standard_registrar_uses_coarse_transaction_boundaries() -> None:
     srv = FastMCP("test")
     register_transactions_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"transactions", "transactions_annotate"}
 
 
@@ -115,7 +115,7 @@ async def test_standard_registrar_uses_coarse_transaction_boundaries() -> None:
 async def test_transaction_coarse_registrar_registers_only_replacement() -> None:
     srv = FastMCP("test")
     register_transaction_coarse_reads(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == {"transactions"}
 
 

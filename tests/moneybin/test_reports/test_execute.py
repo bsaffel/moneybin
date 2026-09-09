@@ -123,7 +123,7 @@ def test_a_stale_saved_query_fails_without_echoing_its_sql(
     does not, so the boundary itself has to classify the failure and drop the SQL.
     """
 
-    def stale(db: Database) -> ReportQuery:  # noqa: ARG001  # report contract handle
+    def stale(db: Database) -> ReportQuery:  # report contract handle
         """Saved query naming a column no longer present upstream.
 
         Args:

@@ -218,10 +218,10 @@ def stats_command(
                     )
                     WHERE rn = 1
                     ORDER BY metric_name
-                    """,  # noqa: S608 — where_sql is built from validated fragments
+                    """,  # noqa: S608  # where_sql is built from validated fragments
                     params if params else None,
                 ).fetchall()
-            except Exception:  # noqa: BLE001 — app.metrics table may not exist yet
+            except Exception:  # app.metrics table may not exist yet
                 logger.debug("Failed to query app.metrics", exc_info=True)
                 rows = []
 

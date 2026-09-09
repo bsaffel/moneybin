@@ -1,4 +1,3 @@
-# ruff: noqa: S101,S106
 # TestConfirmationEnvelopeData tests the module-private _confirmation_envelope_data builder:
 # pyright: reportPrivateUsage=false
 """Tests for import CLI commands.
