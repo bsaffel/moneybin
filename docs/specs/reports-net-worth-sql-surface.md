@@ -616,9 +616,12 @@ tests named in §Testing Strategy.
 - `src/moneybin/metrics/registry.py` — rate-spine coverage counters.
 - `docs/specs/INDEX.md`, `docs/roadmap.md` — status and milestone entries.
 - `.claude/rules/column-ordering.md` — the "service-backed report is the
-  exception" passages retire with the deletion below. (Enforcement item 3's
-  `_SNAPSHOT_COLUMN_TYPES` tripwire already retired separately, when the
-  snapshot path was keyed by name — issue #511.)
+  exception" passages retire with the deletion below, including the
+  parallel-positions list that names `_SNAPSHOT_COLUMN_TYPES_BY_NAME`,
+  `_HISTORY_COLUMNS`, and `types_by_name` — every symbol it cites disappears
+  in this deletion too. (Enforcement item 3's `_SNAPSHOT_COLUMN_TYPES`
+  tripwire already retired separately, when the snapshot path was keyed by
+  name — issue #511.)
 
 ### Files to Delete
 

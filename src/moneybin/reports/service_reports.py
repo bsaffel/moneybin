@@ -106,9 +106,9 @@ _SNAPSHOT_COLUMN_TYPES_BY_NAME = {
     "total_liabilities": "DECIMAL(18,2)",
     "net_worth": "DECIMAL(18,2)",
 }
-_SNAPSHOT_COLUMN_TYPES = [
+_SNAPSHOT_COLUMN_TYPES = tuple(
     _SNAPSHOT_COLUMN_TYPES_BY_NAME[column.name] for column in _SNAPSHOT_COLUMNS
-]
+)
 _SNAPSHOT_CLASSES = {column.name: column.data_class for column in _SNAPSHOT_COLUMNS}
 _SNAPSHOT_SEMANTICS = ReportSemantics(
     unit="currency",
@@ -386,9 +386,8 @@ def _execute_networth_history(
         for point in payload.points
     ]
     # Keyed by column name and projected through _HISTORY_COLUMNS, so reordering
-    # that tuple carries the types with it. The positional form this replaced
-    # had to be reordered in lockstep by hand, and nothing checked it — unlike
-    # `_SNAPSHOT_COLUMN_TYPES`, whose parallel list a test does hold down.
+    # that tuple carries the types with it — the same shape `_SNAPSHOT_COLUMN_TYPES`
+    # uses for `_SNAPSHOT_COLUMNS`.
     types_by_name = {
         "currency_code": "VARCHAR",
         "period": "VARCHAR",

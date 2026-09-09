@@ -35,16 +35,16 @@ _SNAPSHOT_COLUMNS]` directly into its execution, so for `core:networth` and
 `core:networth_history` the declared order is what JSON, MCP, `--wide`, and every
 export emit. Reordering that tuple is a user-visible change, not a cosmetic one.
 
-A service report in fact carries **three** parallel orderings, and reordering one
-means reordering all three:
+A service report in fact carries **three** positions that must stay in
+agreement, but only two of them are separate lists an author reorders by hand:
 
 1. The `columns` tuple — sets `result.columns`, drives `--wide`.
-2. A `column_types` list. Both `core:networth` and `core:networth_history` key
-   their types by column name (`_SNAPSHOT_COLUMN_TYPES_BY_NAME`,
+2. A `column_types` sequence. Both `core:networth` and `core:networth_history`
+   key their types by column name (`_SNAPSHOT_COLUMN_TYPES_BY_NAME`,
    `_execute_networth_history`'s local `types_by_name`) and project them
    through their own columns tuple (`_SNAPSHOT_COLUMNS`, `_HISTORY_COLUMNS`),
-   so reordering the columns tuple carries the types with it — an ordering
-   derived once beats an ordering duplicated and checked.
+   so this one is derived, not a second hand-kept ordering — reordering the
+   columns tuple carries the types with it automatically.
    `core:networth_history`'s `_decimal_column_type(rows, "net_worth", …)`
    entries additionally name their column in an argument, since its types
    depend on the resolved `Decimal` precision rather than being static.
