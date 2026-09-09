@@ -1750,7 +1750,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wants the same conversation with the data in a file they hold, and the
   README's client list names the ChatGPT desktop app in place of Gemini CLI.
   Every claim is custody, not privacy: the model still sees the rows it
-  queries.
+  queries. (#572)
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
   total with an `s` appended whether or not it measured time — so
