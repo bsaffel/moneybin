@@ -305,7 +305,7 @@ def model_presence(db: Database) -> ModelPresence:
             SELECT LOWER(schema_name || '.' || view_name) FROM duckdb_views()
             """
         ).fetchall()
-    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on catalog reads
+    except Exception as e:  # duckdb raises untyped errors on catalog reads
         # Frame chain, not the traceback: `exc_info` would append
         # `<Type>: <str(exc)>`, and DuckDB names the database file in its
         # catalog errors. `SanitizedLogFormatter` masks amounts and digit runs,

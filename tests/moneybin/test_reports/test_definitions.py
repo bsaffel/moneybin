@@ -440,7 +440,7 @@ _BINDING_CLASSES: list[tuple[str, Runner, dict[str, Any], tuple[str, ...]]] = [
 )
 def test_every_binding_a_shipped_runner_returns_declares_its_class(
     db: Database,
-    name: str,  # noqa: ARG001  # parametrize id only
+    name: str,  # parametrize id only
     runner: Runner,
     kwargs: dict[str, Any],
     expected: tuple[str, ...],
@@ -511,7 +511,7 @@ def _install_large_transactions_view(db: Database, *, jpy_rows: int) -> None:
                'm2', 'Depato', 'Food', 'JPY', 3.0, 3.0, TRUE
         FROM GENERATE_SERIES(1, ?) AS t(i)
     """.replace("?", str(jpy_rows))
-    )  # noqa: S608  # test-controlled row count
+    )  # test-controlled row count
 
 
 def test_large_transactions_keeps_each_currency_inside_the_top_n(
@@ -544,7 +544,7 @@ def _install_merchant_activity_view(db: Database, *, jpy_rows: int) -> None:
                'Food', 1
         FROM GENERATE_SERIES(1, ?) AS t(i)
     """.replace("?", str(jpy_rows))
-    )  # noqa: S608  # test-controlled row count
+    )  # test-controlled row count
 
 
 def test_merchants_keeps_each_currency_inside_the_top_n(db: Database) -> None:

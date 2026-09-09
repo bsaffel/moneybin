@@ -31,7 +31,7 @@ def _model_body(name: str) -> str:
 
 def _install_report(db: Database, name: str) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
-    db.execute(  # noqa: S608  # test-selected shipped model name
+    db.execute(  # test-selected shipped model name
         f"CREATE OR REPLACE VIEW reports.{name} AS {_model_body(name)}"
     )
 

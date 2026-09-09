@@ -110,7 +110,7 @@ def pre_v026_db(db: Database) -> Database:
     # follows the same pattern for tabular_transactions.)
     for sid, acct, txn_date, amt, desc in rows:
         db.execute(
-            "INSERT INTO raw.manual_transactions "  # noqa: S608  # test input, not user SQL
+            "INSERT INTO raw.manual_transactions "  # test input, not user SQL
             "(source_transaction_id, import_id, account_id, transaction_date, "
             " amount, description, created_by, transaction_id) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",

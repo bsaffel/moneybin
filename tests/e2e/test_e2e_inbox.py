@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess  # noqa: S404 — subprocess is intentional; we invoke uv as a test harness
+import subprocess  # noqa: S404  # subprocess is intentional; we invoke uv as a test harness
 from pathlib import Path
 
 import pytest
@@ -57,8 +57,8 @@ class TestInboxWorkflow:
         shutil.copy(fixture, drop_dir / "march.csv")
 
         full_env = {**os.environ, **FAST_ARGON2_ENV, **env}
-        result = subprocess.run(  # noqa: S603 — controlled test command, not user input
-            ["uv", "run", "moneybin", "import", "inbox"],  # noqa: S607 — uv is on PATH in dev
+        result = subprocess.run(  # controlled test command, not user input
+            ["uv", "run", "moneybin", "import", "inbox"],  # noqa: S607  # uv is on PATH in dev
             env=full_env,
             capture_output=True,
             text=True,

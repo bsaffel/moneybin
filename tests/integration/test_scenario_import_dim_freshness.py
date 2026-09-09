@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Regression scenario: multi-file import refreshes core.dim_accounts.
 
 Guards against the 2026-05-15 finding: a multi-file import previously left

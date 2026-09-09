@@ -116,7 +116,7 @@ _CLASSES = {"value": DataClass.AGGREGATE}
 
 
 def _sql_runner(
-    db: Database,  # noqa: ARG001  # contract handle
+    db: Database,  # contract handle
     *,
     count: int,
     label: str | None = None,
@@ -787,7 +787,7 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
     dispatched: dict[str, JsonValue] = {}
 
     def executor(
-        db: Database,  # noqa: ARG001  # contract handle
+        db: Database,  # contract handle
         parameters: Mapping[str, JsonValue],
         limit: int | None,
     ) -> CatalogReportExecution:
@@ -1778,7 +1778,7 @@ def test_networth_separates_currency_totals_from_account_balances(
     )
 
 
-def _transaction_total_runner(db: Database) -> ReportQuery:  # noqa: ARG001  # contract handle
+def _transaction_total_runner(db: Database) -> ReportQuery:  # contract handle
     """Total the very rows an undecided duplicate pair leaves doubled."""
     return ReportQuery("SELECT SUM(amount) AS value FROM core.fct_transactions")
 

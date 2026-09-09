@@ -443,7 +443,7 @@ def test_approve_cascade_threads_parent_audit_id(real_db: Database) -> None:
 
     # The rule-insert audit is the cascade parent.
     rule_insert = real_db.execute(
-        "SELECT audit_id FROM app.audit_log "  # noqa: S608  # test query, not executing user SQL
+        "SELECT audit_id FROM app.audit_log "  # test query, not executing user SQL
         "WHERE action = 'categorization_rule.insert' AND target_id = ?",
         [rule_id],
     ).fetchone()
@@ -452,7 +452,7 @@ def test_approve_cascade_threads_parent_audit_id(real_db: Database) -> None:
 
     # The proposal-approve audit threads the rule-insert's audit id.
     approve_row = real_db.execute(
-        "SELECT parent_audit_id FROM app.audit_log "  # noqa: S608  # test query, not executing user SQL
+        "SELECT parent_audit_id FROM app.audit_log "  # test query, not executing user SQL
         "WHERE action = 'proposed_rule.approve' AND target_id = ?",
         [pid],
     ).fetchone()

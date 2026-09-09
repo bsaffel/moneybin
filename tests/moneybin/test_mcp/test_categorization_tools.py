@@ -63,7 +63,7 @@ async def _registered_names() -> set[str]:
     register_taxonomy_tools(srv)
     register_transactions_categorize_tools(srv)
     register_transactions_categorize_assist_tools(srv)
-    return {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
 
 class TestCategorizeToolRegistration:
@@ -382,7 +382,7 @@ class TestCategorizePendingSortParam:
                     DATE '2026-04-15', CAST(-5.00 AS DECIMAL(18,2)),
                     'USD', 'TINY', NULL, 'Tiny',
                     CAST(25 AS INTEGER), 125.0, 'ofx', NULL
-            """)  # noqa: S608  # test input, not executing dynamic SQL
+            """)  # test input, not executing dynamic SQL
 
     @pytest.mark.unit
     async def test_categorize_pending_sort_impact(self, mcp_db: object) -> None:
@@ -544,7 +544,7 @@ class TestCategorizationRulesTargetState:
         server = FastMCP("coarse-rules")
         register_categorization_coarse_writes(server)
 
-        names = {tool.name for tool in await server._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {tool.name for tool in await server._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {"transactions_categorize_rules_set"}
 
     @pytest.mark.unit
@@ -774,7 +774,7 @@ class TestCategorizationRulesCoarseReads:
         server = FastMCP("coarse-rule-reads")
         register_categorization_coarse_reads(server)
 
-        names = {tool.name for tool in await server._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {tool.name for tool in await server._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {"transactions_categorize_rules"}
         assert derive_tier(CategorizationRulesCoarsePayload) is Tier.HIGH
 

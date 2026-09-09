@@ -1047,7 +1047,7 @@ def reviews_coarse(
                             tuple[ReviewStatus, ...], ("pending", "history")
                         )
                     ]
-                except Exception as exc:  # noqa: BLE001 — degrade this queue only
+                except Exception as exc:  # degrade this queue only
                     unavailable.append(_unavailable_queue(queue_kind, exc))
                     continue
                 counts.extend(queue_counts)

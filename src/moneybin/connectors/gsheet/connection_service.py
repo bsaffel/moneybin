@@ -674,7 +674,9 @@ class GSheetConnectionService:
                     safe_view = exp.to_identifier(f"gsheet_{alias}", quoted=True).sql(
                         "duckdb"
                     )
-                    self._db.execute(f"DROP VIEW IF EXISTS raw.{safe_view};")  # noqa: S608  # alias regex-validated + sqlglot-quoted
+                    self._db.execute(
+                        f"DROP VIEW IF EXISTS raw.{safe_view};"
+                    )  # alias regex-validated + sqlglot-quoted
                 self._db.execute(
                     f"DELETE FROM {GSHEET_SEEDS.full_name} WHERE connection_id = ?",  # noqa: S608  # TableRef + parameterized value
                     [connection_id],

@@ -116,7 +116,7 @@ def test_tabular_currency_case_and_whitespace_variants_are_one_currency(
                  source_origin, import_id, extracted_at, loaded_at)
             VALUES (?, ?, ?, '/tmp/variants.csv', 'csv', 'variant_bank',
                     'imp-variants', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"variant-acct-{i}", f"Account {i}", raw_currency],
         )
         db.execute(
@@ -128,7 +128,7 @@ def test_tabular_currency_case_and_whitespace_variants_are_one_currency(
             VALUES (?, ?, '2026-01-15', -10.00, 'Variant purchase', ?,
                     '/tmp/variants.csv', 'csv', 'variant_bank', 'imp-variants',
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"variant-txn-{i}", f"variant-acct-{i}", raw_currency],
         )
 
@@ -169,7 +169,7 @@ def test_plaid_account_currency_falls_back_to_the_unofficial_code(
                  source_file, source_type, source_origin, extracted_at, loaded_at)
             VALUES (?, 'depository', 'checking', 'Test Bank', 'sync_1', 'plaid',
                     'item_currency', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [account_id],
         )
         db.execute(
@@ -180,7 +180,7 @@ def test_plaid_account_currency_falls_back_to_the_unofficial_code(
                  extracted_at, loaded_at)
             VALUES (?, '2026-01-15', 100.00, ?, ?, 'sync_1', 'plaid',
                     'item_currency', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [account_id, iso_code, unofficial_code],
         )
 

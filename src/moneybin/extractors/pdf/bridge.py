@@ -206,7 +206,7 @@ def parse_bridge_response(payload: object) -> BridgeResponse:
         )
     try:
         recipe = Recipe.model_validate(typed_recipe)
-    except Exception as e:  # noqa: BLE001 — pydantic ValidationError + bound-validator ValueErrors
+    except Exception as e:  # pydantic ValidationError + bound-validator ValueErrors
         raise BridgeResponseError(f"bridge recipe invalid: {e}") from e
     # A bridge recipe must extract the two required fields — a primary date and
     # an amount of the shape the declared sign_convention reconciles against.

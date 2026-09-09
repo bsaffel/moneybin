@@ -89,8 +89,10 @@ def _install_ledger_chain(
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         f"CREATE TABLE prep.stg_plaid__investment_transactions ({_PLAID_COLUMNS}, ledger_include BOOLEAN)"
-    )  # noqa: S608  # static test DDL
-    db.execute(f"CREATE TABLE prep.stg_plaid__opening_lots ({_PLAID_COLUMNS})")  # noqa: S608  # static test DDL
+    )  # static test DDL
+    db.execute(
+        f"CREATE TABLE prep.stg_plaid__opening_lots ({_PLAID_COLUMNS})"
+    )  # static test DDL
     db.execute("""
         CREATE TABLE core.dim_accounts (
             account_id VARCHAR,
@@ -102,11 +104,11 @@ def _install_ledger_chain(
         "INSERT INTO core.dim_accounts VALUES (?, ?, ?::TIMESTAMP)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
     )
-    db.execute(  # noqa: S608  # shipped model body, not user SQL
+    db.execute(  # shipped model body, not user SQL
         "CREATE OR REPLACE VIEW prep.stg_manual__investment_transactions AS "
         + _model_body(_MANUAL_STG)
     )
-    db.execute(  # noqa: S608  # shipped model body, not user SQL
+    db.execute(  # shipped model body, not user SQL
         "CREATE OR REPLACE VIEW core.fct_investment_transactions AS "
         + _model_body(_LEDGER)
     )
@@ -129,7 +131,7 @@ def _record_event(
         VALUES ('manual_evt_1', 'import_1', ?, 'sec_1', ?, '2026-05-11'::DATE,
                 10::DECIMAL(28,10), ?::DECIMAL(18,2), ?, 'cli', 'inv_evt_1',
                 ?::TIMESTAMP)
-        """,  # noqa: S608  # static test fixture
+        """,  # static test fixture
         [_ACCOUNT_ID, event_type, amount, currency_code, created_at],
     )
 

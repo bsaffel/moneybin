@@ -89,7 +89,7 @@ def get_redaction_key() -> bytes:
             # unstable across calls whenever the keychain is unreachable.
             try:
                 store.set_key(REDACTION_KEY_NAME, key.hex())
-            except Exception:  # noqa: BLE001 — fail-soft: in-memory key stays stable for this process
+            except Exception:  # fail-soft: in-memory key stays stable for this process
                 logger.warning(
                     "privacy: could not persist redaction key; "
                     "key is ephemeral for this process"

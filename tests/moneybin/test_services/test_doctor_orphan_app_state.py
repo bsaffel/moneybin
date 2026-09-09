@@ -19,7 +19,7 @@ from tests.moneybin.db_helpers import create_core_tables
 def _seed_core_txn(db: Database, transaction_id: str) -> None:
     """Insert a minimal core.fct_transactions row so non-orphans pass."""
     db.execute(
-        "INSERT INTO core.fct_transactions "  # noqa: S608  # test input, not user SQL
+        "INSERT INTO core.fct_transactions "  # test input, not user SQL
         "(transaction_id, account_id, transaction_date, amount, description, source_type) "
         "VALUES (?, ?, ?, ?, ?, ?)",
         [transaction_id, "acct1", date(2024, 1, 1), Decimal("10.00"), "x", "csv"],
@@ -28,7 +28,7 @@ def _seed_core_txn(db: Database, transaction_id: str) -> None:
 
 def _insert_note(db: Database, *, note_id: str, transaction_id: str) -> None:
     db.execute(
-        "INSERT INTO app.transaction_notes "  # noqa: S608  # test input, not user SQL
+        "INSERT INTO app.transaction_notes "  # test input, not user SQL
         "(note_id, transaction_id, text, author) VALUES (?, ?, ?, ?)",
         [note_id, transaction_id, "n", "mcp"],
     )
@@ -36,7 +36,7 @@ def _insert_note(db: Database, *, note_id: str, transaction_id: str) -> None:
 
 def _insert_tag(db: Database, *, transaction_id: str, tag: str) -> None:
     db.execute(
-        "INSERT INTO app.transaction_tags "  # noqa: S608  # test input, not user SQL
+        "INSERT INTO app.transaction_tags "  # test input, not user SQL
         "(transaction_id, tag, applied_by) VALUES (?, ?, ?)",
         [transaction_id, tag, "mcp"],
     )
@@ -56,7 +56,7 @@ def _insert_pending_manual(
     ``predicted_transaction_id`` as orphans during this window.
     """
     db.execute(
-        "INSERT INTO raw.manual_transactions "  # noqa: S608  # test input, not user SQL
+        "INSERT INTO raw.manual_transactions "  # test input, not user SQL
         "(source_transaction_id, import_id, account_id, transaction_date, "
         " amount, description, created_by, transaction_id) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",

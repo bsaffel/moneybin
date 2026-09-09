@@ -8,7 +8,7 @@ import inspect
 import json
 import logging
 import os
-import subprocess  # noqa: S404 — subprocess used for git rev-parse; static args only
+import subprocess  # noqa: S404  # subprocess used for git rev-parse; static args only
 from collections.abc import Callable
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -314,7 +314,7 @@ def _read_git_revision(root: Path) -> str | None:
     confidently wrong stamp, worse than the documented ``null``.
     """
     try:
-        completed = subprocess.run(  # noqa: S603 — git with static args
+        completed = subprocess.run(  # noqa: S603  # git with static args
             [  # noqa: S607
                 "git",
                 "-C",
@@ -1032,7 +1032,7 @@ async def system_status_coarse(
                 response = await _run_tool_body(
                     transactions_categorize_stats, include_auto=detail == "full"
                 )
-        except Exception as exc:  # noqa: BLE001 — degrade this section, keep the rest
+        except Exception as exc:  # degrade this section, keep the rest
             unavailable = _unavailable_section(section, exc)
             selected.append(unavailable)
             degraded_reasons.append(f"{section}: {unavailable.reason}")

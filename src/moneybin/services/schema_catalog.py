@@ -785,7 +785,7 @@ def _schema_doc(db: Database) -> dict[str, Any]:
           ON t.schema_name = c.schema_name AND t.table_name = c.table_name
         WHERE t.schema_name || '.' || t.table_name IN ({placeholders})
         ORDER BY t.schema_name, t.table_name, c.column_index
-        """,  # noqa: S608  # INTERFACE_TABLES is a compile-time allowlist, not user input
+        """,  # INTERFACE_TABLES is a compile-time allowlist, not user input
         interface_names,
     ).fetchall()
     seed_view_entries = _gsheet_seed_views(db)
@@ -884,7 +884,7 @@ def build_live_catalog(schema: str | None = None) -> list[dict[str, Any]]:
             FROM duckdb_views()
             WHERE NOT internal AND schema_name IN ({placeholders})
             ORDER BY schema_name, table_name
-            """,  # noqa: S608  # placeholders only; schema values are parameterized
+            """,  # placeholders only; schema values are parameterized
             schemas + schemas,
         ).fetchall()
 
@@ -918,7 +918,7 @@ def _gsheet_seed_views(db: Database) -> list[dict[str, Any]]:
               AND status != 'disconnected'
               AND alias IS NOT NULL
             ORDER BY created_at ASC, connection_id ASC
-            """  # noqa: S608  # GSHEET_CONNECTIONS is a TableRef constant
+            """  # GSHEET_CONNECTIONS is a TableRef constant
         ).fetchall()
     except duckdb.CatalogException:
         # Table absent on bare DBs before init_schemas — no seed views to add.
@@ -989,7 +989,7 @@ def _pdf_seed_views(db: Database) -> list[dict[str, Any]]:
             WHERE source_type = 'pdf'
               AND status = 'complete'
             ORDER BY source_origin ASC
-            """  # noqa: S608 — compile-time TableRef constant, no user input
+            """  # compile-time TableRef constant, no user input
         ).fetchall()
     except duckdb.CatalogException:
         # Table absent on bare DBs before init_schemas — no PDF views to add.

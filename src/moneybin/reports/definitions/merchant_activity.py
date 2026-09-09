@@ -133,7 +133,7 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
     ),
 )
 def merchant_activity(
-    db: Database,  # noqa: ARG001  # contract handle; this runner builds pure SQL
+    db: Database,  # contract handle; this runner builds pure SQL
     *,
     top: int = 25,
     sort: str = "spend",

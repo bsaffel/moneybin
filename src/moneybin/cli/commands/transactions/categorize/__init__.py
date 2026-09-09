@@ -63,7 +63,7 @@ def categorize_pending(
         help="Filter to an account: accepts account_id or display_name (ambiguous matches error).",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001
+    quiet: bool = quiet_option,
 ) -> None:
     """List uncategorized transactions.
 
@@ -459,7 +459,7 @@ def categorize_assist(
 @app.command("stats")
 def stats(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — summary has no informational chatter; only data
+    quiet: bool = quiet_option,  # summary has no informational chatter; only data
 ) -> None:
     """Show categorization coverage summary."""
     from moneybin.cli.output import render_or_json

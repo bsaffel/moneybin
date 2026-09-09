@@ -132,7 +132,7 @@ def _build_raw_landing_scan(
             SELECT MAX(landed_at)::TIMESTAMPTZ FROM (
             {union}
             ) AS candidates
-        """  # noqa: S608  # identifiers come from the module constants above
+        """  # identifiers come from the module constants above
     return f"""
         WITH bad_imports AS (
             SELECT import_id FROM {IMPORT_LOG.full_name}
@@ -143,7 +143,7 @@ def _build_raw_landing_scan(
         SELECT MAX(landed_at)::TIMESTAMPTZ FROM candidates
         WHERE import_id IS NULL
            OR import_id NOT IN (SELECT import_id FROM bad_imports)
-    """  # noqa: S608  # identifiers come from the module constants above
+    """  # identifiers come from the module constants above
 
 
 _RAW_LANDING_SCAN = _build_raw_landing_scan(_RAW_LANDING_COLUMNS)
@@ -199,7 +199,7 @@ def _oldest_execution_scan(model_count: int) -> str:
         FROM {MODEL_FRESHNESS.full_name}
         WHERE COALESCE(model_kind, '') NOT IN ({kinds})
           AND LOWER(model_name) IN ({names})
-    """  # noqa: S608  # kinds are a module constant; names are `?` placeholders
+    """  # kinds are a module constant; names are `?` placeholders
 
 
 @dataclass(frozen=True)
@@ -353,7 +353,7 @@ class TransformService:
                         )
                 # Full plan rebuilds seeds.* too, so refresh views that read them.
                 refresh_views(self._db)
-            except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as structured result
+            except Exception as e:  # surface SQLMesh failure as structured result
                 elapsed = time.monotonic() - t0
                 error_type = type(e).__name__
                 # Envelope carries only the type name (str(e) can embed file
@@ -382,7 +382,9 @@ class TransformService:
             # caller think the apply failed and re-run it. Log and continue.
             try:
                 self._db.checkpoint("post_transform")
-            except Exception as e:  # noqa: BLE001 — checkpoint is best-effort durability, not correctness
+            except (
+                Exception
+            ) as e:  # checkpoint is best-effort durability, not correctness
                 logger.warning(
                     f"post_transform checkpoint failed (transforms applied): "
                     f"{type(e).__name__}"
@@ -402,7 +404,7 @@ class TransformService:
                 SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_apply").observe(
                     time.monotonic() - t0
                 )
-            except Exception as exc:  # noqa: BLE001  # telemetry must not undo a committed apply
+            except Exception as exc:  # telemetry must not undo a committed apply
                 # Type, not message: a metrics-client failure can name the
                 # profile path, and SanitizedLogFormatter masks known PII
                 # patterns, not arbitrary paths.
@@ -427,7 +429,7 @@ class TransformService:
                         no_prompts=True,
                     )
                 refresh_views(self._db)
-            except Exception as e:  # noqa: BLE001 — match apply()'s safe result contract
+            except Exception as e:  # match apply()'s safe result contract
                 elapsed = time.monotonic() - t0
                 error_type = type(e).__name__
                 logger.warning(
@@ -441,7 +443,7 @@ class TransformService:
 
             try:
                 self._db.checkpoint("post_transform")
-            except Exception as e:  # noqa: BLE001 — committed restatement remains valid
+            except Exception as e:  # committed restatement remains valid
                 logger.warning(
                     f"post_transform checkpoint failed after restatement: "
                     f"{type(e).__name__}"
@@ -455,7 +457,7 @@ class TransformService:
                 SQLMESH_RUN_DURATION_SECONDS.labels(model="transform_restate").observe(
                     time.monotonic() - t0
                 )
-            except Exception as exc:  # noqa: BLE001 — telemetry cannot undo a restatement
+            except Exception as exc:  # telemetry cannot undo a restatement
                 logger.warning(
                     f"Could not record the restatement duration: {type(exc).__name__}"
                 )
@@ -530,7 +532,7 @@ class TransformService:
                         env_apply_at = datetime.fromtimestamp(
                             env.finalized_ts / 1000, tz=UTC
                         ).replace(tzinfo=None)
-        except Exception:  # noqa: BLE001 — SQLMesh may fail to init on a fresh DB
+        except Exception:  # SQLMesh may fail to init on a fresh DB
             logger.debug("SQLMesh status read failed", exc_info=True)
 
         # Prefer SQLMesh's finalized_ts when present (authoritative for the
@@ -583,7 +585,7 @@ class TransformService:
         try:
             with sqlmesh_context(self._db) as ctx:
                 ctx.plan_builder().build()
-        except Exception as e:  # noqa: BLE001 — SQLMesh raises a variety of parse/resolve errors
+        except Exception as e:  # SQLMesh raises a variety of parse/resolve errors
             # type(e).__name__ instead of str(e): SQLMesh error messages can
             # embed file paths and SQL fragments containing user data.
             errors.append({"model": "<unknown>", "message": type(e).__name__})
@@ -626,7 +628,7 @@ class TransformService:
                                 "detail": None,
                             })
                             passed += 1
-        except Exception as e:  # noqa: BLE001 — surface SQLMesh failure as one failed audit
+        except Exception as e:  # surface SQLMesh failure as one failed audit
             # type(e).__name__ instead of str(e): SQLMesh error messages can
             # embed file paths and SQL fragments containing user data.
             return AuditResult(
@@ -654,7 +656,7 @@ class TransformService:
         try:
             row = self._db.execute(
                 f"SELECT MAX(completed_at)::TIMESTAMP FROM {IMPORT_LOG.full_name} "
-                f"WHERE status IN ('complete', 'partial')"  # noqa: S608  # TableRef constant
+                f"WHERE status IN ('complete', 'partial')"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when raw.import_log not yet created (pre-first-import)
@@ -664,7 +666,7 @@ class TransformService:
     def _max_dim_accounts_updated_at(self) -> datetime | None:
         try:
             row = self._db.execute(
-                f"SELECT MAX(updated_at)::TIMESTAMP FROM {DIM_ACCOUNTS.full_name}"  # noqa: S608  # TableRef constant
+                f"SELECT MAX(updated_at)::TIMESTAMP FROM {DIM_ACCOUNTS.full_name}"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
             # CatalogException when core.dim_accounts not yet created (pre-first-transform)

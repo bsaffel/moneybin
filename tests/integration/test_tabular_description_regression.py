@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Regression test: tabular descriptions must survive transforms into core.
 
 A previous followup speculated tabular-imported rows landed in

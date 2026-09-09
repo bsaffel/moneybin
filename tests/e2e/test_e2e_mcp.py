@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E MCP server tests — verify the server boots and responds to protocol requests.
 
 Uses the MCP SDK client to connect to `moneybin mcp serve` via stdio transport,

@@ -80,10 +80,10 @@ from moneybin.investments.sqlmesh_loader import load_engine_inputs
 )
 def execute(
     context: ExecutionContext,
-    start: datetime,  # noqa: ARG001 — FULL kind ignores start/end
-    end: datetime,  # noqa: ARG001
-    execution_time: datetime,  # noqa: ARG001
-    **kwargs: t.Any,  # noqa: ARG001
+    start: datetime,  # FULL kind ignores start/end
+    end: datetime,
+    execution_time: datetime,
+    **kwargs: t.Any,
 ) -> Iterator[pd.DataFrame]:
     """Run the cost-basis engine and emit one row per realized-gain slice."""
     events, method_for, selections_for, group_updated_at = load_engine_inputs(context)

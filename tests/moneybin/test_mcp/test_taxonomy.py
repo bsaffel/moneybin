@@ -633,7 +633,7 @@ async def test_taxonomy_all_noop_batch_returns_nothing_to_do() -> None:
 async def test_taxonomy_write_registrar_advertises_maximum_destructive_risk() -> None:
     mcp = isolated_server(register_taxonomy_coarse_writes)
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"taxonomy_set"}
     tool = await listed_tool(mcp, "taxonomy_set")
     assert tool.outputSchema is None
@@ -1017,7 +1017,7 @@ async def test_taxonomy_rejects_category_only_argument_for_merchants() -> None:
 async def test_taxonomy_standard_registrar_renders_closed_contract() -> None:
     mcp = isolated_server(register_taxonomy_coarse_reads)
 
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"taxonomy"}
     tool = await listed_tool(mcp, "taxonomy")
     assert tool.outputSchema is None

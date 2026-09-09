@@ -177,7 +177,7 @@ def test_remote_filesystem_refused_on_write_connection(
 ) -> None:
     """DuckDB refuses every remote scheme before it opens a socket."""
     with pytest.raises(duckdb.PermissionException, match="disabled by configuration"):
-        write_db.execute(f"SELECT * FROM read_csv('{url}')")  # noqa: S608 — fixed test URLs, not user input
+        write_db.execute(f"SELECT * FROM read_csv('{url}')")  # noqa: S608  # fixed test URLs, not user input
 
 
 @pytest.mark.parametrize("url", REMOTE_URLS)
@@ -186,7 +186,7 @@ def test_remote_filesystem_refused_on_read_only_connection(
 ) -> None:
     """The agent-facing handle is the one that matters most."""
     with pytest.raises(duckdb.PermissionException, match="disabled by configuration"):
-        read_db.execute(f"SELECT * FROM read_csv('{url}')")  # noqa: S608 — fixed test URLs, not user input
+        read_db.execute(f"SELECT * FROM read_csv('{url}')")  # noqa: S608  # fixed test URLs, not user input
 
 
 @pytest.mark.parametrize("sql", UNDO_ATTEMPTS)

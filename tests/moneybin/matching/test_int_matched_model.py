@@ -109,7 +109,7 @@ def _insert_match(
             account_id, confidence_score, match_signals, match_type, match_tier,
             account_id_b, match_status, match_reason, decided_by, decided_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [
             match_id,
             stid_a,
@@ -156,7 +156,7 @@ def _insert_unioned_row(
             transaction_date, amount, description, currency_code,
             source_type, source_origin, is_pending
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [
             source_transaction_id,
             account_id,
@@ -482,7 +482,7 @@ class TestIntTransactionsMatchedModel:
             FROM prep.int_transactions__matched
             WHERE match_group_id IS NOT NULL
             ORDER BY 1
-            """  # noqa: S608  # test input, not executing user SQL
+            """  # test input, not executing user SQL
         ).fetchall()
         # Exactly one confidence value in the group — the weakest edge.
         assert len(rows) == 1, f"Expected 1 distinct confidence value, got {rows}"

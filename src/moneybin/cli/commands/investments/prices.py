@@ -107,7 +107,7 @@ def _echo_refresh_hint(what: str, *, stale: bool) -> None:
 
 @app.command("pull")
 def investments_prices_pull(
-    securities: list[str] = typer.Option(  # noqa: B008  # typer declares defaults in the signature
+    securities: list[str] = typer.Option(  # typer declares defaults in the signature
         [],
         "--security",
         help="Limit to these securities (ticker, CUSIP, ISIN, name, or id). Repeatable.",
@@ -402,7 +402,7 @@ def investments_prices_list(
         help="Filter by the source that supplied each close",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — list has no informational chatter; only data
+    quiet: bool = quiet_option,  # list has no informational chatter; only data
 ) -> None:
     """Show the resolved price series for one security, newest first.
 

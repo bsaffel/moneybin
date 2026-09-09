@@ -59,7 +59,7 @@ class TestToolRegistration:
     async def test_reports_tools_register(self) -> None:
         srv = FastMCP("test")
         register_reports_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {"reports"}
 
     @pytest.mark.unit
@@ -67,7 +67,7 @@ class TestToolRegistration:
 
         srv = FastMCP("test")
         register_accounts_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {
             "accounts",
             "accounts_set",

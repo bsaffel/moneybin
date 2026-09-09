@@ -62,8 +62,10 @@ def run_standalone_audits(
         for name, audit in selected.items():
             try:
                 sql = audit.render_audit_query().sql(dialect="duckdb")
-                rows = db.execute(sql).fetchall()  # noqa: S608 — rendered from trusted audit files
-            except Exception as e:  # noqa: BLE001 — per-audit isolation; one broken audit must not hide the rest
+                rows = db.execute(sql).fetchall()  # rendered from trusted audit files
+            except (
+                Exception
+            ) as e:  # per-audit isolation; one broken audit must not hide the rest
                 logger.warning(f"Transform audit {name!r} failed to run: {e}")
                 outcomes.append(AuditOutcome(name=name, error=f"audit failed: {e}"))
                 continue

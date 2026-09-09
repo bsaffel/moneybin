@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """The mint report names an account the way every other surface names it.
 
 Guards issue #446: ``accounts_created[].display_name`` was a second, weaker

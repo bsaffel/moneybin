@@ -27,7 +27,7 @@ def test_dedup_cross_format_truncation() -> None:
         # Hand-derived: 4 CSV + 4 OFX twin rows collapse to 4 gold records,
         # each with exactly two contributing sources.
         rows = db.execute(
-            "SELECT source_count FROM core.fct_transactions"  # noqa: S608 — no input
+            "SELECT source_count FROM core.fct_transactions"  # no input
         ).fetchall()
         counts = sorted(int(r[0]) for r in rows)
         return [

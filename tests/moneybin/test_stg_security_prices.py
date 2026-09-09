@@ -33,7 +33,7 @@ def _insert_price(
              source_origin, close, price_basis, extracted_at, loaded_at)
         VALUES (?, ?::DATE, 'USD', ?, ?, ?, 'raw',
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [key, price_date, source, origin, close],
     )
 
@@ -61,7 +61,7 @@ def _accept_link(
              status, decided_by, decided_at)
         VALUES (?, ?, ?, ?, ?, 'accepted', 'auto',
                 COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [
             link_id or f"link_{key}",
             canonical_id,
@@ -579,7 +579,7 @@ def _retire_link(
         UPDATE app.security_links
         SET status = 'reversed', reversed_at = ?::TIMESTAMP, reversed_by = ?
         WHERE link_id = ?
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [f"{on} 00:00:00", by, link_id or f"link_{key}"],
     )
 

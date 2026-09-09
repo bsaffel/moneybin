@@ -107,7 +107,9 @@ class TestFxRate:
         result = runner.invoke(app, ["rate", "USD", "EUR"])
 
         assert result.exit_code == 0
-        assert resolve.call_args.args[2] == date.today()  # noqa: DTZ011  # a calendar date, not an instant
+        assert (
+            resolve.call_args.args[2] == date.today()
+        )  # a calendar date, not an instant
 
     @patch("moneybin.cli.commands.fx.get_database")
     @_patched_resolve(

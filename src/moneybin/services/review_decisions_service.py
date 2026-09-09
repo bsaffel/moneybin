@@ -266,7 +266,7 @@ class ReviewDecisionsService:
                 )
             )
             LIMIT 1
-            """,  # noqa: S608  # TableRef constants + parameterized value
+            """,  # TableRef constants + parameterized value
             [
                 transaction_id,
                 transaction_id,
@@ -310,7 +310,7 @@ class ReviewDecisionsService:
               AND subcategory IS NOT DISTINCT FROM ?
               AND is_active
             LIMIT 1
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [request.category, request.subcategory],
         ).fetchone()
         if category_row is None:
@@ -347,7 +347,7 @@ class ReviewDecisionsService:
                         SELECT list_contains(exemplars, ?)
                         FROM {USER_MERCHANTS.full_name}
                         WHERE merchant_id = ?
-                        """,  # noqa: S608  # TableRef constant + parameterized values
+                        """,  # TableRef constant + parameterized values
                         [match_text, merchant_id],
                     ).fetchone()
                     merchant_changed = not bool(exemplar_row and exemplar_row[0])
@@ -598,7 +598,7 @@ class ReviewDecisionsService:
             WHERE (provisional_account_id = ? OR candidate_account_id = ?)
               AND status = 'pending' AND reversed_at IS NULL
             ORDER BY decision_id
-            """,  # noqa: S608  # TableRef constants + parameterized values
+            """,  # TableRef constants + parameterized values
             [source_id, source_id],
         )
         links = _query_json_rows(
@@ -607,7 +607,7 @@ class ReviewDecisionsService:
             SELECT * FROM {ACCOUNT_LINKS.full_name}
             WHERE account_id = ? AND status = 'accepted'
             ORDER BY link_id
-            """,  # noqa: S608  # TableRef constant + parameterized value
+            """,  # TableRef constant + parameterized value
             [source_id],
         )
         material_accept = changed and request.decision == "accept"
@@ -619,7 +619,7 @@ class ReviewDecisionsService:
                 FROM {FCT_TRANSACTIONS.full_name}
                 WHERE account_id = ?
                 ORDER BY transaction_id
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [source_id],
             )
             if material_accept
@@ -695,7 +695,7 @@ class ReviewDecisionsService:
             WHERE source_type = ? AND ref_value = ?
               AND status = 'pending' AND reversed_at IS NULL
             ORDER BY decision_id
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [decision["source_type"], decision["ref_value"]],
         )
         links = _query_json_rows(
@@ -704,7 +704,7 @@ class ReviewDecisionsService:
             SELECT * FROM {MERCHANT_LINKS.full_name}
             WHERE source_type = ? AND ref_value = ?
             ORDER BY link_id
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [decision["source_type"], decision["ref_value"]],
         )
         material_accept = changed and request.decision == "accept"
@@ -750,7 +750,7 @@ class ReviewDecisionsService:
             WHERE ref_kind = ? AND ref_value = ? AND source_type = ?
               AND status = 'accepted'
             LIMIT 1
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [decision["ref_kind"], decision["ref_value"], decision["source_type"]],
         ).fetchone()
         binds_a_feed_key = SecurityLinksService.binds_a_feed_key(
@@ -805,7 +805,7 @@ class ReviewDecisionsService:
             WHERE source_type = ? AND ref_kind = ? AND ref_value = ?
               AND status = 'pending' AND reversed_at IS NULL
             ORDER BY decision_id
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [decision["source_type"], decision["ref_kind"], decision["ref_value"]],
         )
         links = _query_json_rows(
@@ -814,7 +814,7 @@ class ReviewDecisionsService:
             SELECT * FROM {SECURITY_LINKS.full_name}
             WHERE security_id = ? AND status = 'accepted'
             ORDER BY link_id
-            """,  # noqa: S608  # TableRef constant + parameterized value
+            """,  # TableRef constant + parameterized value
             [source_id],
         )
         securities = _query_json_rows(
@@ -823,7 +823,7 @@ class ReviewDecisionsService:
             SELECT * FROM {SECURITIES.full_name}
             WHERE security_id IN (?, ?)
             ORDER BY security_id
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [source_id, target_id],
         )
         manual = _query_json_rows(
@@ -832,7 +832,7 @@ class ReviewDecisionsService:
             SELECT * FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name}
             WHERE security_id = ?
             ORDER BY source_transaction_id
-            """,  # noqa: S608  # TableRef constant + parameterized value
+            """,  # TableRef constant + parameterized value
             [source_id],
         )
         selections = [
@@ -844,7 +844,7 @@ class ReviewDecisionsService:
                 SELECT * FROM {LOT_SELECTIONS.full_name}
                 WHERE investment_transaction_id = ?
                 ORDER BY lot_id
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [disposal_id],
             )
         ]
@@ -876,7 +876,7 @@ class ReviewDecisionsService:
                 SELECT * FROM {SECURITY_PRICE_OVERRIDES.full_name}
                 WHERE security_id = ?
                 ORDER BY price_date, quote_currency
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [source_id],
             )
             if material_merge
@@ -890,7 +890,7 @@ class ReviewDecisionsService:
                 FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
                 WHERE security_id = ?
                 ORDER BY investment_transaction_id
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [source_id],
             )
             if material_merge
@@ -907,7 +907,7 @@ class ReviewDecisionsService:
                 FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name}
                 WHERE security_id = ?
                 ORDER BY 1
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [source_id],
             )
             if material_merge
@@ -922,7 +922,7 @@ class ReviewDecisionsService:
                 FROM {FCT_INVESTMENT_LOTS.full_name}
                 WHERE security_id = ?
                 ORDER BY lot_id
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [source_id],
             )
             if material_merge
