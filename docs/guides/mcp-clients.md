@@ -288,7 +288,7 @@ Both return the standard MoneyBin envelope. `system_status` looks roughly like:
       }
     }]
   },
-  "actions": ["Use reviews for per-queue review counts", "Use reports(report_id=\"core:spending\") for a monthly spending trend snapshot"]
+  "actions": ["Use reviews for per-queue review counts", "Use reports(report_id=\"core:spending_trend\") for a monthly spending trend snapshot"]
 }
 ```
 

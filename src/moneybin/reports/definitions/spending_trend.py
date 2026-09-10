@@ -1,4 +1,4 @@
-"""core:spending / `reports spending` — monthly spending trend with deltas."""
+"""core:spending_trend / `reports spending-trend` — monthly spending trend with deltas."""
 
 from __future__ import annotations
 
@@ -59,8 +59,8 @@ def _default_columns(parameters: Mapping[str, object]) -> tuple[str, ...]:
 
 
 @report(
-    report_id="core:spending",
-    name="spending",
+    report_id="core:spending_trend",
+    name="spending_trend",
     view=REPORTS_SPENDING_TREND,
     classes={
         "year_month": DataClass.TXN_DATE,
@@ -209,8 +209,8 @@ def spending_trend(
             regardless, so JSON, MCP, and --wide are unaffected.
 
     Examples:
-        reports(report_id="core:spending", parameters={"category": "Groceries"})
-        reports(report_id="core:spending", parameters={"from_month": "2023-01", "to_month": "2023-12"})
+        reports(report_id="core:spending_trend", parameters={"category": "Groceries"})
+        reports(report_id="core:spending_trend", parameters={"from_month": "2023-01", "to_month": "2023-12"})
     """
     # Validate so agents see the allowed values and can't pass arbitrary strings;
     # the view returns all three comparison columns regardless, so `compare` has
@@ -221,7 +221,7 @@ def spending_trend(
     from_month, to_month, period, hint = resolve_window(
         from_month,
         to_month,
-        report_id="core:spending",
+        report_id="core:spending_trend",
     )
 
     ranked = f"""
@@ -269,10 +269,10 @@ def spending_trend(
     """  # noqa: S608  # subquery built from TableRef + allowlisted filters
 
     actions = [
-        "Run reports(report_id='core:spending', "
+        "Run reports(report_id='core:spending_trend', "
         "parameters={'category': '<name>'}) to filter to one category",
-        "Run reports(report_id='core:cashflow') for inflow, outflow, and net",
-        "Run reports(report_id='core:recurring') for recurring charge patterns",
+        "Run reports(report_id='core:cash_flow') for inflow, outflow, and net",
+        "Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns",
     ]
     if hint:
         actions.insert(0, hint)

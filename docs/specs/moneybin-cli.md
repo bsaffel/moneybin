@@ -453,8 +453,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
-|   |   # The six view-backed reports below (cashflow, spending, recurring,
-|   |   # merchants, large-transactions, balance-drift) are framework-generated
+|   |   # The six view-backed reports below (cash-flow, spending-trend, recurring-subscriptions,
+|   |   # merchant-activity, large-transactions, balance-drift) are framework-generated
 |   |   # from `@report` runners in src/moneybin/reports/definitions/. Command
 |   |   # names and result shapes are unchanged; each flag is auto-derived from
 |   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
@@ -520,10 +520,10 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # durable record of why the floor was lowered.
 |   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
 |   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
-|   +-- cashflow                   -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
-|   +-- spending                   -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
-|   +-- recurring                  -- Recurring transactions [--min-confidence] [--status] [--cadence] via `reports(report_id="core:recurring")`
-|   +-- merchants                  -- Top merchants by spend [--top] [--sort]
+|   +-- cash-flow                  -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
+|   +-- spending-trend             -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
+|   +-- recurring-subscriptions    -- Recurring transactions [--min-confidence] [--status] [--cadence] via `reports(report_id="core:recurring_subscriptions")`
+|   +-- merchant-activity          -- Top merchants by spend [--top] [--sort]
 |   +-- uncategorized              -- Uncategorized transactions roll-up
 |   +-- large-transactions         -- Outlier amounts [--top] [--anomaly]
 |   +-- balance-drift              -- Reconciliation drift across accounts [--account] [--status] [--since]
@@ -725,7 +725,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports — per-report commands (networth, networth-history, spending, cashflow, recurring, merchants, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
+Reports:        reports — per-report commands (networth, networth-history, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -786,7 +786,7 @@ selectors to preserve bounded agent context.
 | Undo a match | `transactions matches undo <match_id>` | `system_audit_undo(operation_id=<operation_id>)` after locating the audit operation | `POST /transactions/matches/{match_id}/undo` |
 | Run matching | `transactions matches run` | `refresh_run(steps=["match"])` | `POST /refresh/match` |
 | Run investment matching after M1J.7 slice 2 | `investments matches run` | `refresh_run`, with `steps` set to `investment_match` | `POST /refresh/investment-match` (after M1J.7 slice 2) |
-| Spending report | `reports spending` | `reports(report_id="core:spending")` | `GET /reports/spending` |
+| Spending report | `reports spending-trend` | `reports(report_id="core:spending_trend")` | `GET /reports/spending-trend` |
 
 ### Pluralization
 

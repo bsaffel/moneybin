@@ -33,10 +33,10 @@ from moneybin.reports.definitions.spending_trend import spending_trend
 pytestmark = pytest.mark.unit
 
 _CORE_REPORT_IDS = {
-    "spending": "core:spending",
-    "cashflow": "core:cashflow",
-    "recurring": "core:recurring",
-    "merchants": "core:merchants",
+    "spending_trend": "core:spending_trend",
+    "cash_flow": "core:cash_flow",
+    "recurring_subscriptions": "core:recurring_subscriptions",
+    "merchant_activity": "core:merchant_activity",
     "large_transactions": "core:large_transactions",
     "balance_drift": "core:balance_drift",
 }
@@ -48,15 +48,15 @@ _FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
 #: What none of them may do is put two currencies behind one figure.
 _NEVER_BLENDED = "segmented per currency_code, never blended"
 _EXPECTED_DESCRIPTIONS = {
-    "spending": (
+    "spending_trend": (
         "Spending amounts are positive absolute outflows; comparison deltas "
         "are current spend minus comparison-period spend."
     ),
-    "recurring": (
+    "recurring_subscriptions": (
         "Average and annualized costs are positive absolute outflows in each "
         "row's own currency_code."
     ),
-    "merchants": (
+    "merchant_activity": (
         "total_spend is positive absolute outflow; total_outflow is negative; "
         "total_inflow is positive; avg_amount and median_amount are signed."
     ),
@@ -122,20 +122,22 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
                 "current date"
             )
 
-    assert specs["spending"].semantics.denominator == (
+    assert specs["spending_trend"].semantics.denominator == (
         "previous-month spend for mom_pct; prior-year spend for yoy_pct; "
         "available calendar months up to three for trailing_3mo_avg, including "
         "zero-spend months"
     )
-    assert specs["spending"].semantics.time_basis == (
+    assert specs["spending_trend"].semantics.time_basis == (
         "inclusive eligible-data calendar-month period with zero-filled missing "
         "category-months"
     )
-    assert specs["spending"].semantics.comparison_window == (
+    assert specs["spending_trend"].semantics.comparison_window == (
         "previous calendar month, same calendar month one year earlier, and "
         "trailing three calendar months including current month"
     )
-    assert specs["merchants"].semantics.denominator == "txn_count for avg_amount"
+    assert (
+        specs["merchant_activity"].semantics.denominator == "txn_count for avg_amount"
+    )
     assert specs["large_transactions"].semantics.exclusions == (
         "transfers",
         "archived accounts",
@@ -405,24 +407,24 @@ def test_balance_drift_default_columns_keep_the_assertion_date() -> None:
 #: and reading the class off the signature would render one under the other.
 _BINDING_CLASSES: list[tuple[str, Runner, dict[str, Any], tuple[str, ...]]] = [
     (
-        "cashflow",
+        "cash_flow",
         cash_flow,
         {"by": "account", "from_month": "2026-01", "to_month": "2026-12"},
         ("txn_date", "txn_date"),
     ),
     (
-        "spending",
+        "spending_trend",
         spending_trend,
         {"from_month": "2026-01", "to_month": "2026-12", "category": "Food"},
         ("txn_date", "txn_date", "category"),
     ),
     (
-        "recurring",
+        "recurring_subscriptions",
         recurring_subscriptions,
         {"min_confidence": 0.5, "status": "active", "cadence": "monthly"},
         ("aggregate", "txn_type", "txn_type"),
     ),
-    ("merchants", merchant_activity, {"top": 5}, ("aggregate",)),
+    ("merchant_activity", merchant_activity, {"top": 5}, ("aggregate",)),
     ("large_transactions", large_transactions, {"top": 5}, ("aggregate",)),
     (
         "balance_drift",

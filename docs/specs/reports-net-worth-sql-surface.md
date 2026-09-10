@@ -1,7 +1,7 @@
 # Feature: Net Worth on the SQL Surface
 
 ## Status
-ready
+in-progress
 
 ## Goal
 

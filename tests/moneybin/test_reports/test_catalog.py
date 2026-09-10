@@ -1363,7 +1363,9 @@ def test_a_locked_database_is_still_an_error_when_browsing() -> None:
 
 
 def _listing_entry(
-    *, tier: Literal["builtin", "extension", "user"], report_id: str = "core:spending"
+    *,
+    tier: Literal["builtin", "extension", "user"],
+    report_id: str = "core:spending_trend",
 ) -> ReportCatalogEntry:
     """One catalog listing row, varying only the field ``catalog_sensitivity`` reads."""
     return ReportCatalogEntry(

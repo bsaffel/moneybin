@@ -163,11 +163,11 @@ One view per CLI/MCP report, with one exception: `reports.net_worth` also backs 
 | View | Powers |
 |---|---|
 | `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')`, and `moneybin reports networth-history` / `reports(report_id='core:networth_history')` (period-bucketed re-query of the same view; no separate `reports.*` table) |
-| `reports.cash_flow` | `moneybin reports cashflow` / `reports(report_id='core:cashflow')` |
-| `reports.spending_trend` | `moneybin reports spending` / `reports(report_id='core:spending')` |
-| `reports.recurring_subscriptions` | `moneybin reports recurring` / `reports(report_id='core:recurring')` |
+| `reports.cash_flow` | `moneybin reports cash-flow` / `reports(report_id='core:cash_flow')` |
+| `reports.spending_trend` | `moneybin reports spending-trend` / `reports(report_id='core:spending_trend')` |
+| `reports.recurring_subscriptions` | `moneybin reports recurring-subscriptions` / `reports(report_id='core:recurring_subscriptions')` |
 | `reports.large_transactions` | `moneybin reports large-transactions` / `reports(report_id='core:large_transactions')` |
-| `reports.merchant_activity` | `moneybin reports merchants` / `reports(report_id='core:merchants')` |
+| `reports.merchant_activity` | `moneybin reports merchant-activity` / `reports(report_id='core:merchant_activity')` |
 | `reports.balance_drift` | `moneybin reports balance-drift` / `reports(report_id='core:balance_drift')` |
 
 ### `meta.*` and `seeds.*`
@@ -356,7 +356,7 @@ Read from `core.*` and `reports.*`. The full column reference is in [`docs/refer
 
 ```bash
 moneybin transactions list --from 2026-04-01 --category Groceries
-moneybin reports cashflow --from-month 2026-01 --by category
+moneybin reports cash-flow --from-month 2026-01 --by category
 moneybin accounts list
 ```
 

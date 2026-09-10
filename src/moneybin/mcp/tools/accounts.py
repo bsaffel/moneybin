@@ -168,7 +168,7 @@ def accounts(
         data=result,
         actions=[
             "Use accounts_balances for current balances",
-            "Use reports(report_id='core:spending') to drill into spending",
+            "Use reports(report_id='core:spending_trend') to drill into spending",
         ],
     )
 

@@ -190,7 +190,7 @@ Transaction query returned 5 of 20 rows (has_more=True)
 5 of 20 shown · raise --limit for more · 5 uncategorized
 ```
 
-Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending`, `merchants`, `recurring`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cashflow` and `reports spending` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all eight built-in reports on a populated profile and shows how to save your own.
+Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending-trend`, `merchant-activity`, `recurring-subscriptions`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cash-flow` and `reports spending-trend` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all eight built-in reports on a populated profile and shows how to save your own.
 
 ## 7. Categorize
 

@@ -813,7 +813,7 @@ Review my MoneyBin sync state and flag anything that needs attention.
 
 Use these tools (in order):
 1. sync_status — list connected institutions with last sync time, status, and any error guidance.
-2. `reports(report_id="core:spending")` — optional, for aggregate recent spending context.
+2. `reports(report_id="core:spending_trend")` — optional, for aggregate recent spending context.
 
 Report concisely (bulleted, single paragraph if everything is healthy):
 

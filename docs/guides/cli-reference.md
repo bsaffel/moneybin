@@ -24,7 +24,7 @@ These flags appear on commands across every group. They are not repeated in the 
 
 ### Date and duration formats
 
-- **Date arguments** (`--from`, `--to`, `--as-of`, `--date`) are ISO 8601 `YYYY-MM-DD`. Month-grain commands like `reports cashflow` use `--from-month`/`--to-month` and document `YYYY-MM-01` in their `--help`.
+- **Date arguments** (`--from`, `--to`, `--as-of`, `--date`) are ISO 8601 `YYYY-MM-DD`. Month-grain commands like `reports cash-flow` use `--from-month`/`--to-month` and document `YYYY-MM-01` in their `--help`.
 - **Duration shortcuts** (`7d`, `24h`, `5m`) are accepted on `logs` (`--since`, `--until`) and `stats` (`--since`). They are **not** accepted on report or sync date filters — use absolute dates there.
 - Timestamps in JSON output are ISO 8601; dates are `YYYY-MM-DD` strings (not epoch seconds).
 
@@ -419,10 +419,10 @@ only change the number.
 
 Cross-domain analytical views. All commands support `--output json` and return
 the standard envelope. The eight built-in reports — `networth`,
-`networth-history`, `cashflow`, `spending`, `recurring`, `merchants`,
+`networth-history`, `cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`,
 `large-transactions`, `balance-drift` — each have their own command with the
-filters that fit their grain (`--from-month`/`--to-month` on `cashflow` and
-`spending`, `--from`/`--to` on `networth-history`, `--since` on
+filters that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
+`spending-trend`, `--from`/`--to` on `networth-history`, `--since` on
 `balance-drift`, `--as-of` on snapshots, `--account` and `--category` where
 they apply);
 [`features.md`](../features.md#reports) says what each one shows, and the
@@ -635,7 +635,7 @@ moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
 # ... categorize via review or transactions categorize rules ...
 moneybin reports networth                   # this month's net worth
-moneybin reports cashflow                   # this month's income vs spending
+moneybin reports cash-flow                  # this month's income vs spending
 ```
 
 Each step is idempotent — re-run safely if interrupted. `import files` auto-runs `refresh` after the load, so an OFX-only month can skip the explicit `refresh` call.
@@ -654,9 +654,9 @@ moneybin reports networth
 ### Year-end / tax-prep
 
 ```bash
-moneybin reports cashflow --from-month 2026-01-01 --to-month 2026-12-01
-moneybin reports merchants --top 20 --sort spend
-moneybin reports spending --from-month 2026-01-01 --to-month 2026-12-01 --compare yoy
+moneybin reports cash-flow --from-month 2026-01-01 --to-month 2026-12-01
+moneybin reports merchant-activity --top 20 --sort spend
+moneybin reports spending-trend --from-month 2026-01-01 --to-month 2026-12-01 --compare yoy
 ```
 
 There is no dedicated `tax` command group. The reports above, `investments gains` (the 1099-B surface), and a `db query` against `core.fct_transactions` cover most tax-prep needs today.

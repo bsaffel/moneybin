@@ -61,7 +61,7 @@ is added.
 | Family | Standard MCP boundary | Representative CLI paths | Outcome |
 |---|---|---|---|
 | System and audit | `system_status`, `system_audit`, `system_audit_undo` | `system status`, `system audit *`, `transactions matches undo` | Same health state, audit history, and reversible operation |
-| Reports | `reports` | `reports list`, `reports run`, `reports networth`, `reports spending`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation across the built-in, extension, and user tiers |
+| Reports | `reports` | `reports list`, `reports run`, `reports networth`, `reports spending-trend`, and other registered reports | Same catalog runner, rows, period, provenance, and truncation across the built-in, extension, and user tiers |
 | Saved-report lifecycle | none — `admission-pending` | `reports create`, `reports set`, `reports delete`, `reports reclassify` | Same audited `app.user_reports` row, derived class map, and human-confirmed downgrade |
 | Report verification | none — `admission-pending` | `reports explain` | Same query in both provenance forms, per-column class provenance, lineage, drift freshness, and graduation eligibility for every tier |
 | Export delivery | `export_run` | `export bundle`, `export report` | Same `ExportService.run` subject, named destination, redaction mode, format, row counts, checksums, receipt identity, and safe failures. Both surfaces record the run's receipt to `app.audit_log` under action `export.run`, readable afterwards through `system_audit` (MCP) or `moneybin system audit` (CLI) |

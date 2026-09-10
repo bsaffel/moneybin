@@ -165,7 +165,7 @@ async def test_reports_without_id_returns_catalog_with_runtime_classification() 
 
     assert response.error is None
     assert response.data.kind == "catalog"
-    assert "core:spending" in {entry.report_id for entry in response.data.reports}
+    assert "core:spending_trend" in {entry.report_id for entry in response.data.reports}
     assert response.summary.sensitivity == "low"
     assert response.classes_returned == ["aggregate"]
     assert response.summary.returned_count == len(response.data.reports)
@@ -368,7 +368,7 @@ async def test_reports_without_id_rejects_execution_arguments(
 @pytest.mark.unit
 async def test_reports_with_id_opens_one_read_only_database_and_executes() -> None:
     result = CatalogReportResult(
-        report_id="core:spending",
+        report_id="core:spending_trend",
         parameters={"from_month": "2026-06", "to_month": "2026-06"},
         semantics=_SEMANTICS,
         provenance=_SEMANTICS.provenance,
@@ -416,21 +416,21 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
         patch("moneybin.mcp.decorator.write_privacy_event"),
     ):
         response = await reports(
-            report_id="core:spending",
+            report_id="core:spending_trend",
             parameters={"from_month": "2026-06", "to_month": "2026-06"},
         )
 
     get_database.assert_called_once_with(read_only=True)
     catalog.execute.assert_called_once_with(
         db,
-        report_id="core:spending",
+        report_id="core:spending_trend",
         parameters={"from_month": "2026-06", "to_month": "2026-06"},
         limit=50,
         display_currency=None,
         home_currency=None,
     )
     assert response.data.kind == "result"
-    assert response.data.report_id == "core:spending"
+    assert response.data.report_id == "core:spending_trend"
     assert response.summary.sensitivity == "critical"
     assert response.summary.total_count == 3
     assert response.summary.returned_count == 1

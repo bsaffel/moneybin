@@ -1743,6 +1743,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
+- **Four report ids and CLI commands now match their view names.** `reports
+  cashflow` is `reports cash-flow` (`core:cashflow` → `core:cash_flow`),
+  `reports spending` is `reports spending-trend` (`core:spending` →
+  `core:spending_trend`), `reports recurring` is `reports
+  recurring-subscriptions` (`core:recurring` → `core:recurring_subscriptions`),
+  and `reports merchants` is `reports merchant-activity` (`core:merchants` →
+  `core:merchant_activity`). No `reports.*` view is renamed — only the id and
+  the command derived from it. The old spellings are unregistered; a script or
+  saved prompt using them fails with an unknown-command or unregistered-report
+  error and must switch to the new name.
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
   total with an `s` appended whether or not it measured time — so

@@ -575,10 +575,10 @@ def test_a_report_that_cannot_be_priced_gives_its_own_declared_reason(
 ) -> None:
     """The refusal quotes the report's `fx_basis` rather than inferring one.
 
-    Why a report cannot be priced differs per report. `core:cashflow` has a
+    Why a report cannot be priced differs per report. `core:cash_flow` has a
     single date at its grain and still cannot convert, because `currency_code`
     sits in its GROUP BY — pricing each row into one display currency would
-    return several rows sharing a grain key. `core:merchants` additionally
+    return several rows sharing a grain key. `core:merchant_activity` additionally
     spans a range of dates rather than one. Deriving a reason from which
     declaration happens to be missing would state one report's obstacle for
     another's, so the author writes it once and it surfaces both here and

@@ -20,10 +20,10 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports reclassify`](#moneybin-reports-reclassify) | Lower one column's masking floor, permanently, for this report. |
 | [`moneybin reports networth`](#moneybin-reports-networth) | Show current or as-of net worth + per-account breakdown. |
 | [`moneybin reports networth-history`](#moneybin-reports-networth-history) | Net worth time series with period-over-period change. |
-| [`moneybin reports spending`](#moneybin-reports-spending) | Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. |
-| [`moneybin reports cashflow`](#moneybin-reports-cashflow) | Monthly cash flow rollup: inflow/outflow/net per account x category. |
-| [`moneybin reports recurring`](#moneybin-reports-recurring) | Likely-recurring subscription candidates with confidence scores. |
-| [`moneybin reports merchants`](#moneybin-reports-merchants) | Per-merchant lifetime activity totals (spend, count, first/last seen). |
+| [`moneybin reports spending-trend`](#moneybin-reports-spending-trend) | Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. |
+| [`moneybin reports cash-flow`](#moneybin-reports-cash-flow) | Monthly cash flow rollup: inflow/outflow/net per account x category. |
+| [`moneybin reports recurring-subscriptions`](#moneybin-reports-recurring-subscriptions) | Likely-recurring subscription candidates with confidence scores. |
+| [`moneybin reports merchant-activity`](#moneybin-reports-merchant-activity) | Per-merchant lifetime activity totals (spend, count, first/last seen). |
 | [`moneybin reports large-transactions`](#moneybin-reports-large-transactions) | Top transactions by absolute amount with per-account/category z-scores. |
 | [`moneybin reports balance-drift`](#moneybin-reports-balance-drift) | Balance reconciliation drift: asserted vs computed, one row per assertion. |
 
@@ -231,13 +231,13 @@ Usage: `moneybin reports networth-history [OPTIONS]`
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 
-## moneybin reports spending
+## moneybin reports spending-trend
 
 Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
 Defaults to the last 12 calendar months when both bounds are omitted. YoY columns come from the underlying view (all history), so narrowing the window does not null out yoy_pct. Spending amounts are positive absolute outflows; comparison deltas are current spend minus comparison-period spend. Monetary values are denominated in each row's own currency_code.
 
-Usage: `moneybin reports spending [OPTIONS]`
+Usage: `moneybin reports spending-trend [OPTIONS]`
 
 **Options**
 
@@ -252,13 +252,13 @@ Usage: `moneybin reports spending [OPTIONS]`
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
-## moneybin reports cashflow
+## moneybin reports cash-flow
 
 Monthly cash flow rollup: inflow/outflow/net per account x category.
 
 Defaults to the last 12 calendar months when both bounds are omitted. Amounts use the accounting convention (negative = expense, positive = income) in each row's own currency_code; rows are segmented per currency, never blended.
 
-Usage: `moneybin reports cashflow [OPTIONS]`
+Usage: `moneybin reports cash-flow [OPTIONS]`
 
 **Options**
 
@@ -272,7 +272,7 @@ Usage: `moneybin reports cashflow [OPTIONS]`
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
-## moneybin reports recurring
+## moneybin reports recurring-subscriptions
 
 Likely-recurring subscription candidates with confidence scores.
 
@@ -280,7 +280,7 @@ Average and annualized costs are positive absolute outflows in each row's own cu
 
 Rows interleave the currencies, costliest first within each, so a truncated result still represents every currency. Compare annualized_cost only between rows sharing a currency_code.
 
-Usage: `moneybin reports recurring [OPTIONS]`
+Usage: `moneybin reports recurring-subscriptions [OPTIONS]`
 
 **Options**
 
@@ -294,7 +294,7 @@ Usage: `moneybin reports recurring [OPTIONS]`
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
-## moneybin reports merchants
+## moneybin reports merchant-activity
 
 Per-merchant lifetime activity totals (spend, count, first/last seen).
 
@@ -302,7 +302,7 @@ total_spend is positive absolute outflow; total_outflow is negative; total_inflo
 
 Rows interleave the currencies, highest-ranked first within each, so a truncated result still represents every currency. Compare monetary values only between rows sharing a currency_code.
 
-Usage: `moneybin reports merchants [OPTIONS]`
+Usage: `moneybin reports merchant-activity [OPTIONS]`
 
 **Options**
 

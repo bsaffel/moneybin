@@ -67,10 +67,10 @@
     "cli_commands": [
       "reports networth",
       "reports networth-history",
-      "reports spending",
-      "reports cashflow",
-      "reports recurring",
-      "reports merchants",
+      "reports spending-trend",
+      "reports cash-flow",
+      "reports recurring-subscriptions",
+      "reports merchant-activity",
       "reports large-transactions",
       "reports balance-drift",
       "reports run"

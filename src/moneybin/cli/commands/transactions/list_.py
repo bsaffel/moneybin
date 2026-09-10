@@ -78,7 +78,7 @@ def _list_actions(next_cursor: str | None, invocation: dict[str, object]) -> lis
     the blast radius of every MCP rename.
     """
     actions = [
-        "Use `moneybin reports spending` for category breakdowns",
+        "Use `moneybin reports spending-trend` for category breakdowns",
         "Use `moneybin transactions categorize run` to categorize uncategorized "
         "transactions",
     ]
