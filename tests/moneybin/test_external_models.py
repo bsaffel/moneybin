@@ -67,10 +67,11 @@ def test_external_model_guard_rejects_no_discovered_dependencies() -> None:
         _declared_external_models(set(), [("raw.transactions", {})])
 
 
-def test_external_models_match_initialized_raw_and_app_tables(
+@pytest.mark.integration
+def test_external_models_are_available_to_each_supported_gateway_and_match_tables(
     tmp_path: Path, mock_secret_store: MagicMock
 ) -> None:
-    """Every raw/app relation read by SQLMesh has its live column schema declared."""
+    """Every raw/app relation is gateway-neutral and matches its live schema."""
     db = Database(
         tmp_path / "external_models.duckdb",
         secret_store=mock_secret_store,
@@ -86,6 +87,24 @@ def test_external_models_match_initialized_raw_and_app_tables(
                 for dependency in model.depends_on
                 if _relation_name(dependency).startswith(("raw.", "app."))
             }
+            loader = context._loaders[0]  # type: ignore[reportPrivateUsage]  # SQLMesh has no public gateway-specific external-model loader
+            cache = loader._Cache(loader, loader.config_path)  # type: ignore[reportPrivateUsage]  # private cache is required to exercise SQLMesh's real YAML loader
+            declared_by_gateway = {
+                gateway: {
+                    _relation_name(name)
+                    for name in loader._load_external_models(  # type: ignore[reportPrivateUsage]  # characterization test for SQLMesh gateway filtering
+                        context._audits,
+                        cache,
+                        gateway,  # type: ignore[reportPrivateUsage]  # audit registry populated by the real encrypted context
+                    )
+                    if _relation_name(name).startswith(("raw.", "app."))
+                }
+                for gateway in ("local", "moneybin")
+            }
+        assert declared_by_gateway == {
+            "local": expected_relations,
+            "moneybin": expected_relations,
+        }
         declarations = [
             (_relation_name(str(entry["name"])), dict(entry["columns"]))
             for entry in _load_external_models()

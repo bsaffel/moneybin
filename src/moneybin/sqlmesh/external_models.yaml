@@ -12,7 +12,6 @@
     decided_at: TIMESTAMPNTZ
     reversed_at: TIMESTAMPNTZ
     reversed_by: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."account_settings"'
   columns:
     account_id: TEXT
@@ -27,7 +26,6 @@
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."balance_assertions"'
   columns:
     account_id: TEXT
@@ -36,13 +34,11 @@
     notes: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."category_overrides"'
   columns:
     category_id: TEXT
     is_active: BOOLEAN
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."category_source_map"'
   columns:
     source_type: TEXT
@@ -52,7 +48,6 @@
     source_taxonomy_version: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."match_decisions"'
   columns:
     match_id: TEXT
@@ -74,7 +69,6 @@
     decided_at: TIMESTAMPNTZ
     reversed_at: TIMESTAMPNTZ
     reversed_by: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."securities"'
   columns:
     security_id: TEXT
@@ -92,7 +86,6 @@
     created_by: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."security_links"'
   columns:
     link_id: TEXT
@@ -105,7 +98,6 @@
     decided_at: TIMESTAMPNTZ
     reversed_at: TIMESTAMPNTZ
     reversed_by: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."security_price_overrides"'
   columns:
     security_id: TEXT
@@ -115,12 +107,10 @@
     note: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."seed_source_priority"'
   columns:
     source_type: TEXT
     priority: INT
-  gateway: moneybin
 - name: '"moneybin"."app"."transaction_categories"'
   columns:
     transaction_id: TEXT
@@ -133,7 +123,6 @@
     confidence: DECIMAL(3, 2)
     rule_id: TEXT
     source_type: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."transaction_notes"'
   columns:
     note_id: TEXT
@@ -141,7 +130,6 @@
     text: TEXT
     author: TEXT
     created_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."transaction_splits"'
   columns:
     split_id: TEXT
@@ -154,14 +142,12 @@
     ord: INT
     created_at: TIMESTAMPNTZ
     created_by: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."transaction_tags"'
   columns:
     transaction_id: TEXT
     tag: TEXT
     applied_at: TIMESTAMPNTZ
     applied_by: TEXT
-  gateway: moneybin
 - name: '"moneybin"."app"."user_categories"'
   columns:
     category_id: TEXT
@@ -172,7 +158,6 @@
     is_active: BOOLEAN
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."app"."user_merchants"'
   columns:
     merchant_id: TEXT
@@ -186,7 +171,6 @@
     exemplars: ARRAY<TEXT>
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."exchange_rates"'
   columns:
     from_currency: TEXT
@@ -195,7 +179,6 @@
     rate: DECIMAL(18, 8)
     source_type: TEXT
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."manual_investment_transactions"'
   columns:
     source_transaction_id: TEXT
@@ -220,7 +203,6 @@
     created_at: TIMESTAMPNTZ
     created_by: TEXT
     investment_transaction_id: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."manual_transactions"'
   columns:
     source_transaction_id: TEXT
@@ -244,7 +226,6 @@
     transaction_id: TEXT
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."ofx_accounts"'
   columns:
     account_id: TEXT
@@ -258,7 +239,6 @@
     import_id: TEXT
     source_type: TEXT
     source_origin: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."ofx_balances"'
   columns:
     account_id: TEXT
@@ -274,7 +254,6 @@
     source_type: TEXT
     source_origin: TEXT
     currency_code: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."ofx_institutions"'
   columns:
     organization: TEXT
@@ -284,7 +263,6 @@
     loaded_at: TIMESTAMPNTZ
     import_id: TEXT
     source_type: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."ofx_transactions"'
   columns:
     source_transaction_id: TEXT
@@ -305,7 +283,6 @@
     fitid_repaired: BOOLEAN
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_accounts"'
   columns:
     account_id: TEXT
@@ -321,7 +298,6 @@
     source_origin: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_balances"'
   columns:
     account_id: TEXT
@@ -338,7 +314,6 @@
     last_updated_datetime: TIMESTAMPNTZ
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_investment_holding_lots"'
   columns:
     account_id: TEXT
@@ -356,7 +331,6 @@
     source_origin: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_investment_holdings"'
   columns:
     account_id: TEXT
@@ -377,7 +351,6 @@
     source_origin: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_investment_holdings_snapshots"'
   columns:
     source_origin: TEXT
@@ -388,7 +361,6 @@
     source_type: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_investment_transactions"'
   columns:
     investment_transaction_id: TEXT
@@ -410,7 +382,6 @@
     source_origin: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_securities"'
   columns:
     security_id: TEXT
@@ -432,7 +403,6 @@
     source_origin: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."plaid_transactions"'
   columns:
     transaction_id: TEXT
@@ -466,7 +436,6 @@
     loaded_at: TIMESTAMPNTZ
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
-  gateway: moneybin
 - name: '"moneybin"."raw"."security_prices"'
   columns:
     provider_security_key: TEXT
@@ -478,7 +447,6 @@
     price_basis: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."tabular_accounts"'
   columns:
     account_id: TEXT
@@ -495,7 +463,6 @@
     import_id: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
-  gateway: moneybin
 - name: '"moneybin"."raw"."tabular_transactions"'
   columns:
     transaction_id: TEXT
@@ -527,7 +494,6 @@
     deleted_from_source_at: TIMESTAMPNTZ
     to_amount: DECIMAL(18, 2)
     to_currency: TEXT
-  gateway: moneybin
 - name: '"moneybin"."sqlmesh"."_intervals"'
   columns:
     id: TEXT
@@ -543,7 +509,6 @@
     is_pending_restatement: BOOLEAN
     dev_version: TEXT
     last_altered_ts: BIGINT
-  gateway: moneybin
 - name: '"moneybin"."sqlmesh"."_snapshots"'
   columns:
     name: TEXT
@@ -558,4 +523,3 @@
     forward_only: BOOLEAN
     dev_version: TEXT
     fingerprint: TEXT
-  gateway: moneybin
