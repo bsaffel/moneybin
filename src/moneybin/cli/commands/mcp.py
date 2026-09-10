@@ -238,10 +238,10 @@ def mcp_install(
         # Print the snippet without writing
         moneybin mcp install --client claude-desktop --print
 
-        # Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
+        # Codex (CLI and IDE extension share ~/.codex/config.toml)
         moneybin mcp install --client codex --yes
 
-        # ChatGPT desktop app (same Codex-hosted config as above)
+        # ChatGPT desktop app (hosts Codex; same config as above)
         moneybin mcp install --client chatgpt-desktop --yes
 
         # Workspace-local .vscode/mcp.json
@@ -526,7 +526,7 @@ _PER_INVOCATION_CLIENTS: frozenset[str] = frozenset({
 def _maybe_warn_auto_load(client: str, profile: str) -> None:
     """Warn after install when the client auto-loads on every invocation.
 
-    For codex (CLI/Desktop/IDE) and gemini-cli, install means MoneyBin starts on
+    For codex (CLI/IDE) and gemini-cli, install means MoneyBin starts on
     every shell launch of that tool. Two sessions on the same profile share one
     DuckDB file: reads coexist with other reads and writes serialize via the
     per-operation lock. A write-mode call fails only when another session holds a
@@ -537,7 +537,7 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
     if client not in _PER_INVOCATION_CLIENTS:
         return
     surface = (
-        "the Codex CLI, Desktop app, IDE extension, and ChatGPT desktop app"
+        "the Codex CLI, the IDE extension, and the ChatGPT desktop app"
         if client in _CODEX_HOSTED_CLIENTS
         else "every `gemini` invocation"
     )
