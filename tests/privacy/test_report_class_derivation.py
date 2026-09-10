@@ -250,8 +250,11 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
 
     Each of these legitimately reads prep.*/seeds.* (outside CLASSIFICATION's
     core/app ground truth) or uses a shape this deriver can't walk without
-    ``qualify()`` (bare ``SELECT *``, or ``UNNEST(...)`` struct-field access) —
-    none is a bug to fix here; each is a real, stated scope boundary.
+    ``qualify()`` (bare ``SELECT *``, ``UNNEST(...)`` struct-field access, or a
+    table-valued function call like ``GENERATE_SERIES(...) AS s(...)``, which
+    `report_materialization.py`'s scope walk sees as an aliased table with no
+    schema rather than the function call it actually is) — none is a bug to
+    fix here; each is a real, stated scope boundary.
     """
     _derived, excluded = derive_core_view_classes()
     unresolvable = {
@@ -262,6 +265,8 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
         "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings* and core.fct_security_prices
         "core.dim_securities",  # unaliased single-table SELECT (no qualify())
         "core.fct_balances",  # bare SELECT * inside a UNION ALL branch
+        "core.fct_exchange_rates",  # reads prep.stg_exchange_rates
+        "core.fct_exchange_rates_effective",  # GENERATE_SERIES(...) AS s(...) in uncovered_spine's FROM clause
         "core.fct_transaction_lines",  # UNNEST(t.splits) struct-field access
         "core.fct_transactions",  # reads prep.int_transactions__merged
     }
@@ -280,15 +285,17 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
     assert set(view_derivation_failures) == unresolvable
     # Each exclusion must name WHY it could not be derived. "no CLASSIFICATION
     # ground truth" is the schema-contract refusal (`assert_acyclic` rejecting
-    # a read of seeds/prep/raw/meta); the other two are resolution failures. A
-    # bare "excluded" with no stated cause is the silent skip this whole
-    # mechanism exists to prevent.
+    # a read of seeds/prep/raw/meta); "without a schema" is the same scope
+    # walk misreading a table-valued function call as an unqualified table
+    # read; the rest are resolution failures. A bare "excluded" with no stated
+    # cause is the silent skip this whole mechanism exists to prevent.
     for name in unresolvable:
         reason = view_derivation_failures[name]
         assert (
             "no CLASSIFICATION ground truth" in reason
             or "not resolvable" in reason
             or "SELECT *" in reason
+            or "without a schema" in reason
         ), f"{name}: exclusion reason does not say why: {reason!r}"
 
 

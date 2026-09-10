@@ -444,6 +444,26 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     ["source_type"],
 )
 
+FX_RATE_SPINE_ROWS = Gauge(
+    "moneybin_fx_rate_spine_rows",
+    # core.fct_exchange_rates_daily is kind FULL, so this is a snapshot as of
+    # the last sqlmesh run, not a live count — a flat 'provider' value across
+    # runs with a growing raw.exchange_rates means the densification stopped
+    # advancing, not that the feed stopped.
+    "Rows in core.fct_exchange_rates_daily, by rate_source (provider / identity)",
+    ["rate_source"],
+)
+
+FX_RATE_SPINE_PAIRS = Gauge(
+    "moneybin_fx_rate_spine_pairs",
+    # Coverage, not volume: one pair with a year of daily rows and one pair
+    # with a single row both count as 1 here, which is what makes this the
+    # counter to watch for "did a whole pair go dark" rather than "did the
+    # row count dip."
+    "Distinct (from_currency, to_currency) pairs in core.fct_exchange_rates_daily, by rate_source",
+    ["rate_source"],
+)
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
@@ -1173,12 +1193,13 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_fx_accounting_rows": "Multi-currency integrity",
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
-    "moneybin_fx_accounting_rows": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",
     "moneybin_fx_rate_backfill_pairs": "Exchange rates",
     "moneybin_fx_rate_fetch_duration_seconds": "Exchange rates",
+    "moneybin_fx_rate_spine_rows": "Exchange rates",
+    "moneybin_fx_rate_spine_pairs": "Exchange rates",
     # Categorization
     "moneybin_categorization_auto_rate": "Categorization",
     "moneybin_categorization_rules_fired": "Categorization",
