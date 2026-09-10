@@ -86,11 +86,14 @@ echo "==> installed wheel categorization merchant learning"
 import json
 import sys
 from datetime import date
+from decimal import Decimal
 
+from moneybin.config import set_current_profile
 from moneybin.database import get_database
 from moneybin.services.transaction_service import TransactionService
 
 proposal_path = sys.argv[1]
+set_current_profile("demo")
 with get_database(read_only=False) as db:
     account_id = db.execute(
         "SELECT account_id FROM core.dim_accounts ORDER BY account_id LIMIT 1"
@@ -98,7 +101,7 @@ with get_database(read_only=False) as db:
     result = TransactionService(db).create_manual_batch(
         [{
             "account_id": account_id,
-            "amount": -12,
+            "amount": Decimal("-12"),
             "transaction_date": date(2026, 1, 1),
             "description": "SMOKE MERCHANT LEARNING",
         }],
@@ -109,15 +112,18 @@ with get_database(read_only=False) as db:
 with open(proposal_path, "w", encoding="utf-8") as proposal_file:
     json.dump([{
         "transaction_id": transaction_id,
-        "category": "Groceries",
+        "category": "Food & Drink",
         "canonical_merchant_name": "Smoke Merchant",
     }], proposal_file)
 PY
+"$MB" transform apply
 "$MB" transactions categorize commit-from-file \
   "$WORK_DIR/merchant-learning-proposal.json" --output json
 "$VENV/bin/python" - <<'PY'
+from moneybin.config import set_current_profile
 from moneybin.database import get_database
 
+set_current_profile("demo")
 with get_database(read_only=True) as db:
     merchants = db.execute(
         "SELECT canonical_name FROM app.user_merchants "
