@@ -29,7 +29,7 @@ The supported `--client` values are:
 - `vscode`
 - `gemini-cli`
 - `codex` (CLI and IDE extension — both share `~/.codex/config.toml`)
-- `chatgpt-desktop` (the ChatGPT desktop app, which has hosted Codex since the two apps merged in July 2026, shares that same file — installing for either covers both)
+- `chatgpt-desktop` (the ChatGPT desktop app, which has hosted Codex since the two apps merged in July 2026 per [OpenAI's desktop app docs](https://learn.chatgpt.com/docs/app), shares that same file — installing for either covers both)
 
 ChatGPT on the **web** cannot reach a local MoneyBin. See [ChatGPT desktop app](#chatgpt-desktop-app).
 
