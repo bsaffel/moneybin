@@ -83,6 +83,9 @@ from moneybin.services.ledger_overlap import (
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_INSTITUTIONS,
     OFX_TRANSACTIONS,
     TABULAR_TRANSACTIONS,
 )
@@ -2203,6 +2206,33 @@ class ImportService:
                 source_bytes=raw,
             )
         except Exception:
+            # load() writes each of the four raw.ofx_* tables in sequence, so a
+            # failure partway through (e.g. institutions/accounts landed, then
+            # transactions raised) leaves those rows behind. Delete this
+            # import_id's rows from all four tables — matching the tabular/PDF
+            # failure paths — so rows_total=0 below actually describes zero
+            # live rows, not just zero reported rows. Best-effort: revert's own
+            # count is read live from these tables (plan_revert), never from
+            # rows_total, so a cleanup failure here doesn't strand the batch —
+            # it only leaves raw.import_log undercounting rows that a later
+            # `import revert` would still find and remove correctly.
+            for table_ref in (
+                OFX_INSTITUTIONS,
+                OFX_ACCOUNTS,
+                OFX_TRANSACTIONS,
+                OFX_BALANCES,
+            ):
+                try:
+                    self._db.execute(
+                        f"DELETE FROM {table_ref.full_name} WHERE import_id = ?",
+                        [import_id],
+                    )
+                except Exception:  # cleanup is best-effort
+                    logger.warning(
+                        f"OFX cleanup DELETE failed on {table_ref.full_name} "
+                        f"for import_id={import_id[:8]}...",
+                        exc_info=True,
+                    )
             import_log.finalize_import(
                 self._db,
                 import_id,

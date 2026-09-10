@@ -30,11 +30,18 @@ from moneybin.extractors.institution_resolution import (
     slug_for_fid,
 )
 from moneybin.extractors.ofx.config import OFXProviderConfig
+
+# DEPRECATED: extractors-to-services — extractors/ should not import from
+# services/ (upward layering inversion); allowlisted in
+# test_extractor_layering.py pending MB-246, which relocates SourceAccount and
+# friends to a layer both extractors/ and services/ can import.
 from moneybin.services.account_display_name import (
     AccountNameFacts,
     account_category,
     derived_last_four,
 )
+
+# DEPRECATED: extractors-to-services — see MB-246 (same as above).
 from moneybin.services.account_resolution_types import (
     SourceAccount,
     normalize_account_identifier,
