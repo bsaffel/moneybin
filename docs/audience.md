@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-09 -->
+<!-- Last reviewed: 2026-09-10 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -98,7 +98,7 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **Job to be done:** The same conversation about their money, with the data in a file they hold.
 
-**Why MoneyBin will fit:** The ChatGPT desktop app already drives MoneyBin over MCP, so the assistant answers from an encrypted file on your machine. The model still sees the rows it asks for; nobody but you keeps the feed.
+**Why MoneyBin will fit:** The ChatGPT desktop app already drives MoneyBin over MCP, so the assistant answers from an encrypted file on your machine. The model still sees the rows it asks for. Import from OFX, QFX, or CSV and nobody but you keeps the feed. Turn on Plaid sync and Plaid keeps it too; the [threat model](guides/threat-model.md#plaid-itself-when-you-use-bank-direct-sync) says exactly what it holds.
 
 **What's still rough:** Install is `git clone` + `uv`, there is no web UI, and ChatGPT on the web cannot reach a local MoneyBin. Web UI and remote-client support are planned. **If zero setup matters more than who holds the feed, [Finances in ChatGPT](https://help.openai.com/en/articles/20001222-finances-in-chatgpt) is the right answer today.**
 
