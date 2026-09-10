@@ -8,11 +8,9 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.extractors.ofx.extractor import ofx_source_accounts
 from moneybin.loaders import import_log
-from moneybin.services.import_service import (
-    ImportService,
-    _ofx_source_accounts,  # pyright: ignore[reportPrivateUsage]
-)
+from moneybin.services.import_service import ImportService
 from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 from tests.import_helpers import import_answering_gate
 
@@ -25,7 +23,7 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
         type=None,
         institution=SimpleNamespace(fid="", organization=""),
     )
-    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    [ofx] = ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
     pdf = derive_pdf_account_identity(
         issuer="Bank",
         identifier="ab-12 34",
@@ -41,7 +39,7 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
 def test_ofx_source_accounts_never_marks_account_name_as_user_set() -> None:
     """OFX has no account-name element, so this must always read False.
 
-    Direct-wiring proof for the `_ofx_source_accounts` call site: resolver-level
+    Direct-wiring proof for the `ofx_source_accounts` call site: resolver-level
     tests (`test_account_resolver.py`) cover what the gate does with the flag,
     not that this function actually sets it. A regression that silently flipped
     the literal back to `True` would pass every one of those.
@@ -53,7 +51,7 @@ def test_ofx_source_accounts_never_marks_account_name_as_user_set() -> None:
         type=None,
         institution=SimpleNamespace(fid="", organization=""),
     )
-    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    [ofx] = ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
     assert ofx.account_name_is_user_set is False
 
 

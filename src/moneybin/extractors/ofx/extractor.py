@@ -12,8 +12,10 @@ import html
 import json
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +23,28 @@ import ofxparse
 import polars as pl
 from pydantic import BaseModel, Field, field_validator
 
+from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, FilePath, ProviderSource
+from moneybin.extractors.institution_resolution import (
+    display_name_for_fid,
+    slug_for_fid,
+)
 from moneybin.extractors.ofx.config import OFXProviderConfig
+from moneybin.services.account_display_name import (
+    AccountNameFacts,
+    account_category,
+    derived_last_four,
+)
+from moneybin.services.account_resolution_types import (
+    SourceAccount,
+    normalize_account_identifier,
+)
+from moneybin.tables import (
+    OFX_ACCOUNTS,
+    OFX_BALANCES,
+    OFX_INSTITUTIONS,
+    OFX_TRANSACTIONS,
+)
 from moneybin.utils.parsing import coerce_to_decimal
 
 logger = logging.getLogger(__name__)
@@ -264,6 +286,148 @@ def preprocess_ofx_content(content: str) -> str:
     return content
 
 
+def sniff_ofx_content(file_path: Path) -> bool:
+    """Return True if the file's first 1024 bytes look like OFX/QFX/QBO content.
+
+    Used by the lifecycle service's extension-based dispatch as a fallback
+    when a file's suffix doesn't already say "ofx" — e.g. a ``.pdf``-named
+    file that actually carries OFX content.
+    """
+    try:
+        with open(file_path, "rb") as f:
+            head = f.read(1024)
+    except PermissionError:
+        # "Could not look" is not "is not OFX". Returning False here sends an
+        # unreadable file on to the extension checks, where a missing or unknown
+        # suffix reports "Unsupported file type" — blaming the file for a
+        # permission problem the caller can actually fix. Let it propagate so
+        # `classify_user_error` produces the permission code and its hint.
+        raise
+    except OSError:
+        return False
+    head_lstripped = head.lstrip()
+    if head_lstripped.startswith(b"OFXHEADER:"):
+        return True
+    if head_lstripped.startswith(b"<?xml") and b"<OFX>" in head:
+        return True
+    return False
+
+
+def parse_ofx_content(source_bytes: bytes, *, source_label: str) -> Any:
+    """Decode, SGML-preprocess, and parse OFX/QFX bytes into an ofxparse object.
+
+    Shared by ``extract_from_file`` (raw-table extraction) and the lifecycle
+    service's pre-import gate (identity enumeration before any batch opens),
+    so both apply the same non-UTF-8 handling and SGML preprocessing and fail
+    identically on malformed content. Raises whatever ``ofxparse.OfxParser.parse``
+    raises — callers wrap it (both do, for the "Invalid OFX file format" message).
+    """
+    content = source_bytes.decode("utf-8", errors="replace")
+    if "�" in content:
+        logger.warning(
+            f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: {source_label}"
+        )
+    content = preprocess_ofx_content(content)
+    return ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
+
+
+def ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
+    """Enumerate the account identities an OFX file presents, without resolving.
+
+    Reads the parsed ofxparse object rather than the extractor's DataFrame so it
+    can run *before* ``begin_import`` — the confirm gate has to stop the import
+    before any batch is opened or any row is ingested.
+
+    One list serves both the gate and the resolve pass. Deriving them separately
+    would let the gate propose one identity while resolve binds another; the
+    field derivation is shared with the extractor (``none_if_blank``,
+    ``ofx_account_type``) for the same reason.
+
+    Deduped by ``<ACCTID>``, because ofxparse emits one ``Account`` per statement
+    response with no de-dup of its own: an export that splits one card across two
+    ``<STMTRS>`` blocks would otherwise surface it as two independent identities,
+    ask about each, and let two different answers write one native key under two
+    canonical accounts. ACCTID alone is the right key — it *is* the
+    ``source_account_key`` every downstream link and staging JOIN uses, so two
+    entries sharing one cannot resolve to different accounts by design.
+    """
+    accounts: list[SourceAccount] = []
+    seen: set[str] = set()
+    for account in parsed_ofx.accounts:
+        acctid: str | None = account.account_id
+        if not acctid or acctid in seen:
+            continue
+        seen.add(acctid)
+        routing = none_if_blank(account.routing_number)
+        normalized_acctid = normalize_account_identifier(acctid)
+        institution = account.institution
+        fid = none_if_blank(institution.fid if institution else None)
+        accounts.append(
+            SourceAccount(
+                source_type="ofx",
+                source_origin=source_origin,
+                source_account_key=acctid,
+                account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
+                # OFX has no account-name element at all (see account_label's
+                # NULL arm in dim_accounts.sql) -- this is always the
+                # generated institution+type fallback, never a person's own
+                # label, so it must never drive the resolver's name rung.
+                account_name_is_user_set=False,
+                # full_number is a strong ref ONLY when institution/routing-scoped
+                # (contains ':'); a bare number is demoted to a candidate signal.
+                account_number=(
+                    f"{routing}:{normalized_acctid}"
+                    if routing and normalized_acctid
+                    else None
+                ),
+                last_four=acctid[-4:],
+                # The FID slug, not source_origin. source_origin comes from <ORG>,
+                # which is a routing code for some issuers ("B1" = Chase), and it
+                # must stay untouched because downstream identity keys on it.
+                # Matching needs the same canonical slug
+                # core.dim_accounts.institution_slug carries, so resolve it from
+                # the FID and fall back to source_origin when the FID is
+                # unregistered.
+                institution=slug_for_fid(fid) or source_origin,
+                # What core.dim_accounts will name this account: the registry's
+                # display name for the FID, else the file's own <ORG> — the
+                # model's COALESCE(seeds.institutions.display_name,
+                # institution_org), and the extractor's `inst_org or
+                # source_origin` for the raw column it reads. Not
+                # `source_origin` on its own, which is a routing code ("B1" =
+                # Chase); not `<ACCTTYPE>` raw, which the type map normalizes;
+                # and last four by DIGITS, because the model strips non-digits
+                # before taking four.
+                # The <ORG> arm is deliberately not none_if_blank'd: the
+                # extractor stores `inst_org or source_origin` untrimmed, so a
+                # whitespace-only <ORG> is written, staging NULLIFs it, and the
+                # dim falls through to the type rung. Normalizing it here would
+                # reach source_origin instead and report a name the dim will
+                # not store. AccountNameFacts trims what it is given.
+                name_facts=AccountNameFacts(
+                    institution_name=(
+                        display_name_for_fid(fid)
+                        or (institution.organization if institution else None)
+                        or source_origin
+                    ),
+                    category=account_category(ofx_account_type(account)),
+                    last_four=derived_last_four(acctid),
+                ),
+            )
+        )
+    return accounts
+
+
+@dataclass(frozen=True, slots=True)
+class OFXLoadResult:
+    """Per-table row counts returned by :meth:`OFXExtractor.load`."""
+
+    institutions_loaded: int
+    accounts_loaded: int
+    transactions_loaded: int
+    balances_loaded: int
+
+
 class OFXExtractor:
     """Extract financial data from OFX/QFX files into raw table structures."""
 
@@ -273,14 +437,28 @@ class OFXExtractor:
     source_type = "ofx"
     """Written into source_type column on every row produced by this provider."""
 
-    def __init__(self, config: OFXProviderConfig | None = None):
+    def __init__(
+        self,
+        config: OFXProviderConfig | None = None,
+        db: Database | None = None,
+    ):
         """Initialize the OFX extractor.
 
         Args:
-            config: Extraction configuration settings
+            config: Extraction configuration settings.
+            db: An active Database connection (caller-managed per ADR-010),
+                matching ``PlaidExtractor``'s shape. Required only for
+                ``load()``; ``extract_from_file()`` alone needs no database,
+                so existing callers that construct with just a config keep
+                working. Keyword-preferred: unlike ``PlaidExtractor`` (which
+                takes ``db`` first and always requires it), OFX has long
+                had ``config`` as its sole positional argument across many
+                call sites — reordering would silently mis-bind ``db`` for
+                any caller still passing it positionally.
         """
         from moneybin.config import get_raw_data_path
 
+        self.db = db
         self.config = config or OFXProviderConfig()
 
         # Resolve raw_data_path locally so the (frozen) config stays
@@ -354,17 +532,7 @@ class OFXExtractor:
             if source_bytes is None:
                 with open(file_path, "rb") as f:
                     source_bytes = f.read()
-            content = source_bytes.decode("utf-8", errors="replace")
-            if "�" in content:
-                logger.warning(
-                    f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
-                    f"{file_path.name}"
-                )
-            content = preprocess_ofx_content(content)
-
-            from io import BytesIO
-
-            ofx = ofxparse.OfxParser.parse(BytesIO(content.encode("utf-8")))  # type: ignore[reportUnknownMemberType]
+            ofx = parse_ofx_content(source_bytes, source_label=str(file_path))
 
             extraction_timestamp = datetime.now()
             source_file = str(file_path)
@@ -398,6 +566,55 @@ class OFXExtractor:
             # exception type name + file path is enough for diagnostics.
             logger.error(f"Failed to parse OFX file {file_path}: {type(e).__name__}")
             raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
+
+    def load(
+        self,
+        file_path: Path,
+        *,
+        import_id: str,
+        source_origin: str,
+        source_bytes: bytes | None = None,
+    ) -> OFXLoadResult:
+        """Extract an OFX/QFX file and write its rows to raw.ofx_* tables.
+
+        Matches :meth:`PlaidExtractor.load`'s shape: the extractor owns the
+        raw-table write, the caller (the lifecycle service) owns everything
+        upstream (re-import detection, account gating/resolution) and
+        downstream (import-log finalization, metrics).
+
+        Raises:
+            RuntimeError: If this instance was constructed without a
+                Database — ``load()`` needs one; ``extract_from_file()``
+                alone does not.
+        """
+        if self.db is None:
+            raise RuntimeError(
+                "OFXExtractor.load() requires a Database; construct with "
+                "OFXExtractor(config, db=...)."
+            )
+        data = self.extract_from_file(
+            file_path,
+            import_id=import_id,
+            source_origin=source_origin,
+            source_bytes=source_bytes,
+        )
+        rows_loaded: dict[str, int] = {}
+        for table_key, qualified in (
+            ("institutions", OFX_INSTITUTIONS.full_name),
+            ("accounts", OFX_ACCOUNTS.full_name),
+            ("transactions", OFX_TRANSACTIONS.full_name),
+            ("balances", OFX_BALANCES.full_name),
+        ):
+            df = data[table_key]
+            if len(df) > 0:
+                self.db.ingest_dataframe(qualified, df, on_conflict="upsert")
+            rows_loaded[table_key] = len(df)
+        return OFXLoadResult(
+            institutions_loaded=rows_loaded["institutions"],
+            accounts_loaded=rows_loaded["accounts"],
+            transactions_loaded=rows_loaded["transactions"],
+            balances_loaded=rows_loaded["balances"],
+        )
 
     def _extract_institutions(
         self,
