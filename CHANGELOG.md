@@ -18,7 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or stdin workflow. `commit` and `commit-from-file` now pass that optional
   field through the shared validator and categorization service, preserving the
   existing per-row validation, AI-source precedence, idempotency, and
-  post-commit cascade. (MB-126)
+  post-commit cascade. (PR #580)
 
 - **`sql_query` no longer masks a count of how many rows are missing a
   protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so
