@@ -96,7 +96,7 @@ def _insert_event(
                 (investment_transaction_id, account_id, security_id, trade_date,
                  type, quantity, amount, currency_code, source_type)
             VALUES (?, ?, ?, ?, ?, ?, ?, 'USD', ?)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [
                 investment_transaction_id,
                 account_id,
@@ -289,7 +289,7 @@ class TestRegistration:
     async def test_all_investments_tools_registered(self) -> None:
         srv = FastMCP("test")
         register_investments_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {
             "investments",
             "investments_record",
@@ -301,7 +301,7 @@ class TestRegistration:
     async def test_coarse_registrar_registers_only_replacement(self) -> None:
         srv = FastMCP("test")
         register_investment_coarse_reads(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         assert names == {"investments"}
 
 
@@ -697,7 +697,7 @@ async def test_lots_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_open', ?, ?, '2024-01-15', 'buy', 10, 10, 1500, 1500,
                     'fifo', 'USD', TRUE, FALSE)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [_ACCOUNT, sec],
         )
 
@@ -726,7 +726,7 @@ async def test_gains_view_degrades_on_a_source_overlap(mcp_db: Path) -> None:
             VALUES ('gain_1', ?, ?, 'sell_1', 'lot_1', 5, '2024-01-01',
                     '2024-06-12', 950.00, 750.00, 200.00, 'long', 'fifo',
                     FALSE, 'USD')
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [_ACCOUNT, sec],
         )
 
@@ -1384,7 +1384,7 @@ class TestInvestmentsLotsSelect:
                     (investment_transaction_id, account_id, security_id, trade_date,
                      type, quantity)
                 VALUES ('sell_1', ?, ?, '2024-06-15', 'sell', -10)
-                """,  # noqa: S608  # test fixture insert, static SQL
+                """,  # test fixture insert, static SQL
                 [_ACCOUNT, sec],
             )
             db.executemany(
@@ -1393,7 +1393,7 @@ class TestInvestmentsLotsSelect:
                     (lot_id, account_id, security_id, acquisition_date,
                      original_quantity, remaining_quantity)
                 VALUES (?, ?, ?, '2024-01-10', ?, ?)
-                """,  # noqa: S608  # test fixture insert, static SQL
+                """,  # test fixture insert, static SQL
                 [
                     ["lot_a", _ACCOUNT, sec, Decimal("6"), Decimal("6")],
                     ["lot_b", _ACCOUNT, sec, Decimal("6"), Decimal("6")],
@@ -1558,7 +1558,7 @@ def _replace_holdings_view(rows: list[_Holding]) -> None:
         )
     select_sql = " UNION ALL ".join(parts)
     with get_database(read_only=False) as db:
-        db.execute(  # noqa: S608  # test fixture view, literal test data only
+        db.execute(  # test fixture view, literal test data only
             f"CREATE OR REPLACE VIEW core.dim_holdings AS {select_sql}"
         )
 
@@ -1768,7 +1768,7 @@ class TestHoldingsDescription:
     async def test_description_explains_the_staleness_number(self) -> None:
         srv = FastMCP("test")
         register_investment_coarse_reads(srv)
-        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tools = await srv._list_tools()  # pyright: ignore[reportPrivateUsage]
         tool = next(t for t in tools if t.name == "investments")
         assert tool.description is not None
         assert "max_days_since_observed" in tool.description
@@ -1778,7 +1778,7 @@ class TestHoldingsDescription:
         """market_value is per-row; the coarse currency line must carve holdings out."""
         srv = FastMCP("test")
         register_investment_coarse_reads(srv)
-        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tools = await srv._list_tools()  # pyright: ignore[reportPrivateUsage]
         tool = next(t for t in tools if t.name == "investments")
         assert tool.description is not None
         # display_currency still applies to the other four views...

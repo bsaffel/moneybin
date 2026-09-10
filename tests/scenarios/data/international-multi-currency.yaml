@@ -6,8 +6,10 @@ description: >
   multi-currency-report-segmentation scenario proves segmentation through the
   Plaid loader with three currencies on one account; this one proves the other
   half, where the currency rides on the account and arrives through two
-  different raw tables. Per-currency ground truth is derived in the pytest
-  entry from the deterministic GeneratorEngine, before any report is read.
+  different raw tables. Explicit monthly USD/EUR transfers also provide exact
+  conversion terms and FIFO realized-FX ground truth. Per-currency ground truth
+  is derived in the pytest entry from the deterministic GeneratorEngine,
+  before any report is read.
 
 setup:
   persona: international

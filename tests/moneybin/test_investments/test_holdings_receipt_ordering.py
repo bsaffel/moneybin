@@ -17,7 +17,9 @@ def _view(db: Database, name: str) -> None:
     query = next(
         node for node in parse(path.read_text()) if isinstance(node, exp.Select)
     )
-    db.execute(f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}")  # noqa: S608  # fixed local test model names
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"
+    )  # fixed local test model names
 
 
 def test_first_snapshot_is_account_scoped_and_stable_when_timestamps_tie(

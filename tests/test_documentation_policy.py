@@ -111,7 +111,6 @@ def _active_agent_instruction_files(repo_root: Path = _REPO_ROOT) -> list[Path]:
         if (
             relative.name in {"AGENTS.md", "CLAUDE.md", "CONTEXT.md"}
             or (posix.startswith(".claude/") and relative.suffix == ".md")
-            or (posix.startswith(".cursor/rules/") and relative.suffix == ".mdc")
             or posix
             in {
                 ".github/ai-review-protocol.md",
@@ -169,7 +168,6 @@ def test_active_agent_instruction_files_include_all_harness_surfaces() -> None:
         _REPO_ROOT / ".claude" / "skills",
     ):
         expected.update(root.rglob("*.md"))
-    expected.update((_REPO_ROOT / ".cursor" / "rules").rglob("*.mdc"))
     expected.update((_REPO_ROOT / "design-system" / "components").rglob("*.prompt.md"))
     expected.add(_REPO_ROOT / ".github" / "ai-review-protocol.md")
     expected.add(_REPO_ROOT / ".github" / "workflows" / "ai-review.yml")
@@ -525,7 +523,7 @@ def _resolve_invocation(
     while index < len(tokens):
         token = tokens[index]
         index += 1
-        if token in {"--help", ""}:  # noqa: S105  # CLI argument, not a secret
+        if token in {"--help", ""}:  # CLI argument, not a secret
             saw_help = saw_help or token == "--help"  # noqa: S105  # ditto
             continue
         if token == "--":  # noqa: S105  # end of options: the rest are positionals
@@ -537,7 +535,7 @@ def _resolve_invocation(
                 positionals = 0
                 seen_options = set()
             continue
-        if token in {"*", "…", "..."}:  # noqa: S105  # CLI argument, not a secret
+        if token in {"*", "…", "..."}:  # CLI argument, not a secret
             return None  # a wildcard or elision: nothing checkable past it
         if (
             token.startswith("-")

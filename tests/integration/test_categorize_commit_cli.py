@@ -1,7 +1,5 @@
 """Integration tests for `moneybin transactions categorize commit` CLI command."""
 
-# ruff: noqa: S101
-
 from __future__ import annotations
 
 import json
@@ -28,7 +26,7 @@ def _seed_one_transaction(db: Database) -> str:
     SQLMesh, so we create a bare table with the columns the service reads.
     """
     txn_id = "csv_apply_cli_test_001"
-    db.execute(  # noqa: S608  # test input, not executing SQL
+    db.execute(  # test input, not executing SQL
         """
         CREATE TABLE IF NOT EXISTS core.fct_transactions (
             transaction_id  VARCHAR PRIMARY KEY,
@@ -71,7 +69,7 @@ def _invoke(
 
     @contextmanager
     def _db_ctx(*_a: object, **_kw: object):
-        yield db  # noqa: B023 — db is loop-invariant in this helper
+        yield db  # db is loop-invariant in this helper
 
     monkeypatch.setattr(_categorize_mod, "get_database", _db_ctx)
     monkeypatch.setattr("moneybin.secrets.SecretStore", lambda: store)

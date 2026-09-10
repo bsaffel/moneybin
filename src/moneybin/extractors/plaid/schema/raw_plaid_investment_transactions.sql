@@ -1,4 +1,4 @@
-/* Investment ledger events from Plaid investments/transactions/get; one record per transaction per sync payload */
+/* Immutable investment transaction observation revisions from Plaid investments/transactions/get; delivery lineage lives on receipts. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     investment_transaction_id VARCHAR NOT NULL, -- Plaid investment_transaction_id; stable unique identifier
     account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts

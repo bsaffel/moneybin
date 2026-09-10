@@ -48,7 +48,9 @@ def review_command(
     confirm_all: bool = typer.Option(
         False, "--confirm-all", help="Non-interactive: confirm all items in scope"
     ),
-    limit: int = typer.Option(50, "--limit", help="Cap items per session"),  # noqa: ARG001 — placeholder; interactive loop pending
+    limit: int = typer.Option(
+        50, "--limit", help="Cap items per session"
+    ),  # placeholder; interactive loop pending
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:

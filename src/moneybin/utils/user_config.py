@@ -326,7 +326,9 @@ def ensure_default_profile() -> str:
         from moneybin.config import get_base_dir
 
         profile_dir = get_base_dir() / "profiles" / profile_name
-    except Exception as e:  # noqa: BLE001 — first-run wizard must surface any setup failure as a clean message
+    except (
+        Exception
+    ) as e:  # first-run wizard must surface any setup failure as a clean message
         # Profile directory rollback is handled by ProfileService.create();
         # surface a clean error instead of a raw traceback so the user can retry.
         typer.echo(f"\n❌ Failed to create profile '{profile_name}': {e}", err=True)

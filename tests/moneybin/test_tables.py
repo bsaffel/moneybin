@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+import moneybin.tables as table_registry
 from moneybin.tables import (
     ACCOUNT_SETTINGS,
     AUDIT_LOG,
@@ -171,3 +172,15 @@ def test_investment_table_refs() -> None:
     assert FCT_SECURITY_PRICES.audience == "interface"
     assert SECURITIES.audience == "internal"
     assert MANUAL_INVESTMENT_TRANSACTIONS.audience == "internal"
+
+
+def test_currency_accounting_table_refs() -> None:
+    """M1K.3 constants resolve to the fixed Core table names."""
+    assert (
+        table_registry.BRIDGE_CURRENCY_CONVERSIONS.full_name
+        == "core.bridge_currency_conversions"
+    )
+    assert table_registry.FCT_CURRENCY_LOTS.full_name == "core.fct_currency_lots"
+    assert (
+        table_registry.FCT_REALIZED_FX_GAINS.full_name == "core.fct_realized_fx_gains"
+    )

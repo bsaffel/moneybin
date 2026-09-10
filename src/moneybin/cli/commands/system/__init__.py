@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 @app.command("status")
 def system_status(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — status is data-only; nothing to suppress
+    quiet: bool = quiet_option,  # status is data-only; nothing to suppress
 ) -> None:
     """Show data inventory and pending review queue counts."""
     from moneybin.exports.service import ExportService

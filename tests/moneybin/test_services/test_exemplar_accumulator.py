@@ -35,7 +35,7 @@ def _seed_txn(
         (transaction_id, account_id, transaction_date, amount,
          description, memo, source_type, is_transfer)
         VALUES (?, 'acct_test', '2026-05-10', -10.00, ?, ?, 'ofx', false)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [txn_id, description, memo],
     )
 

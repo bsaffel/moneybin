@@ -240,6 +240,6 @@ def test_override_unique_category_id(db: Database) -> None:
     # A raw duplicate INSERT still violates the PK (sanity that the PK exists).
     with pytest.raises(duckdb.ConstraintException):
         db.conn.execute(
-            "INSERT INTO app.category_overrides (category_id, is_active) "  # noqa: S608  # test input, not executing user SQL
+            "INSERT INTO app.category_overrides (category_id, is_active) "  # test input, not executing user SQL
             "VALUES ('seed-cat-2', true)"
         )

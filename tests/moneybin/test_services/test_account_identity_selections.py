@@ -56,10 +56,15 @@ def test_account_preview_captures_the_complete_selection_impact(db: Database) ->
     assert impact.lot_selection_disposal_ids == ("sell",)
 
 
+@pytest.mark.parametrize("disposal_type", ["sell", "transfer_out"])
 def test_account_selection_remap_and_undo_are_one_operation(
-    db: Database, mocker: MockerFixture
+    db: Database, mocker: MockerFixture, disposal_type: str
 ) -> None:
     old = seed_account_selections(db)
+    db.execute(
+        "UPDATE core.fct_investment_transactions SET type = ? WHERE investment_transaction_id = 'sell'",
+        [disposal_type],
+    )
     mocker.patch.object(AccountLinksService, "rematch_after_merge", return_value=None)
     with operation() as op:
         AccountLinksService(db).set("a_b_", target_account_id="b")

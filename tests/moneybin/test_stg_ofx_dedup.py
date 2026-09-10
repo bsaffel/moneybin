@@ -63,7 +63,9 @@ def _build_staging(db: Database) -> None:
     body = re.sub(
         r"^MODEL\s*\(.*?\);\s*", "", _MODEL_FILE.read_text(), flags=re.DOTALL
     ).strip()
-    db.execute(f"CREATE OR REPLACE VIEW prep.stg_ofx__transactions AS\n{body}")  # noqa: S608 — model body read from the repo, not user input
+    db.execute(
+        f"CREATE OR REPLACE VIEW prep.stg_ofx__transactions AS\n{body}"
+    )  # model body read from the repo, not user input
 
 
 def _insert_ofx_row(
@@ -95,7 +97,7 @@ def _insert_ofx_row(
             loaded_at, source_type, source_origin, currency_code, fitid_repaired
         ) VALUES (?, ?, 'DEBIT', TIMESTAMP '2026-01-15 00:00:00', ?, ?, ?, NULL,
                   ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ofx', ?, 'USD', ?)
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [
             fitid,
             account_id,
@@ -297,7 +299,7 @@ def test_same_id_in_two_files_keeps_only_the_latest_load(db: Database) -> None:
         ) VALUES ('X', 'ACC1', 'DEBIT', TIMESTAMP '2026-01-15 00:00:00',
                   -13.12, 'POSTED', NULL, NULL, 'new.qfx', CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP + INTERVAL 1 HOUR, 'ofx', 'chase', 'USD')
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
     rows = db.execute(

@@ -358,7 +358,7 @@ class ProfileService:
         for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
             try:
                 store.delete_key(key_name)
-            except Exception as e:  # noqa: BLE001 — best-effort cleanup; data dir is already gone
+            except Exception as e:  # best-effort cleanup; data dir is already gone
                 # Don't turn a successful directory removal into a hard failure
                 # if keyring cleanup fails (e.g. NoKeyringError on headless
                 # systems, locked keychain, network keyring unreachable).

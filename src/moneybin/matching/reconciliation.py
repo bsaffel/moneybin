@@ -125,7 +125,7 @@ def retire_transfers_invalidated_by_dedup(
         FROM {MATCH_DECISIONS.full_name}
         WHERE match_type = 'transfer' AND match_status = 'accepted'
         ORDER BY decided_at, match_id
-        """  # noqa: S608 — TableRef constant, no interpolated values
+        """  # noqa: S608  # TableRef constant, no interpolated values
     ).fetchall()
 
     claimed: set[tuple[str, str, str]] = set()
@@ -189,7 +189,7 @@ def _count_retirements(count: int, *, cause: str) -> None:
         return
     try:
         TRANSFER_RETIREMENTS_TOTAL.labels(cause=cause).inc(count)
-    except Exception as exc:  # noqa: BLE001  # telemetry must not abort a committed reversal
+    except Exception as exc:  # telemetry must not abort a committed reversal
         # Type, not message: a metrics-client or DuckDB failure can name the
         # profile database, and SanitizedLogFormatter masks known PII patterns,
         # not arbitrary paths. The type is what a reader acts on anyway.

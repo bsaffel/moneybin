@@ -242,7 +242,7 @@ class SecurityLinksService:
             for disposal_id in plan
         )
         link_count_row = self._db.execute(
-            f"SELECT COUNT(*) FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT COUNT(*) FROM {SECURITY_LINKS.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ? AND status = 'accepted'",
             [provisional],
         ).fetchone()
@@ -255,7 +255,7 @@ class SecurityLinksService:
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
-            """,  # noqa: S608  # TableRef constants + parameterized values
+            """,  # TableRef constants + parameterized values
             [
                 decision["source_type"],
                 decision["ref_kind"],
@@ -289,7 +289,7 @@ class SecurityLinksService:
         agreed to.
         """
         row = self._db.execute(
-            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ?",
             [security_id],
         ).fetchone()
@@ -298,7 +298,7 @@ class SecurityLinksService:
     def _security_display(self, security_id: str) -> tuple[str | None, str | None]:
         """(ticker, name) for ``security_id`` from ``app.securities``; ``(None, None)`` if absent."""
         row = self._db.execute(
-            f"SELECT ticker, name FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT ticker, name FROM {SECURITIES.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ? LIMIT 1",
             [security_id],
         ).fetchone()
@@ -778,7 +778,7 @@ class SecurityLinksService:
         accept then auto-rejects a decision the user was never shown. Read-only.
         """
         rows = self._db.execute(
-            f"SELECT decision_id FROM {SECURITY_LINK_DECISIONS.full_name} "  # noqa: S608  # TableRef + parameterized values
+            f"SELECT decision_id FROM {SECURITY_LINK_DECISIONS.full_name} "  # TableRef + parameterized values
             "WHERE status = 'pending' AND ref_kind = ? AND ref_value = ? "
             "AND source_type = ? ORDER BY decision_id",
             [ref_kind, ref_value, source_type],
@@ -803,7 +803,7 @@ class SecurityLinksService:
     def _security_exists(self, security_id: str) -> bool:
         """True when ``security_id`` is present in ``app.securities``."""
         row = self._db.execute(
-            f"SELECT 1 FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT 1 FROM {SECURITIES.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ? LIMIT 1",
             [security_id],
         ).fetchone()
@@ -812,7 +812,7 @@ class SecurityLinksService:
     def _security_created_by(self, security_id: str) -> str | None:
         """``created_by`` for ``security_id``, or ``None`` if it doesn't exist."""
         row = self._db.execute(
-            f"SELECT created_by FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT created_by FROM {SECURITIES.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ? LIMIT 1",
             [security_id],
         ).fetchone()
@@ -861,7 +861,7 @@ class SecurityLinksService:
                 LEFT JOIN {FCT_INVESTMENT_LOTS.full_name} AS l
                   ON l.lot_id = ls.lot_id
                 ORDER BY ls.investment_transaction_id, ls.lot_id
-                """,  # noqa: S608  # TableRef constants + parameterized value
+                """,  # TableRef constants
             ).fetchall()
         except duckdb.CatalogException:
             # core is not materialized, so remappability cannot be verified. With
@@ -889,7 +889,7 @@ class SecurityLinksService:
                    i.security_id
             FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
             JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
-            """,  # noqa: S608  # TableRef and canonical repository query
+            """,  # TableRef and canonical repository query
             ).fetchall()
         )
         for row in rows:
@@ -959,7 +959,7 @@ class SecurityLinksService:
         genuinely can't be verified without ``core`` — not a bug to narrow.
         """
         row = self._db.execute(
-            f"SELECT COUNT(*) FROM {LOT_SELECTIONS.full_name}"  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM {LOT_SELECTIONS.full_name}"  # TableRef constant
         ).fetchone()
         return int(row[0]) if row else 0
 
@@ -1032,7 +1032,7 @@ class SecurityLinksService:
         earlier — while the delete event sitting beside it still records the truth.
         """
         rows = self._db.execute(
-            f"SELECT price_date, quote_currency, close, note, created_at "  # noqa: S608  # TableRef constant
+            f"SELECT price_date, quote_currency, close, note, created_at "  # TableRef constant
             f"FROM {SECURITY_PRICE_OVERRIDES.full_name} WHERE security_id = ? "
             "ORDER BY price_date, quote_currency",
             [provisional],
@@ -1040,7 +1040,7 @@ class SecurityLinksService:
         if not rows:
             return 0
         clash = self._db.execute(
-            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} AS a "  # noqa: S608  # TableRef constant
+            f"SELECT COUNT(*) FROM {SECURITY_PRICE_OVERRIDES.full_name} AS a "  # TableRef constant
             f"JOIN {SECURITY_PRICE_OVERRIDES.full_name} AS b "
             "ON b.price_date = a.price_date AND b.quote_currency = a.quote_currency "
             "WHERE a.security_id = ? AND b.security_id = ?",
@@ -1093,7 +1093,7 @@ class SecurityLinksService:
         Runs inside the caller's open transaction.
         """
         link_ids = self._db.execute(
-            f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # noqa: S608  # TableRef + parameterized value
+            f"SELECT link_id FROM {SECURITY_LINKS.full_name} "  # TableRef + parameterized value
             "WHERE security_id = ? AND status = 'accepted' ORDER BY link_id",
             [provisional],
         ).fetchall()
@@ -1133,7 +1133,7 @@ class SecurityLinksService:
               AND status = 'pending'
               AND reversed_at IS NULL
             ORDER BY decision_id
-            """,  # noqa: S608  # TableRef + parameterized values
+            """,  # TableRef + parameterized values
             [
                 decision["source_type"],
                 decision["ref_kind"],

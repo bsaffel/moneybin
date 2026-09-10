@@ -29,6 +29,7 @@ from moneybin.services.currency_service import (
     unsupported_currencies,
 )
 from moneybin.tables import (
+    BRIDGE_CURRENCY_CONVERSIONS,
     DIM_HOLDINGS,
     FCT_BALANCES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
@@ -255,6 +256,7 @@ def _core_is_built(db: Database) -> bool:
     message differs by DuckDB version and by which relation was missing.
     """
     relations = (
+        BRIDGE_CURRENCY_CONVERSIONS,
         FCT_TRANSACTIONS,
         FCT_BALANCES_DAILY,
         FCT_INVESTMENT_TRANSACTIONS,
@@ -266,7 +268,7 @@ def _core_is_built(db: Database) -> bool:
     params = [part for ref in relations for part in (ref.schema, ref.name)]
     row = db.execute(
         # Fixed predicate count, values bound; no interpolation of caller input.
-        f"SELECT COUNT(*) FROM information_schema.tables WHERE {placeholders}",  # noqa: S608
+        f"SELECT COUNT(*) FROM information_schema.tables WHERE {placeholders}",
         params,
     ).fetchone()
     return bool(row and row[0] > 0)
@@ -303,6 +305,9 @@ def plan_rate_backfill(
         WITH dated AS (
             SELECT currency_code, transaction_date AS on_date
               FROM {FCT_TRANSACTIONS.full_name}
+            UNION ALL
+            SELECT to_currency, to_date
+              FROM {BRIDGE_CURRENCY_CONVERSIONS.full_name}
             UNION ALL
             SELECT currency_code, balance_date
               FROM {FCT_BALANCES_DAILY.full_name}
@@ -347,7 +352,7 @@ def plan_rate_backfill(
         SELECT from_currency, earliest
           FROM needed
          ORDER BY from_currency
-        """,  # noqa: S608  # TableRef + parameterized values
+        """,  # TableRef + parameterized values
         [home],
     ).fetchall()
     windows: list[RateWindow] = []

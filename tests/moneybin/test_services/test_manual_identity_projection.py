@@ -31,7 +31,7 @@ def create_identity_views(db: Database) -> None:
         )
         db.execute(
             f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"
-        )  # noqa: S608  # fixed model names and parsed repository SQL
+        )  # fixed model names and parsed repository SQL
 
 
 def add_manual_observation(db: Database, account: str = "a", native: str = "m") -> None:

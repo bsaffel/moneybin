@@ -85,7 +85,7 @@ def table_exists(table: TableRef) -> bool:
                 [table.schema, table.name],
             ).fetchone()
             return bool(result and result[0] > 0)
-    except Exception:  # noqa: BLE001
+    except Exception:
         return False
 
 

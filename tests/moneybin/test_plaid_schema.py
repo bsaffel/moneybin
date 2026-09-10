@@ -34,7 +34,7 @@ def test_raw_plaid_transactions_primary_key(db: Database) -> None:
         VALUES
             ('txn_x', 'acc_a', '2026-04-07', 10.00, 'sync_1', 'plaid', 'item_a'),
             ('txn_x', 'acc_b', '2026-04-07', 20.00, 'sync_1', 'plaid', 'item_b')
-        """  # noqa: S608  # test input, not executing dynamic SQL
+        """  # test input, not executing dynamic SQL
     )
     row = db.execute(
         "SELECT COUNT(*) FROM raw.plaid_transactions WHERE transaction_id = 'txn_x'"

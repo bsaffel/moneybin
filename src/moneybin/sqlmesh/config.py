@@ -53,7 +53,7 @@ if _repo_root is not None:
     if _src_dir not in sys.path:
         sys.path.insert(0, _src_dir)
 
-from moneybin.config import (  # noqa: E402 — must follow sys.path setup above
+from moneybin.config import (  # noqa: E402  # must follow sys.path setup above
     canonical_checkout_root,
     get_current_profile,
     get_database_path,

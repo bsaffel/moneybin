@@ -35,7 +35,7 @@ def _insert_accepted_source_native(
             (link_id, account_id, ref_kind, ref_value, source_type,
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, ?, ?, 'accepted', 'auto', CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [link_id, account_id, ref_value, source_type, source_origin],
     )
 
@@ -57,7 +57,7 @@ def test_stg_ofx_transactions_translates_to_canonical_account_id(
         VALUES ('fitid-001', ?, 'DEBIT', CURRENT_TIMESTAMP,
                 -10.00, '/tmp/test.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-ofx-txn-001', 'ofx', 'test_bank_ofx_txn')
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -107,7 +107,7 @@ def test_stg_tabular_transactions_translates_to_canonical_account_id(
         VALUES ('tab-txn-id-001', ?, '2024-01-15', -50.00, 'Test purchase',
                 '/tmp/test.csv', 'csv', 'test_bank_tab_txn',
                 'imp-tab-txn-001', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -156,7 +156,7 @@ def test_stg_plaid_transactions_translates_to_canonical_account_id(
              source_type, source_origin, extracted_at, loaded_at)
         VALUES ('plaid-txn-id-001', ?, '2024-01-15', 25.00, 'sync_job_001',
                 'plaid', 'plaid-item-txn-001', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -205,7 +205,7 @@ def test_stg_manual_transactions_translates_to_canonical_account_id(
              description, import_id, created_by)
         VALUES ('manual_abc123def456', ?, '2024-01-15', -30.00,
                 'Manual test entry', 'imp-manual-001', 'cli')
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(
@@ -255,7 +255,7 @@ def test_stg_ofx_balances_translates_to_canonical_account_id(
         VALUES (?, '2024-01-31', 1000.00, '2024-01-31',
                 '/tmp/test.ofx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                 'imp-bal-001', 'ofx', 'test_bank_ofx_bal')
-        """,  # noqa: S608  # test fixture
+        """,  # test fixture
         [native_key],
     )
     _insert_accepted_source_native(

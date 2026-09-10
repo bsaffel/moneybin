@@ -106,6 +106,7 @@ All metric names are prefixed `moneybin_` and registered in `src/moneybin/metric
 - `provider` (sync family) — `plaid` today.
 - `error_code` (sync errors) — Plaid error codes like `ITEM_LOGIN_REQUIRED`, `INSTITUTION_DOWN`, `RATE_LIMIT_EXCEEDED`.
 - `outcome` / `status` / `result` (import, sync, account match) — small enumerated sets per metric.
+- `command` (CLI rendering family) — the underscored command path, e.g. `reports_run`, `transactions_list`. The same derivation the audit trail uses, so a counter and an audit row name one command the same way.
 - `merchant_id` (categorization exemplar gauge) — unbounded in principle; an exemplar gauge alarm fires above 200 per merchant.
 
 Cardinality is bounded by the underlying domain in every case except `merchant_id`. If you ship a `moneybin_*` metric, prefer labels with a known enumeration over open strings.
@@ -133,6 +134,7 @@ Families (see `src/moneybin/metrics/registry.py` for the complete list):
 - **Account matching** — outcome counters during tabular import.
 - **MCP server** — per-tool call counts and duration.
 - **Sync (Plaid via `moneybin-sync`)** — pull duration and outcomes, transactions loaded, per-institution errors by code, refresh-token rotation, connect-flow outcomes.
+- **CLI text rendering** — `--wide` requests and column omissions per command, and invocations of commands that are still stubs. These persist only on sessions that also write business data, since a read-only run does not take a write lock just to flush counters — read the wide-versus-omitted ratio as a direction to look, never as a census.
 - **Audit log**, **Database** (query duration), **Synthetic data** — counters and durations.
 
 Every metric is recorded manually (`METRIC.labels(...).inc()` / `.observe()`) at the call site that matters — there is no generic instrumentation decorator.
@@ -153,7 +155,13 @@ moneybin stats --since 24h
 moneybin stats --output json | jq '.metrics[] | select(.type=="counter")'
 ```
 
-`stats` returns the most recent snapshot per `(metric_name, labels)` and reports counts as `N total`, gauges as `value`, and histograms as `N observations (sum=Ns)`. Cumulative counters are not summed across snapshots — that would double-count.
+`stats` returns the most recent snapshot per `(metric_name, labels)`, groups the result under a header per subsystem, and reports counters as `N total`, gauges as `value`, and histograms as `N snapshots (sum=X <unit>)`. Cumulative counters are not summed across snapshots — that would double-count.
+
+Two details of that line are worth reading precisely:
+
+- **`N` counts stored snapshots, not observations.** A snapshot is one flush, and a flush writes the metric's running total — so `4 snapshots` means the metric was written four times, which says nothing about how many files were imported or how many queries ran.
+- **The unit is declared, not derived from the name.** It comes from `HISTOGRAM_UNITS` in `src/moneybin/metrics/registry.py`. Nine histograms end in a suffix naming a *dimension* rather than a unit — `_batch_size`, `_score`, `_confidence`, `_ratio`, `_rows_affected` — and `moneybin_import_batch_size` counts files, a fact that lives only in the declaration. Adding a histogram without adding its unit fails a test rather than printing an unlabelled figure.
+- **The subsystem is declared too**, in `METRIC_DOMAINS` beside it, and for the same reason: a name's leading token is not a subsystem. Categorization declares metrics under five prefixes — `categorization_`, `categorize_`, `auto_rule_`, `rule_` and `merchant_exemplar_count` — so grouping on the first underscore scattered one subsystem across four headers. Blocks print in the registry's declaration order, and a metric name kept from an older version prints under `Other` rather than vanishing. Both tables key on the name `app.metrics` stores, which for a counter is the declaration minus its `_total` — the flush strips that suffix, so `Counter("…_records_total")` is looked up as `…_records`.
 
 `stats --output json` is one of the operations-metadata reads that stay off the standard response envelope (`logs`, `migrate status`, `db info`, and `db ps` are the others; with the `db query` operator bypass, the CLI reference names all six). It emits `{"metrics": [...]}`, each entry carrying `name`, `type`, `labels`, `value`, `snapshots`, and `last_recorded` — so the jq path is `.metrics[]`, not `.data[]`, and there is no top-level `status` to match on.
 

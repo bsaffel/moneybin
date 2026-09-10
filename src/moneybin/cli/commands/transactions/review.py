@@ -52,7 +52,7 @@ def review_impl(
     confirm_all: bool,
     limit: int,
     output: OutputFormat,
-    quiet: bool,  # noqa: ARG001 — the status path emits data only; nothing to suppress
+    quiet: bool,  # the status path emits data only; nothing to suppress
 ) -> None:
     """Shared impl for `moneybin review` and its deprecated `transactions review` alias.
 
@@ -93,7 +93,9 @@ def review_impl(
         return
 
     if interactive:
-        _not_implemented("the interactive review loop")
+        # Not a whole-command stub: `review` works, and only this mode is
+        # unfinished. `stubs.py` explains what that excludes it from.
+        _not_implemented("the interactive review loop", whole_command=False)
         return
 
     # Counts are the default: they are what `--help` describes, and the only

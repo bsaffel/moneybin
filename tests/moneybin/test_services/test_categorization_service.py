@@ -100,7 +100,7 @@ def _reflect_categorizations_into_fact(db: Database) -> None:
         SET category = c.category
         FROM app.transaction_categories AS c
         WHERE c.transaction_id = t.transaction_id AND t.category IS NULL
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 
@@ -835,7 +835,7 @@ def _insert_coverage_txn(
                   'DEBIT', false, 'USD', 'ofx', ?, ?,
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   2026, 2, 1, 0, '2026-02', '2026-Q1')
-        """,  # noqa: S608 — test input, not user data
+        """,  # test input, not user data
         [transaction_id, account_id, category, is_transfer],
     )
 
@@ -1392,7 +1392,7 @@ def test_categorize_items_snowball_fans_out_to_siblings(real_db: Database) -> No
              description, memo, source_type, is_transfer)
             VALUES (?, 'acct_test', '2026-05-10', -10.00,
                     'STARBUCKS', 'STORE 1234', 'ofx', false)
-            """,  # noqa: S608  # test input, not executing SQL
+            """,  # test input, not executing SQL
             [txn_id],
         )
 

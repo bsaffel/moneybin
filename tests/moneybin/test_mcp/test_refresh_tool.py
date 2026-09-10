@@ -16,7 +16,7 @@ from moneybin.orchestration.refresh import RefreshResult
 async def test_refresh_run_is_registered() -> None:
     mcp = FastMCP("test")
     register_refresh_tools(mcp)
-    tools = await mcp._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     names = {tool.name for tool in tools}
     assert names == {"refresh_run"}
     description = next(tool.description for tool in tools if tool.name == "refresh_run")

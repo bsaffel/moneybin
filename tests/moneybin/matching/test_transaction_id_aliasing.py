@@ -76,6 +76,8 @@ CREATE TABLE IF NOT EXISTS prep.int_transactions__unioned (
     location_latitude     DOUBLE,
     location_longitude    DOUBLE,
     currency_code         VARCHAR,
+    to_currency           VARCHAR,
+    to_amount             DECIMAL(18, 2),
     source_type           VARCHAR,
     source_origin         VARCHAR,
     source_file           VARCHAR,
@@ -126,7 +128,7 @@ def _insert_source_row(
             source_type, source_origin, source_file, is_pending,
             pending_transaction_id, loaded_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, FALSE, ?, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test input, not executing user SQL
+        """,  # test input, not executing user SQL
         [
             source_transaction_id,
             _ACCOUNT,
@@ -233,7 +235,7 @@ def _aliases(db: Database) -> dict[str, str]:
 
 def _forwarded_count() -> float:
     """Read the committed curation-forwarding counter."""
-    return TRANSACTION_CURATION_FORWARDED_TOTAL._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]  # no public counter getter
+    return TRANSACTION_CURATION_FORWARDED_TOTAL._value.get()  # pyright: ignore[reportPrivateUsage]  # no public counter getter
 
 
 def _canonical_ids(db: Database) -> set[str]:

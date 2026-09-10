@@ -11,12 +11,14 @@ WITH matched_ids AS (
   SELECT
     source_transaction_id,
     source_type,
+    source_origin,
     account_id,
     MAX(transaction_id) AS transaction_id
   FROM prep.int_transactions__matched
   GROUP BY
     source_transaction_id,
     source_type,
+    source_origin,
     account_id
 )
 SELECT
@@ -29,10 +31,12 @@ FROM app.match_decisions AS md
 JOIN matched_ids AS debit
   ON md.source_transaction_id_a = debit.source_transaction_id
   AND md.source_type_a = debit.source_type
+  AND md.source_origin_a = debit.source_origin
   AND md.account_id = debit.account_id
 JOIN matched_ids AS credit
   ON md.source_transaction_id_b = credit.source_transaction_id
   AND md.source_type_b = credit.source_type
+  AND md.source_origin_b = credit.source_origin
   AND md.account_id_b = credit.account_id
 JOIN prep.int_transactions__merged AS debit_txn
   ON debit.transaction_id = debit_txn.transaction_id

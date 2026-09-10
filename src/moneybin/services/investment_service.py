@@ -539,7 +539,7 @@ class InvestmentService:
         # Rung 0 — canonical stable id. Coarse surfaces resolve a user-facing
         # reference through the shared entity resolver before binding filters.
         row = self._db.execute(
-            f"SELECT security_id FROM {SECURITIES.full_name} WHERE security_id = ?",  # noqa: S608  # TableRef constant
+            f"SELECT security_id FROM {SECURITIES.full_name} WHERE security_id = ?",  # TableRef constant
             [ref_clean],
         ).fetchone()
         if row is not None:
@@ -578,7 +578,7 @@ class InvestmentService:
         """
         column = "cusip" if attribute == "cusip" else "isin"
         rows = self._db.execute(
-            f"SELECT security_id FROM {SECURITIES.full_name} "  # noqa: S608  # column from a fixed 2-value allowlist
+            f"SELECT security_id FROM {SECURITIES.full_name} "  # column from a fixed 2-value allowlist
             f"WHERE UPPER({column}) = UPPER(?)",
             [ref],
         ).fetchall()
@@ -626,7 +626,7 @@ class InvestmentService:
             exchange_filter = "AND UPPER(exchange) = UPPER(?)"
             params.append(exchange)
         rows = self._db.execute(
-            f"SELECT security_id FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef + static filter
+            f"SELECT security_id FROM {SECURITIES.full_name} "  # TableRef + static filter
             f"WHERE UPPER(ticker) = UPPER(?) {exchange_filter}",
             params,
         ).fetchall()
@@ -648,7 +648,7 @@ class InvestmentService:
         Returns ``None`` on no match.
         """
         rows = self._db.execute(
-            f"SELECT security_id, cusip, isin, ticker FROM {SECURITIES.full_name} "  # noqa: S608  # TableRef constant
+            f"SELECT security_id, cusip, isin, ticker FROM {SECURITIES.full_name} "  # TableRef constant
             "WHERE LOWER(name) = LOWER(?)",
             [ref],
         ).fetchall()
@@ -853,7 +853,7 @@ class InvestmentService:
                    coingecko_id, is_cash_equivalent, cost_basis_method, currency_code
               FROM {SECURITIES.full_name}
              WHERE security_id = ?
-            """,  # noqa: S608  # TableRef constant
+            """,  # TableRef constant
             [security_id],
         ).fetchone()
         if row is None:
@@ -1285,7 +1285,7 @@ class InvestmentService:
                 price, amount, fees, currency_code, description,
                 created_by, investment_transaction_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,  # noqa: S608  # TableRef + parameterized values
+            """,  # TableRef + parameterized values
             [
                 source_transaction_id,
                 import_id,
@@ -1481,7 +1481,7 @@ class InvestmentService:
         declarative set; ``selections=[]`` clears all overrides → FIFO).
         """
         row = self._db.execute(
-            f"SELECT account_id, security_id, type, quantity, trade_date "  # noqa: S608  # TableRef constant
+            f"SELECT account_id, security_id, type, quantity, trade_date "  # TableRef constant
             f"FROM {FCT_INVESTMENT_TRANSACTIONS.full_name} "
             "WHERE investment_transaction_id = ?",
             [disposal_txn_id],
@@ -1599,7 +1599,7 @@ class InvestmentService:
                 ),
             )
         settings = self._db.execute(
-            f"SELECT default_cost_basis_method "  # noqa: S608  # TableRef constant
+            f"SELECT default_cost_basis_method "  # TableRef constant
             f"FROM {ACCOUNT_SETTINGS.full_name} WHERE account_id = ?",
             [account_id],
         ).fetchone()
@@ -1689,7 +1689,7 @@ class InvestmentService:
         lot_ids = list(requested)
         placeholders = ", ".join("?" * len(lot_ids))
         rows = self._db.execute(
-            f"SELECT l.lot_id, l.remaining_quantity, "  # noqa: S608  # TableRef constant
+            f"SELECT l.lot_id, l.remaining_quantity, "  # TableRef constant
             "COALESCE(SUM(g.quantity), 0) "
             f"FROM {FCT_INVESTMENT_LOTS.full_name} l "
             f"LEFT JOIN {FCT_REALIZED_GAINS.full_name} g "
@@ -1771,7 +1771,7 @@ class InvestmentService:
              WHERE COALESCE(subtype, '') <> 'opening_bootstrap'
              GROUP BY account_id
             HAVING COUNT(DISTINCT source_type) > 1
-            """  # noqa: S608  # TableRef constant, no interpolated values
+            """  # TableRef constant, no interpolated values
         ).fetchall()
         return frozenset(str(r[0]) for r in rows)
 
@@ -1879,7 +1879,7 @@ class InvestmentService:
               FROM {FCT_INVESTMENT_TRANSACTIONS.full_name}
               {where_sql}
              ORDER BY trade_date, investment_transaction_id
-            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
         return EventsResult(
@@ -1948,7 +1948,7 @@ class InvestmentService:
               FROM {DIM_HOLDINGS.full_name}
               {where_sql}
              ORDER BY account_id, security_id
-            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
         holding_rows = [
@@ -2178,7 +2178,7 @@ class InvestmentService:
               FROM {FCT_INVESTMENT_LOTS.full_name}
               {where_sql}
              ORDER BY acquisition_date, lot_id
-            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
         lot_rows = [
@@ -2271,7 +2271,7 @@ class InvestmentService:
               FROM {FCT_REALIZED_GAINS.full_name}
               {where_sql}
              ORDER BY disposal_date, realized_gain_id
-            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragments above
+            """,  # TableRef + parameterized values; where_sql built from literal fragments above
             params,
         ).fetchall()
         gain_rows = [
@@ -2334,7 +2334,7 @@ class InvestmentService:
               FROM {DIM_SECURITIES.full_name}
               {where_sql}
              ORDER BY name, security_id
-            """,  # noqa: S608  # TableRef + parameterized values; where_sql built from literal fragment above
+            """,  # TableRef + parameterized values; where_sql built from literal fragment above
             params,
         ).fetchall()
         return SecuritiesResult(

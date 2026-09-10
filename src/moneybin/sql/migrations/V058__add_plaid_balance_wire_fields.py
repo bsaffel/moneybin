@@ -75,6 +75,6 @@ def migrate(conn: object) -> None:
         # DuckDB's COMMENT ON does not accept `?` parameters; use a literal like V030.
         # name + comment come from the hardcoded _COLUMNS list (no user input); comments
         # contain no apostrophes.
-        conn.execute(  # type: ignore[attr-defined]  # noqa: S608  # DDL from hardcoded constants, not user input
+        conn.execute(  # type: ignore[attr-defined]  # DDL from hardcoded constants, not user input
             f"COMMENT ON COLUMN raw.plaid_balances.{name} IS '{comment}'"
         )

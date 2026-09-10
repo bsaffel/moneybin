@@ -106,7 +106,7 @@ async def test_register_gsheet_tools_registers_expected_tools() -> None:
     """The standard Google Sheets workflow registers without aliases."""
     srv = FastMCP("test")
     register_gsheet_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == _EXPECTED_GSHEET_TOOLS
 
 
@@ -115,7 +115,7 @@ async def test_register_gsheet_coarse_reads_is_standard_and_isolated() -> None:
     srv = FastMCP("test")
     register_gsheet_coarse_reads(srv)
 
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     assert names == {"gsheet"}
 
@@ -125,7 +125,7 @@ async def test_register_gsheet_workflow_tools_excludes_fragmented_aliases() -> N
     srv = FastMCP("test")
     gsheet_module.register_gsheet_workflow_tools(srv)
 
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     assert names == {"gsheet", "gsheet_connect", "gsheet_pull", "gsheet_disconnect"}
     assert "gsheet_auth" not in names
@@ -137,7 +137,7 @@ async def test_register_gsheet_workflow_tools_excludes_fragmented_aliases() -> N
 async def test_gsheet_workflow_schemas_are_strict_and_target_state_based() -> None:
     srv = FastMCP("test")
     gsheet_module.register_gsheet_workflow_tools(srv)
-    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = {t.name: t for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     connect = tools["gsheet_connect"]
     disconnect = tools["gsheet_disconnect"]
@@ -377,7 +377,7 @@ async def test_gsheet_write_tool_schemas_hide_sign_confirmation_inputs() -> None
     """Only a human elicitation can confirm sign; the agent-facing schema cannot."""
     srv = FastMCP("test")
     register_gsheet_tools(srv)
-    tools = {t.name: t for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = {t.name: t for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     assert set(tools["gsheet_connect"].parameters["properties"]) == {
         "url",

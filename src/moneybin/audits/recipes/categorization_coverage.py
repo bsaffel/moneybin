@@ -20,8 +20,8 @@ from moneybin.errors import RecoveryAction
 
 
 def recipe(
-    affected_ids: list[str],  # noqa: ARG001 — coverage audit doesn't track ids
-    context: RecipeContext,  # noqa: ARG001 — pure recipe
+    affected_ids: list[str],  # coverage audit doesn't track ids
+    context: RecipeContext,  # pure recipe
 ) -> list[RecoveryAction]:
     """Emit a single deterministic-categorize-run action (suggested first step)."""
     return [

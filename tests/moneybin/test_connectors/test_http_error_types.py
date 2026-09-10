@@ -87,7 +87,7 @@ def test_the_label_names_the_feed_that_failed() -> None:
     )
     respx.get(_URL).mock(side_effect=httpx.ConnectError("no route to host"))
 
-    with pytest.raises(Exception) as exc:  # noqa: PT011  # neutral base, asserted below
+    with pytest.raises(Exception) as exc:  # neutral base, asserted below
         fetch_json(
             httpx.Client(), _URL, params={}, sleep=_noop_sleep, errors=rate_errors
         )

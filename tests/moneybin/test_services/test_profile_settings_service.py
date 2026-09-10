@@ -23,12 +23,19 @@ def test_home_currency_starts_unset(service: ProfileSettingsService) -> None:
 
 
 def test_set_setting_persists_the_home_currency(
-    service: ProfileSettingsService,
+    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The managed key round-trips through the database."""
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        restated.append,
+    )
+
     service.set_setting("home_currency", "EUR", actor="cli")
 
     assert service.get_settings().home_currency == "EUR"
+    assert len(restated) == 1
 
 
 def test_set_setting_rejects_an_unknown_key(service: ProfileSettingsService) -> None:

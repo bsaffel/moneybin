@@ -113,7 +113,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             description VARCHAR,
             plaid_detailed VARCHAR
         )
-        """  # noqa: S608  # SEED_CATEGORIES is a TableRef constant, not user input
+        """  # SEED_CATEGORIES is a TableRef constant, not user input
     )
     db.execute(
         f"""
@@ -124,7 +124,7 @@ def _ensure_seed_tables_exist(db: Database) -> None:
             category_id VARCHAR,
             source_taxonomy_version VARCHAR
         )
-        """  # noqa: S608  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
+        """  # SEED_CATEGORY_SOURCE_MAP is a TableRef constant, not user input
     )
 
 

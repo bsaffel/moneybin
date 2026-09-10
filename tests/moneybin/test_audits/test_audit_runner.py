@@ -58,6 +58,7 @@ def _txn_values(
     *,
     amount: str,
     direction: str,
+    currency: str = "USD",
     category: str = "NULL",
     is_transfer: str = "FALSE",
     transfer_pair_id: str = "NULL",
@@ -71,7 +72,7 @@ def _txn_values(
     return (
         f"('{transaction_id}', 'ACC1', '2026-01-{day:02d}', {amount}, {absolute}, "
         f"'{direction}', 'Row {transaction_id}', {category_sql}, {is_transfer}, "
-        f"{pair_sql}, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
+        f"{pair_sql}, 'DEBIT', false, '{currency}', 'ofx', CURRENT_TIMESTAMP, "
         f"CURRENT_TIMESTAMP, 2026, 1, {day}, 3, '2026-01', '2026-Q1')"
     )
 
@@ -89,13 +90,13 @@ def _seed_account(db: Database) -> None:
         ) VALUES ('ACC1', '111', 'CHECKING', 'Bank', 'fid', 'ofx',
                   'a.qfx', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   CURRENT_TIMESTAMP, 'Bank CHECKING', 'USD', FALSE, TRUE)
-        """  # noqa: S608 — test input, not user data
+        """  # test input, not user data
     )
 
 
 def _insert_transactions(db: Database, *rows: str) -> None:
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES {', '.join(rows)}"  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES {', '.join(rows)}"  # noqa: S608  # test input, not user data
     )
 
 
@@ -103,7 +104,7 @@ def _insert_transfer(
     db: Database, transfer_id: str, debit_id: str, credit_id: str, amount: str
 ) -> None:
     db.execute(
-        "INSERT INTO core.bridge_transfers (transfer_id, debit_transaction_id, "  # noqa: S608 — test input, not user data
+        "INSERT INTO core.bridge_transfers (transfer_id, debit_transaction_id, "  # noqa: S608  # test input, not user data
         "credit_transaction_id, date_offset_days, amount) VALUES "
         f"('{transfer_id}', '{debit_id}', '{credit_id}', 0, {amount})"
     )
@@ -163,7 +164,7 @@ def test_balanced_transfers_flags_a_pair_whose_legs_carry_no_amount(
     """NULL + NULL is not zero — a comparison on the sum alone would pass it."""
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_DEBIT', 'ACC1', '2026-01-03', NULL, NULL, NULL, 'Out', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 3, 5, '2026-01', '2026-Q1'), "
@@ -188,6 +189,57 @@ def test_balanced_transfers_accepts_a_pair_that_nets_to_zero(db: Database) -> No
     assert _violations(db, "bridge_transfers_balanced") == []
 
 
+def test_balanced_transfers_accepts_a_known_cross_currency_pair(
+    db: Database,
+) -> None:
+    _seed_account(db)
+    _insert_transactions(
+        db,
+        _txn_values("T_DEBIT", amount="-100.00", direction="expense", currency="USD"),
+        _txn_values("T_CREDIT", amount="90.00", direction="income", currency="EUR"),
+    )
+    _insert_transfer(db, "XFER1", "T_DEBIT", "T_CREDIT", "100.00")
+
+    assert _violations(db, "bridge_transfers_balanced") == []
+
+
+@pytest.mark.parametrize(
+    ("debit_amount", "debit_direction", "credit_amount", "credit_direction"),
+    [
+        ("100.00", "income", "90.00", "income"),
+        ("-100.00", "expense", "-90.00", "expense"),
+        ("0.00", "zero", "90.00", "income"),
+        ("-100.00", "expense", "0.00", "zero"),
+    ],
+)
+def test_balanced_transfers_flags_cross_currency_legs_with_invalid_signs(
+    db: Database,
+    debit_amount: str,
+    debit_direction: str,
+    credit_amount: str,
+    credit_direction: str,
+) -> None:
+    _seed_account(db)
+    _insert_transactions(
+        db,
+        _txn_values(
+            "T_DEBIT",
+            amount=debit_amount,
+            direction=debit_direction,
+            currency="USD",
+        ),
+        _txn_values(
+            "T_CREDIT",
+            amount=credit_amount,
+            direction=credit_direction,
+            currency="EUR",
+        ),
+    )
+    _insert_transfer(db, "XFER1", "T_DEBIT", "T_CREDIT", "100.00")
+
+    assert _violations(db, "bridge_transfers_balanced") == ["T_DEBIT"]
+
+
 def test_sign_convention_flags_a_direction_that_contradicts_its_amount(
     db: Database,
 ) -> None:
@@ -205,7 +257,7 @@ def test_sign_convention_flags_an_absolute_that_contradicts_its_amount(
 ) -> None:
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_ABS', 'ACC1', '2026-01-01', -50.00, 49.00, 'expense', 'Row', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 1, 3, '2026-01', '2026-Q1')"
@@ -217,7 +269,7 @@ def test_sign_convention_flags_an_absolute_that_contradicts_its_amount(
 def test_sign_convention_flags_a_null_amount(db: Database) -> None:
     _seed_account(db)
     db.execute(
-        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608 — test input, not user data
+        f"INSERT INTO core.fct_transactions ({_TXN_COLUMNS}) VALUES "  # noqa: S608  # test input, not user data
         "('T_NULL', 'ACC1', '2026-01-01', NULL, NULL, NULL, 'Row', NULL, "
         "FALSE, NULL, 'DEBIT', false, 'USD', 'ofx', CURRENT_TIMESTAMP, "
         "CURRENT_TIMESTAMP, 2026, 1, 1, 3, '2026-01', '2026-Q1')"

@@ -34,7 +34,7 @@ def migrate(conn: object) -> None:
         if "updated_at" not in col_map:
             logger.info(f"Adding updated_at to app.{table}")
             conn.execute(  # type: ignore[union-attr]
-                f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names, not user input
+                f"ALTER TABLE app.{table} "  # allowlisted table names, not user input
                 "ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
             )
             # Commit the backfill before SET NOT NULL. A failure between this
@@ -46,7 +46,7 @@ def migrate(conn: object) -> None:
             conn.execute("COMMIT")  # type: ignore[union-attr]
             conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
             conn.execute(  # type: ignore[union-attr]
-                f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names
+                f"ALTER TABLE app.{table} "  # allowlisted table names
                 "ALTER COLUMN updated_at SET NOT NULL"
             )
         elif col_map["updated_at"] is True:
@@ -55,7 +55,7 @@ def migrate(conn: object) -> None:
             # SET NOT NULL is safe inside the runner's enclosing transaction.
             logger.info(f"Tightening app.{table}.updated_at to NOT NULL")
             conn.execute(  # type: ignore[union-attr]
-                f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names
+                f"ALTER TABLE app.{table} "  # allowlisted table names
                 "ALTER COLUMN updated_at SET NOT NULL"
             )
 
@@ -78,7 +78,7 @@ def migrate(conn: object) -> None:
         if col_map.get("updated_at") is True:
             logger.info(f"Tightening app.{table}.updated_at to NOT NULL")
             conn.execute(  # type: ignore[union-attr]
-                f"ALTER TABLE app.{table} "  # noqa: S608  # allowlisted table names
+                f"ALTER TABLE app.{table} "  # allowlisted table names
                 "ALTER COLUMN updated_at SET NOT NULL"
             )
 

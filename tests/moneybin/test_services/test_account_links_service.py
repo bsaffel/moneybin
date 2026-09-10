@@ -1337,7 +1337,7 @@ def _collapse_retirement_count() -> float:
     from moneybin.metrics.registry import TRANSFER_RETIREMENTS_TOTAL
 
     counter = TRANSFER_RETIREMENTS_TOTAL.labels(cause="account_merge")
-    return counter._value.get()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    return counter._value.get()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_collapsed_transfer_increments_its_own_counter(
@@ -1707,12 +1707,12 @@ def _seed_twin_accounts(db: Database) -> None:
     """Insert two dim_accounts rows sharing institution+last4 (triggers institution_last4 signal)."""
     db.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         [_TWIN_A, "7777", "first_bank", "First Bank Checking A", "csv"],
     )
     db.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         [_TWIN_B, "7777", "first_bank", "First Bank Checking B", "ofx"],
     )
     # Each twin carries an accepted source_native link (as resolver-imported
@@ -1806,12 +1806,12 @@ def test_run_skips_provisionals_without_source_native_link(
     """
     db.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["nolink_a0001", "5555", "second_bank", "No-Link A", "csv"],
     )
     db.execute(
         "INSERT INTO core.dim_accounts (account_id, last_four, institution_name, display_name, source_type) "
-        "VALUES (?, ?, ?, ?, ?)",  # noqa: S608  # test fixture insert
+        "VALUES (?, ?, ?, ?, ?)",  # test fixture insert
         ["nolink_b0001", "5555", "second_bank", "No-Link B", "ofx"],
     )
     assert svc.run() == 0

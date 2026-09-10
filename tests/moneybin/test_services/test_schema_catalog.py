@@ -347,7 +347,7 @@ def test_live_catalog_holds_one_transaction_across_both_of_its_sets(
     writer = schema_catalog_db.conn.cursor()
     _pin_cursor_to_moneybin(writer)
     # The seam the race opens at.
-    schema_doc = schema_catalog_module._schema_doc  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    schema_doc = schema_catalog_module._schema_doc  # pyright: ignore[reportPrivateUsage]
 
     def doc_then_commit_a_view(db: Database) -> dict[str, Any]:
         doc = schema_doc(db)
@@ -373,7 +373,7 @@ def test_schema_doc_holds_one_transaction_across_its_reads(
     writer = schema_catalog_db.conn.cursor()
     _pin_cursor_to_moneybin(writer)
     # The read the race lands in front of.
-    gsheet_seed_views = schema_catalog_module._gsheet_seed_views  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    gsheet_seed_views = schema_catalog_module._gsheet_seed_views  # pyright: ignore[reportPrivateUsage]
 
     def commit_a_seed_view_then_read(db: Database) -> list[dict[str, Any]]:
         writer.execute("CREATE OR REPLACE VIEW raw.gsheet_probe AS SELECT 1 AS id")

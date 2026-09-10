@@ -1,4 +1,3 @@
-# ruff: noqa: A001 — "import" shadows builtin, but it's a Typer subcommand name
 """Import commands for MoneyBin CLI.
 
 This module provides the user-facing import workflow: auto-detect file type,
@@ -182,7 +181,7 @@ def _load_all_formats(
     if db is not None:
         try:
             user_formats = load_formats_from_db(db)
-        except Exception:  # noqa: BLE001 — DB table may not exist yet
+        except Exception:  # DB table may not exist yet
             logger.debug("Could not load user formats from DB, using built-in only")
     all_formats = merge_formats(builtin, user_formats)
     return all_formats, builtin
@@ -196,7 +195,7 @@ def _load_pdf_formats(db: Database | None) -> list[PdfFormat]:
         from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 
         return PdfFormatsRepo(db).list_all()
-    except Exception:  # noqa: BLE001 — app.pdf_formats may not exist yet
+    except Exception:  # app.pdf_formats may not exist yet
         logger.debug("Could not load PDF formats from DB")
         return []
 
@@ -599,7 +598,7 @@ def import_files_command(
                             typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
                         files_list, data = _batch_payload(batch_result)
                         refresh_steps = batch_result.refresh_steps
-    except Exception as _exc:  # noqa: BLE001 — dispatch on type below
+    except Exception as _exc:  # dispatch on type below
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
             header_row_consumed_recovery,
@@ -2760,7 +2759,7 @@ def formats_list(
     quiet: bool = quiet_option,
     wide: bool = wide_option,
     # _type shadows the builtin `type` — Typer CLI name remains --type (A001).
-    _type: _FormatTypeFilter = typer.Option(  # noqa: A002
+    _type: _FormatTypeFilter = typer.Option(
         _FormatTypeFilter.all,
         "--type",
         help=(
@@ -2787,7 +2786,7 @@ def formats_list(
     try:
         with get_database(read_only=True) as db:
             all_formats, builtin, pdf_formats = ImportService(db).list_formats()
-    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
+    except Exception:  # DB may not exist yet; show built-in / empty PDF
         all_formats, builtin = _load_all_formats(None)
         pdf_formats = _load_pdf_formats(None)
 
@@ -2882,7 +2881,7 @@ def formats_list(
 def formats_show(
     name: str = typer.Argument(..., help="Format name to show"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — show has no info chatter; only data lines
+    quiet: bool = quiet_option,  # show has no info chatter; only data lines
 ) -> None:
     """Show details for a specific format.
 
@@ -2904,7 +2903,7 @@ def formats_show(
     try:
         with get_database(read_only=True) as db:
             all_formats, _, pdf_formats_list = ImportService(db).list_formats()
-    except Exception:  # noqa: BLE001 — DB may not exist yet; show built-in / empty PDF
+    except Exception:  # DB may not exist yet; show built-in / empty PDF
         all_formats, _ = _load_all_formats(None)
         pdf_formats_list = _load_pdf_formats(None)
 
@@ -3118,7 +3117,7 @@ def import_status(
         with handle_cli_errors():
             with get_database(read_only=True) as db:
                 rows = ImportService(db).raw_data_summary()
-    except Exception as e:  # noqa: BLE001 — surface connection errors generically
+    except Exception as e:  # surface connection errors generically
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 

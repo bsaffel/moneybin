@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """Regression scenarios for what may and may not clear transform ``pending``.
 
 Both need a real SQLMesh apply to reproduce. The first guards the fail-open (a

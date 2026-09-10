@@ -16,8 +16,8 @@ from moneybin.errors import RecoveryAction
 
 
 def recipe(
-    affected_ids: list[str],  # noqa: ARG001 — dedup audit doesn't carry per-row ids
-    context: RecipeContext,  # noqa: ARG001 — pure recipe
+    affected_ids: list[str],  # dedup audit doesn't carry per-row ids
+    context: RecipeContext,  # pure recipe
 ) -> list[RecoveryAction]:
     """Emit a full refresh followed by the standard doctor status section."""
     return [

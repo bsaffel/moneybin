@@ -1,4 +1,3 @@
-# ruff: noqa: S101
 """E2E read-only tests — commands that don't mutate state.
 
 Covers three groups:

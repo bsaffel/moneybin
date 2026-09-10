@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -100,7 +101,7 @@ def account_db(db: Database) -> Database:
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     # Insert test balances
     conn.execute("""
@@ -113,7 +114,7 @@ def account_db(db: Database) -> Database:
          4800.00, 'test.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx'),
         ('ACC002', '2025-06-01', '2025-06-30', 15000.00, '2025-06-30',
          15000.00, 'other.qfx', '2025-01-24', CURRENT_TIMESTAMP, NULL, 'ofx')
-    """)  # noqa: S608  # test input, not executing SQL
+    """)  # test input, not executing SQL
 
     return db
 
@@ -483,8 +484,19 @@ class TestAccountServiceMutators:
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_persists(
-        self, test_db: Database
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        restated: list[tuple[Database, bool]] = []
+
+        def record_restatement(
+            db: Database, *, account_currency_changed: bool = False
+        ) -> None:
+            restated.append((db, account_currency_changed))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
         svc = AccountService(test_db)
         updated, warnings = svc.settings_update(
             "acct_a", actor="cli", default_cost_basis_method="hifo"
@@ -494,11 +506,54 @@ class TestAccountServiceMutators:
         loaded = svc._load_settings("acct_a")
         assert loaded is not None
         assert loaded.default_cost_basis_method == "hifo"
+        assert restated == [(test_db, False)]
+
+    @pytest.mark.unit
+    def test_currency_update_restates_from_the_account_dimension(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restated: list[tuple[Database, bool]] = []
+
+        def record_restatement(
+            db: Database, *, account_currency_changed: bool = False
+        ) -> None:
+            restated.append((db, account_currency_changed))
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+
+        AccountService(test_db).settings_update(
+            "acct_a", actor="cli", currency_code="EUR"
+        )
+
+        assert restated == [(test_db, True)]
+
+    @pytest.mark.unit
+    def test_unrelated_account_setting_does_not_restate_fx_accounting(
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        restated: list[Database] = []
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            restated.append,
+        )
+
+        AccountService(test_db).settings_update(
+            "acct_a", actor="cli", display_name="Everyday"
+        )
+
+        assert restated == []
 
     @pytest.mark.unit
     def test_settings_update_default_cost_basis_method_clear_sentinel(
-        self, test_db: Database
+        self, test_db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         svc = AccountService(test_db)
         svc.settings_update("acct_a", actor="cli", default_cost_basis_method="fifo")
         updated, _ = svc.settings_update(

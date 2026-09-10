@@ -27,7 +27,8 @@ CREATE TABLE app.security_links (
 """
 
 
-def _old_schema(db: Database) -> None:
+def seed_legacy_manual_identity_schema(db: Database) -> None:
+    """Populate manual observations and Security Links using the pre-V061 schema."""
     db.execute("DROP TABLE app.security_links")
     db.execute(_OLD_SECURITY_LINKS_SQL)
     db.execute("""INSERT INTO app.security_links VALUES
@@ -53,7 +54,7 @@ def _migrate(db: Database) -> None:
 def test_upgrade_widens_links_without_changing_raw_or_existing_links(
     db: Database,
 ) -> None:
-    _old_schema(db)
+    seed_legacy_manual_identity_schema(db)
     raw = db.execute(
         "SELECT * FROM raw.manual_investment_transactions ORDER BY source_transaction_id"
     ).fetchall()
@@ -78,7 +79,7 @@ def test_upgrade_widens_links_without_changing_raw_or_existing_links(
 def test_historical_account_activation_with_unprovable_selections_refuses_upgrade(
     db: Database,
 ) -> None:
-    _old_schema(db)
+    seed_legacy_manual_identity_schema(db)
     db.execute("""INSERT INTO app.account_link_decisions
         (decision_id, provisional_account_id, candidate_account_id, status, decided_by, decided_at)
         VALUES ('historical_merge', 'a', 'b', 'accepted', 'user', CURRENT_TIMESTAMP)""")
@@ -108,7 +109,7 @@ def test_historical_account_activation_with_unprovable_selections_refuses_upgrad
 
 
 def test_historical_activation_cannot_ignore_survivor_selections(db: Database) -> None:
-    _old_schema(db)
+    seed_legacy_manual_identity_schema(db)
     create_core_dim_stub_views(db)
     db.execute("""INSERT INTO app.account_link_decisions
         (decision_id, provisional_account_id, candidate_account_id, status, decided_by, decided_at)

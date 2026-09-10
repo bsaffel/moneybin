@@ -325,12 +325,19 @@ def test_accept_repoints_every_accepted_ref(
     assert orphaned is not None and orphaned[0] == 0
 
 
+@pytest.mark.parametrize("disposal_type", ["sell", "transfer_out"])
 def test_accept_migrates_lot_selection(
-    db: Database, merge_setup: dict[str, str]
+    db: Database, merge_setup: dict[str, str], disposal_type: str
 ) -> None:
     provisional = merge_setup["provisional"]
     old_lot = add_lot(db, security_id=provisional)
     add_disposal(db, "itx_sell", provisional)
+    db.execute(
+        """UPDATE core.fct_investment_transactions
+        SET type = ?, amount = CASE WHEN ? = 'transfer_out' THEN NULL ELSE amount END
+        WHERE investment_transaction_id = 'itx_sell'""",
+        [disposal_type, disposal_type],
+    )
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],

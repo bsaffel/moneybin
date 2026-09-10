@@ -23,7 +23,7 @@ class TransferGenerator:
         rng: Seeded random number generator.
     """
 
-    def __init__(self, transfers: list[TransferConfig], rng: SeededRandom) -> None:  # noqa: D107 — args documented in class docstring
+    def __init__(self, transfers: list[TransferConfig], rng: SeededRandom) -> None:  # noqa: D107  # args documented in class docstring
         self._transfers = transfers
         self._rng = rng
         self._pair_counter = 0
@@ -69,6 +69,12 @@ class TransferGenerator:
             if amount <= 0:
                 continue
 
+            received = (
+                Decimal(str(config.received_amount))
+                if config.received_amount is not None
+                else amount
+            )
+
             self._pair_counter += 1
             pair_id = f"XFER{self._pair_counter:06d}"
 
@@ -90,7 +96,7 @@ class TransferGenerator:
             txns.append(
                 GeneratedTransaction(
                     date=txn_date,
-                    amount=amount,
+                    amount=received,
                     description=description,
                     account_name=config.to_account,
                     transfer_pair_id=pair_id,

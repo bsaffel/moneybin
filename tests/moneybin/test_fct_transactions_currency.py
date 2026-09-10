@@ -23,7 +23,7 @@ def _insert_dim_account_inputs(db: Database, *, account_id: str) -> None:
             (account_id, account_type, source_file, extracted_at,
              source_type, source_origin)
         VALUES (?, 'CHECKING', 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank')
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [account_id],
     )
 
@@ -46,7 +46,7 @@ def _insert_ofx_transaction(
              source_origin, currency_code)
         VALUES (?, ?, 'DEBIT', '2026-07-01'::TIMESTAMP, -10.00, 'Test Payee',
                 'ofx_test', CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, account_id, currency_code],
     )
 
@@ -120,6 +120,38 @@ def test_transaction_currency_falls_back_to_account_default_when_neither_known(
 
 
 @pytest.mark.slow
+def test_cleared_account_currency_advances_transaction_freshness(
+    db: Database,
+) -> None:
+    """A cleared inherited currency remains visible to incremental consumers."""
+    _insert_dim_account_inputs(db, account_id="a_cleared")
+    db.execute(
+        """
+        INSERT INTO app.account_settings (account_id, currency_code, updated_at)
+        VALUES ('a_cleared', NULL, '2099-01-01 09:00:00'::TIMESTAMP)
+        """
+    )
+    _insert_ofx_transaction(
+        db, txn_id="t-cleared", account_id="a_cleared", currency_code=None
+    )
+
+    with sqlmesh_context(db) as ctx:
+        ctx.plan(auto_apply=True, no_prompts=True)
+
+    row = db.execute(
+        """
+        SELECT t.currency_code, t.updated_at, a.updated_at
+        FROM core.fct_transactions AS t
+        JOIN core.dim_accounts AS a USING (account_id)
+        WHERE t.account_id = 'a_cleared'
+        """
+    ).fetchone()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] == row[2]
+
+
+@pytest.mark.slow
 def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
     db: Database,
 ) -> None:
@@ -148,7 +180,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                  source_origin, status, decided_by, decided_at)
             VALUES (?, ?, 'source_native', '1001', 'ofx', ?, 'accepted',
                     'system', CURRENT_TIMESTAMP)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"lnk_{origin}", canonical, origin],
         )
         db.execute(
@@ -157,7 +189,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                 (account_id, account_type, source_file, extracted_at,
                  source_type, source_origin)
             VALUES ('1001', 'CHECKING', ?, ?::TIMESTAMP, 'ofx', ?)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [f"ofx_{origin}", when, origin],
         )
         db.execute(
@@ -168,7 +200,7 @@ def test_two_banks_sharing_an_account_key_keep_their_own_currencies(
                  source_type, source_origin, currency_code)
             VALUES ('1001', ?::TIMESTAMP, ?::TIMESTAMP, 100.00, ?::TIMESTAMP,
                     ?, ?::TIMESTAMP, 'ofx', ?, ?)
-            """,  # noqa: S608  # test fixture, not executing user SQL
+            """,  # test fixture, not executing user SQL
             [when, when, when, f"ofx_{origin}", when, origin, currency],
         )
 

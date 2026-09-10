@@ -360,7 +360,7 @@ def _rate_date(value: Any) -> date | None:
             # report, which is what every other unpriceable row does — raising
             # would take down the read instead.
             return None
-        return min(close, date.today())  # noqa: DTZ011  # a rate date is a calendar day, not an instant
+        return min(close, date.today())  # a rate date is a calendar day, not an instant
     try:
         return date.fromisoformat(text[:10])
     except ValueError:

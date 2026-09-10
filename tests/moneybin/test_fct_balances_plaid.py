@@ -49,7 +49,7 @@ def _insert_plaid_account(
              extracted_at, loaded_at)
         VALUES (?, ?, ?, 'TestBank', ?, ?, 'sync_test', 'plaid', ?,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [native_key, account_type, subtype, official_name, mask, _ITEM],
     )
 
@@ -71,7 +71,7 @@ def _insert_plaid_balance(
              extracted_at, loaded_at)
         VALUES (?, ?::DATE, ?, ?, ?, 'sync_test', 'plaid', ?,
                 CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [native_key, balance_date, current, available, margin, _ITEM],
     )
 
@@ -84,7 +84,7 @@ def _accept_link(db: Database, *, native_key: str, canonical_id: str) -> None:
              source_origin, status, decided_by, decided_at)
         VALUES (?, ?, 'source_native', ?, 'plaid', ?, 'accepted', 'auto',
                 CURRENT_TIMESTAMP)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [f"link_{native_key}", canonical_id, native_key, _ITEM],
     )
 

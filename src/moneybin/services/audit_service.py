@@ -141,7 +141,7 @@ class AuditService:
                 before_value, after_value, parent_audit_id, operation_id,
                 context_json, is_undo, undoes_operation_id
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
+            """,  # AUDIT_LOG is a TableRef constant, values parameterized
             [
                 audit_id,
                 actor,
@@ -246,7 +246,7 @@ class AuditService:
                 before_value, after_value, parent_audit_id, operation_id,
                 context_json, is_undo, undoes_operation_id
             ) VALUES {values}
-            """,  # noqa: S608  # Placeholder count derives only from batch length
+            """,  # Placeholder count derives only from batch length
             params,
         )
         audit_events_emitted_total.labels(action=action, actor=actor).inc(len(events))
@@ -308,7 +308,7 @@ class AuditService:
               {where}
               ORDER BY occurred_at DESC, audit_id DESC
               {limit_sql}
-            """,  # noqa: S608  # controlled fragments + parameterized filters
+            """,  # controlled fragments + parameterized filters
             params,
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -325,7 +325,7 @@ class AuditService:
             where = "WHERE occurred_at < ? OR (occurred_at = ? AND audit_id <= ?)"
             params.extend([snapshot[0], snapshot[0], snapshot[1]])
         row = self._db.conn.execute(
-            f"SELECT COUNT(*) FROM {AUDIT_LOG.full_name} {where}",  # noqa: S608  # fixed predicate fragment
+            f"SELECT COUNT(*) FROM {AUDIT_LOG.full_name} {where}",  # fixed predicate fragment
             params,
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -353,7 +353,7 @@ class AuditService:
                 OR json_extract_string(after_value, '$.transaction_id') = ?
              ORDER BY occurred_at DESC, rowid DESC
              LIMIT ?
-            """,  # noqa: S608  # undo-columns fragment is a controlled literal
+            """,  # undo-columns fragment is a controlled literal
             [transaction_id, transaction_id, transaction_id, limit],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -380,7 +380,7 @@ class AuditService:
               FROM {AUDIT_LOG.full_name}
              WHERE operation_id = ?
              ORDER BY occurred_at ASC, rowid ASC
-            """,  # noqa: S608  # undo-columns fragment is a controlled literal
+            """,  # undo-columns fragment is a controlled literal
             [operation_id],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]
@@ -396,7 +396,7 @@ class AuditService:
               FROM {AUDIT_LOG.full_name}
              WHERE audit_id = ? OR parent_audit_id = ?
              ORDER BY occurred_at ASC, audit_id ASC
-            """,  # noqa: S608  # undo-columns fragment is a controlled literal
+            """,  # undo-columns fragment is a controlled literal
             [audit_id, audit_id],
         ).fetchall()
         return [self._row_to_event(r) for r in rows]

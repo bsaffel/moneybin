@@ -37,7 +37,7 @@ def _insert_tabular_transaction(
         VALUES (?, 'acct_blank_cat', '2026-07-01'::DATE, -10.00, 'Test Payee',
                 '/tmp/blank_cat.csv', 'csv', 'test_bank',
                 '00000000-0000-0000-0000-0000000000b1', ?, ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, category, subcategory],
     )
 
@@ -56,7 +56,7 @@ def _insert_manual_transaction(
              amount, description, created_by, category, subcategory)
         VALUES (?, 'manual_blank_cat', 'acct_blank_cat', '2026-07-01'::DATE,
                 -10.00, 'Test Manual Entry', 'cli', ?, ?)
-        """,  # noqa: S608  # test fixture, not executing user SQL
+        """,  # test fixture, not executing user SQL
         [txn_id, category, subcategory],
     )
 

@@ -265,7 +265,7 @@ def test_harvest_routes_conflict_to_review() -> None:
         # Derived from input: exactly 2 transactions carry ent_conflict.
         rows = db.execute(
             "SELECT transaction_id FROM core.bridge_merchant_entities "
-            "WHERE merchant_entity_id = ? ORDER BY transaction_id",  # noqa: S608  # static identifiers
+            "WHERE merchant_entity_id = ? ORDER BY transaction_id",  # static identifiers
             [_ENTITY_CONFLICT],
         ).fetchall()
         assert len(rows) == 2, (

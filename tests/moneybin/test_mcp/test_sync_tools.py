@@ -24,7 +24,7 @@ async def test_register_sync_tools_registers_expected_tools() -> None:
     """Expected sync tools register; schedule stubs/login/logout/key-rotate excluded."""
     srv = FastMCP("test")
     register_sync_tools(srv)
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
     assert names == _EXPECTED_TOOLS
     assert "sync_login" not in names
     assert "sync_logout" not in names
@@ -40,7 +40,7 @@ async def test_register_sync_workflow_tools_excludes_live_aliases() -> None:
     srv = FastMCP("test")
     sync_module.register_sync_workflow_tools(srv)
 
-    names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     assert names == {"sync_link", "sync_status", "sync_pull", "sync_disconnect"}
     assert "sync_link_status" not in names
@@ -52,7 +52,7 @@ async def test_register_sync_workflow_tools_excludes_live_aliases() -> None:
 async def test_sync_workflow_status_accepts_optional_session_id() -> None:
     srv = FastMCP("test")
     sync_module.register_sync_workflow_tools(srv)
-    tool = next(t for t in await srv._list_tools() if t.name == "sync_status")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tool = next(t for t in await srv._list_tools() if t.name == "sync_status")  # pyright: ignore[reportPrivateUsage]
 
     assert tool.parameters["properties"]["session_id"] == {
         "anyOf": [{"type": "string"}, {"type": "null"}],
@@ -66,7 +66,7 @@ async def test_sync_workflow_renders_explicit_auth_variants() -> None:
     """Existing tools carry strict login/status/logout variants without new names."""
     srv = FastMCP("test")
     sync_module.register_sync_workflow_tools(srv)
-    tools = {tool.name: tool for tool in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tools = {tool.name: tool for tool in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
     assert tools["sync_link"].parameters["properties"]["mode"] == {
         "default": "institution",

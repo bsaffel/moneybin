@@ -47,7 +47,7 @@ def _make_investments_db(tmp_path: Path) -> Database:
         INSERT INTO core.dim_accounts
             (account_id, account_type, institution_name, source_type)
         VALUES ('acct_brokerage', 'investment', 'Fidelity', 'manual')
-        """  # noqa: S608  # test fixture insert, static SQL
+        """  # test fixture insert, static SQL
     )
     return database
 
@@ -186,7 +186,7 @@ class TestSecuritiesAddAndBuy:
             SELECT type, security_id, quantity, amount, fees
               FROM raw.manual_investment_transactions
              WHERE account_id = ?
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             ["acct_brokerage"],
         ).fetchall()
         assert len(rows) == 1
@@ -336,7 +336,7 @@ class TestSecuritiesAddAndBuy:
             """
             SELECT type FROM raw.manual_investment_transactions
              WHERE investment_transaction_id IN (?, ?)
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             ids,
         ).fetchall()
         assert {r[0] for r in rows} == {"reinvest", "dividend"}
@@ -458,7 +458,7 @@ class TestInvestmentsList:
                  type, quantity, amount, currency_code)
             VALUES ('evt_1', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, -1500.00, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         result = runner.invoke(app, ["investments", "list", "--output", "json"])
         assert result.exit_code == 0, result.output
@@ -477,7 +477,7 @@ class TestInvestmentsList:
                  type, quantity, amount, currency_code)
             VALUES ('evt_1', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, -1500.00, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         # No `--wide`: all six columns are the default view, so the flag would
         # promise columns nothing is holding back and the command does not
@@ -516,7 +516,7 @@ class TestInvestmentsList:
                  type, quantity, amount, currency_code)
             VALUES ('evt_ccy', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, -1500.00, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "list"])
@@ -592,7 +592,7 @@ class TestHoldingsAndGains:
                    CAST(NULL AS DECIMAL(18,2)), CAST(NULL AS DECIMAL(18,2)),
                    CAST(NULL AS DATE), CAST(NULL AS VARCHAR), CAST(NULL AS INT),
                    'unpriced'
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings", "--wide"])
         assert result.exit_code == 0, result.output
@@ -638,7 +638,7 @@ class TestHoldingsAndGains:
                    200.00::DECIMAL(18,2) AS unrealized_gain,
                    DATE '2026-07-15' AS price_date, 'plaid' AS price_source,
                    0::INT AS days_since_observed, 'valued' AS valuation_status
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
 
@@ -681,7 +681,7 @@ class TestHoldingsAndGains:
                    NULL::DATE AS price_date, NULL AS price_source,
                    NULL::INT AS days_since_observed,
                    'unpriced' AS valuation_status
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
 
         result = runner.invoke(app, ["investments", "holdings", "-q"])
@@ -714,7 +714,7 @@ class TestHoldingsAndGains:
                    NULL::DATE AS price_date, NULL AS price_source,
                    NULL::INT AS days_since_observed,
                    'source_overlap' AS valuation_status
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
 
         result = runner.invoke(app, ["investments", "holdings", "--output", "json"])
@@ -744,7 +744,7 @@ class TestHoldingsAndGains:
                    DATE '2026-03-02' AS price_date, 'plaid' AS price_source,
                    135::INT AS days_since_observed,
                    'carried_forward' AS valuation_status
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
@@ -769,7 +769,7 @@ class TestHoldingsAndGains:
                    CAST(NULL AS VARCHAR) AS price_source,
                    CAST(NULL AS INT) AS days_since_observed,
                    'unpriced' AS valuation_status
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
@@ -797,7 +797,7 @@ class TestHoldingsAndGains:
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'USD',
                    800.00::DECIMAL(18,2), 300.00::DECIMAL(18,2),
                    DATE '2026-07-15', 'plaid', 0::INT, 'valued'
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
@@ -826,7 +826,7 @@ class TestHoldingsAndGains:
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
                    900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
                    DATE '2026-07-15', 'plaid', 0::INT, 'valued'
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
@@ -876,7 +876,7 @@ class TestHoldingsAndGains:
                    500.00::DECIMAL(18,2), 100.00::DECIMAL(28,10), 'EUR',
                    900.00::DECIMAL(18,2), 400.00::DECIMAL(18,2),
                    DATE '2026-07-15', 'plaid', 0::INT, 'valued'
-            """  # noqa: S608  # test fixture view, literal test data only
+            """  # test fixture view, literal test data only
         )
         result = runner.invoke(app, ["investments", "holdings"])
         assert result.exit_code == 0, result.output
@@ -905,7 +905,7 @@ class TestHoldingsAndGains:
             VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a', 5,
                     '2024-01-01', '2024-06-12', 950.00, 750.00, 200.00, 'long',
                     'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "gains", "--output", "json"])
@@ -931,7 +931,7 @@ class TestHoldingsAndGains:
             VALUES ('gain_1', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a', 5,
                     '2024-01-01', '2024-06-12', 950.00, 750.00, 200.00, 'long',
                     'fifo', true, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         result = runner.invoke(app, ["investments", "gains", "--output", "json"])
         assert result.exit_code == 0, result.output
@@ -968,7 +968,7 @@ class TestHoldingsAndGains:
             VALUES ('gain_quiet', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
                     5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
                     'long', 'fifo', true, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         quiet = runner.invoke(app, ["investments", "gains", "-q"])
@@ -996,7 +996,7 @@ class TestHoldingsAndGains:
                    ('gain_whole', 'acct_brokerage', 'sec_2', 'sell_2', 'lot_b',
                     5, '2024-01-01', '2024-06-13', 950.00, 750.00, 200.00,
                     'long', 'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         wide = runner.invoke(app, ["investments", "gains", "--wide"])
@@ -1029,7 +1029,7 @@ class TestHoldingsAndGains:
             VALUES ('gain_signed', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
                     5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
                     'long', 'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "gains", "--wide"])
@@ -1088,7 +1088,7 @@ class TestHoldingsAndGains:
             VALUES ('gain_ccy', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
                     5, '2024-01-01', '2024-06-12', 1950.00, 1750.00, 200.00,
                     'long', 'fifo', false, 'USD')
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "gains"])
@@ -1119,7 +1119,7 @@ def _seed_two_source_ledger(
             (investment_transaction_id, account_id, security_id, trade_date,
              type, quantity, amount, currency_code, source_type)
         VALUES (?, ?, 'sec_1', '2024-01-15', 'buy', 10, -1500.00, 'USD', ?)
-        """,  # noqa: S608  # test fixture insert, static SQL
+        """,  # test fixture insert, static SQL
         [
             ["evt_manual", account_id, "manual"],
             ["evt_plaid", account_id, "plaid"],
@@ -1143,7 +1143,7 @@ class TestLotsList:
                  currency_code, is_open)
             VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     ?, ?, ?, ?, 'fifo', 'USD', ?)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [
                 [
                     "lot_open",
@@ -1199,7 +1199,7 @@ class TestLotsList:
                  currency_code, is_open)
             VALUES ('lot_open', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, 10, 1500.00, 1500.00, 'fifo', 'USD', true)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "lots", "list", "--output", "json"])
@@ -1224,7 +1224,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_incomplete', 'acct_brokerage', 'sec_1', '2024-01-15',
                     'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         result = runner.invoke(app, ["investments", "lots", "list", "--output", "json"])
         assert result.exit_code == 0, result.output
@@ -1245,7 +1245,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_incomplete', 'acct_brokerage', 'sec_1', '2024-01-15',
                     'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
         assert result.exit_code == 0, result.output
@@ -1273,7 +1273,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_quiet', 'acct_brokerage', 'sec_1', '2024-01-15',
                     'transfer_in', 10, 10, 0.00, 0.00, 'fifo', 'USD', true, true)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "lots", "list", "-q"])
@@ -1307,7 +1307,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_overlap', 'acct_brokerage', 'sec_1', '2024-01-15',
                     'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, true)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "lots", "list", "-q"])
@@ -1344,7 +1344,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_ccy', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
@@ -1384,7 +1384,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_wide', 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         wide = runner.invoke(app, ["investments", "lots", "list", "--wide"])
@@ -1422,7 +1422,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-15', 'buy',
                     10, ?, 1500.00, ?, 'fifo', 'USD', ?, false)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [
                 ["lot_still_open", Decimal("10"), Decimal("1500.00"), True],
                 ["lot_sold_off", Decimal("0"), Decimal("0.00"), False],
@@ -1459,7 +1459,7 @@ class TestLotsList:
                  currency_code, is_open, basis_incomplete)
             VALUES ('lot_named', 'acct_brokerage', 'sec_1', '2024-01-15',
                     'buy', 10, 10, 1234.50, 1234.50, 'fifo', 'USD', true, false)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
 
         result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
@@ -1508,7 +1508,7 @@ def _seed_single_lot_disposal(db: Database, method: str) -> None:
             (investment_transaction_id, account_id, security_id, trade_date,
              type, quantity)
         VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -5)
-        """  # noqa: S608  # test fixture insert, static SQL
+        """  # test fixture insert, static SQL
     )
     db.conn.execute(
         """
@@ -1516,7 +1516,7 @@ def _seed_single_lot_disposal(db: Database, method: str) -> None:
             (lot_id, account_id, security_id, acquisition_date,
              original_quantity, remaining_quantity)
         VALUES ('lot_a', 'acct_brokerage', 'sec_1', '2024-01-10', 5, 5)
-        """  # noqa: S608  # test fixture insert, static SQL
+        """  # test fixture insert, static SQL
     )
 
 
@@ -1534,7 +1534,7 @@ class TestLotsSelect:
                 (investment_transaction_id, account_id, security_id, trade_date,
                  type, quantity)
             VALUES ('sell_1', 'acct_brokerage', 'sec_1', '2024-06-15', 'sell', -10)
-            """  # noqa: S608  # test fixture insert, static SQL
+            """  # test fixture insert, static SQL
         )
         db.conn.executemany(
             """
@@ -1542,7 +1542,7 @@ class TestLotsSelect:
                 (lot_id, account_id, security_id, acquisition_date,
                  original_quantity, remaining_quantity)
             VALUES (?, 'acct_brokerage', 'sec_1', '2024-01-10', ?, ?)
-            """,  # noqa: S608  # test fixture insert, static SQL
+            """,  # test fixture insert, static SQL
             [
                 ["lot_a", Decimal("6"), Decimal("6")],
                 ["lot_b", Decimal("6"), Decimal("6")],
@@ -1569,7 +1569,7 @@ class TestLotsSelect:
             SELECT lot_id, quantity FROM app.lot_selections
              WHERE investment_transaction_id = ?
              ORDER BY lot_id
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             ["sell_1"],
         ).fetchall()
         assert [(r[0], r[1]) for r in rows] == [
@@ -1586,7 +1586,7 @@ class TestLotsSelect:
             """
             SELECT COUNT(*) FROM app.lot_selections
              WHERE investment_transaction_id = ?
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             ["sell_1"],
         ).fetchone()
         assert remaining is not None
@@ -1631,7 +1631,7 @@ class TestLotsSelect:
         assert "specific" in result.stderr
         count = db.conn.execute(
             "SELECT COUNT(*) FROM app.lot_selections "
-            "WHERE investment_transaction_id = 'sell_1'"  # noqa: S608  # test read, static SQL
+            "WHERE investment_transaction_id = 'sell_1'"  # test read, static SQL
         ).fetchone()
         assert count is not None
         assert count[0] == 0
@@ -1720,7 +1720,7 @@ class TestSecuritiesListAndSet:
             """
             SELECT name, ticker, cost_basis_method FROM app.securities
              WHERE security_id = ?
-            """,  # noqa: S608  # test read, static SQL
+            """,  # test read, static SQL
             [security_id],
         ).fetchone()
         assert row == ("Vanguard Total Stock Market", "VTSAX", "average")

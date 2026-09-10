@@ -10,13 +10,17 @@ import typer
 __all__ = ["_not_implemented"]
 
 
-def _not_implemented(feature: str) -> None:
+def _not_implemented(feature: str, *, whole_command: bool = True) -> None:
     """Print a not-implemented message and return cleanly.
 
     Args:
         feature: The capability in user vocabulary, as a lowercase noun phrase
             ("budget targets"). Never a spec filename or repo path — an
             installed user has no checkout to open (req 32).
+        whole_command: Whether the command itself is a stub. False for one
+            unfinished mode of a command that otherwise works, which prints the
+            same message but is not the demand signal the counter below
+            measures — see its comment.
 
     Exit code policy: stubs return 0, not 1. Per `.claude/rules/cli.md`,
     exit code 1 means "runtime error" (operation ran and failed) — using
@@ -37,6 +41,25 @@ def _not_implemented(feature: str) -> None:
     tradeoff `.claude/rules/cli.md` already accepts for a line a `typer.echo`
     carries, and it applies to every stub rather than special-casing `db key`.
     """
+    # Which hidden stubs users still reach is the demand signal for building
+    # one — requirement 31 keeps them invocable while hiding them from `--help`,
+    # so nothing else observes that a user tried. Deferred imports keep
+    # prometheus_client off the startup path of every command.
+    #
+    # A partial mode is excluded because it answers a different question. The
+    # counter ranks commands a user had to find without help advertising them;
+    # `review --interactive` is one mode of a documented command, and its label
+    # would read as demand for `review` itself — which already exists and
+    # already runs. The alias would split that same mode across `review` and
+    # `transactions_review` on top of it.
+    if whole_command:
+        from moneybin.cli.output import derive_cli_actor
+        from moneybin.metrics.registry import CLI_STUB_INVOKED_TOTAL
+
+        command = derive_cli_actor()
+        if command is not None:
+            CLI_STUB_INVOKED_TOTAL.labels(command=command).inc()
+
     typer.echo(
         f"⚠️  This command is not yet implemented. Support for {feature} is "
         "planned — run `moneybin --help` for what works today.",

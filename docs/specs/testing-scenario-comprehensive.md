@@ -71,7 +71,7 @@ Every scenario MUST be evaluated against the following tiers. The scenario YAML 
 
 | Check | Primitive |
 |---|---|
-| Balanced transfers: both legs present and cancelling exactly | `assert_transform_audit` → `bridge_transfers_balanced` (audit SQL since MB-54) |
+| Balanced transfers: both legs and currencies present, debit < 0 and credit > 0, and same-currency legs cancel exactly | `assert_transform_audit` → `bridge_transfers_balanced` (audit SQL since MB-54) |
 | Categorization accuracy + per-category precision/recall vs ground truth | `score_categorization` (existing — extend with P/R breakdown) |
 | Transfer detection: F1 + raw precision and recall (separately, to catch one-sided bias) | `score_transfer_detection` (existing — extend) |
 | Match confidence distribution within expected bounds | `assert_distribution_within_bounds` (existing — wire in) |

@@ -147,6 +147,55 @@ def _undo_action(
     )
 
 
+def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
+    """Return whether undo changed FX inputs and whether Account currency changed."""
+    needs_restatement = False
+    account_currency_changed = False
+    for event in events:
+        if event.target_schema != "app":
+            continue
+        if event.target_table in {"exchange_rate_overrides", "profile_settings"}:
+            needs_restatement = True
+            continue
+        if event.target_table == "match_decisions":
+            before = event.before_value or {}
+            after = event.after_value or {}
+            before_is_accepted_transfer = (
+                before.get("match_type") == "transfer"
+                and before.get("match_status") == "accepted"
+                and before.get("reversed_at") is None
+            )
+            after_is_accepted_transfer = (
+                after.get("match_type") == "transfer"
+                and after.get("match_status") == "accepted"
+                and after.get("reversed_at") is None
+            )
+            if before_is_accepted_transfer != after_is_accepted_transfer:
+                needs_restatement = True
+            before_endpoints = (before.get("account_id"), before.get("account_id_b"))
+            after_endpoints = (after.get("account_id"), after.get("account_id_b"))
+            if (
+                before_is_accepted_transfer
+                and after_is_accepted_transfer
+                and before_endpoints != after_endpoints
+            ):
+                needs_restatement = True
+                account_currency_changed = True
+            continue
+        if event.target_table != "account_settings":
+            continue
+        before = event.before_value or {}
+        after = event.after_value or {}
+        if before.get("currency_code") != after.get("currency_code"):
+            needs_restatement = True
+            account_currency_changed = True
+        if before.get("default_cost_basis_method") != after.get(
+            "default_cost_basis_method"
+        ):
+            needs_restatement = True
+    return needs_restatement, account_currency_changed
+
+
 class UndoService:
     """Reverse, list, and inspect audited operations."""
 
@@ -274,7 +323,7 @@ class UndoService:
         for repo in touched.values():
             try:
                 repo.refresh_pending_gauge()
-            except Exception:  # noqa: BLE001 — telemetry never fails a committed undo
+            except Exception:  # telemetry never fails a committed undo
                 logger.warning(
                     f"⚠️ Could not refresh the review-queue gauge for "
                     f"{type(repo).__name__} after undo {operation_id}; the count "
@@ -287,6 +336,19 @@ class UndoService:
             f"audit_undo undone_op={operation_id} undo_op={undo_op} "
             f"rows={len(undone)} actor={actor}"
         )
+        needs_fx_restatement, account_currency_changed = _fx_restatement_requirement(
+            undone
+        )
+        if needs_fx_restatement:
+            from moneybin.services.fx_accounting_refresh import (
+                restate_fx_accounting,
+            )
+
+            restate_fx_accounting(
+                self._db,
+                account_currency_changed=account_currency_changed,
+                committed_change="undo",
+            )
         return UndoResult(
             undo_operation_id=undo_op,
             undone_operation_id=operation_id,
@@ -331,7 +393,7 @@ class UndoService:
         if not accounts and not securities:
             return
         selections = self._db.execute(
-            f"SELECT DISTINCT investment_transaction_id FROM {LOT_SELECTIONS.full_name}",  # noqa: S608  # TableRef constant
+            f"SELECT DISTINCT investment_transaction_id FROM {LOT_SELECTIONS.full_name}",  # TableRef constant
         ).fetchall()
         uncovered = {str(row[0]) for row in selections} - covered
         if not uncovered:
@@ -353,7 +415,7 @@ class UndoService:
                 LEFT JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
                   ON t.investment_transaction_id = ls.investment_transaction_id
                 LEFT JOIN {FCT_INVESTMENT_LOTS.full_name} AS l ON l.lot_id = ls.lot_id
-                """,  # noqa: S608  # TableRefs and fixed projection chosen above
+                """,  # TableRefs and fixed projection chosen above
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):
             raise refusal from None
@@ -402,7 +464,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -439,7 +501,7 @@ class UndoService:
              {having}
              ORDER BY MAX(occurred_at) DESC, operation_id DESC
              {limit_sql}
-            """,  # noqa: S608  # WHERE built from literal clauses; values parameterized
+            """,  # WHERE built from literal clauses; values parameterized
             params,
         ).fetchall()
         liveness = self._build_undo_liveness()
@@ -467,7 +529,7 @@ class UndoService:
             clauses.append("is_undo = FALSE")
         if domain is not None:
             clauses.append(
-                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+                f"operation_id IN (SELECT operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
                 "WHERE action LIKE ?)"
             )
             params.append(f"{domain}.%")
@@ -489,7 +551,7 @@ class UndoService:
                 GROUP BY operation_id
                 {having}
             )
-            """,  # noqa: S608  # fixed predicate fragments; values parameterized
+            """,  # fixed predicate fragments; values parameterized
             params,
         ).fetchone()
         return int(row[0]) if row is not None else 0
@@ -615,7 +677,7 @@ class UndoService:
         refuses with ``recovery_no_path``.
         """
         row = self._db.conn.execute(
-            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT 1 FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL "
             "AND before_value IS DISTINCT FROM after_value LIMIT 1",
             [operation_id],
@@ -656,7 +718,7 @@ class UndoService:
         still live?" — see :class:`_UndoLiveness`.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT DISTINCT operation_id, undoes_operation_id FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE undoes_operation_id IS NOT NULL"
         ).fetchall()
         children: dict[str, list[str]] = {}
@@ -673,7 +735,7 @@ class UndoService:
         every row's full before/after payload.
         """
         rows = self._db.conn.execute(
-            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # noqa: S608  # AUDIT_LOG is a TableRef constant
+            f"SELECT DISTINCT target_schema, target_table FROM {AUDIT_LOG.full_name} "  # AUDIT_LOG is a TableRef constant
             "WHERE operation_id = ? AND target_id IS NOT NULL",
             [operation_id],
         ).fetchall()
@@ -740,7 +802,7 @@ class UndoService:
                AND a.is_undo = FALSE
              GROUP BY a.operation_id
              ORDER BY latest DESC
-            """,  # noqa: S608  # AUDIT_LOG is a TableRef constant, values parameterized
+            """,  # AUDIT_LOG is a TableRef constant, values parameterized
             [operation_id, operation_id],
         ).fetchall()
         return [str(r[0]) for r in rows if not liveness.is_undone(str(r[0]))]

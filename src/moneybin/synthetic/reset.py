@@ -81,7 +81,7 @@ def has_synthetic_ground_truth(db: Database) -> bool:
             "WHERE table_schema = 'synthetic' AND table_name = 'ground_truth'"
         ).fetchone()
         return bool(row and row[0])
-    except Exception:  # noqa: BLE001 — fresh DB with no synthetic schema
+    except Exception:  # fresh DB with no synthetic schema
         return False
 
 
@@ -190,7 +190,7 @@ def has_any_user_content(db: Database) -> bool:
             found = db.execute(
                 f"SELECT 1 FROM {_quote(schema, name)} LIMIT 1"  # noqa: S608  # catalog-sourced, double-quoted identifier
             ).fetchone()
-        except Exception:  # noqa: BLE001,S112 — table may not exist in a partial DB
+        except Exception:  # noqa: S112  # table may not exist in a partial DB
             continue
         if found:
             return True
@@ -208,7 +208,7 @@ def has_non_synthetic_data(db: Database) -> bool:
     for table, where in _real_row_checks(db):
         try:
             row = db.execute(f"SELECT 1 FROM {table} {where} LIMIT 1").fetchone()  # noqa: S608  # catalog-sourced, double-quoted identifiers + literal WHERE clauses
-        except Exception:  # noqa: BLE001,S112 — table may not exist in a fresh/partial DB
+        except Exception:  # noqa: S112  # table may not exist in a fresh/partial DB
             continue
         if row:
             return True
@@ -220,5 +220,5 @@ def reset_synthetic_rows(db: Database) -> None:
     for table, where in RESET_DELETIONS.items():
         try:
             db.execute(f"DELETE FROM {table} {where}")  # noqa: S608  # allowlisted table names + literal WHERE clauses
-        except Exception:  # noqa: BLE001,S110 — table may not exist in a fresh DB
+        except Exception:  # noqa: S110  # table may not exist in a fresh DB
             pass

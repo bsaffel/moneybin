@@ -67,7 +67,7 @@ def get_active_matches(
         SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
         ORDER BY decided_at DESC
-        """,  # noqa: S608 — match_type validated above
+        """,  # noqa: S608  # match_type validated above
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
@@ -100,7 +100,7 @@ def get_pending_matches(
         {where}
         ORDER BY confidence_score DESC
         {limit_clause}
-        """,  # noqa: S608 — match_type validated above; limit is parameterized
+        """,  # noqa: S608  # match_type validated above; limit is parameterized
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]
@@ -177,7 +177,7 @@ def get_match_decision(db: Database, match_id: str) -> dict[str, Any] | None:
         f"""
         SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         WHERE match_id = ?
-        """,  # noqa: S608 — column list is a module constant, not user input
+        """,  # noqa: S608  # column list is a module constant, not user input
         [match_id],
     ).fetchone()
     if row is None:
@@ -198,7 +198,7 @@ def get_match_statuses(db: Database, match_ids: Sequence[str]) -> dict[str, str]
         f"""
         SELECT match_id, match_status FROM {MATCH_DECISIONS.full_name}
         WHERE match_id IN ({placeholders})
-        """,  # noqa: S608 — placeholders are '?' literals; every value is parameterized
+        """,  # noqa: S608  # placeholders are '?' literals; every value is parameterized
         list(match_ids),
     ).fetchall()
     return {str(row[0]): str(row[1]) for row in rows}
@@ -238,7 +238,7 @@ def get_active_dedup_edges(
           AND reversed_at IS NULL
         ORDER BY account_id, source_type_a, source_transaction_id_a,
                  source_type_b, source_transaction_id_b
-        """,  # noqa: S608 — placeholders only; every status is bound
+        """,  # noqa: S608  # placeholders only; every status is bound
         list(statuses),
     ).fetchall()
     cols = (
@@ -263,7 +263,7 @@ def get_rejected_pairs(
         FROM {MATCH_DECISIONS.full_name}
         WHERE match_status = 'rejected'
           AND match_type = ?
-        """,  # noqa: S608 — TableRef constant; match_type is parameterized
+        """,  # noqa: S608  # TableRef constant; match_type is parameterized
         [match_type],
     ).fetchall()
     columns = [
@@ -305,7 +305,7 @@ def get_match_log(
         {where}
         ORDER BY decided_at DESC, match_id DESC
         {limit_clause}
-        """,  # noqa: S608 — match_type validated above; limit is parameterized
+        """,  # noqa: S608  # match_type validated above; limit is parameterized
         params,
     ).fetchall()
     return [dict(zip(_MATCH_DECISION_COLUMNS, row, strict=True)) for row in rows]

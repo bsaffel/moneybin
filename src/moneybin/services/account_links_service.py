@@ -148,7 +148,7 @@ class AccountLinksService:
                 SELECT COUNT(DISTINCT provisional_account_id)
                 FROM {ACCOUNT_LINK_DECISIONS.full_name}
                 WHERE status = 'pending' AND reversed_at IS NULL
-                """,  # noqa: S608  # TableRef constant, no user values
+                """,  # TableRef constant, no user values
             ).fetchone()
             return int(row[0]) if row else 0
         except duckdb.CatalogException:
@@ -208,7 +208,7 @@ class AccountLinksService:
         """How many transactions the account holds; 0 when core is not materialized."""
         try:
             row = self._db.execute(
-                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef constant + parameterized value
+                f"SELECT COUNT(*) FROM {FCT_TRANSACTIONS.full_name} "  # TableRef constant + parameterized value
                 "WHERE account_id = ?",
                 [account_id],
             ).fetchone()
@@ -234,7 +234,7 @@ class AccountLinksService:
                 f"""
                 SELECT account_subtype, account_type, currency_code, last_four
                 FROM {DIM_ACCOUNTS.full_name} WHERE account_id = ?
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [account_id],
             ).fetchone()
         except duckdb.CatalogException:
@@ -255,7 +255,7 @@ class AccountLinksService:
                     MAX(transaction_date),
                     LIST(DISTINCT source_type)
                 FROM {FCT_TRANSACTIONS.full_name} WHERE account_id = ?
-                """,  # noqa: S608  # TableRef constant + parameterized value
+                """,  # TableRef constant + parameterized value
                 [account_id],
             ).fetchone()
         except duckdb.CatalogException:
@@ -407,7 +407,7 @@ class AccountLinksService:
             f"""
             SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
             WHERE account_id = ? AND status = 'accepted'
-            """,  # noqa: S608  # TableRef constant + parameterized value
+            """,  # TableRef constant + parameterized value
             [provisional_id],
         ).fetchall()
         if not any(ref_kind == "source_native" for _, ref_kind in links):
@@ -424,7 +424,7 @@ class AccountLinksService:
               AND decision_id != ?
               AND status = 'pending'
               AND reversed_at IS NULL
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [provisional_id, provisional_id, decision_id],
         ).fetchall()
         # Mirrors set()'s own two queries exactly: every accepted link is
@@ -496,7 +496,7 @@ class AccountLinksService:
             account_ids = [
                 str(r[0])
                 for r in self._db.execute(
-                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}",  # noqa: S608  # TableRef constant
+                    f"SELECT account_id FROM {DIM_ACCOUNTS.full_name}",  # TableRef constant
                 ).fetchall()
             ]
         except duckdb.CatalogException:
@@ -510,7 +510,7 @@ class AccountLinksService:
         mergeable = {
             str(r[0])
             for r in self._db.execute(
-                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef constant
+                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef constant
                 "WHERE ref_kind = 'source_native' AND status = 'accepted'",
             ).fetchall()
         }
@@ -538,7 +538,7 @@ class AccountLinksService:
                         WHERE (provisional_account_id = ? AND candidate_account_id = ?)
                            OR (provisional_account_id = ? AND candidate_account_id = ?)
                         LIMIT 1
-                        """,  # noqa: S608  # TableRef constant + parameterized values
+                        """,  # TableRef constant + parameterized values
                         [
                             account_id,
                             candidate.account_id,
@@ -659,7 +659,7 @@ class AccountLinksService:
                 OR (provisional_account_id = ? AND candidate_account_id = ?))
               AND status IN ('pending', 'accepted')
             LIMIT 1
-            """,  # noqa: S608  # TableRef constant + parameterized values
+            """,  # TableRef constant + parameterized values
             [account_id, candidate_account_id, candidate_account_id, account_id],
         ).fetchone()
         if existing is not None:
@@ -672,7 +672,7 @@ class AccountLinksService:
         mergeable = {
             str(r[0])
             for r in self._db.execute(
-                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # noqa: S608  # TableRef constant + parameterized values
+                f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef constant + parameterized values
                 "WHERE ref_kind = 'source_native' AND status = 'accepted' "
                 "AND account_id IN (?, ?)",
                 pair,
@@ -716,7 +716,7 @@ class AccountLinksService:
 
         refresh_account_link_pending_gauge(self._db)
 
-    def set(  # noqa: A003  # mirrors the existing set_status verb shape; "set" is the surface verb
+    def set(  # mirrors the existing set_status verb shape; "set" is the surface verb
         self,
         decision_id: str,
         *,
@@ -802,7 +802,7 @@ class AccountLinksService:
                     f"""
                     SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
                     WHERE account_id = ? AND status = 'accepted'
-                    """,  # noqa: S608  # TableRef constant + parameterized values
+                    """,  # TableRef constant + parameterized values
                     [provisional_id],
                 ).fetchall()
                 if not any(ref_kind == "source_native" for _, ref_kind in links):
@@ -888,7 +888,7 @@ class AccountLinksService:
                       AND decision_id != ?
                       AND status = 'pending'
                       AND reversed_at IS NULL
-                    """,  # noqa: S608  # TableRef constant + parameterized values
+                    """,  # TableRef constant + parameterized values
                     [provisional_id, provisional_id, decision_id],
                 ).fetchall()
                 sibling_names = self._frozen_names(sibling_rows)
@@ -911,7 +911,7 @@ class AccountLinksService:
                     WHERE provisional_account_id = ?
                       AND status = 'pending'
                       AND reversed_at IS NULL
-                    """,  # noqa: S608  # TableRef constant + parameterized values
+                    """,  # TableRef constant + parameterized values
                     [provisional_id],
                 ).fetchall()
                 rejected_names = self._frozen_names(pending_rows)

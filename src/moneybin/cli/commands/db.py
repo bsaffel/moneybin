@@ -9,7 +9,7 @@ import logging
 import os
 import shutil
 import signal
-import subprocess  # noqa: S404 — subprocess used with static args for DuckDB CLI invocation and lsof/ps process inspection
+import subprocess  # noqa: S404  # subprocess used with static args for DuckDB CLI invocation and lsof/ps process inspection
 import sys
 import tempfile
 from collections.abc import Generator
@@ -205,7 +205,7 @@ def db_init(
             argon2_parallelism=db_cfg.argon2_parallelism,
             argon2_hash_len=db_cfg.argon2_hash_len,
         )
-    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on key/file issues
+    except Exception as e:  # duckdb raises untyped errors on key/file issues
         logger.error(f"❌ Failed to initialize database: {e}")
         if db_path.exists():
             logger.info(
@@ -273,7 +273,7 @@ def _run_duckdb_cli(
         cmd = [duckdb_path, "-init", str(init_script)]
         if extra_args:
             cmd.extend(extra_args)
-        subprocess.run(cmd, check=True)  # noqa: S603 — cmd built from static args and validated flags
+        subprocess.run(cmd, check=True)  # noqa: S603  # cmd built from static args and validated flags
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ {error_noun} failed: {e}")
         raise typer.Exit(1) from e
@@ -353,7 +353,7 @@ def db_query(
             help="Output format: text, json, csv, markdown, or box",
         ),
     ] = "text",
-    quiet: Annotated[  # noqa: ARG001 — query has no informational chatter to gate
+    quiet: Annotated[  # query has no informational chatter to gate
         bool,
         typer.Option("-q", "--quiet", help="Suppress informational output"),
     ] = False,
@@ -403,7 +403,7 @@ def db_info(
         help="Path to DuckDB database file (default: profile config)",
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — db info has no info-only chatter; only data lines
+    quiet: bool = quiet_option,  # db info has no info-only chatter; only data lines
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
     from moneybin.config import get_settings
@@ -470,12 +470,14 @@ def db_info(
                     label_schema = schema.replace("'", "''")
                     label_table = table.replace("'", "''")
                     sql = (
-                        f"SELECT '{label_schema}' AS schema, '{label_table}' AS \"table\", "  # noqa: S608 — sqlglot-quoted FROM identifiers; labels are quote-escaped
+                        f"SELECT '{label_schema}' AS schema, '{label_table}' AS \"table\", "  # noqa: S608  # sqlglot-quoted FROM identifiers; labels are quote-escaped
                         f"COUNT(*) AS rows FROM {safe_schema}.{safe_table}"
                     )
                     count_selects.append(sql)
                 union_sql = " UNION ALL ".join(count_selects)
-                count_rows = db.execute(union_sql).fetchall()  # noqa: S608 — sqlglot-quoted catalog identifiers and information_schema-sourced names
+                count_rows = db.execute(
+                    union_sql
+                ).fetchall()  # sqlglot-quoted catalog identifiers and information_schema-sourced names
                 table_rows = [
                     {"schema": s, "table": t, "rows": c} for s, t, c in count_rows
                 ]
@@ -497,7 +499,9 @@ def db_info(
                 logger.info(f"    {row['schema']}.{row['table']}: {row['rows']} rows")
             if "duckdb_version" in payload:
                 logger.info(f"  DuckDB version: {payload['duckdb_version']}")
-    except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on connection/encryption failure
+    except (
+        Exception
+    ) as e:  # duckdb raises untyped errors on connection/encryption failure
         logger.error(f"❌ Could not open database: {e}")
         raise typer.Exit(1) from e
 
@@ -637,7 +641,9 @@ def db_restore(
             "and run 'moneybin db key rotate' to re-encrypt."
         )
         raise typer.Exit(1) from None
-    except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
+    except (
+        Exception
+    ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         logger.debug("Restore validation failed", exc_info=True)
         logger.warning(
             "⚠️  Could not open restored database. The backup may be corrupted."
@@ -661,7 +667,7 @@ def db_lock() -> None:
         logger.info("✅ Database locked — key cleared from keychain")
     except SecretNotFoundError:
         logger.info("Database is already locked (no key in keychain)")
-    except Exception as e:  # noqa: BLE001 — keyring backends may raise non-specific errors
+    except Exception as e:  # keyring backends may raise non-specific errors
         logger.error(f"❌ Failed to lock: {e}")
         raise typer.Exit(1) from e
 
@@ -745,10 +751,12 @@ def db_unlock() -> None:
 
         invalidate_encryption_key_cache()
         logger.info("✅ Database unlocked")
-    except Exception:  # noqa: BLE001 — duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
+    except (
+        Exception
+    ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         try:
             store.delete_key("DATABASE__ENCRYPTION_KEY")
-        except Exception:  # noqa: BLE001 — keyring backends may raise beyond SecretNotFoundError
+        except Exception:  # keyring backends may raise beyond SecretNotFoundError
             logger.debug(
                 "Could not remove key from keychain during unlock failure",
                 exc_info=True,
@@ -760,7 +768,7 @@ def db_unlock() -> None:
 @key_app.command("show")
 def db_key_show(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # noqa: ARG001 — security warning is unconditional
+    quiet: bool = quiet_option,  # security warning is unconditional
 ) -> None:
     """Print the database encryption key."""
     with _load_encryption_key() as key:
@@ -824,7 +832,7 @@ def db_key_rotate(
             conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
             conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
             conn.execute("COPY FROM DATABASE old_db TO new_db")
-        except Exception as e:  # noqa: BLE001 — duckdb raises untyped errors on ATTACH/COPY failure
+        except Exception as e:  # duckdb raises untyped errors on ATTACH/COPY failure
             # Both ATTACHes carry a plaintext key, and DuckDB echoes the failing
             # statement back in parser errors. This message goes to logger.error,
             # which the unfiltered file handler persists to cli_YYYY-MM-DD.log —
@@ -848,7 +856,7 @@ def db_key_rotate(
 
     try:
         store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
-    except Exception as e:  # noqa: BLE001 — keyring backends may raise non-specific errors
+    except Exception as e:  # keyring backends may raise non-specific errors
         # The DB file now holds new_key but the keychain still has old_key.
         # old_backup is intact — recovery is possible.
         # Print the new key to stderr directly (not via logger) so it does

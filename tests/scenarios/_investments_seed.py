@@ -50,7 +50,7 @@ def insert_security(
         INSERT INTO app.securities
             (security_id, name, security_type, cost_basis_method, currency_code)
         VALUES (?, ?, ?, ?, ?)
-        """,  # noqa: S608  # test fixture insert, parameterized values
+        """,  # test fixture insert, parameterized values
         [security_id, name, security_type, cost_basis_method, currency_code],
     )
 
@@ -81,7 +81,7 @@ def insert_security_link(
             (link_id, security_id, ref_kind, ref_value, source_type, status,
              decided_by, decided_at)
         VALUES (?, ?, ?, ?, ?, 'accepted', 'user', ?::TIMESTAMP)
-        """,  # noqa: S608  # test fixture insert, parameterized values
+        """,  # test fixture insert, parameterized values
         [link_id, security_id, ref_kind, ref_value, source_type, decided_at],
     )
 
@@ -111,7 +111,7 @@ def insert_security_price(
             (provider_security_key, price_date, quote_currency, source_type,
              source_origin, close, price_basis, extracted_at)
         VALUES (?, ?::DATE, ?, ?, ?, ?::DECIMAL(28,10), ?, ?::TIMESTAMP)
-        """,  # noqa: S608  # test fixture insert, parameterized values
+        """,  # test fixture insert, parameterized values
         [
             provider_security_key,
             price_date,
@@ -163,7 +163,7 @@ def insert_event(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?::DATE, ?::DATE,
                 ?::DECIMAL(28,10), ?::DECIMAL(28,10), ?::DECIMAL(18,2),
                 ?::DECIMAL(18,2), ?, ?::TIMESTAMP, 'cli', ?)
-        """,  # noqa: S608  # test fixture insert, parameterized values
+        """,  # test fixture insert, parameterized values
         [
             investment_transaction_id,
             _IMPORT_ID,

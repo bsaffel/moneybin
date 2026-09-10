@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
+from unittest.mock import MagicMock
 
 import pytest
 from fastmcp import FastMCP
@@ -836,7 +837,7 @@ class TestStandardCoarseAccountReads:
         srv = FastMCP("test")
         register_accounts_coarse_reads(srv)
 
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
         assert names == {"accounts", "accounts_balances"}
 
@@ -845,7 +846,7 @@ class TestStandardCoarseAccountReads:
         srv = FastMCP("test")
         register_accounts_tools(srv)
 
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
 
         assert names == {
             "accounts",
@@ -1152,7 +1153,7 @@ class TestStandardCoarseBalanceAssertionWrite:
         srv = FastMCP("test")
         register_accounts_coarse_writes(srv)
 
-        tools = await srv._list_tools()  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        tools = await srv._list_tools()  # pyright: ignore[reportPrivateUsage]
 
         assert [tool.name for tool in tools] == ["accounts_balance_assert"]
         tool = tools[0]
@@ -1169,7 +1170,7 @@ class TestNarrowToolsRemoved:
     async def test_narrow_account_tools_removed(self) -> None:
         srv = FastMCP("test")
         register_accounts_tools(srv)
-        names = {t.name for t in await srv._list_tools()}  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+        names = {t.name for t in await srv._list_tools()}  # pyright: ignore[reportPrivateUsage]
         for removed in (
             "accounts_rename",
             "accounts_include",
@@ -1340,8 +1341,14 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] is None
 
     @pytest.mark.unit
-    async def test_default_cost_basis_method_round_trips(self, mcp_db: Path) -> None:
+    async def test_default_cost_basis_method_round_trips(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """default_cost_basis_method param round-trips through the payload."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         result = await accounts_set(
             account_id="ACC001", default_cost_basis_method="hifo"
         )
@@ -1349,8 +1356,14 @@ class TestAccountsSetExtended:
         assert parsed["data"]["default_cost_basis_method"] == "hifo"
 
     @pytest.mark.unit
-    async def test_clear_default_cost_basis_method(self, mcp_db: Path) -> None:
+    async def test_clear_default_cost_basis_method(
+        self, mcp_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """default_cost_basis_method is in _CLEARABLE_FIELDS; clearing it returns NULL."""
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            MagicMock(),
+        )
         await accounts_set(account_id="ACC001", default_cost_basis_method="fifo")
         result = await accounts_set(
             account_id="ACC001", clear_fields=["default_cost_basis_method"]
@@ -1978,7 +1991,7 @@ async def test_links_run_does_not_promise_a_safe_retry() -> None:
     srv = FastMCP("test")
     register_accounts_tools(srv)
 
-    tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # noqa: SLF001  # pyright: ignore[reportPrivateUsage]
+    tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # pyright: ignore[reportPrivateUsage]
 
     assert tool.annotations is not None
     assert tool.annotations.idempotentHint is False

@@ -32,7 +32,7 @@ def install_comparison_models(db: Database) -> None:
         )
         db.execute(
             f"CREATE OR REPLACE VIEW prep.{name} AS {query.sql(dialect='duckdb')}"
-        )  # noqa: S608  # fixed local test model names
+        )  # fixed local test model names
 
 
 def seed_manual_event(

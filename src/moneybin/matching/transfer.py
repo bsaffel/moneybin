@@ -180,7 +180,7 @@ def get_candidates_transfers(
             AND a.source_type != 'manual'
             AND b.source_type != 'manual'
         ORDER BY date_dist ASC
-    """  # noqa: S608 — table name validated above; date_window_days is parameterized
+    """  # noqa: S608  # table name validated above; date_window_days is parameterized
 
     rows = db.execute(query, [date_window_days]).fetchall()
 

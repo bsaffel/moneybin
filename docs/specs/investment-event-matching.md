@@ -541,7 +541,9 @@ and audited remapping in the same transaction, or refusal before writes. A
 second merge before refresh cannot rely on stale Core as proof of an empty
 selection set. Historical Account routes becoming effective at upgrade receive
 the same preflight; insufficient materialized evidence with affected selections
-refuses the upgrade transactionally and preserves the original database.
+causes V061 to refuse transactionally, preserving its affected Raw observations,
+routes, selections, and audit state. Earlier successfully applied migrations
+remain committed and recorded.
 
 Canonical identity operations never rewrite Raw observations after M1J.7. An
 audited equivalence merge changes Link or alias routing and forwards the prior
