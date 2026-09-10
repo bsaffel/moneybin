@@ -337,7 +337,7 @@ jobs:
   test-privacy-performance:
     name: Privacy performance budgets
     needs: [changes]
-    if: needs.changes.outputs.code == 'true' && !inputs.record_durations
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && !inputs.record_durations
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

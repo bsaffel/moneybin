@@ -1,7 +1,7 @@
 # MoneyBin Development Makefile
 # This Makefile provides development commands for the MoneyBin project
 
-.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios generate-report-classes generate-docs claude-mcp audit
+.PHONY: help setup clean install install-dev test test-cov lint format format-sql type-check pre-commit venv activate status install-uv test-e2e test-scenarios test-perf generate-report-classes generate-docs claude-mcp audit
 
 # Default target
 .DEFAULT_GOAL := help
@@ -130,15 +130,15 @@ pre-commit: venv ## Setup & Installation: Install pre-commit hooks
 	@echo "$(GREEN)✅ Pre-commit hooks installed$(RESET)"
 	@echo "$(BLUE)ℹ️  Pre-commit will use uv run for consistent tool versions$(RESET)"
 
-test-unit: venv ## Development: Run unit tests only (skips slow ones; use 'make test-all' for everything)
-	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' for all tests)...$(RESET)"
+test-unit: venv ## Development: Run unit tests only (skips slow ones; use 'make test-all' + 'make test-perf' for everything)
+	@echo "$(BLUE)🧪 Running unit tests (use 'make test-all' + 'make test-perf' for all tests)...$(RESET)"
 	@uv run pytest tests/ -m "unit and not slow" --durations=25
 
 test: test-unit ## Development: Run unit tests (alias for test-unit)
 
-test-all: venv ## Development: Run all tests (unit, integration, e2e) with verbose output
-	@echo "$(BLUE)🧪 Running all tests (unit, integration, e2e)...$(RESET)"
-	@uv run pytest tests/ -v --durations=25
+test-all: venv ## Development: Run all tests except performance budgets with verbose output
+	@echo "$(BLUE)🧪 Running all tests except performance budgets...$(RESET)"
+	@uv run pytest tests/ -m "not perf" -v --durations=25
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
@@ -153,9 +153,13 @@ test-e2e: venv ## Development: Run end-to-end subprocess tests
 	@echo "$(BLUE)🧪 Running end-to-end tests...$(RESET)"
 	@uv run pytest tests/ -m e2e -v --durations=25
 
-test-scenarios: venv ## Development: Run all whole-pipeline scenarios via pytest
-	@echo "$(BLUE)🧪 Running all scenarios...$(RESET)"
-	@uv run pytest tests/scenarios/ -m scenarios -v --durations=25
+test-scenarios: venv ## Development: Run all whole-pipeline scenarios except performance budgets
+	@echo "$(BLUE)🧪 Running all scenarios except performance budgets...$(RESET)"
+	@uv run pytest tests/scenarios/ -m "scenarios and not perf" -v --durations=25
+
+test-perf: venv ## Development: Run privacy performance budgets serially
+	@echo "$(BLUE)🧪 Running privacy performance budgets...$(RESET)"
+	@uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
 
 generate-report-classes: venv ## Development: Regenerate the derived reports.* privacy-class module; commit the result
 	@echo "$(BLUE)🔐 Regenerating derived report-class module...$(RESET)"
