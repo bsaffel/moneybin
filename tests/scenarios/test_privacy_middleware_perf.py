@@ -12,14 +12,10 @@ budget.
 - p99 latency increase: ≤ 200 ms per flow
 - Total wall-clock regression on the full flow set: ≤ 20 %
 
-The test is marked ``@pytest.mark.perf`` (declared in pyproject.toml). The
-``perf`` marker is opt-in — `make test` does not run it; the runner needs
-a populated persona DB and a profile selected via ``MONEYBIN_HOME`` +
-``MONEYBIN_PROFILE``.
-
-If the test runs in an environment without a populated DB, it skips with
-a clear message rather than failing — the budget assertion is meaningful
-only against a representative dataset.
+The tests carry ``scenarios`` and ``perf`` markers. A dedicated CI job runs
+them serially against the family persona built by this module's fixture;
+`make test` does not select them. Setup must produce a populated database
+before measurements begin, so missing data cannot silently skip the gate.
 
 **Diagnosing a regression.** If the budget is exceeded:
 
@@ -34,6 +30,7 @@ only against a representative dataset.
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -56,6 +53,15 @@ from moneybin.services.budget_service import BudgetService
 from moneybin.services.networth_service import NetworthService
 from moneybin.services.transaction_service import TransactionService
 from tests.scenarios._perf_runner import measure_flow, read_baseline
+from tests.scenarios._runner.loader import Scenario, SetupSpec
+from tests.scenarios._runner.runner import scenario_env
+from tests.scenarios._runner.steps import run_step
+
+pytestmark = [
+    pytest.mark.scenarios,
+    pytest.mark.slow,
+    pytest.mark.usefixtures("build_perf_persona"),
+]
 
 BASELINE_PATH = Path("tests/scenarios/fixtures/perf_baseline_pre_privacy.json")
 ITERATIONS = 30
@@ -72,6 +78,22 @@ _PERSONA_SETUP_HINT = (
     "`moneybin synthetic generate family --seed 8229 --years 3 "
     "&& moneybin transform apply` first"
 )
+
+
+@pytest.fixture(scope="module")
+def build_perf_persona() -> Generator[None, None, None]:
+    """Build the documented family fixture before measuring its privacy budget."""
+    scenario = Scenario(
+        scenario="privacy-middleware-perf",
+        setup=SetupSpec(persona="family", seed=8229, years=3),
+        pipeline=[],
+    )
+    with scenario_env(scenario) as (db, _tmpdir, env):
+        run_step("generate", scenario.setup, db, env=env)
+        run_step("transform", scenario.setup, db, env=env)
+        db.close()
+        assert _persona_db_skip_reason() is None
+        yield
 
 
 def _persona_db_skip_reason() -> str | None:

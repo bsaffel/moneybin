@@ -334,6 +334,30 @@ jobs:
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --durations=25
 
+  test-privacy-performance:
+    name: Privacy performance budgets
+    needs: [changes]
+    if: needs.changes.outputs.code == 'true' && !inputs.record_durations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Run privacy performance budgets
+        env:
+          # The persona fixture creates an encrypted database before measuring.
+          # CI runners do not have a keyring backend, so use an ephemeral key.
+          MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
+        run: uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
+
   record-test-durations:
     name: Record CI test durations
     needs: [changes]
@@ -363,7 +387,7 @@ jobs:
         env:
           MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
-          uv run pytest tests/ -m "unit or integration or e2e or scenarios" \
+          uv run pytest tests/ -m "unit or integration or e2e or (scenarios and not perf)" \
             -n logical --store-durations
 
       - name: Save CI test durations
