@@ -1,3 +1,4 @@
+# Generated from initialized raw/app schemas; guarded by tests/moneybin/test_external_models.py.
 - name: '"moneybin"."app"."account_links"'
   columns:
     link_id: TEXT

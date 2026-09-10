@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import TypedDict, cast
 from unittest.mock import MagicMock
 
-from ruamel.yaml import YAML
+import pytest
+import yaml
 from sqlglot import exp
 
 from moneybin.database import Database, sqlmesh_context
@@ -24,8 +25,10 @@ class _ExternalModelDeclaration(TypedDict):
 
 def _load_external_models() -> list[_ExternalModelDeclaration]:
     """Load the fixed external-model declaration shape from YAML."""
-    loader = cast(Any, YAML(typ="safe"))
-    return cast(list[_ExternalModelDeclaration], loader.load(_EXTERNAL_MODELS_PATH))
+    return cast(
+        list[_ExternalModelDeclaration],
+        yaml.safe_load(_EXTERNAL_MODELS_PATH.read_text(encoding="utf-8")),
+    )
 
 
 def _relation_name(name: str) -> str:
@@ -37,6 +40,31 @@ def _relation_name(name: str) -> str:
 def _data_type(data_type: str) -> str:
     """Normalize equivalent DuckDB type spellings before comparing schemas."""
     return exp.DataType.build(data_type, dialect="duckdb").sql(dialect="duckdb")
+
+
+def _declared_external_models(
+    expected_relations: set[str],
+    declarations: list[tuple[str, dict[str, str]]],
+) -> dict[str, dict[str, str]]:
+    """Require a discovered dependency for every unique declaration."""
+    assert expected_relations
+    assert len({name for name, _ in declarations}) == len(declarations)
+    return dict(declarations)
+
+
+def test_external_model_guard_rejects_duplicate_declarations() -> None:
+    """A duplicate declaration cannot be hidden by conversion to a dict."""
+    with pytest.raises(AssertionError):
+        _declared_external_models(
+            {"raw.transactions"},
+            [("raw.transactions", {}), ("raw.transactions", {})],
+        )
+
+
+def test_external_model_guard_rejects_no_discovered_dependencies() -> None:
+    """The guard must inspect at least one SQLMesh raw/app dependency."""
+    with pytest.raises(AssertionError):
+        _declared_external_models(set(), [("raw.transactions", {})])
 
 
 def test_external_models_match_initialized_raw_and_app_tables(
@@ -58,15 +86,12 @@ def test_external_models_match_initialized_raw_and_app_tables(
                 for dependency in model.depends_on
                 if _relation_name(dependency).startswith(("raw.", "app."))
             }
-        assert expected_relations
-
         declarations = [
             (_relation_name(str(entry["name"])), dict(entry["columns"]))
             for entry in _load_external_models()
             if _relation_name(str(entry["name"])).startswith(("raw.", "app."))
         ]
-        assert len({name for name, _ in declarations}) == len(declarations)
-        declared = dict(declarations)
+        declared = _declared_external_models(expected_relations, declarations)
         observed_columns: defaultdict[str, dict[str, str]] = defaultdict(dict)
         for relation, column, data_type in db.execute(
             """
