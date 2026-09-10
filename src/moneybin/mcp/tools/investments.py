@@ -352,7 +352,7 @@ def investments_record(
     - `quantity`, `price`, `amount`, `fees`, `basis` (optional): decimal
       strings, e.g. "10.5" (never floats — pass as strings to avoid binary
       rounding).
-    - `subtype`, `acquired` (ISO date), `event_group_id`, `description`
+    - `subtype`, `acquired` (ISO date), `description`
       (optional).
     - `currency` (optional): ISO-4217 code. Omit it and the event inherits
       the account's own currency — MoneyBin never assumes USD.
@@ -406,6 +406,11 @@ def investments_record(
     with get_database(read_only=False) as db:
         typed: list[dict[str, Any]] = []
         for index, item in enumerate(events):
+            if "event_group_id" in item:
+                raise UserError(
+                    "Caller-authored event grouping is unavailable; submit one reinvest event.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
             account, type_, date_str = _require_event_fields(item, index)
             typed.append({
                 "account_ref": account,
@@ -419,7 +424,6 @@ def investments_record(
                 "fees": _parse_decimal(item.get("fees")),
                 "acquired": _parse_date(item.get("acquired")),
                 "basis": _parse_decimal(item.get("basis")),
-                "event_group_id": _opt_str(item.get("event_group_id")),
                 "currency_code": _opt_str(item.get("currency")),
                 "description": _opt_str(item.get("description")),
             })

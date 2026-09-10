@@ -15,6 +15,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
+from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     PROFILE_CURRENCIES,
@@ -55,11 +56,9 @@ from moneybin.tables import (
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
     LOT_SELECTIONS,
-    MANUAL_INVESTMENT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
     PDF_FORMATS,
-    PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
@@ -158,7 +157,7 @@ newest_snapshot AS (
             source_file,
             ROW_NUMBER() OVER (
                 PARTITION BY source_origin
-                ORDER BY extracted_at DESC, source_file DESC
+                ORDER BY extracted_at DESC, ingestion_sequence DESC
             ) AS snapshot_rank
         FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
     )
@@ -1059,42 +1058,10 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_source_overlap(self) -> InvariantResult:
-        """Accounts carrying BOTH manual and Plaid investment history.
-
-        ``fail``, not ``warn``: every position in such an account is derived
-        from two interleaved ledgers, so lots double-count and cost basis
-        mixes two accountings — numbers nobody should read. Investment dedup
-        across sources is a future matching child, unlike transactions which
-        already have ``prep.int_transactions__matched``, so nothing the
-        pipeline can re-run resolves it; one of the two feeds has to go.
-
-        ``core.dim_holdings`` already withholds every figure for these
-        positions (``valuation_status = 'source_overlap'``). This check is what
-        says so out loud and blocks the release gate, and it reads the RAW
-        tables rather than the ledger so it still fires before a first
-        transform — the point at which the withhold does not yet exist.
-
-        Reverting the imported batch is the only remedy MoneyBin can run
-        today. Disconnecting the connector is a remote operation that leaves
-        every row it already pulled — the rows this very query reads — so it
-        stops the feed growing without clearing the check. The recipe says so
-        rather than offering it (``audits/recipes/investment_source_overlap``).
-        """
+        """Detect transaction or holdings overlap before any transform runs."""
         name = "investment_source_overlap"
         try:
-            rows = self._db.execute(
-                f"""
-                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
-                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
-                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
-                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
-                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
-                  AND al.ref_value = p.account_id
-                JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
-                  ON m.account_id = COALESCE(al.account_id, p.account_id)
-                ORDER BY account_id
-                """  # noqa: S608  # TableRef constants
-            ).fetchall()
+            accounts = investment_source_overlap(self._db)
         except Exception as e:  # noqa: BLE001 — raw tables absent on fresh DBs
             return InvariantResult(
                 name=name,
@@ -1102,23 +1069,22 @@ class DoctorService:
                 detail=f"raw tables unavailable: {e}",
                 affected_ids=[],
             )
-        if rows:
+        if accounts:
             return InvariantResult(
                 name=name,
                 status="fail",
                 detail=(
-                    f"{len(rows)} account(s) have both manual and Plaid "
-                    "investment rows — the two ledgers interleave, so lots and "
-                    "gains double-count and cost basis mixes two accountings; "
-                    "core.dim_holdings withholds every figure for these "
-                    "positions (valuation_status 'source_overlap') until one "
-                    "source is left. Revert the redundant import batch to "
+                    f"{len(accounts)} account(s) have manual investment history "
+                    "alongside Plaid transactions or holdings. Review overlapping "
+                    "history before relying on lots or gains. Holdings withholding "
+                    "for mixed transaction ledgers remains active; opening-bootstrap "
+                    "rows do not trigger it. Revert the redundant import batch to "
                     "clear it; disconnecting the connector stops future pulls "
                     "but keeps the rows already pulled, so it does not "
                     "(investment dedup across sources is a future matching "
                     "child)"
                 ),
-                affected_ids=[str(r[0]) for r in rows],
+                affected_ids=accounts,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 

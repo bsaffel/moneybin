@@ -274,10 +274,9 @@ def _seed_plaid_buy(
             investment_transaction_id, account_id, security_id,
             investment_transaction_type, investment_transaction_subtype,
             transaction_date, quantity, price, amount, fees, iso_currency_code,
-            source_file, source_type, source_origin, extracted_at, loaded_at
+            observation_version, source_type, source_origin
         ) VALUES (?, ?, ?, 'buy', 'buy', ?,
-                  ?, 100.00, 1000.00, 0.00, 'USD', 'sync_test', 'plaid', ?,
-                  CURRENT_TIMESTAMP, COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))
+                  ?, 100.00, 1000.00, 0.00, 'USD', 'plaid_fixture', 'plaid', ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
         [
             f"itx_buy_{account_id}",
@@ -286,8 +285,15 @@ def _seed_plaid_buy(
             trade_date,
             quantity,
             source_origin,
-            loaded_at,
         ],
+    )
+    db.execute(
+        """INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at, loaded_at
+        ) VALUES (?, ?, 'sync_test', 'plaid_fixture', CURRENT_TIMESTAMP,
+                  COALESCE(?::TIMESTAMP, CURRENT_TIMESTAMP))""",
+        [f"itx_buy_{account_id}", source_origin, loaded_at],
     )
 
 
@@ -335,10 +341,9 @@ def _seed_split_reject(
             investment_transaction_id, account_id, security_id,
             investment_transaction_type, investment_transaction_subtype,
             transaction_date, quantity, price, amount, fees, iso_currency_code,
-            source_file, source_type, source_origin, extracted_at, loaded_at
+            observation_version, source_type, source_origin
         ) VALUES (?, ?, ?, 'transfer', 'split', ?,
-                  4, NULL, 0.00, NULL, 'USD', 'sync_test', 'plaid', ?,
-                  CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                  4, NULL, 0.00, NULL, 'USD', 'plaid_fixture', 'plaid', ?)
         """,  # noqa: S608  # test fixture, not executing user SQL
         [
             f"itx_split_{account_id}",
@@ -347,6 +352,14 @@ def _seed_split_reject(
             trade_date,
             source_origin,
         ],
+    )
+
+    db.execute(
+        """INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        ) VALUES (?, ?, 'sync_test', 'plaid_fixture', CURRENT_TIMESTAMP)""",
+        [f"itx_split_{account_id}", source_origin],
     )
 
 
@@ -781,7 +794,7 @@ def valuation_cases_template(
     # A manual ledger beside a broker SNAPSHOT (no Plaid transaction). The snapshot
     # makes the opening-lot bootstrap synthesize a plaid-sourced transfer_in, so the
     # ledger carries two source_types — but the bootstrap reconstructs a pre-window
-    # position rather than re-reporting an event, so this is not an overlap.
+    # position rather than re-reporting an event, so withholding excludes it.
     _seed_security(db, security_id=security("bootstrap_only"))
     _seed_price(
         db, security_id=security("bootstrap_only"), price_date=anchor, close="120.00"
@@ -1606,10 +1619,8 @@ def test_an_opening_bootstrap_is_not_a_second_source_ledger(
     and double-counts nothing. Counting its ``source_type`` would withhold every
     broker-covered account that also holds a manual entry.
 
-    It would also put this model at odds with the check that reports the state:
-    ``investment_source_overlap`` joins the two raw TRANSACTION tables, so a
-    holdings snapshot alone is not an overlap there. A user would be left holding
-    a withheld portfolio with a passing doctor and no remedy named anywhere.
+    Sync and doctor detect this broader overlap for review. That detection does
+    not expand the shipped withholding predicate or change its bootstrap exclusion.
     """
     db = valuation_cases.db
     account_id = _case_account("bootstrap_only")

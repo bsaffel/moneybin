@@ -1,9 +1,7 @@
 """Tests for ``ManualInvestmentTransactionsRepo``.
 
-The merge cascade's reference to the manual ledger. The repoint must pair an
-``app.audit_log`` row with the write and be reversible through the generic
-``BaseRepo.undo_event`` — a merge that repointed the ledger but could not
-un-repoint it would make ``accept_merge`` only partly undoable.
+Manual identity changes write audited Security Links and keep Raw unchanged.
+Their Link audit events remain reversible through ordinary Link recovery.
 """
 
 from __future__ import annotations
@@ -17,6 +15,7 @@ from moneybin.database import Database
 from moneybin.repositories.manual_investment_transactions_repo import (
     ManualInvestmentTransactionsRepo,
 )
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 
 
 def _insert_event(
@@ -55,7 +54,7 @@ def _audit_rows(db: Database) -> list[tuple[Any, ...]]:
         SELECT action, target_schema, target_table, target_id,
                before_value, after_value, actor, parent_audit_id
           FROM app.audit_log
-         WHERE action LIKE 'manual_investment.%'
+         WHERE action LIKE 'security_link.%'
          ORDER BY rowid
         """
     ).fetchall()
@@ -70,19 +69,27 @@ def test_repoint_moves_security_and_audits(db: Database) -> None:
         actor="cli",
     )
 
-    assert event.target_id == "manual_buy"
-    assert _row(db)[0] == "sec_new"
+    assert event.target_id is not None
+    assert _row(db)[0] == "sec_old"
+    assert (
+        SecurityLinksRepo(db).lookup(
+            ref_kind="manual_investment_transaction_id",
+            ref_value="manual_buy",
+            source_type="manual",
+        )
+        == "sec_new"
+    )
 
     audit = _audit_rows(db)
     assert len(audit) == 1
     action, schema, table, target_id, before, after, actor, _parent = audit[0]
-    assert action == "manual_investment.repoint_security"
+    assert action == "security_link.insert"
     assert (schema, table, target_id) == (
-        "raw",
-        "manual_investment_transactions",
-        "manual_buy",
+        "app",
+        "security_links",
+        event.target_id,
     )
-    assert json.loads(before)["security_id"] == "sec_old"
+    assert before is None
     assert json.loads(after)["security_id"] == "sec_new"
     assert actor == "cli"
 

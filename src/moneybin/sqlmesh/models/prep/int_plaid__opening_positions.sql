@@ -31,14 +31,17 @@ WITH first_snapshot AS (
       account_id,
       source_origin,
       source_file,
-      ROW_NUMBER() OVER (PARTITION BY account_id, source_origin ORDER BY extracted_at, source_file) AS snapshot_rank
+      ROW_NUMBER() OVER (PARTITION BY account_id, source_origin ORDER BY extracted_at, ingestion_sequence) AS snapshot_rank
     FROM (
       SELECT DISTINCT
-        account_id,
-        source_origin,
-        source_file,
-        extracted_at
-      FROM raw.plaid_investment_holdings
+        h.account_id,
+        r.source_origin,
+        r.source_file,
+        r.extracted_at,
+        r.ingestion_sequence
+      FROM raw.plaid_investment_holdings AS h
+      JOIN prep.stg_plaid__investment_holdings_snapshots AS r
+        ON r.source_origin = h.source_origin AND r.source_file = h.source_file
     )
   )
   WHERE

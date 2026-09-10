@@ -42,6 +42,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   masking too. (MB-102)
 
 ### Changed
+- **Investment source history preserves revisions and delivery order.** Plaid
+  transaction corrections retain earlier observations, and replaying a sync job
+  preserves its receipt order and the first holdings snapshot for each account.
+- **Manual reinvest entry owns its complete group.** `investments add` and
+  `investments_record` no longer accept caller-authored grouping; one reinvest
+  request writes its acquisition and income rows atomically.
+- **Investment overlap warnings include holdings-only syncs.** Sync and doctor
+  detect manual history alongside Plaid transactions or holdings evidence while
+  preserving the existing holdings withholding and opening-bootstrap exclusion.
 - **Categorization coverage counts the work you can actually do.** `moneybin
   transactions categorize stats`, MCP `transactions_categorize_stats`, and the
   `categorization_coverage` doctor check each derived their own "uncategorized"

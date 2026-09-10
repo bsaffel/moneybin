@@ -6,7 +6,7 @@ applied to the investment ledger. The cash grain already resolves it this way in
 ``core.fct_transactions``; these tests hold the same chain for the investment
 grain — ``raw.manual_investment_transactions`` →
 ``prep.stg_manual__investment_transactions`` → ``core.fct_investment_transactions``
-— by installing the two shipped models as views over hand-made sources.
+— by installing the shipped identity and ledger models over hand-made sources.
 
 The discriminating fixture is a **EUR** account: a USD one passes whether the
 model inherits or fabricates. The unknown-account-currency case is the other
@@ -25,6 +25,9 @@ from moneybin.database import SQLMESH_ROOT, Database
 
 _MANUAL_STG = (
     SQLMESH_ROOT / "models" / "prep" / "stg_manual__investment_transactions.sql"
+)
+_MANUAL_IDENTITY = (
+    SQLMESH_ROOT / "models" / "prep" / "int_manual__investment_identity.sql"
 )
 _LEDGER = SQLMESH_ROOT / "models" / "core" / "fct_investment_transactions.sql"
 
@@ -64,7 +67,7 @@ def _model_body(path: Path) -> str:
 
 
 def _install_ledger_chain(db: Database, *, account_currency: str | None) -> None:
-    """Install the two shipped models over hand-made sources."""
+    """Install the shipped identity and ledger models over hand-made sources."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         f"CREATE TABLE prep.stg_plaid__investment_transactions ({_PLAID_COLUMNS}, ledger_include BOOLEAN)"
@@ -79,6 +82,10 @@ def _install_ledger_chain(db: Database, *, account_currency: str | None) -> None
     db.execute(
         "INSERT INTO core.dim_accounts VALUES (?, ?)",
         [_ACCOUNT_ID, account_currency],
+    )
+    db.execute(  # noqa: S608  # shipped model body, not user SQL
+        "CREATE OR REPLACE VIEW prep.int_manual__investment_identity AS "
+        + _model_body(_MANUAL_IDENTITY)
     )
     db.execute(  # noqa: S608  # shipped model body, not user SQL
         "CREATE OR REPLACE VIEW prep.stg_manual__investment_transactions AS "

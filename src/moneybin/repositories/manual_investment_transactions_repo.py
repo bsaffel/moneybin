@@ -1,32 +1,16 @@
-"""Audited security repoint over ``raw.manual_investment_transactions`` (M1G.4).
-
-``raw.manual_investment_transactions`` is **user-entered state that happens to
-live in ``raw``** (mirroring ``raw.manual_transactions``), not provider-owned
-raw. ``investments record`` resolves the account and security interactively at
-entry and stores the RESOLVED ``security_id``; ``stg_manual__investment_
-transactions`` then carries that id verbatim, with no link-table indirection.
-
-So when a security merge deletes a provisional catalog row, nothing else moves
-these rows off it: the link repoint only moves provider refs. This repo owns the
-one mutation the merge needs — re-point ``security_id`` onto the surviving
-security — and pairs it with an ``app.audit_log`` row like any protected-table
-repo. That audit is what keeps ``SecurityLinksService.accept_merge`` reversible
-as a single operation: a merge that repointed the ledger but could not
-un-repoint it would not be undoable, and a partial undo of a merge is a defect.
-
-Row CREATION stays in ``InvestmentService`` (a plain ``raw`` write, outside
-Invariant 10's ``app.*`` surface). Only this post-hoc repoint is audited — the
-asymmetry is deliberate: the merge is the one write to this table that has to
-participate in an undoable cascade.
-"""
+"""Manual Security routing and validated recovery of historical Raw repoints."""
 
 from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from moneybin import error_codes
+from moneybin.errors import UserError
+from moneybin.investments.identity import manual_identity_sql
 from moneybin.repositories.base import BaseRepo
+from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import MANUAL_INVESTMENT_TRANSACTIONS, TableRef
+from moneybin.tables import MANUAL_INVESTMENT_TRANSACTIONS, SECURITY_LINKS, TableRef
 
 _MANUAL_INVESTMENT_COLUMNS = (
     "source_transaction_id",
@@ -55,7 +39,7 @@ _MANUAL_INVESTMENT_COLUMNS = (
 
 
 class ManualInvestmentTransactionsRepo(BaseRepo):
-    """Audited ``security_id`` repoint over ``raw.manual_investment_transactions``."""
+    """Route manual identities without modifying their frozen observations."""
 
     repository: ClassVar[str] = "manual_investment_transactions"
     table_ref: ClassVar[TableRef] = MANUAL_INVESTMENT_TRANSACTIONS
@@ -70,14 +54,32 @@ class ManualInvestmentTransactionsRepo(BaseRepo):
         )
 
     def list_ids_for_security(self, security_id: str) -> list[str]:
-        """``source_transaction_id`` of every manual event on ``security_id``. Read-only."""
+        """Enumerate current identities, including routes from earlier merges."""
         rows = self._db.execute(
-            "SELECT source_transaction_id FROM "  # noqa: S608  # TableRef + parameterized value
-            f"{MANUAL_INVESTMENT_TRANSACTIONS.full_name} "
-            "WHERE security_id = ? ORDER BY source_transaction_id",
+            f"""
+            SELECT source_transaction_id FROM ({manual_identity_sql()}) AS identity
+            WHERE security_id = ? ORDER BY source_transaction_id
+            """,  # noqa: S608  # repository model query with parameterized identity
             [security_id],
         ).fetchall()
         return [str(row[0]) for row in rows]
+
+    def _accepted_route(self, source_transaction_id: str) -> tuple[str, str] | None:
+        rows = self._db.execute(
+            f"""
+            SELECT link_id, security_id FROM {SECURITY_LINKS.full_name}
+            WHERE source_type = 'manual'
+              AND ref_kind = 'manual_investment_transaction_id'
+              AND ref_value = ? AND status = 'accepted'
+            """,  # noqa: S608  # TableRef and parameterized source id
+            [source_transaction_id],
+        ).fetchall()
+        if len(rows) > 1:
+            raise UserError(
+                "Manual identity has conflicting accepted Security Links.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        return (str(rows[0][0]), str(rows[0][1])) if rows else None
 
     def repoint_security(
         self,
@@ -87,47 +89,112 @@ class ManualInvestmentTransactionsRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
-        """Re-point one manual event onto ``new_security_id`` + paired audit.
-
-        ``investment_transaction_id`` (the predicted gold key) hashes
-        ``source_transaction_id`` and ``account_id``, not ``security_id``, so it
-        is unaffected — the disposal keys in ``app.lot_selections`` stay valid
-        across the repoint. The lots those selections point at DO re-key
-        (``lot_id`` hashes ``security_id``); migrating them is the caller's job
-        (``SecurityLinksService._plan_lot_selections``).
-
-        ``security_ref`` — what the user originally typed — is deliberately left
-        alone: it is the audit trail of the resolution, not a live reference.
-
-        Raises ``ValueError`` when the row is absent, or when it already carries
-        ``new_security_id`` (a no-op repoint would emit a ``before == after``
-        audit row that the undo engine skips, so the caller must not ask for one).
-        """
+        """Write an audited Link; absent routing means the frozen Raw assignment."""
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._require(
+            raw = self._require(
                 self._fetch_row(source_transaction_id),
                 "source_transaction_id",
                 source_transaction_id,
             )
-            if before["security_id"] == new_security_id:
+            route = self._accepted_route(source_transaction_id)
+            if (route[1] if route else raw["security_id"]) == new_security_id:
                 raise ValueError(
-                    f"manual_investment_transactions repoint: "
-                    f"{source_transaction_id!r} already carries "
-                    f"security_id={new_security_id!r}"
+                    "manual investment already carries the target security"
                 )
-            self._db.execute(
-                "UPDATE "  # noqa: S608  # TableRef + parameterized values
-                f"{MANUAL_INVESTMENT_TRANSACTIONS.full_name} "
-                "SET security_id = ? WHERE source_transaction_id = ?",
-                [new_security_id, source_transaction_id],
-            )
-            after = self._fetch_row(source_transaction_id)
-            return self._emit_audit(
-                action="manual_investment.repoint_security",
-                target=(*self._audit_target, source_transaction_id),
-                before=self._serialize_for_audit(before),
-                after=self._serialize_for_audit(after),
+            links = SecurityLinksRepo(self._db, audit=self._audit)
+            if route:
+                return links.repoint(
+                    link_id=route[0],
+                    new_security_id=new_security_id,
+                    decided_by="user",
+                    actor=actor,
+                    parent_audit_id=parent_audit_id,
+                    in_outer_txn=True,
+                    undoes_operation_id=undoes_operation_id,
+                )
+            return links.insert(
+                security_id=new_security_id,
+                ref_kind="manual_investment_transaction_id",
+                ref_value=source_transaction_id,
+                source_type="manual",
+                decided_by="user",
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                in_outer_txn=True,
+                undoes_operation_id=undoes_operation_id,
             )
+
+    def validate_legacy_event(self, event: AuditEvent) -> None:
+        """Refuse incomplete or non-Security history before any cascade writes."""
+        before, after = event.before_value, event.after_value
+        action_suffix = event.action.removeprefix("manual_investment.repoint_security")
+        valid_action = (
+            event.action.startswith("manual_investment.repoint_security")
+            and all(part == "undo" for part in action_suffix.split(".")[1:])
+            and (not action_suffix or action_suffix.startswith("."))
+        )
+        if not valid_action or before is None or after is None:
+            raise UserError(
+                "Historical manual mutation has no supported identity recovery path.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        self._require_capture(before, _MANUAL_INVESTMENT_COLUMNS, event)
+        self._require_capture(after, _MANUAL_INVESTMENT_COLUMNS, event)
+        if (
+            before.keys() != after.keys()
+            or any(before[key] != after[key] for key in before if key != "security_id")
+            or before["source_transaction_id"] != event.target_id
+            or not isinstance(before["security_id"], str)
+            or not isinstance(after["security_id"], str)
+        ):
+            raise UserError(
+                "Historical manual mutation is not a complete Security-only repoint.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        raw = self._serialize_for_audit(self._fetch_row(str(event.target_id)))
+        if raw is None or any(
+            raw.get(key) != after[key] for key in after if key != "security_id"
+        ):
+            raise UserError(
+                "Frozen manual observation no longer agrees with the captured history.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        route = self._accepted_route(str(event.target_id))
+        if (route[1] if route else raw["security_id"]) != after["security_id"]:
+            raise UserError(
+                "Current manual identity no longer agrees with the captured history.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+
+    def undo_event(
+        self,
+        event: AuditEvent,
+        *,
+        actor: str,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent | None:
+        """Translate legacy Raw inverses into actual, redoable Link audit events."""
+        if event.target_table == SECURITY_LINKS.name:
+            return SecurityLinksRepo(self._db, audit=self._audit).undo_event(
+                event,
+                actor=actor,
+                in_outer_txn=in_outer_txn,
+            )
+        self.validate_legacy_event(event)
+        if event.before_value == event.after_value:
+            return None
+        if event.before_value is None:
+            raise UserError(
+                "Historical manual mutation has no supported identity recovery path.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        return self.repoint_security(
+            source_transaction_id=str(event.target_id),
+            new_security_id=str(event.before_value["security_id"]),
+            actor=actor,
+            parent_audit_id=event.audit_id,
+            in_outer_txn=in_outer_txn,
+            undoes_operation_id=event.operation_id,
+        )

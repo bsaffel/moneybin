@@ -31,7 +31,12 @@ from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_dispatch import is_registered, repo_for
-from moneybin.tables import AUDIT_LOG
+from moneybin.tables import (
+    AUDIT_LOG,
+    FCT_INVESTMENT_LOTS,
+    FCT_INVESTMENT_TRANSACTIONS,
+    LOT_SELECTIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +218,19 @@ class UndoService:
             try:
                 undone: list[AuditEvent] = []
                 touched: dict[str, BaseRepo] = {}
+                self._validate_identity_selections(row_events)
+                from moneybin.repositories.manual_investment_transactions_repo import (
+                    ManualInvestmentTransactionsRepo,
+                )
+
+                for event in row_events:
+                    if (
+                        event.target_schema == "raw"
+                        and event.target_table == "manual_investment_transactions"
+                    ):
+                        ManualInvestmentTransactionsRepo(
+                            self._db, audit=self._audit
+                        ).validate_legacy_event(event)
                 for event in reversed(row_events):
                     repo = repo_for(
                         event.target_schema or "",
@@ -224,6 +242,8 @@ class UndoService:
                     inverse = repo.undo_event(event, actor=actor, in_outer_txn=True)
                     if inverse is not None:
                         undone.append(inverse)
+                # Legacy Raw recovery can emit two Link inverses for one event.
+                undone = self._audit.events_for_operation(undo_op)
                 self._db.commit()
             except UserError as e:
                 # _require_capture can raise RECOVERY_NO_PATH mid-loop (a legacy
@@ -273,6 +293,83 @@ class UndoService:
             reversed_row_count=len(undone),
             tables=tables,
         )
+
+    def _validate_identity_selections(self, events: list[AuditEvent]) -> None:
+        """Refuse to strand later elections outside an identity operation's inverses."""
+        accounts: set[str] = set()
+        securities: set[str] = set()
+        covered = {
+            event.target_id
+            for event in events
+            if event.target_table == LOT_SELECTIONS.name
+        }
+        for event in events:
+            if event.before_value == event.after_value:
+                continue
+            if event.target_table not in {
+                "account_links",
+                "account_link_decisions",
+                "security_links",
+                "manual_investment_transactions",
+            }:
+                continue
+            for image in (event.before_value, event.after_value):
+                if image is None:
+                    continue
+                if event.target_table in {"account_links", "account_link_decisions"}:
+                    accounts.update(
+                        str(image[key])
+                        for key in (
+                            "account_id",
+                            "provisional_account_id",
+                            "candidate_account_id",
+                        )
+                        if image.get(key) is not None
+                    )
+                elif image.get("security_id") is not None:
+                    securities.add(str(image["security_id"]))
+        if not accounts and not securities:
+            return
+        selections = self._db.execute(
+            f"SELECT DISTINCT investment_transaction_id FROM {LOT_SELECTIONS.full_name}",  # noqa: S608  # TableRef constant
+        ).fetchall()
+        uncovered = {str(row[0]) for row in selections} - covered
+        if not uncovered:
+            return
+        refusal = UserError(
+            "Cannot undo identity while later lot selections lack complete audited "
+            "inverses. Undo those selections first, then retry the identity operation.",
+            code=error_codes.UNDO_CASCADE_BLOCKED,
+        )
+        import duckdb
+
+        account_projection = "t.account_id" if accounts else "NULL"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT ls.investment_transaction_id, t.investment_transaction_id,
+                       t.security_id, l.security_id, {account_projection}, l.account_id
+                FROM {LOT_SELECTIONS.full_name} AS ls
+                LEFT JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
+                  ON t.investment_transaction_id = ls.investment_transaction_id
+                LEFT JOIN {FCT_INVESTMENT_LOTS.full_name} AS l ON l.lot_id = ls.lot_id
+                """,  # noqa: S608  # TableRefs and fixed projection chosen above
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            raise refusal from None
+        if any(
+            str(row[0]) in uncovered
+            and (
+                row[1] is None
+                or row[3] is None
+                or row[2] in securities
+                or row[3] in securities
+                or row[4] in accounts
+                or row[5] in accounts
+            )
+            for row in rows
+        ):
+            raise refusal
 
     def history(
         self,
@@ -604,14 +701,33 @@ class UndoService:
         """
         rows = self._db.conn.execute(
             f"""
-            WITH op_rows AS (
+            WITH audit_targets AS (
+                SELECT target_schema, target_table, target_id, rowid,
+                       operation_id, is_undo
+                FROM {AUDIT_LOG.full_name}
+                UNION ALL
+                SELECT 'identity', 'manual_investment_security',
+                       CASE WHEN target_table = 'manual_investment_transactions'
+                            THEN target_id
+                            ELSE COALESCE(json_extract_string(after_value, '$.ref_value'),
+                                          json_extract_string(before_value, '$.ref_value'))
+                       END,
+                       rowid, operation_id, is_undo
+                FROM {AUDIT_LOG.full_name}
+                WHERE (target_schema = 'raw' AND target_table = 'manual_investment_transactions')
+                   OR (target_schema = 'app' AND target_table = 'security_links'
+                       AND COALESCE(json_extract_string(after_value, '$.ref_kind'),
+                                    json_extract_string(before_value, '$.ref_kind')) = 'manual_investment_transaction_id'
+                       AND COALESCE(json_extract_string(after_value, '$.source_type'),
+                                    json_extract_string(before_value, '$.source_type')) = 'manual')
+            ), op_rows AS (
                 SELECT target_schema, target_table, target_id, rowid
-                  FROM {AUDIT_LOG.full_name}
+                  FROM audit_targets
                  WHERE operation_id = ?
             ),
             boundary AS (SELECT MAX(rowid) AS r FROM op_rows)
             SELECT a.operation_id, MAX(a.rowid) AS latest
-              FROM {AUDIT_LOG.full_name} a
+              FROM audit_targets a
               JOIN (
                   SELECT DISTINCT target_schema, target_table, target_id
                     FROM op_rows WHERE target_id IS NOT NULL

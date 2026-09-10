@@ -66,6 +66,7 @@ class AccountLinkAcceptImpact:
     blast_radius: dict[str, int]
     link_ids: tuple[str, ...]
     decision_ids: tuple[str, ...]
+    lot_selection_disposal_ids: tuple[str, ...] = ()
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -396,6 +397,12 @@ class AccountLinksService:
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         provisional_id = str(decision["provisional_account_id"])
+        from moneybin.investments.identity_preflight import plan_account_lot_selections
+        from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+
+        selection_plan = plan_account_lot_selections(
+            self._db, provisional_id, target_account_id
+        )
         links = self._db.execute(
             f"""
             SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
@@ -434,9 +441,20 @@ class AccountLinksService:
                 "accounts": 2,
                 "account_links": len(link_ids),
                 "account_link_decisions": len(decision_ids),
+                **(
+                    {
+                        "lot_selections": sum(
+                            len(LotSelectionsRepo(self._db).list_for_disposal(disposal))
+                            for disposal in selection_plan
+                        )
+                    }
+                    if selection_plan
+                    else {}
+                ),
             },
             link_ids=link_ids,
             decision_ids=decision_ids,
+            lot_selection_disposal_ids=tuple(sorted(selection_plan)),
         )
 
     # ------------------------------------------------------------------
@@ -770,6 +788,16 @@ class AccountLinksService:
                 # adoption lookups). Leaving a strong ref on the merged-away
                 # provisional would later mis-adopt a source carrying the same
                 # token/number onto the dead id instead of the candidate.
+                from moneybin.investments.identity_preflight import (
+                    plan_account_lot_selections,
+                )
+                from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
+
+                selection_plan = plan_account_lot_selections(
+                    self._db,
+                    provisional_id,
+                    target_account_id,
+                )
                 links = self._db.execute(
                     f"""
                     SELECT link_id, ref_kind FROM {ACCOUNT_LINKS.full_name}
@@ -801,6 +829,13 @@ class AccountLinksService:
                         link_id=link_id,
                         new_account_id=target_account_id,
                         decided_by=decided_by,
+                        actor=self._actor,
+                        in_outer_txn=True,
+                    )
+                for disposal_id, selections in selection_plan.items():
+                    LotSelectionsRepo(self._db).set_for_disposal(
+                        investment_transaction_id=disposal_id,
+                        selections=selections,
                         actor=self._actor,
                         in_outer_txn=True,
                     )
