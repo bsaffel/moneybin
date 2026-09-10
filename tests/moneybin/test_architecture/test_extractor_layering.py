@@ -35,7 +35,7 @@ EXTRACTOR_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # why: ofx_source_accounts() (moved out of ImportService in MB-52 slice 1,
     # PR #585) builds SourceAccount/AccountNameFacts value objects that
     # currently live under services/. MB-246 relocates them to a layer both
-    # extractors/ and services/ can import; remove these four entries and the
+    # extractors/ and services/ can import; remove these five entries and the
     # DEPRECATED markers in extractors/ofx/extractor.py once it lands.
     (
         "extractors/ofx/extractor.py",
@@ -83,12 +83,18 @@ def _collect_imports(path: Path) -> list[tuple[str, str, str]]:
 
 
 def _scan_extractors() -> list[tuple[str, str, str]]:
-    """Walk every extractor module and collect guarded imports."""
+    """Walk every extractor module — including __init__.py — for guarded imports.
+
+    Unlike `test_adapter_layering.py`'s adapters, an extractor's `__init__.py`
+    is the public re-export surface (`from moneybin.extractors.ofx import
+    OFXExtractor` resolves through it) — exactly where a services import would
+    land if someone routed one through the package root instead of the
+    submodule. Skipping it here would leave the guard's most likely evasion
+    path unchecked.
+    """
     triples: list[tuple[str, str, str]] = []
     for root in EXTRACTOR_ROOTS:
         for path in sorted(root.rglob("*.py")):
-            if path.name == "__init__.py":
-                continue
             triples.extend(_collect_imports(path))
     return triples
 
