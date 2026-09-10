@@ -138,9 +138,6 @@ def _persona_db_skip_reason() -> str | None:
 @pytest.mark.perf
 def test_privacy_middleware_within_budget() -> None:
     """Re-run baseline flows post-middleware; assert deltas within budget."""
-    if reason := _persona_db_skip_reason():
-        pytest.skip(reason)
-
     baseline = read_baseline(BASELINE_PATH)
 
     def _transactions_get() -> object:
@@ -227,8 +224,6 @@ def test_sql_query_lineage_overhead_within_budget() -> None:
     is independently derived (the PR's own contract: lineage adds ≤ P50_BUDGET_MS
     p50), not a paste of observed numbers.
     """
-    if reason := _persona_db_skip_reason():
-        pytest.skip(reason)
 
     def _raw() -> object:
         with get_database(read_only=True) as db:
