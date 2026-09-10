@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **SQLMesh external schemas now retain refreshed columns for lineage and type
+  validation.** The declarations are available to every supported gateway.
+  (PR #583)
+
 - **`sql_query` no longer masks a count of how many rows are missing a
   protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so
   `COUNT(*) - COUNT(last_four)` already returned the number of accounts with no

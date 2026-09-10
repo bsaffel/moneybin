@@ -42,6 +42,23 @@ def _data_type(data_type: str) -> str:
     return exp.DataType.build(data_type, dialect="duckdb").sql(dialect="duckdb")
 
 
+@pytest.mark.parametrize(
+    ("left", "right", "equivalent"),
+    [
+        ("VARCHAR", "TEXT", True),
+        ("TIMESTAMP", "TIMESTAMPNTZ", True),
+        ("DECIMAL(18, 2)", "DECIMAL(18, 4)", False),
+        ("DECIMAL(18, 2)", "DECIMAL(19, 2)", False),
+        ("INTEGER", "TEXT", False),
+    ],
+)
+def test_data_type_preserves_meaningful_duckdb_type_differences(
+    left: str, right: str, equivalent: bool
+) -> None:
+    """Equivalent spellings compare equally without collapsing distinct types."""
+    assert (_data_type(left) == _data_type(right)) is equivalent
+
+
 def _declared_external_models(
     expected_relations: set[str],
     declarations: list[tuple[str, dict[str, str]]],
