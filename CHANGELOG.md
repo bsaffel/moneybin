@@ -12,13 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 - **CLI categorization commits now retain reviewed merchant identities.**
-  `transactions categorize commit-from-file` previously stripped
-  `canonical_merchant_name` while removing export-only fields, so the same
-  reviewed payload learned merchant exemplars through MCP but not the CLI file
-  or stdin workflow. `commit` and `commit-from-file` now pass that optional
-  field through the shared validator and categorization service, preserving the
-  existing per-row validation, AI-source precedence, idempotency, and
-  post-commit cascade. (PR #580)
+  `transactions categorize commit-from-file` now preserves
+  `canonical_merchant_name` while removing export-only fields, matching the
+  existing direct `commit` behavior. The file and stdin workflow retain
+  per-row validation, AI-source precedence, idempotency, and the post-commit
+  cascade. (PR #580)
 
 - **`sql_query` no longer masks a count of how many rows are missing a
   protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so

@@ -122,6 +122,8 @@ def categorize_commit_from_file(
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
         )
+        if result.merchants_created:
+            logger.info(f"   Created {result.merchants_created} merchant mappings")
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 

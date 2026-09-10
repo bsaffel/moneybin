@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import nullcontext
 from pathlib import Path
 from unittest.mock import patch
@@ -60,8 +61,6 @@ def test_commit_routes_preserve_canonical_merchant_name(
         input_text = None
     else:
         args = [command, "-", "--output", "json"]
-        if command == "commit":
-            args = [command, "-", "--output", "json"]
         input_text = json.dumps(payload)
 
     with (
@@ -142,3 +141,46 @@ def test_commit_from_file_reports_invalid_merchant_names_per_row(
     assert result.exit_code == 1, result.output
     assert [item.transaction_id for item in received] == ["txn-valid"]
     assert "canonical_merchant_name" in result.output
+
+
+@pytest.mark.unit
+def test_commit_from_file_text_reports_created_merchant_mappings(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Omitting the created-mapping count hides learning from file commits."""
+    input_path = tmp_path / "proposals.json"
+    input_path.write_text(
+        json.dumps([{"transaction_id": "txn-1", "category": "Groceries"}]),
+        encoding="utf-8",
+    )
+
+    class RecordingService:
+        def __init__(self, _db: object) -> None:
+            pass
+
+        def categorize_items(
+            self, _items: list[CategorizationItem]
+        ) -> CategorizationResult:
+            return CategorizationResult(
+                applied=1,
+                skipped=0,
+                errors=0,
+                error_details=[],
+                merchants_created=2,
+            )
+
+    with (
+        caplog.at_level(logging.INFO),
+        patch(
+            "moneybin.cli.commands.transactions.categorize.commit_from_file.get_database",
+            return_value=nullcontext(object()),
+        ),
+        patch(
+            "moneybin.services.categorization.CategorizationService",
+            RecordingService,
+        ),
+    ):
+        result = CliRunner().invoke(app, ["commit-from-file", str(input_path)])
+
+    assert result.exit_code == 0, result.output
+    assert "Created 2 merchant mappings" in "\n".join(caplog.messages)
