@@ -266,12 +266,11 @@ def accounts_set(
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
 
-    Archive cascade: ``is_archived=True`` also sets ``include_in_net_worth=False``
-    atomically in the same write. Unarchiving (``is_archived=False``) does NOT
-    restore the prior ``include_in_net_worth`` value — pass
-    ``include_in_net_worth=True`` explicitly to re-include. When the cascade
-    fires, the response data includes ``cascaded_include_in_net_worth: false``
-    to surface the side effect.
+    ``is_archived`` and ``include_in_net_worth`` are independent — archiving no
+    longer changes ``include_in_net_worth``; pass it explicitly alongside
+    ``is_archived`` if the account should also stop contributing to net worth.
+    ``cascaded_include_in_net_worth`` in the response is always ``None`` now
+    (the retired cascade's signal; kept for wire compatibility).
 
     Soft-validation warnings (for non-canonical ``account_subtype`` or
     ``holder_category`` values) are embedded in ``data['warnings']``.
@@ -320,7 +319,8 @@ def accounts_set(
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
-        cascaded_include_in_net_worth=False if is_archived is True else None,
+        # No cascade fires anymore; kept at its None default for wire
+        # compatibility rather than removing the field outright.
     )
     return build_envelope(data=payload)
 
@@ -1788,9 +1788,9 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "official_name, last_four, account_subtype, holder_category, "
         "currency_code, credit_limit. Pass None to leave a field "
         "unchanged; include a text field's name in clear_fields to clear it "
-        "(booleans are not clearable). Archiving (is_archived=True) cascades "
-        "include_in_net_worth=False atomically; unarchive does NOT restore "
-        "the prior include value. "
+        "(booleans are not clearable). is_archived and include_in_net_worth "
+        "are independent — set both explicitly if archiving should also "
+        "exclude the account from net worth. "
         "Writes app.account_settings; revert by calling again with the prior "
         "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",

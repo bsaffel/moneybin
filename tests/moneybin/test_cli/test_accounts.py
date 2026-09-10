@@ -502,7 +502,7 @@ class TestAccountsSetBehavioralFlags:
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_set_archive_announces_cascade(
+    def test_set_archive_no_longer_announces_cascade(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
@@ -511,14 +511,15 @@ class TestAccountsSetBehavioralFlags:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
         mock_service.settings_update.return_value = (
-            MagicMock(archived=True, include_in_net_worth=False),
+            MagicMock(archived=True, include_in_net_worth=True),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--archive"])
         assert result.exit_code == 0
         kwargs = mock_service.settings_update.call_args.kwargs
         assert kwargs["archived"] is True
-        assert "net worth" in result.stderr.lower()
+        # No cascade note anymore — archived and include_in_net_worth are independent.
+        assert "net worth" not in result.stderr.lower()
 
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
@@ -532,14 +533,13 @@ class TestAccountsSetBehavioralFlags:
         mock_get_db.return_value = MagicMock()
         mock_service = mock_svc_cls.return_value
         mock_service.settings_update.return_value = (
-            MagicMock(archived=False, include_in_net_worth=False),
+            MagicMock(archived=False, include_in_net_worth=True),
             [],
         )
         result = runner.invoke(app, ["accounts", "set", "acct_a", "--unarchive"])
         assert result.exit_code == 0
         kwargs = mock_service.settings_update.call_args.kwargs
         assert kwargs["archived"] is False
-        # Cascade note appears only on --archive, never on --unarchive
         assert "also excluded from net worth" not in result.stderr.lower()
 
     @pytest.mark.unit

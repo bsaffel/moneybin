@@ -851,16 +851,23 @@ without. Both are sequenced ahead of it, for the same reason: each is a change
 to a different subsystem, and folding it into a reports change would get it
 approved as a footnote rather than reviewed on its own terms.
 
-- **Retire the archive cascade** — blocks Requirement 9, and only that
-  requirement. `AccountService.settings_update` stops forcing
-  `include_in_net_worth=False` when `archived=True`; `archived_at` carries the
-  exclusion instead, date-scoped, and the net-worth eligibility filter becomes
+- **Retire the archive cascade** — **closed**, ahead of this spec, the same
+  sequencing as the margin-loan defect below. `AccountService.settings_update`
+  no longer forces `include_in_net_worth=False` when `archived=True`;
+  `archived_at DATE` (migration V060) carries the exclusion instead,
+  date-scoped, stamped with today's date on the archived FALSE→TRUE transition
+  and cleared on unarchive. V060 backfilled every already-archived account,
+  reading `before_value.include_in_net_worth` from the most recent `archived`
+  FALSE→TRUE audit row to distinguish a cascade-written FALSE from one the
+  user chose, and restoring `include_in_net_worth` only for the former. An
+  archived account with no audit evidence for the transition was left
+  untouched rather than guessed at — `archived_at` stays NULL, preserving
+  today's behavior for that account. `core.dim_accounts` now resolves
+  `archived_at` alongside `archived`. What remains **for this spec**:
+  Requirement 9's own eligibility filter —
   `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
-  archived_at)`. Needs the `archived_at` column and its migration, the service
-  change, and a backfill that reads `before_value.include_in_net_worth` from the
-  `archived` FALSE→TRUE audit row to distinguish a cascade-written FALSE from
-  one the user chose. `app.audit_log` is append-only, so that reconstruction
-  does not decay while this waits. Rationale and the redundancy that makes the
+  archived_at)` — on the three net-worth rungs themselves; this prerequisite
+  only made that filter possible. Rationale and the redundancy that made the
   cascade removable: §`app.account_settings`.
 - **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
   spec, which is the sequencing this section describes working as intended. The

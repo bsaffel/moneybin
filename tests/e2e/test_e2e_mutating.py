@@ -849,14 +849,13 @@ class TestAccountsEntityOps:
     def test_accounts_set_archive_then_unarchive(
         self, _accounts_with_data_template: Path, tmp_path: Path
     ) -> None:
-        """`accounts set --archive` then `--unarchive` round-trip; cascade message present on archive."""
+        """`accounts set --archive` then `--unarchive` round-trip succeeds."""
         env = make_workflow_env_fast(
             tmp_path, "acct-archive", _accounts_with_data_template
         )
         account_id = _resolve_account_id(env)
         result = run_cli("accounts", "set", account_id, "--archive", env=env)
         result.assert_success()
-        assert "excluded from net worth" in result.output
         result = run_cli("accounts", "set", account_id, "--unarchive", env=env)
         result.assert_success()
 

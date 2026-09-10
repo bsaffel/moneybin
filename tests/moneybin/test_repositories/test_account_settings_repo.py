@@ -34,6 +34,7 @@ def _set(repo: AccountSettingsRepo, **overrides: Any) -> Any:
         "currency_code": "USD",
         "credit_limit": None,
         "archived": False,
+        "archived_at": None,
         "include_in_net_worth": True,
         "default_cost_basis_method": None,
         "actor": "cli",

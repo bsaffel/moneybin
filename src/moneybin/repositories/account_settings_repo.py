@@ -8,6 +8,7 @@ composes this instead of raw SQL; reads (``load``) stay in the service.
 
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -25,6 +26,7 @@ _ACCOUNT_SETTINGS_COLUMNS = (
     "currency_code",
     "credit_limit",
     "archived",
+    "archived_at",
     "include_in_net_worth",
     "default_cost_basis_method",
     "updated_at",
@@ -56,6 +58,7 @@ class AccountSettingsRepo(BaseRepo):
         currency_code: str | None,
         credit_limit: Decimal | None,
         archived: bool,
+        archived_at: date | None,
         include_in_net_worth: bool,
         default_cost_basis_method: str | None,
         actor: str,
@@ -76,9 +79,9 @@ class AccountSettingsRepo(BaseRepo):
                 INSERT INTO {ACCOUNT_SETTINGS.full_name} (
                     account_id, display_name, official_name, last_four,
                     account_subtype, holder_category, currency_code,
-                    credit_limit, archived, include_in_net_worth,
+                    credit_limit, archived, archived_at, include_in_net_worth,
                     default_cost_basis_method
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (account_id) DO UPDATE SET
                     display_name         = excluded.display_name,
                     official_name        = excluded.official_name,
@@ -88,6 +91,7 @@ class AccountSettingsRepo(BaseRepo):
                     currency_code        = excluded.currency_code,
                     credit_limit         = excluded.credit_limit,
                     archived             = excluded.archived,
+                    archived_at          = excluded.archived_at,
                     include_in_net_worth = excluded.include_in_net_worth,
                     default_cost_basis_method = excluded.default_cost_basis_method,
                     updated_at           = NOW()
@@ -102,6 +106,7 @@ class AccountSettingsRepo(BaseRepo):
                     currency_code,
                     credit_limit,
                     archived,
+                    archived_at,
                     include_in_net_worth,
                     default_cost_basis_method,
                 ],

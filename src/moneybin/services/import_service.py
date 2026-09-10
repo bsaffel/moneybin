@@ -2471,6 +2471,7 @@ class ImportService:
             currency_code=settings.currency_code,
             credit_limit=settings.credit_limit,
             archived=settings.archived,
+            archived_at=settings.archived_at,
             include_in_net_worth=settings.include_in_net_worth,
             default_cost_basis_method=settings.default_cost_basis_method,
             actor="import",

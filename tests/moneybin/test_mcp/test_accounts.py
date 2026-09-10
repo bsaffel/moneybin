@@ -1307,27 +1307,26 @@ class TestAccountsSetExtended:
         assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
-    async def test_is_archived_cascades_to_include(self, mcp_db: Path) -> None:
-        """is_archived=True translates to archived=True and cascades include_in_net_worth=False."""
+    async def test_is_archived_no_longer_cascades_to_include(
+        self, mcp_db: Path
+    ) -> None:
+        """is_archived=True translates to archived=True; no cascade to include."""
         result = await accounts_set(account_id="ACC001", is_archived=True)
         parsed = result.to_dict()
         # AccountSettingsPayload emits "archived", not "is_archived".
         assert parsed["data"]["archived"] is True
-        assert parsed["data"]["include_in_net_worth"] is False
-        assert parsed["data"]["cascaded_include_in_net_worth"] is False
+        # include_in_net_worth is untouched — no cascade.
+        assert parsed["data"]["include_in_net_worth"] is True
+        assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
-    async def test_unarchive_does_not_restore_include(self, mcp_db: Path) -> None:
-        """Unarchive (is_archived=False) leaves include_in_net_worth unchanged."""
-        # Archive first → include cascades to False.
+    async def test_unarchive_leaves_include_untouched(self, mcp_db: Path) -> None:
+        """Archive then unarchive leaves include_in_net_worth untouched throughout."""
         await accounts_set(account_id="ACC001", is_archived=True)
-        # Unarchive without an explicit include flag.
         result = await accounts_set(account_id="ACC001", is_archived=False)
         parsed = result.to_dict()
         assert parsed["data"]["archived"] is False
-        # NOT restored — caller must opt back in explicitly.
-        assert parsed["data"]["include_in_net_worth"] is False
-        # No cascade for unarchive: cascaded_include_in_net_worth is None.
+        assert parsed["data"]["include_in_net_worth"] is True
         assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit

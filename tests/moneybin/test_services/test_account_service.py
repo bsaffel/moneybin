@@ -6,6 +6,7 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -335,6 +336,7 @@ def _seed_blank_settings_row(db: Database) -> None:
         currency_code=None,
         credit_limit=None,
         archived=False,
+        archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=None,
         actor="test",
@@ -383,19 +385,33 @@ class TestAccountServiceMutators:
         assert loaded.include_in_net_worth is True
 
     @pytest.mark.unit
-    def test_archive_cascades_to_include(self, test_db: Database) -> None:
+    def test_archive_does_not_cascade_to_include(self, test_db: Database) -> None:
         svc = AccountService(test_db)
         result = svc.archive("acct_a")
         assert result.archived is True
-        assert result.include_in_net_worth is False
+        # include_in_net_worth is untouched — no cascade.
+        assert result.include_in_net_worth is True
+        assert result.archived_at == date.today()
 
     @pytest.mark.unit
-    def test_unarchive_does_not_restore_include(self, test_db: Database) -> None:
+    def test_unarchive_clears_archived_at_and_leaves_include_untouched(
+        self, test_db: Database
+    ) -> None:
         svc = AccountService(test_db)
         svc.archive("acct_a")
         result = svc.unarchive("acct_a")
         assert result.archived is False
-        assert result.include_in_net_worth is False  # NOT restored
+        assert result.archived_at is None
+        assert result.include_in_net_worth is True  # never touched
+
+    @pytest.mark.unit
+    def test_rearchive_does_not_move_archived_at(self, test_db: Database) -> None:
+        """A second archive() while already archived keeps the first date."""
+        svc = AccountService(test_db)
+        first = svc.archive("acct_a")
+        # A no-op re-archive should not restamp the date.
+        second = svc.archive("acct_a")
+        assert second.archived_at == first.archived_at
 
     @pytest.mark.unit
     def test_settings_update_partial(self, test_db: Database) -> None:
@@ -597,26 +613,44 @@ class TestSettingsUpdateExtended:
         assert result.include_in_net_worth is False
 
     @pytest.mark.unit
-    def test_set_archived_true_cascades_include_false(self, test_db: Database) -> None:
+    def test_set_archived_true_does_not_cascade_include(
+        self, test_db: Database
+    ) -> None:
         svc = AccountService(test_db)
         # Start from the default include_in_net_worth=True.
         result, _ = svc.settings_update("acct_a", actor="cli", archived=True)
         assert result.archived is True
-        assert result.include_in_net_worth is False, (
-            "Archiving must cascade include_in_net_worth to False"
+        assert result.include_in_net_worth is True, (
+            "Archiving must not cascade include_in_net_worth"
         )
+        assert result.archived_at == date.today()
 
     @pytest.mark.unit
-    def test_set_archived_false_does_not_restore_include(
+    def test_set_archived_true_honors_explicit_include_value(
+        self, test_db: Database
+    ) -> None:
+        """An explicit include_in_net_worth in the same call must win outright.
+
+        Previously the cascade overrode this, ahead of _resolve(), so an
+        explicit caller value silently lost.
+        """
+        svc = AccountService(test_db)
+        result, _ = svc.settings_update(
+            "acct_a", actor="cli", archived=True, include_in_net_worth=False
+        )
+        assert result.archived is True
+        assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_set_archived_false_clears_archived_at_leaves_include_untouched(
         self, test_db: Database
     ) -> None:
         svc = AccountService(test_db)
-        # Archive (cascades include=False).
         svc.settings_update("acct_a", actor="cli", archived=True)
-        # Unarchive — include stays False, matching the prior unarchive() contract.
         result, _ = svc.settings_update("acct_a", actor="cli", archived=False)
         assert result.archived is False
-        assert result.include_in_net_worth is False
+        assert result.archived_at is None
+        assert result.include_in_net_worth is True
 
     @pytest.mark.unit
     def test_clear_display_name_via_clear_sentinel(self, test_db: Database) -> None:
@@ -744,6 +778,7 @@ class TestSettingsUpdateExtended:
             currency_code=None,
             credit_limit=None,
             archived=False,
+            archived_at=None,
             include_in_net_worth=True,
             default_cost_basis_method=None,
             actor="test",
@@ -771,6 +806,7 @@ def _insert_dim_account(
     currency_code: str = "USD",
     credit_limit: Decimal | None = None,
     archived: bool = False,
+    archived_at: date | None = None,
     include_in_net_worth: bool = True,
     routing_number: str | None = None,
     official_name: str | None = None,
@@ -791,10 +827,10 @@ def _insert_dim_account(
             loaded_at, updated_at,
             display_name, official_name, last_four, account_subtype,
             holder_category, currency_code, credit_limit,
-            archived, include_in_net_worth
+            archived, archived_at, include_in_net_worth
         ) VALUES (?, ?, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             account_id,
@@ -810,6 +846,7 @@ def _insert_dim_account(
             currency_code,
             credit_limit,
             archived,
+            archived_at,
             include_in_net_worth,
         ],
     )
