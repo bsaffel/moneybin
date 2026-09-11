@@ -71,7 +71,7 @@ this spec's to close.
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
 | 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
-| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, as its own increment rather than one of the five delivery slices here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
+| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, as its own increment rather than part of the work already in flight here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
 
 ## Requirements
 
@@ -151,10 +151,10 @@ this spec's to close.
     silence. It behaves the way an unpriced currency already does under
     Requirement 7: the profile total is NULL, with an unanchored-account count
     beside it, and the `system doctor` balance-staleness check Defect 4 defers
-    lands with it. **Beta-gating, and not one of this spec's five delivery
-    slices** — it is its own increment, because the number a first-time user
-    sees has to be either right or visibly incomplete before anything is built
-    on top of it. Full Pillar D net-worth integration stays post-release; this
+    lands with it. **Beta-gating, and its own increment** — it does not
+    ride along with the rungs or the rate spine, because the number a
+    first-time user sees has to be either right or visibly incomplete before
+    anything is built on top of it. Full Pillar D net-worth integration stays post-release; this
     requirement only keeps its absence honest.
 
 ## Data Model
@@ -904,8 +904,9 @@ approved as a footnote rather than reviewed on its own terms.
 - **Named account subsets** — a filter layered over the ladder, not a grain.
 - **Per-lot cost basis** — the grain below account × security, belonging to the
   investments ledger.
-- **A `system doctor` check for balance staleness** (Defect 4's other half).
-  This spec makes staleness queryable; turning it into an invariant with a
-  threshold is a doctor change.
+- **A `system doctor` check for balance staleness** — *no longer out of scope.*
+  It moved in with Requirement 14, which needs the invariant as well as the
+  column: this spec makes staleness queryable, and the threshold that turns it
+  into a failure ships beside the unanchored-account guard.
 - **Balance forecasting** — unchanged from M2B.1.
 - **Arbitrary display-currency conversion in SQL** — Key Decision 7.
