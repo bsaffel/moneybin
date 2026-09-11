@@ -34,6 +34,48 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _unreleased_category_problems(text: str) -> list[str]:
+    allowed = {"Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"}
+    seen: set[str] = set()
+    problems: list[str] = []
+    in_unreleased = False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_unreleased = line.strip() == "## [Unreleased]"
+        elif in_unreleased and line.startswith("### "):
+            category = line.removeprefix("### ").strip()
+            if category not in allowed:
+                problems.append(f"Unknown category: {category}")
+            elif category in seen:
+                problems.append(f"Duplicate category: {category}")
+            seen.add(category)
+    return problems
+
+
+@pytest.mark.parametrize(
+    "heading", ["Added", "Changed", "Deprecated", "Removed", "Fixed", "Security"]
+)
+def test_unreleased_rejects_duplicate_categories(heading: str) -> None:
+    text = f"## [Unreleased]\n### {heading}\n- First\n### {heading}\n- Second\n"
+    assert _unreleased_category_problems(text) == [f"Duplicate category: {heading}"]
+
+
+def test_unreleased_rejects_unknown_categories() -> None:
+    assert _unreleased_category_problems("## [Unreleased]\n### Fixes\n") == [
+        "Unknown category: Fixes"
+    ]
+
+
+def test_unreleased_ignores_released_history() -> None:
+    text = "## [Unreleased]\n### Fixed\n## [M1]\n### Fixed\n### Fixed\n### Other\n"
+    assert _unreleased_category_problems(text) == []
+
+
+def test_unreleased_changelog_categories() -> None:
+    problems = _unreleased_category_problems((_REPO_ROOT / "CHANGELOG.md").read_text())
+    assert not problems, "CHANGELOG.md [Unreleased]: " + "; ".join(problems)
+
+
 def _git_executable() -> str:
     executable = shutil.which("git")
     if executable is None:
