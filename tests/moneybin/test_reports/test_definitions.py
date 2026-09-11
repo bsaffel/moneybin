@@ -77,6 +77,21 @@ def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
+def test_every_report_id_names_the_view_it_reads() -> None:
+    """The id, the view, and the derived command are one name.
+
+    Requirement 13 of `reports-net-worth-sql-surface.md` is a convention until a
+    test enforces it, and four of these six had drifted before the rename that
+    added this guard. `cli_name` is `name` with hyphens, so pinning `name` pins
+    the command too.
+    """
+    for runner in ALL_REPORTS:
+        spec = spec_of(runner)
+        assert spec.view is not None, f"{spec.report_id} declares no view"
+        name_half = spec.report_id.partition(":")[2]
+        assert name_half == spec.name == spec.view.name
+
+
 def test_core_report_definitions_have_complete_financial_semantics() -> None:
     specs = {spec.name: spec for spec in map(spec_of, ALL_REPORTS)}
 

@@ -1757,7 +1757,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `core:merchant_activity`). No `reports.*` view is renamed — only the id and
   the command derived from it. The old spellings are unregistered; a script or
   saved prompt using them fails with an unknown-command or unregistered-report
-  error and must switch to the new name.
+  error and must switch to the new name. A test now holds the rule for every
+  runner in `ALL_REPORTS` — the id's name half, the spec name, and the view
+  name must agree — so the next report cannot re-introduce the drift.
 - **The storefront names the custody difference against Finances in ChatGPT.**
   `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
   "coming later" persona for the reader who wants a bank feed in a file they
