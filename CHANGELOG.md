@@ -1758,6 +1758,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transition is left exactly as it reads today. This is the prerequisite for
   date-scoped account exclusion in [`reports-net-worth-sql-surface.md`](docs/specs/reports-net-worth-sql-surface.md);
   the net-worth eligibility filter itself is unchanged by this entry.
+- **The storefront names the custody difference against Finances in ChatGPT.**
+  `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
+  "coming later" persona for the reader who wants a bank feed in a file they
+  hold rather than a vendor's database, with every claim scoped to file import
+  because Plaid keeps the feed when sync is on. The README's client list names
+  the ChatGPT desktop app in place of Gemini CLI, and the clients guide,
+  features page, and `mcp install` help stop listing the standalone Codex
+  desktop app that merged into it in July 2026. (#572)
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
   total with an `s` appended whether or not it measured time — so
