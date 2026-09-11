@@ -10,6 +10,7 @@ from typing import cast
 
 import pytest
 
+from moneybin.build_info import get_build_info
 from moneybin.database import Database
 from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.service import ExportService
@@ -246,6 +247,32 @@ def test_prepare_bundle_builds_the_closed_typed_canonical_snapshot(
     )
     json.dumps(first.manifest)
     json.dumps(first.manifest["data_dictionary"])
+
+
+def test_prepare_bundle_populates_manifest_provenance_with_the_running_build(
+    db: Database,
+) -> None:
+    """A bundle names its build, the same version+revision ``system_status`` reports.
+
+    Regression for #448: a bundle export previously wrote ``manifest.provenance:
+    null``, leaving the artifact with no record of which code produced it.
+    """
+    _seed_bundle_rows(db)
+    snapshot = ExportService(db).prepare_bundle(
+        profile="test", redaction_mode="unredacted"
+    )
+    build = get_build_info()
+    expected_build = {"version": build.version, "revision": build.revision}
+
+    assert snapshot.provenance is not None
+    assert snapshot.provenance.build == expected_build
+    assert snapshot.provenance.report_id is None
+    assert snapshot.provenance.receipt is None
+
+    manifest_provenance = snapshot.manifest["provenance"]
+    assert manifest_provenance is not None
+    assert manifest_provenance["build"] == expected_build  # type: ignore[index]
+    json.dumps(snapshot.manifest)
 
 
 def test_data_dictionary_and_manifest_are_json_safe_isolated_receipts(

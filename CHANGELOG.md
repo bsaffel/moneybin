@@ -11,6 +11,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A bundle export's manifest now names the build that produced it.**
+  `manifest.provenance` previously wrote `null` for a bundle export while a
+  report export populated it, leaving a bundle artifact with no record of
+  which code wrote it. Both subject kinds now carry the same version and
+  revision `system_status.overview.build` reports. (PR #TBD)
+
 - **Profile configuration now honors database, data, and logging overrides.**
   `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
   from the environment or active profile dotenv now override profile defaults.
