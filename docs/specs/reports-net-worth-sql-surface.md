@@ -71,7 +71,7 @@ this spec's to close.
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
 | 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
-| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, as its own increment rather than part of the work already in flight here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
+| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, delivered as work item `M2B.3` rather than as part of the work already in flight here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
 
 ## Requirements
 
@@ -146,15 +146,30 @@ this spec's to close.
     (`src/moneybin/reports/_framework/contract.py:408-410`). Applies to every
     report, not only these three — see §Report allocation.
 14. **An unanchored account is visible, never a silent zero.** An account
-    holding value with no balance observation on a date — Defect 6's
-    priced-holdings case — must not contribute zero to that date's total in
-    silence. It behaves the way an unpriced currency already does under
-    Requirement 7: the profile total is NULL, with an unanchored-account count
-    beside it, and the `system doctor` balance-staleness check Defect 4 defers
-    lands with it. **Beta-gating, and its own increment** — it does not
-    ride along with the rungs or the rate spine, because the number a
-    first-time user sees has to be either right or visibly incomplete before
-    anything is built on top of it. Full Pillar D net-worth integration stays post-release; this
+    holding priced value that carries **no balance observation at all** —
+    Defect 6's case — must not contribute zero in silence. It behaves the way
+    an unpriced currency already does under Requirement 7: the profile total is
+    NULL, with an unanchored-account count beside it, and the `system doctor`
+    balance-staleness check Defect 4 defers lands with it.
+
+    **Scoped to the account, not to the date, and deliberately so.**
+    `core.dim_holdings` is a current snapshot with no date dimension, and the
+    dated position spine that would answer "did this account hold priced value
+    on that past date" is `core.fct_holdings_daily` (Pillar C.3), which
+    §Out of Scope excludes. The question this guard can answer from the
+    relations it reaches is "can this account be anchored at all", not "was it
+    anchored on this date". An account acquired partway through a requested
+    range is therefore counted unanchored across the whole range. That
+    over-states incompleteness rather than under-stating it, which is the
+    direction Requirement 7 already chose; the date-precise form waits for C.3,
+    and is the same guard with a finer input rather than a second pattern
+    beside it.
+
+    **Beta-gating, and its own work item — `M2B.3`.** It does not ride along
+    with the rungs or the rate spine, because the number a first-time user sees
+    has to be either right or visibly incomplete before anything is built on
+    top of it, and because M2B.2 closing must not retire a release gate that
+    outlives it. Full Pillar D net-worth integration stays post-release; this
     requirement only keeps its absence honest.
 
 ## Data Model
@@ -820,6 +835,11 @@ including the multi-currency persona, which already contains an account in a
 currency outside the rate provider's published set — so the unpriced path is
 reachable from a shipped fixture rather than a hand-built one.
 
+`M2B.3` adds one scenario beside it, shaped like the unpriced-currency case
+it follows: a persona account holding priced securities and carrying no
+balance observation, asserted to drive `net_worth` to NULL with an
+unanchored-account count of exactly one — never to a smaller populated total.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -842,8 +862,13 @@ currencies, one of them unpriced. Two additions:
 - A rate-observation gap of more than one non-publication day inside a pair's
   window, so `days_since_published` takes a value greater than 1.
 
-Ground truth needs expected net worth per day in the home currency, plus the
-expected NULL dates for the unpriced currency.
+- For `M2B.3`: a persona account holding priced securities with no balance
+  observation of any kind, so the unanchored guard is exercised against a
+  shipped fixture rather than a hand-built one.
+
+Ground truth needs expected net worth per day in the home currency, the
+expected NULL dates for the unpriced currency, and — for `M2B.3` — the expected
+unanchored-account count.
 
 ## Dependencies
 
@@ -892,7 +917,8 @@ approved as a footnote rather than reviewed on its own terms.
   When it lands, an investment account's value becomes a *component* of its
   balance row rather than a second addend, which is the structural form of the
   invariant M2B.1 records: the provider's reported balance already is the total
-  position value.
+  position value. Excluding C.3 is also what narrows Requirement 14's guard to
+  the account rather than the date — see that requirement for the consequence.
 - **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
