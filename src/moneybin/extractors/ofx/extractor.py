@@ -347,7 +347,7 @@ def ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccou
 
     One list serves both the gate and the resolve pass. Deriving them separately
     would let the gate propose one identity while resolve binds another; the
-    field derivation is shared with the extractor (``none_if_blank``,
+    field derivation is shared with ``extract_from_file`` (``none_if_blank``,
     ``ofx_account_type``) for the same reason.
 
     Deduped by ``<ACCTID>``, because ofxparse emits one ``Account`` per statement

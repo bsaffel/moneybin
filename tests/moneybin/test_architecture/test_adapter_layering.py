@@ -39,15 +39,20 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+SRC_ROOT = REPO_ROOT / "src" / "moneybin"
 ADAPTER_ROOTS = (
-    REPO_ROOT / "src" / "moneybin" / "mcp" / "tools",
-    REPO_ROOT / "src" / "moneybin" / "cli" / "commands",
+    SRC_ROOT / "mcp" / "tools",
+    SRC_ROOT / "cli" / "commands",
 )
 GUARDED_PACKAGES = (
     "moneybin.loaders",
     "moneybin.extractors",
     "moneybin.matching",
 )
+
+# Third element for a statement that binds a guarded *module* rather than a name
+# out of one (`import moneybin.extractors.x`, `from moneybin import extractors`).
+MODULE_IMPORT = "<module>"
 
 # Allowlist entries are (adapter_relpath, imported_module, imported_name) triples.
 # `adapter_relpath` is relative to src/moneybin/ for stability across moves.
@@ -265,22 +270,56 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
 })
 
 
+def _is_guarded(module: str) -> bool:
+    """Whether a fully-qualified module path sits inside a guarded package."""
+    return any(module.startswith(pkg) for pkg in GUARDED_PACKAGES)
+
+
+def _format_violation(relpath: str, module: str, name: str) -> str:
+    """Render one triple back as the statement that produced it."""
+    if name == MODULE_IMPORT:
+        return f"  - {relpath}: import {module}"
+    return f"  - {relpath}: from {module} import {name}"
+
+
 def _collect_imports(
-    path: Path,
+    path: Path, src_root: Path = SRC_ROOT
 ) -> list[tuple[str, str, str]]:
-    """Return (adapter_relpath, imported_module, imported_name) triples for a file."""
+    """Return (adapter_relpath, imported_module, imported_name) triples for a file.
+
+    The guard has to recognize every statement form that reaches a guarded
+    package, not just `from X import Y`: a bare `import moneybin.extractors.x` is
+    an `ast.Import` node and `from moneybin import extractors` is an
+    `ast.ImportFrom` whose own module is unguarded, so matching on
+    `ast.ImportFrom.module` alone would let either form import the same symbols
+    with the guard silent.
+    """
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    relpath = path.relative_to(REPO_ROOT / "src" / "moneybin").as_posix()
+    relpath = path.relative_to(src_root).as_posix()
 
     triples: list[tuple[str, str, str]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.module is None:
-            continue
-        if not any(node.module.startswith(pkg) for pkg in GUARDED_PACKAGES):
-            continue
-        for alias in node.names:
-            triples.append((relpath, node.module, alias.name))
+        if isinstance(node, ast.ImportFrom):
+            # A relative import cannot leave its own package, so it cannot reach
+            # a guarded one from here.
+            if node.module is None:
+                continue
+            for alias in node.names:
+                if _is_guarded(node.module):
+                    triples.append((relpath, node.module, alias.name))
+                elif _is_guarded(f"{node.module}.{alias.name}"):
+                    triples.append((
+                        relpath,
+                        f"{node.module}.{alias.name}",
+                        MODULE_IMPORT,
+                    ))
+        elif isinstance(node, ast.Import):
+            triples.extend(
+                (relpath, alias.name, MODULE_IMPORT)
+                for alias in node.names
+                if _is_guarded(alias.name)
+            )
     return triples
 
 
@@ -307,7 +346,7 @@ def test_adapters_dont_bypass_service_layer() -> None:
     violations = [t for t in found if t not in ADAPTER_LAYERING_ALLOWLIST]
     if violations:
         formatted = "\n".join(
-            f"  - {rel}: from {mod} import {name}" for rel, mod, name in violations
+            _format_violation(rel, mod, name) for rel, mod, name in violations
         )
         pytest.fail(
             "Adapter modules must not import from loaders/extractors/matching "
@@ -327,9 +366,55 @@ def test_allowlist_has_no_dead_entries() -> None:
     stale = [entry for entry in ADAPTER_LAYERING_ALLOWLIST if entry not in found]
     if stale:
         formatted = "\n".join(
-            f"  - {rel}: from {mod} import {name}" for rel, mod, name in stale
+            _format_violation(rel, mod, name) for rel, mod, name in stale
         )
         pytest.fail(
             "ADAPTER_LAYERING_ALLOWLIST contains entries with no matching "
             f"import in the tree — remove them.\n\nStale entries:\n{formatted}"
         )
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        (
+            "from moneybin.extractors.ofx import OFXExtractor",
+            ("evasion.py", "moneybin.extractors.ofx", "OFXExtractor"),
+        ),
+        (
+            "import moneybin.extractors.ofx",
+            ("evasion.py", "moneybin.extractors.ofx", MODULE_IMPORT),
+        ),
+        (
+            "import moneybin.extractors.ofx as ofx",
+            ("evasion.py", "moneybin.extractors.ofx", MODULE_IMPORT),
+        ),
+        (
+            "from moneybin import matching",
+            ("evasion.py", "moneybin.matching", MODULE_IMPORT),
+        ),
+    ],
+)
+def test_collect_imports_catches_every_statement_form(
+    tmp_path: Path, statement: str, expected: tuple[str, str, str]
+) -> None:
+    """Each statement form that reaches a guarded package must register as a violation.
+
+    Adversarial fixtures, not redundant coverage: the collector originally
+    matched `ast.ImportFrom` only, so `import moneybin.extractors.x` reached the
+    same symbols while both layering guards stayed green.
+    """
+    module = tmp_path / "evasion.py"
+    module.write_text(f"{statement}\n", encoding="utf-8")
+
+    assert _collect_imports(module, src_root=tmp_path) == [expected]
+
+
+def test_collect_imports_ignores_unguarded_statements(tmp_path: Path) -> None:
+    """A neighbouring package that merely shares the `moneybin` prefix is not a hit."""
+    module = tmp_path / "innocent.py"
+    module.write_text(
+        "import moneybin.tables\nfrom moneybin import error_codes\n", encoding="utf-8"
+    )
+
+    assert _collect_imports(module, src_root=tmp_path) == []
