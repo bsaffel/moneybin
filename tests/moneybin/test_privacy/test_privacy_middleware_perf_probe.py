@@ -205,6 +205,23 @@ def test_raw_static_callback_reuses_the_shared_worker_boundary() -> None:
     assert second_worker == first_worker
 
 
+def test_accounts_perf_call_uses_registered_coarse_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The accounts budget measures the registered dynamic route, not its legacy body."""
+    calls: list[dict[str, object]] = []
+
+    async def _coarse_route(**kwargs: object) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(perf, "accounts_coarse", _coarse_route)
+
+    asyncio.run(perf._accounts_perf_call())  # pyright: ignore[reportPrivateUsage]
+
+    assert calls == [{"view": "list", "limit": 100}]
+
+
 def test_perf_timing_summary_is_visible_at_warning_level(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -521,11 +521,11 @@ Both `sql_query` and `sql_schema` use `dynamic_classification=True`. `sql_schema
 Privacy middleware adds typed redaction where applicable and a privacy-audit
 write on protected egress. The acceptance gate compares the same operation
 within one populated-persona run: a raw callback versus that callback through
-the production `@mcp_tool` decorator. The report flow is the precise exception:
-both paths call the actual `reports()` route, while the raw path temporarily
-replaces only terminal row redaction and the audit writer with test-local
-no-ops. Parameter redaction, limit selection, profile currency lookup,
-conversion, truncation, payload construction, and envelope assembly remain
+the production `@mcp_tool` decorator. The report and registered accounts flows
+call their actual routes on both paths; raw samples temporarily replace only
+terminal redaction and the audit writer with test-local no-ops. Parameter
+redaction, limit selection, profile currency lookup, conversion, truncation,
+dynamic classification, payload construction, and envelope assembly remain
 enabled on both paths. Matching scoped patches keep their setup cost controlled
 and restore the production callables even if the call fails; the preflight
 checks the protected response and its audit event. The gate caps
@@ -574,7 +574,7 @@ by its decorator, and its report-derived result supplies the per-call tier.
 |---|---|---|---|
 | `transactions` | `TransactionService.get(limit=100)` | high (static) | ~100-row list |
 | `reports(report_id="core:spending")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
-| `accounts` | `AccountService.list_accounts()` | critical (static) | ~4-row list (critical fields masked) |
+| `accounts(view="list", limit=100)` | Registered `accounts_coarse` route; raw bypasses only `build_classified_envelope` terminal redaction and audit | dynamic, up to critical | ~4-row list (critical fields masked) |
 | Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool`; setup creates one active `Housing & Utilities` budget through `BudgetService.set_budget()` | high | aggregate + nonempty per-budget rows; no public route is added |
 | Net-worth history (test-only typed egress) | `NetworthService.history()` under `@mcp_tool`; the public route is `reports(report_id="core:networth_history", parameters={...})` | high | balance time-series |
 

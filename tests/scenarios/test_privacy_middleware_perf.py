@@ -47,10 +47,11 @@ import pytest
 from moneybin.database import Database, DatabaseNotInitializedError, get_database
 from moneybin.mcp import decorator as mcp_decorator
 from moneybin.mcp.decorator import mcp_tool
-from moneybin.mcp.tools.accounts import accounts
+from moneybin.mcp.tools.accounts import accounts_coarse
 from moneybin.mcp.tools.reports import reports
 from moneybin.mcp.tools.transactions import transactions_get
-from moneybin.privacy.payloads.accounts import AccountListPayload
+from moneybin.privacy import classified_envelope
+from moneybin.privacy.payloads.accounts import AccountsCoarsePayload
 from moneybin.privacy.payloads.budget import BudgetStatusPayload
 from moneybin.privacy.payloads.networth import NetWorthHistoryPayload
 from moneybin.privacy.payloads.transactions import TransactionGetPayload
@@ -116,6 +117,11 @@ async def _call_raw_in_event_loop(raw: Callable[[], object]) -> object:
 def _run_static_raw(runner: asyncio.Runner, raw: Callable[[], object]) -> object:
     """Run one raw sync callback on the reused timed-sample loop."""
     return runner.run(_call_raw_in_event_loop(raw))
+
+
+async def _accounts_perf_call() -> ResponseEnvelope[AccountsCoarsePayload]:
+    """Invoke the registered accounts list route used by the MCP surface."""
+    return await accounts_coarse(view="list", limit=100)
 
 
 def _log_timing_summary(
@@ -239,12 +245,29 @@ def test_privacy_middleware_within_budget() -> None:
     def _spending_protected() -> ResponseEnvelope[object]:
         return _spending_call(report_redact_records, write_privacy_event)
 
-    def _accounts_raw() -> ResponseEnvelope[AccountListPayload]:
-        return accounts()
+    # accounts_coarse is the registered dynamic route. Its classified-envelope
+    # helper performs terminal redaction before the decorator writes the audit
+    # event, so raw samples bypass exactly those two privacy operations while
+    # retaining the real route's validation, paging, classification, and shape.
+    accounts_redact_typed = classified_envelope.redact_typed
 
-    @mcp_tool()
-    def _accounts_protected() -> ResponseEnvelope[AccountListPayload]:
-        return accounts()
+    def _identity_accounts_redaction(data: Any, *_: object, **__: object) -> Any:
+        return data
+
+    def _accounts_call(
+        redactor: Callable[..., Any], audit_writer: Callable[..., None]
+    ) -> ResponseEnvelope[AccountsCoarsePayload]:
+        with (
+            patch.object(classified_envelope, "redact_typed", redactor),
+            patch.object(mcp_decorator, "write_privacy_event", audit_writer),
+        ):
+            return asyncio.run(_accounts_perf_call())
+
+    def _accounts_raw() -> ResponseEnvelope[AccountsCoarsePayload]:
+        return _accounts_call(_identity_accounts_redaction, _skip_privacy_audit)
+
+    def _accounts_protected() -> ResponseEnvelope[AccountsCoarsePayload]:
+        return _accounts_call(accounts_redact_typed, write_privacy_event)
 
     # Budget status has no registered production egress. This test-only wrapper
     # measures the real decorator around the same service callback without
@@ -327,7 +350,7 @@ def test_privacy_middleware_within_budget() -> None:
     _assert_static_protection(transaction_raw, transaction_protected)
 
     accounts_raw = _accounts_raw()
-    accounts_protected = asyncio.run(_accounts_protected())
+    accounts_protected = _accounts_protected()
     _assert_static_protection(accounts_raw, accounts_protected)
     assert accounts_protected.data != accounts_raw.data
 
@@ -367,8 +390,8 @@ def test_privacy_middleware_within_budget() -> None:
                 lambda: _require_protected_success(_spending_protected()),
             ),
             "accounts": (
-                lambda: _run_static_raw(runner, _accounts_raw),
-                lambda: _require_protected_success(runner.run(_accounts_protected())),
+                _accounts_raw,
+                lambda: _require_protected_success(_accounts_protected()),
             ),
             "budget_status_service": (
                 lambda: _run_static_raw(runner, _budget_raw),
