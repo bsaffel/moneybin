@@ -48,6 +48,15 @@
     source_taxonomy_version: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."exchange_rate_overrides"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    rate_date: DATE
+    rate: DECIMAL(18, 8)
+    note: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
 - name: '"moneybin"."app"."match_decisions"'
   columns:
     match_id: TEXT
