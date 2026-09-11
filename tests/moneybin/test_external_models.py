@@ -63,7 +63,7 @@ def _declared_external_models(
     expected_relations: set[str],
     declarations: list[tuple[str, dict[str, str]]],
 ) -> dict[str, dict[str, str]]:
-    """Require a discovered dependency for every unique declaration."""
+    """Require a nonempty dependency set and unique declarations."""
     assert expected_relations
     assert len({name for name, _ in declarations}) == len(declarations)
     return dict(declarations)
