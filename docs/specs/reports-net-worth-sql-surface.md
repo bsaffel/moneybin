@@ -1,7 +1,7 @@
 # Feature: Net Worth on the SQL Surface
 
 ## Status
-ready
+in-progress
 
 ## Goal
 
@@ -69,9 +69,9 @@ this spec's to close.
 | 1 | A margin account's net worth was overstated by the size of its loan. The sync server sends `margin_loan_amount`, `SyncBalance` did not declare it, and Pydantic's default `extra='ignore'` discarded it silently. | `src/moneybin/connectors/sync_models.py:232` now declares the field; it reaches the spine through `prep/stg_plaid__balances.sql` and `core/fct_balances.sql`, on migration `V058`. | **Already closed**, by #565, before this spec. Kept in the table because the ladder's correctness depends on the balance it reads, and a reader checking that dependency should find it answered rather than absent. |
 | 2 | Archiving an account rewrites net-worth history. `archived` is a plain BOOLEAN with no date, and the filter applies to every `balance_date`, so closing an account in 2026 retroactively removes it from 2022. | `src/moneybin/sql/schema/app_account_settings.sql:13`, `src/moneybin/sqlmesh/models/reports/net_worth.sql:21` | **Closed here** — Requirement 9, behind the prerequisite that requirement names. |
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
-| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The doctor check is out of scope. |
+| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
-| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Not this spec.** Pillar D / a doctor check. |
+| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, as its own increment rather than one of the five delivery slices here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
 
 ## Requirements
 
@@ -145,6 +145,17 @@ this spec's to close.
     derives the Typer command from it by swapping underscores for hyphens
     (`src/moneybin/reports/_framework/contract.py:408-410`). Applies to every
     report, not only these three — see §Report allocation.
+14. **An unanchored account is visible, never a silent zero.** An account
+    holding value with no balance observation on a date — Defect 6's
+    priced-holdings case — must not contribute zero to that date's total in
+    silence. It behaves the way an unpriced currency already does under
+    Requirement 7: the profile total is NULL, with an unanchored-account count
+    beside it, and the `system doctor` balance-staleness check Defect 4 defers
+    lands with it. **Beta-gating, and not one of this spec's five delivery
+    slices** — it is its own increment, because the number a first-time user
+    sees has to be either right or visibly incomplete before anything is built
+    on top of it. Full Pillar D net-worth integration stays post-release; this
+    requirement only keeps its absence honest.
 
 ## Data Model
 
