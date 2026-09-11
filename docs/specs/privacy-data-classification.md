@@ -533,6 +533,16 @@ protected-egress overhead at ≤50 ms p50 and ≤200 ms p99 per flow, and ≤20%
 across the sums of the five per-flow p50 values. The aggregate is not an
 end-to-end wall-clock measure.
 
+The serial fixture disables SQLMesh's anonymized analytics dispatcher before it
+builds the persona. That dispatcher retries external telemetry delivery, which
+is outside MoneyBin's privacy egress and would otherwise perturb local p99
+samples.
+
+Static raw samples also enter an event loop before their callback runs, matching
+the protected callback's `asyncio.run` boundary. The startup cost is therefore
+controlled rather than attributed to the decorator; FastMCP normally supplies
+the loop in production.
+
 ### Persona
 
 | Property | Value |
@@ -557,6 +567,8 @@ Each raw and protected flow runs ≥30 iterations to produce stable percentiles.
 The historical artifact remains at
 `tests/scenarios/fixtures/perf_baseline_pre_privacy.json`; the same-run
 protected-egress assertion is at `tests/scenarios/test_privacy_middleware_perf.py`.
+The shipped `reports` route is dynamic; maximum critical sensitivity is declared
+by its decorator, and its report-derived result supplies the per-call tier.
 
 | Tool / command | Service method | Tier | Shape |
 |---|---|---|---|
@@ -564,7 +576,7 @@ protected-egress assertion is at `tests/scenarios/test_privacy_middleware_perf.p
 | `reports(report_id="core:spending")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
 | `accounts` | `AccountService.list_accounts()` | critical (static) | ~4-row list (critical fields masked) |
 | Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool` | high | aggregate + per-budget rows; no public route is added |
-| Net-worth history | `NetworthService.history()` under `@mcp_tool` | high | balance time-series |
+| Net-worth history (test-only typed egress) | `NetworthService.history()` under `@mcp_tool`; the public route is `reports(report_id="core:networth_history", parameters={...})` | high | balance time-series |
 
 The gate proves each protected callback produces the expected redacted result
 and writes privacy-audit events before timing it. Concrete numbers are

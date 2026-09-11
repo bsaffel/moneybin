@@ -96,6 +96,12 @@ _PERSONA_SETUP_HINT = (
 @pytest.fixture(scope="module")
 def build_perf_persona() -> Generator[None, None, None]:
     """Build the documented family fixture before measuring its privacy budget."""
+    # SQLMesh otherwise starts a telemetry dispatcher that retries failed network
+    # delivery during this serial timing loop. Disable only that test-process
+    # side effect before building the persona; it is not MoneyBin egress.
+    from sqlmesh.core import analytics
+
+    analytics.disable_analytics()
     scenario = Scenario(
         scenario="privacy-middleware-perf",
         setup=SetupSpec(persona="family", seed=8229, years=3),
@@ -235,6 +241,10 @@ def test_privacy_middleware_within_budget() -> None:
         assert protected.error is None
         return protected
 
+    async def _call_raw_in_event_loop(raw: Callable[[], object]) -> object:
+        """Give static raw samples the protected call's event-loop boundary."""
+        return raw()
+
     def _measure_counterbalanced(
         name: str, raw: Callable[[], object], protected: Callable[[], object]
     ) -> tuple[FlowResult, FlowResult]:
@@ -306,7 +316,7 @@ def test_privacy_middleware_within_budget() -> None:
 
     flows = {
         "transactions_get": (
-            _transactions_raw,
+            lambda: asyncio.run(_call_raw_in_event_loop(_transactions_raw)),
             lambda: _require_protected_success(asyncio.run(_transactions_protected())),
         ),
         "reports_spending": (
@@ -314,15 +324,15 @@ def test_privacy_middleware_within_budget() -> None:
             lambda: _require_protected_success(_spending_protected()),
         ),
         "accounts": (
-            _accounts_raw,
+            lambda: asyncio.run(_call_raw_in_event_loop(_accounts_raw)),
             lambda: _require_protected_success(asyncio.run(_accounts_protected())),
         ),
         "budget_status_service": (
-            _budget_raw,
+            lambda: asyncio.run(_call_raw_in_event_loop(_budget_raw)),
             lambda: _require_protected_success(asyncio.run(_budget_protected())),
         ),
         "reports_networth_history": (
-            _networth_raw,
+            lambda: asyncio.run(_call_raw_in_event_loop(_networth_raw)),
             lambda: _require_protected_success(asyncio.run(_networth_protected())),
         ),
     }
