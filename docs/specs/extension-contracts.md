@@ -499,6 +499,58 @@ column holds money. For in-repo reports it is not optional in practice: a
 guard fails any column classed `TXN_AMOUNT` or `BALANCE` that declares no kind
 (`tests/moneybin/test_cli/test_render.py`).
 
+### Declaring what currency a money column is already denominated in
+
+`OutputColumn` also carries an optional `currency_basis`, naming which
+currency a money column's amounts are *already* denominated in when that is
+not the row's own currency. `convert_records`
+(`src/moneybin/reports/_framework/convert.py`) prices every money-classed
+column FROM its declared basis: the row's own currency by default — the
+column named by `ReportSemantics.currency` — or, for a column whose basis is
+`"home"`, the profile's home currency. Pricing an already-home-converted
+column from the row's own currency instead — the row-basis default — reprices
+it a second time, silently; that is the defect this field exists to close.
+
+```python
+OutputColumn(
+    "account_balance_home",
+    "The account balance in the profile's home currency.",
+    DataClass.BALANCE,
+    money_kind="balance",
+    currency_basis="home",
+)
+```
+
+`currency_basis` takes exactly one value, `"home"`. Omitting it (`None`, the
+default) is what every column declared before this field existed still means:
+the amount is in the row's own currency, and `convert_records` prices it as
+it always has.
+
+**Every money column on a converted row ends up in the same target
+currency**, whichever basis it started from — that is the property the field
+exists to guarantee, not a side effect. Reading `to_currency` into the
+profile's home currency (Requirement 9's default, and the common case) makes
+a home-basis column's own rate an identity: `resolve_rate` answers `1` without
+a database lookup, so the column is left numerically unchanged at zero extra
+cost. Reading into any other display currency reprices it from the home
+currency like any other column, landing beside the row-basis columns in the
+same requested currency — never left behind in the home currency, which would
+publish one row holding two currencies under one label, the exact blended
+number `multi-currency.md` forbids.
+
+Pricing a home-basis column needs the profile's home currency itself, which
+`convert_records` has no row-level source for — unlike the row's own currency,
+it is report-level metadata the caller supplies via `home_currency`. A report
+declaring a `"home"`-basis column without a caller passing one degrades
+(segments) rather than guessing, the same way every other unpriceable case in
+this module does.
+
+`OutputColumn` checks `currency_basis` at construction the same way it checks
+`money_kind` and `polarity`, and for the same reason: a `Literal` binds a type
+checker, not the interpreter, and an author running none would otherwise get
+no signal that a misspelled value silently fell back to pricing the column
+from the row's own currency.
+
 ### Choosing which columns a text reader sees first
 
 `@report` carries an optional `default_columns` — the columns the CLI's text

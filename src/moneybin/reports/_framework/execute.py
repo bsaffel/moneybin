@@ -40,6 +40,7 @@ from moneybin.protocol.row_set import row_set
 from moneybin.reports._framework.classify import classify_columns
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
+    OutputColumn,
     ParamSpec,
     RecomputeDerived,
     ReportSemantics,
@@ -157,6 +158,11 @@ class CatalogReportExecution:
     period: str | None
     semantics: ReportSemantics
     provenance: tuple[str, ...]
+    output_columns: tuple[OutputColumn, ...] = ()
+    """The report's declared column contract — needed only to find a column
+    whose ``currency_basis`` is ``"home"`` (``convert_records``,
+    ``rates_pricing``). ``()`` for every report predating that field, which
+    names no home-basis column and converts exactly as it always has."""
     # Same contract as ReportResult.display_currency — see the note there.
     display_currency: str | None = None
     #: Why a requested display currency was not applied, when one was requested
@@ -220,12 +226,16 @@ def convert_execution(
     *,
     to_currency: str,
     service: CurrencyService,
+    home_currency: str | None = None,
 ) -> CatalogReportExecution:
     """Price one execution's rows in ``to_currency``, or leave them segmented.
 
     Applied to the raw execution rather than the redacted result because masking
     replaces an amount with a string: a converted ``'*****'`` is not a number,
     and a partially masked one would be a different number than it claims.
+
+    ``home_currency`` is required whenever ``execution.output_columns`` declares
+    a ``currency_basis="home"`` column — see ``convert_records``.
     """
     outcome = convert_records(
         execution.records,
@@ -233,6 +243,8 @@ def convert_execution(
         semantics=execution.semantics,
         to_currency=to_currency,
         service=service,
+        columns=execution.output_columns,
+        home_currency=home_currency,
     )
     # Only a conversion that happened can leave a derived value stale, and only
     # then is there a target currency to recompute against. A segmented result
@@ -332,6 +344,7 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
             records,
             execution.applied_rates,
             date_column=execution.semantics.fx_date,
+            columns=execution.output_columns,
         )
         if truncated
         else execution.applied_rates,
@@ -362,6 +375,9 @@ class _CatalogSpec(Protocol):
 
     @property
     def classes(self) -> Mapping[str, DataClass]: ...
+
+    @property
+    def columns(self) -> tuple[OutputColumn, ...]: ...
 
     @property
     def semantics(self) -> ReportSemantics: ...
@@ -496,6 +512,7 @@ def build_catalog_execution(
         truncated=truncated,
         actions=actions or [],
         period=period,
+        output_columns=spec.columns,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
         # `None` is also the field default, so a report that declares no

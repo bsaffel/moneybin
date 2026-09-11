@@ -34,6 +34,7 @@ from typing import Any
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
+    OutputColumn,
     ReportSemantics,
 )
 from moneybin.services._validators import validate_currency_code
@@ -105,11 +106,28 @@ def money_columns(classes: Mapping[str, DataClass]) -> tuple[str, ...]:
     )
 
 
+def _home_basis_columns(columns: Sequence[OutputColumn] | None) -> frozenset[str]:
+    """Money columns whose declared basis is the profile's home currency.
+
+    ``convert_records`` prices these FROM the home currency rather than from
+    ``semantics.currency``'s row value — see ``OutputColumn.currency_basis``.
+    ``None`` (every report defined before that field existed) names none,
+    which is what keeps every existing declaration converting exactly as it
+    did before this function was added.
+    """
+    if not columns:
+        return frozenset()
+    return frozenset(
+        column.name for column in columns if column.currency_basis == "home"
+    )
+
+
 def rates_pricing(
     rows: Sequence[Mapping[str, Any]],
     rates: tuple[ResolvedRate, ...],
     *,
     date_column: str | None,
+    columns: Sequence[OutputColumn] | None = None,
 ) -> tuple[ResolvedRate, ...]:
     """The subset of ``rates`` that priced a figure in ``rows``.
 
@@ -128,8 +146,14 @@ def rates_pricing(
     ``core:networth`` headline — so pruning to what the rows can name would drop
     real provenance. Provenance is audit evidence: publishing one rate too many
     is a smaller error than dropping the rate behind a figure on screen.
+
+    A report declaring a home-basis column (``columns``) is the same case by
+    construction: ``ORIGINAL_CURRENCY_COLUMN`` names only the row's own
+    currency, so a rate resolved to price a home-basis column would never
+    match it and would be pruned even though it priced a surviving row. Never
+    narrowed for such a report — every applied rate rides along instead.
     """
-    if not rates or date_column is None:
+    if not rates or date_column is None or _home_basis_columns(columns):
         return rates
     priced: set[tuple[str, date]] = set()
     for row in rows:
@@ -150,16 +174,33 @@ def convert_records(
     semantics: ReportSemantics,
     to_currency: str,
     service: CurrencyService,
+    columns: Sequence[OutputColumn] | None = None,
+    home_currency: str | None = None,
 ) -> ConversionOutcome:
     """Price every row's money columns in ``to_currency``, or segment and say why.
 
-    Converts nothing unless the report declares both the column naming each row's
-    currency (``semantics.currency``) and the column dating it
-    (``semantics.fx_date``); without either, no defensible rate exists to apply.
+    Every money column is priced FROM its declared basis: ``semantics.currency``'s
+    row value by default, or the currency named by ``home_currency`` for a column
+    whose ``OutputColumn.currency_basis`` is ``"home"``. Converts nothing unless
+    the report declares both the column naming each row's currency
+    (``semantics.currency``) and the column dating it (``semantics.fx_date``);
+    without either, no defensible rate exists to apply.
+
+    ``columns`` is the report's declared ``OutputColumn`` sequence, needed only
+    to find a column whose basis is ``"home"`` — see ``_home_basis_columns``.
+    ``home_currency`` is required whenever ``columns`` names one; a home-basis
+    column already equal to ``to_currency`` resolves an identity rate for free
+    (``CurrencyService.resolve_rate``), so a read into the home currency — the
+    common case (Requirement 9's default) — leaves it untouched at zero extra
+    cost, while a read into an arbitrary third currency reprices it from
+    ``home_currency`` exactly like any other column. Both default to ``None``,
+    which is every call site before the net-worth ladder and converts every
+    money-classed column exactly as this function always has.
     """
     target = canonical_currency(to_currency)
     rows = [dict(record) for record in records]
 
+    home_basis = _home_basis_columns(columns)
     amounts = money_columns(classes)
     if not _holds_money(rows, amounts):
         # Nothing to convert is not a degraded conversion. A report of counts and
@@ -188,10 +229,36 @@ def convert_records(
         # reading, which is accurate for it.
         return ConversionOutcome(rows, None, semantics.fx_basis or _NO_DECLARED_BASIS)
 
+    home: str | None = None
+    if home_basis:
+        # A home-basis column needs its own FROM currency, and this function has
+        # no row-level source for it the way `currency_column` is one — the
+        # profile's home currency is report-level metadata, resolved once rather
+        # than read per row.
+        if not isinstance(home_currency, str) or not home_currency.strip():
+            return ConversionOutcome(
+                rows,
+                None,
+                "this report has a column already priced in the profile's home "
+                "currency, but no home currency is set for this profile",
+            )
+        candidate = canonical_currency(home_currency)
+        if not _is_currency_code(candidate):
+            # Never echoed: a malformed profile setting is not user input to this
+            # call, but the same rule as a malformed row currency applies — the
+            # value never rides the reason.
+            return ConversionOutcome(
+                rows,
+                None,
+                "the profile's home currency is not a valid ISO-4217 code",
+            )
+        home = candidate
+
     # Resolved once per (currency, date) rather than per row: a 12-month rollup
     # in three currencies asks 36 questions however many rows it holds.
     resolved: dict[tuple[str, date], ResolvedRate] = {}
     plan: list[tuple[str, date]] = []
+    home_plan: list[tuple[str, date] | None] = []
     for row in rows:
         source = row.get(currency_column)
         if not isinstance(source, str) or not source.strip():
@@ -230,11 +297,24 @@ def convert_records(
                     rows, None, _missing_reason(service, base, target)
                 )
 
+        if home is None:
+            home_plan.append(None)
+        else:
+            home_key = (home, on)
+            home_plan.append(home_key)
+            if home_key not in resolved:
+                try:
+                    resolved[home_key] = service.resolve_rate(home, target, on)
+                except RateUnavailableError:
+                    return ConversionOutcome(
+                        rows, None, _missing_reason(service, home, target)
+                    )
+
     # Built beside the originals rather than in place: a row that fails to
     # convert half way through would otherwise leave the caller holding a
     # partially converted result under a single currency label.
     converted: list[dict[str, Any]] = []
-    for row, key in zip(rows, plan, strict=True):
+    for row, key, home_key in zip(rows, plan, home_plan, strict=True):
         rate = resolved[key].rate
         priced = dict(row)
         for column in amounts:
@@ -256,7 +336,14 @@ def convert_records(
                     "a column declared as money does not hold a number that can "
                     "be priced in another currency",
                 )
-            priced[column] = apply_rate(amount, rate)
+            if column in home_basis:
+                # `home_key` is set on every row whenever `home_basis` is
+                # non-empty: both are gated by the same `home is not None`
+                # check above, so a home-basis column always finds its rate.
+                assert home_key is not None  # noqa: S101  # narrowed by home_basis membership
+                priced[column] = apply_rate(amount, resolved[home_key].rate)
+            else:
+                priced[column] = apply_rate(amount, rate)
         priced[currency_column] = target
         converted.append(priced)
 

@@ -451,6 +451,48 @@ def test_a_money_kind_outside_the_vocabulary_is_refused() -> None:
         )
 
 
+def test_a_currency_basis_outside_the_vocabulary_is_refused() -> None:
+    """The same runtime gate as `money_kind`, for the same reason.
+
+    `convert_records` reads only `"home"` and treats anything else as the
+    row-currency default, so a misspelled `"homer"` would silently price the
+    column from the row's own currency with no error anywhere.
+    """
+    with pytest.raises(ValueError, match="currency_basis"):
+        OutputColumn(
+            name="value",
+            description="Already converted, allegedly.",
+            data_class=DataClass.BALANCE,
+            money_kind="balance",
+            currency_basis="homer",  # pyright: ignore[reportArgumentType]  # the runtime gate under test
+        )
+
+
+def test_a_home_currency_basis_constructs_cleanly() -> None:
+    column = OutputColumn(
+        name="value",
+        description="Already converted to the home currency by SQL.",
+        data_class=DataClass.BALANCE,
+        money_kind="balance",
+        currency_basis="home",
+    )
+
+    assert column.currency_basis == "home"
+
+
+def test_currency_basis_defaults_to_none() -> None:
+    """Every column declared before this field existed keeps its old meaning.
+
+    `None` reads as "priced from the row's own currency" — today's only
+    behaviour — so an existing declaration needs no edit to stay correct.
+    """
+    column = OutputColumn(
+        name="value", description="An amount.", data_class=DataClass.TXN_AMOUNT
+    )
+
+    assert column.currency_basis is None
+
+
 def test_a_polarity_outside_the_vocabulary_is_refused() -> None:
     """`style_for` reads every non-`"income"` polarity as expense.
 

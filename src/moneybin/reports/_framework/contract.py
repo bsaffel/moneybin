@@ -173,10 +173,30 @@ A rise in spending and a rise in income are both ``+``; only the declaration
 says which of them is good news.
 """
 
+type CurrencyBasis = Literal["home"]
+"""Names the currency a money column is already denominated in, when that is
+not the row's own currency — today, only the profile's home currency.
+
+``convert_records`` (``reports/_framework/convert.py``) otherwise has no way
+to tell such a column apart from an ordinary row-currency amount: it prices
+every declared money column using the rate resolved for
+``ReportSemantics.currency``'s value on that row, which silently reprices a
+column a SQLMesh model already converted (`docs/specs/reports-net-worth-sql-
+surface.md`'s ``account_balance_home``, ``net_worth_home``). Declaring
+``currency_basis="home"`` tells ``convert_records`` to price the column FROM
+the profile's home currency instead of from the row's own — an identity rate
+when the target already is the home currency (Requirement 9's default, so the
+column is left numerically unchanged at zero extra cost), and a real
+conversion when the caller asked for a different currency. Every money column
+on a converted row ends up in the same currency either way, which is what
+keeps a comparable row from becoming two figures under one label.
+"""
+
 # Read off the aliases above rather than restated, so the runtime gate in
 # `OutputColumn.__post_init__` cannot drift from the type a contributor sees.
 _MONEY_KINDS: tuple[str, ...] = get_args(MoneyKind.__value__)
 _POLARITIES: tuple[str, ...] = get_args(Polarity.__value__)
+_CURRENCY_BASES: tuple[str, ...] = get_args(CurrencyBasis.__value__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +210,15 @@ class OutputColumn:
     """How to render this column's amounts; ``None`` means it is not money."""
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
+    currency_basis: CurrencyBasis | None = None
+    """``None`` (default) — this amount is in the row's own currency, the one
+    ``ReportSemantics.currency`` names, and ``convert_records`` prices it from
+    that column like every column declared before this field existed.
+    ``"home"`` — a SQLMesh model already converted this amount to the profile's
+    home currency; ``convert_records`` prices it FROM that currency rather than
+    from the row's own, so it still lands in whatever currency the read was
+    converted to. See :data:`CurrencyBasis`.
+    """
 
     def __post_init__(self) -> None:
         """Reject an unrenderable declaration where it is written, not where it is read.
@@ -214,7 +243,11 @@ class OutputColumn:
         dropping it tells an author their column is polarized when the rendered
         output will not be. ``Money`` is left alone: it is not part of the
         extension surface, and every in-repo construction of one is a literal
-        pyright already checks.
+        pyright already checks. An unrecognized ``currency_basis`` would fail
+        the same silent way — ``convert_records`` reads only the one value it
+        recognizes and treats anything else as the row-currency default — so it
+        is rejected here rather than left to price a column wrong with no
+        error anywhere.
         """
         if self.money_kind is not None and self.money_kind not in _MONEY_KINDS:
             raise ValueError(
@@ -229,6 +262,15 @@ class OutputColumn:
         if self.money_kind == "delta" and self.polarity is None:
             raise ValueError(
                 f"money column {self.name!r} is a delta and must declare its polarity"
+            )
+        if (
+            self.currency_basis is not None
+            and self.currency_basis not in _CURRENCY_BASES
+        ):
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown currency_basis "
+                f"{self.currency_basis!r}; expected one of "
+                f"{', '.join(_CURRENCY_BASES)}"
             )
         if self.money_kind != "delta" and self.polarity is not None:
             raise ValueError(
