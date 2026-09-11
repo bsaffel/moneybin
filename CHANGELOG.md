@@ -1758,25 +1758,6 @@ The legacy entries below are retained for the next release preparation.
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
-- **Archiving an account no longer forces it out of net worth.** `accounts set
-  --archive` / `accounts_set(is_archived=True)` used to set
-  `include_in_net_worth=False` in the same write, unconditionally — even
-  overriding an explicit `include_in_net_worth` value passed in that same
-  call. `archived` and `include_in_net_worth` are now independent fields:
-  archiving stamps a new `app.account_settings.archived_at DATE` with today's
-  date instead (cleared on unarchive), which is what lets a future net-worth
-  report exclude the account only for dates after it rather than rewriting
-  history. Migration V060 backfills `archived_at` for every already-archived
-  account from `app.audit_log`'s append-only history, restoring
-  `include_in_net_worth` only where the retired cascade (not the user) had
-  set it to `FALSE`; an archived account with no audit evidence for the
-  transition is left exactly as it reads today. This is the prerequisite for
-  date-scoped account exclusion in [`reports-net-worth-sql-surface.md`](docs/specs/reports-net-worth-sql-surface.md);
-  the net-worth eligibility filter itself is unchanged by this entry.
-  `accounts_set`'s `cascaded_include_in_net_worth` response field — the
-  retired cascade's signal — is removed outright rather than kept as an
-  always-`null` field: pre-launch, a field an agent has to interpret is worse
-  than one that is simply absent.
 - **The storefront names the custody difference against Finances in ChatGPT.**
   `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
   "coming later" persona for the reader who wants a bank feed in a file they
