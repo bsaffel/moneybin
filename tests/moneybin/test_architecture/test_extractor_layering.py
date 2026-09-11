@@ -25,10 +25,13 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SRC_ROOT = REPO_ROOT / "src" / "moneybin"
-ROOT_PACKAGE = SRC_ROOT.name
-EXTRACTOR_ROOTS = (SRC_ROOT / "extractors",)
+from tests.moneybin.test_architecture._import_graph import (
+    SRC,
+    package_of,
+    resolved_module,
+)
+
+EXTRACTOR_ROOTS = (SRC / "extractors",)
 GUARDED_PACKAGES = ("moneybin.services",)
 
 # Third element for a statement that binds a guarded *module* rather than a name
@@ -83,35 +86,7 @@ def _format_violation(relpath: str, module: str, name: str) -> str:
     return f"  - {relpath}: from {module} import {name}"
 
 
-def _absolute_module(
-    relpath: str, node: ast.ImportFrom, root_package: str
-) -> str | None:
-    """Resolve one `from ... import` target to the absolute module Python imports.
-
-    A relative import splits its target across two fields: the leading dots land
-    in `node.level` and only the remainder in `node.module`. So
-    `from ..services.account_display_name import AccountNameFacts` written in
-    `extractors/ofx/extractor.py` arrives as `level=2` with the bare string
-    `services.account_display_name`, and reaches `moneybin.services.…` at
-    runtime. Reading `node.module` without rejoining the dots would score that
-    as an unguarded module.
-
-    Returns None when the dots walk above the root package — Python rejects that
-    import itself, so there is nothing for the guard to classify.
-    """
-    if node.level == 0:
-        return node.module
-    package = (root_package, *relpath.split("/")[:-1])
-    kept = len(package) - (node.level - 1)
-    if kept < 1:
-        return None
-    base = package[:kept]
-    return ".".join((*base, node.module) if node.module else base)
-
-
-def _collect_imports(
-    path: Path, src_root: Path = SRC_ROOT
-) -> list[tuple[str, str, str]]:
+def _collect_imports(path: Path, src_root: Path = SRC) -> list[tuple[str, str, str]]:
     """Return (module_relpath, imported_module, imported_name) triples for a file.
 
     The guard has to recognize every statement form that reaches a guarded
@@ -121,17 +96,23 @@ def _collect_imports(
     relative `from ..services.x import Y` keeps its package hops in
     `node.level`. Matching on `ast.ImportFrom.module` alone lets all three
     import the same symbols with the guard silent.
+
+    `_import_graph.resolved_module` owns the level arithmetic, shared with the
+    other layering guards in this package — a second copy of it resolves one
+    level off and reports nothing, which is the silent green these guards exist
+    to prevent. This function owns only the guarded-package comparison.
     """
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
     relpath = path.relative_to(src_root).as_posix()
+    # `package_of` is pure path arithmetic, so rejoining the relpath under the
+    # real source root also resolves an adversarial fixture living elsewhere.
+    package = package_of(SRC / relpath)
 
     triples: list[tuple[str, str, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            module = _absolute_module(relpath, node, ROOT_PACKAGE)
-            if module is None:
-                continue
+            module = resolved_module(node, package)
             for alias in node.names:
                 if _is_guarded(module):
                     triples.append((relpath, module, alias.name))
