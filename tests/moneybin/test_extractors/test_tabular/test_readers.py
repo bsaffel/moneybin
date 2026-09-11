@@ -502,12 +502,13 @@ class TestExcelReader:
         assert result.has_header is True
         assert result.header_row_looks_like_data is False
 
-    def test_headerless_excel_flags_eaten_row0(self, tmp_path: Path) -> None:
-        """A headerless Excel sheet's eaten row-0 transaction must be flagged.
+    def test_headerless_excel_keeps_row0(self, tmp_path: Path) -> None:
+        """A headerless Excel sheet must not lose its first transaction.
 
-        pl.read_excel always consumes row 0 as the header with no headerless
-        detection, so a headerless sheet silently loses its first transaction —
-        header_row_looks_like_data is the only signal that surfaces it for .xlsx.
+        Regression for MB-449: pl.read_excel used to always consume row 0 as
+        the header with no headerless detection, silently eating the first
+        transaction. Excel now shares _classify_header_rows with CSV/Parquet,
+        so a genuinely headerless sheet is detected as such on first contact.
         """
         import openpyxl
 
@@ -521,7 +522,64 @@ class TestExcelReader:
         wb.save(path)
 
         result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.has_header is False
+        assert result.header_row_looks_like_data is False
+        assert len(result.df) == 2
+        assert result.rows_in_file == 2
+
+    def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """An explicit skip_rows pointed at a real data row must be flagged.
+
+        Mirrors the CSV defense-in-depth check
+        (test_header_row_looks_like_data_true_for_wrong_explicit_skip_rows):
+        an explicit skip_rows always implies has_header=True with no safety
+        check of its own, so a caller that mis-specifies skip_rows against a
+        genuinely headerless sheet must still surface the red flag.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        ws.append(["2026-01-02", 10.00, "Tea"])
+        path = tmp_path / "headerless.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"), skip_rows=0)
+        assert result.has_header is True
         assert result.header_row_looks_like_data is True
+
+    def test_persisted_headerless_decision_survives_explicit_skip_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """A confirm/replay read must honor a persisted has_header=False.
+
+        The reviewed-plan replay path (import_service._import_tabular) always
+        passes the previewed skip_rows explicitly, so has_header must be
+        threaded through separately or a previewed headerless decision would
+        flip back to has_header=True on the confirming read.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        ws.append(["2026-01-02", 10.00, "Tea"])
+        path = tmp_path / "headerless.xlsx"
+        wb.save(path)
+
+        result = read_file(
+            path,
+            FormatInfo(file_type="excel"),
+            skip_rows=0,
+            has_header=False,
+        )
+        assert result.has_header is False
+        assert len(result.df) == 2
 
 
 class TestParquetReader:
@@ -557,3 +615,63 @@ class TestFeatherReader:
         info = FormatInfo(file_type="feather")
         result = read_file(path, info)
         assert len(result.df) == 1
+
+
+class TestHeaderlessAcrossFormats:
+    """MB-449: a headerless file must read identically across all formats.
+
+    The same 6-row headerless bank export, expressed as CSV, Parquet, and
+    Excel, must each report has_header=False and rows_read == rows_in_file.
+    Regression coverage for the Excel reader silently eating row 0 as a
+    header while CSV and Parquet already detected the condition correctly.
+    """
+
+    _ROWS: tuple[tuple[str, str, str], ...] = (
+        ("2026-01-01", "-42.50", "COFFEE SHOP 1111"),
+        ("2026-01-02", "-10.00", "TEA HOUSE 1111"),
+        ("2026-01-03", "-5.00", "BAKERY 1111"),
+        ("2026-01-04", "1200.00", "PAYROLL DEPOSIT"),
+        ("2026-01-05", "-25.00", "GROCERY STORE 1111"),
+        ("2026-01-06", "-8.75", "PARKING GARAGE 1111"),
+    )
+
+    def test_csv(self, tmp_path: Path) -> None:
+        content = "\n".join(",".join(row) for row in self._ROWS) + "\n"
+        f = _write_csv(tmp_path / "headerless.csv", content)
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info)
+        assert result.has_header is False
+        assert len(result.df) == len(self._ROWS)
+        assert result.rows_in_file == len(self._ROWS)
+
+    def test_parquet(self, tmp_path: Path) -> None:
+        df = pl.DataFrame({
+            "column_1": [row[0] for row in self._ROWS],
+            "column_2": [row[1] for row in self._ROWS],
+            "column_3": [row[2] for row in self._ROWS],
+        })
+        path = tmp_path / "headerless.parquet"
+        df.write_parquet(path)
+
+        info = FormatInfo(file_type="parquet")
+        result = read_file(path, info)
+        assert result.has_header is False
+        assert len(result.df) == len(self._ROWS)
+        assert result.rows_in_file == len(self._ROWS)
+
+    def test_xlsx(self, tmp_path: Path) -> None:
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        for row in self._ROWS:
+            ws.append(list(row))
+        path = tmp_path / "headerless.xlsx"
+        wb.save(path)
+
+        info = FormatInfo(file_type="excel")
+        result = read_file(path, info)
+        assert result.has_header is False
+        assert len(result.df) == len(self._ROWS)
+        assert result.rows_in_file == len(self._ROWS)

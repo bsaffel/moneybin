@@ -492,15 +492,16 @@ class TestPreview:
                 f"registered: {sorted(registered)}"
             )
 
-    def test_preview_warns_on_header_that_looks_like_data(
+    def test_preview_detects_headerless_excel_without_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Preview surfaces the misdetection warning on a red-flag layout.
+        """A headerless Excel sheet must preview cleanly, like CSV/Parquet (MB-449).
 
-        A headerless Excel sheet (row 0 is a real transaction) trips
-        header_row_looks_like_data on the auto-detect path the CLI uses. The
-        warning routes through logger.warning (stderr) per cli.md, so assert it
-        via caplog rather than CliRunner's stdout capture.
+        Excel used to always consume row 0 as the header with no headerless
+        detection, so this exact fixture used to trip the
+        header_row_looks_like_data misdetection warning on the auto-detect
+        path. Excel now shares detection with CSV/Parquet: both rows are kept,
+        has_header is reported False, and no misdetection warning fires.
         """
         import logging
 
@@ -518,7 +519,9 @@ class TestPreview:
             result = runner.invoke(app, ["preview", str(path)])
 
         assert result.exit_code == 0
-        assert any("parses as a transaction" in r.message for r in caplog.records)
+        assert "Header row detected: False" in result.output
+        assert "2 in file = 0 skipped + 0 header + 2 read" in result.output
+        assert not any("parses as a transaction" in r.message for r in caplog.records)
 
     def test_permission_error_is_classified_not_raw(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

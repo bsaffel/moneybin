@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **A headerless Excel (`.xlsx`) import no longer loses its first
+  transaction.** The Excel reader now detects a missing header row on the
+  same terms as the CSV and Parquet readers, instead of always treating row 0
+  as column names. A headerless `.xlsx` file now previews with
+  `has_header: false` and keeps every row, matching the other tabular
+  formats. (PR #TBD)
+
 - **Profile configuration now honors database, data, and logging overrides.**
   `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
   from the environment or active profile dotenv now override profile defaults.

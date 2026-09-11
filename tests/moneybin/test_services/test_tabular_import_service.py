@@ -694,24 +694,21 @@ class TestTabularConfirmationFlow:
         # contradict the preview the caller already holds.
         assert outcome.confidence.tier == "medium"
 
-    def test_first_contact_xlsx_reports_the_structural_cause(
+    def test_first_contact_headerless_xlsx_imports_without_confirmation(
         self, db: Database, tmp_path: Path
     ) -> None:
-        """A headerless XLSX sets the flag on first contact — no skip_rows needed.
+        """A headerless XLSX must import cleanly on first contact (MB-449).
 
-        _read_excel computes header_row_looks_like_data unconditionally,
-        because pl.read_excel always consumes row 0 as the header. resolve_or_
-        confirm then refuses the forced-low tier with its own generic reason
-        and raises before the convergence guard, so every surface prescribed a
-        mapping retry for the one cause no mapping answers. (An earlier round
-        of this PR asserted first contact could never set the flag — true for
-        the CSV reader, wrong for Excel.)
+        _read_excel used to compute header_row_looks_like_data unconditionally,
+        because pl.read_excel always consumed row 0 as the header — so a
+        headerless sheet's real first transaction was eaten and the import
+        refused with reason="header_row_consumed" on every first contact.
+        Excel now shares _classify_header_rows with the CSV/Parquet readers:
+        a genuinely headerless sheet is detected as such, no data row is
+        consumed, and both rows load like the CSV/Parquet equivalent would.
         """
         import openpyxl
 
-        from moneybin.services.import_confirmation import (
-            ImportConfirmationRequiredError,
-        )
         from moneybin.services.import_service import ImportService
 
         wb = openpyxl.Workbook()
@@ -722,16 +719,15 @@ class TestTabularConfirmationFlow:
         xlsx = tmp_path / "headerless.xlsx"
         wb.save(xlsx)
 
-        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
-            ImportService(db).import_file(
-                xlsx,
-                account_name="test",
-                refresh=False,
-                confirm=True,
-                save_format=False,
-            )
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
 
-        assert exc_info.value.outcome.reason == "header_row_consumed"
+        assert result.rows_loaded == 2
 
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
