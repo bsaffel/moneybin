@@ -150,7 +150,7 @@ BRIDGE_CURRENCY_CONVERSIONS = TableRef("core", "bridge_currency_conversions")
 FCT_CURRENCY_LOTS = TableRef("core", "fct_currency_lots")
 FCT_REALIZED_FX_GAINS = TableRef("core", "fct_realized_fx_gains")
 # The rate spine (reports-net-worth-sql-surface.md §Rate models). Internal for
-# now, same as the two tables above: nothing in reports.* joins it yet (that
+# now, same as the three tables above: nothing in reports.* joins it yet (that
 # lands with the report rungs this spec's spine feeds), so there is no
 # schema-catalog example query to write. Promote to audience="interface"
 # alongside that work.

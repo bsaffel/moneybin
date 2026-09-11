@@ -177,10 +177,10 @@ WITH daily_with_overrides AS (
 SELECT
   u.from_currency, /* ISO 4217, upper (grain) */
   u.to_currency, /* ISO 4217, upper (grain) */
-  u.effective_date, /* The calendar day this rate is applied ON (grain) */
-  u.published_date, /* The day this rate was actually priced — an override's own date under rule 1 or 3, else the carried observation's date */
-  u.rate, /* Multiply a from_currency amount by this — the override when one won, else the daily spine's provider or identity rate */
   u.rate_source, /* provider / identity / override */
   u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override */
-  u.days_since_published /* effective_date - published_date; 0 on a publication day or a same-day override */
+  u.rate, /* Multiply a from_currency amount by this — the override when one won, else the daily spine's provider or identity rate */
+  u.days_since_published, /* effective_date - published_date; 0 on a publication day or a same-day override */
+  u.effective_date, /* The calendar day this rate is applied ON (grain) */
+  u.published_date /* The day this rate was actually priced — an override's own date under rule 1 or 3, else the carried observation's date */
 FROM unioned AS u

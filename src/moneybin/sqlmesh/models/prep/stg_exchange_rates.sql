@@ -11,8 +11,8 @@ MODEL (
 SELECT
   UPPER(r.from_currency) AS from_currency,
   UPPER(r.to_currency) AS to_currency,
-  r.rate_date,
-  r.rate,
   r.source_type,
+  r.rate,
+  r.rate_date,
   r.loaded_at
 FROM raw.exchange_rates AS r

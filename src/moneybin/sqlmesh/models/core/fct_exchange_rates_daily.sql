@@ -187,10 +187,10 @@ WITH provider_obs AS (
 SELECT
   u.from_currency, /* ISO 4217, upper (grain) */
   u.to_currency, /* ISO 4217, upper (grain) */
-  u.effective_date, /* The calendar day this rate is applied ON (grain) */
-  u.published_date, /* The day the provider priced it (= fct_exchange_rates.rate_date) */
-  u.rate, /* Multiply a from_currency amount by this */
   u.rate_source, /* provider / identity — never override; see the header note */
   u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'), carried forward with the rate it priced; NULL when rate_source = 'identity' */
-  CAST(u.effective_date - u.published_date AS INT) AS days_since_published /* effective_date - published_date; 0 on a publication day */
+  u.rate, /* Multiply a from_currency amount by this */
+  CAST(u.effective_date - u.published_date AS INT) AS days_since_published, /* effective_date - published_date; 0 on a publication day */
+  u.effective_date, /* The calendar day this rate is applied ON (grain) */
+  u.published_date /* The day the provider priced it (= fct_exchange_rates.rate_date) */
 FROM unioned AS u

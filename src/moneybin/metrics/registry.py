@@ -444,25 +444,15 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     ["source_type"],
 )
 
-FX_RATE_SPINE_ROWS = Gauge(
-    "moneybin_fx_rate_spine_rows",
-    # core.fct_exchange_rates_daily is kind FULL, so this is a snapshot as of
-    # the last sqlmesh run, not a live count — a flat 'provider' value across
-    # runs with a growing raw.exchange_rates means the densification stopped
-    # advancing, not that the feed stopped.
-    "Rows in core.fct_exchange_rates_daily, by rate_source (provider / identity)",
-    ["rate_source"],
-)
-
-FX_RATE_SPINE_PAIRS = Gauge(
-    "moneybin_fx_rate_spine_pairs",
-    # Coverage, not volume: one pair with a year of daily rows and one pair
-    # with a single row both count as 1 here, which is what makes this the
-    # counter to watch for "did a whole pair go dark" rather than "did the
-    # row count dip."
-    "Distinct (from_currency, to_currency) pairs in core.fct_exchange_rates_daily, by rate_source",
-    ["rate_source"],
-)
+# The rate spine's row and coverage counts (Requirement 12 of
+# reports-net-worth-sql-surface.md) land with the work that consumes the spine,
+# not here. Every gauge in this family is set from a Python SQLMesh model —
+# fct_currency_lots.py, fct_realized_fx_gains.py, bridge_currency_conversions.py
+# all call set_fx_accounting_rows — and the three rate-spine models are plain
+# .sql with no equivalent hook. A labeled Gauge emits no sample until a child is
+# instantiated, so declaring them now would put two metrics in the registry that
+# never appear in a scrape at all: absent rather than zero, which reads as
+# "not collected" and is worse than an honestly missing metric.
 
 # ── Categorization ────────────────────────────────────────────────────────────
 
@@ -1198,8 +1188,6 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_fx_rate_resolution": "Exchange rates",
     "moneybin_fx_rate_backfill_pairs": "Exchange rates",
     "moneybin_fx_rate_fetch_duration_seconds": "Exchange rates",
-    "moneybin_fx_rate_spine_rows": "Exchange rates",
-    "moneybin_fx_rate_spine_pairs": "Exchange rates",
     # Categorization
     "moneybin_categorization_auto_rate": "Categorization",
     "moneybin_categorization_rules_fired": "Categorization",
