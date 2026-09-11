@@ -1,0 +1,1 @@
+A curation write whose transaction id names no transaction at all — not the id itself, and nothing it forwards to — is now refused with a `transaction_reference_not_found` error instead of being silently accepted. Previously such a write succeeded and produced an unreachable row.

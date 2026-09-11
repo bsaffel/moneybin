@@ -14,15 +14,6 @@ New changes are collected in [changelog fragments](changelog.d/README.md).
 The legacy entries below are retained for the next release preparation.
 
 ### Fixed
-- **Curation written against a superseded transaction id no longer becomes
-  unreachable.** `transactions notes add`, `tags add`/`remove`/`set`,
-  `splits add`/`set`/`clear`, and setting a category now resolve the supplied
-  transaction id — through `core.fct_transactions`, then the append-only
-  `app.transaction_id_aliases` forwarding chain — before writing, so a note,
-  tag, split, or category attached to an id a dedup merge later superseded
-  still lands on the live transaction. A reference that names no transaction
-  at all is now refused with an error instead of silently accepted. (PR #TBD)
-
 - **CLI categorization commits now retain reviewed merchant identities.**
   `transactions categorize commit-from-file` now preserves
   `canonical_merchant_name` while removing export-only fields, matching the
