@@ -1874,6 +1874,7 @@ def _summary(account_id: str, display_name: str | None) -> AccountSummary:
         holder_category=None,
         currency_code="USD",
         archived=False,
+        archived_at=None,
         include_in_net_worth=True,
         last_four=None,
         credit_limit=None,

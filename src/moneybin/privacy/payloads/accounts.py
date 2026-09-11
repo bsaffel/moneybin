@@ -49,6 +49,7 @@ class AccountSummary:
     holder_category: Annotated[str | None, DataClass.TXN_TYPE]
     currency_code: Annotated[str | None, DataClass.CURRENCY]
     archived: Annotated[bool, DataClass.TXN_TYPE]
+    archived_at: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     last_four: Annotated[str | None, DataClass.INSTITUTION_ACCOUNT_NUMBER]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
@@ -78,6 +79,7 @@ class AccountDetail:
     routing_number: Annotated[str | None, DataClass.ROUTING_NUMBER]
     credit_limit: Annotated[Decimal | None, DataClass.BALANCE]
     archived: Annotated[bool, DataClass.TXN_TYPE]
+    archived_at: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     source_type: Annotated[str | None, DataClass.TXN_TYPE]
 
@@ -243,6 +245,13 @@ class AccountSettingsPayload:
     default_cost_basis_method: Annotated[str | None, DataClass.TXN_TYPE]
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     archived: Annotated[bool, DataClass.TXN_TYPE]
+    archived_at: Annotated[date | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    """The date the account stopped being part of the position; NULL while active.
+
+    Published because ``V060`` *infers* it for an account archived before this
+    field existed, reading the ``archived`` FALSE->TRUE transition out of
+    ``app.audit_log``. An inferred date a caller cannot read back is an
+    inference nobody can check."""
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
 
 

@@ -484,6 +484,7 @@ class AccountService:
             "holder_category",
             "currency_code",
             "archived",
+            "archived_at",
             "include_in_net_worth",
             "last_four",
             "credit_limit",
@@ -506,9 +507,10 @@ class AccountService:
                 holder_category=row[5],
                 currency_code=row[6],
                 archived=bool(row[7]),
-                include_in_net_worth=bool(row[8]),
-                last_four=row[9],
-                credit_limit=row[10],
+                archived_at=row[8],
+                include_in_net_worth=bool(row[9]),
+                last_four=row[10],
+                credit_limit=row[11],
             )
             for row in rows
         ]
@@ -533,6 +535,7 @@ class AccountService:
             "last_four",
             "credit_limit",
             "archived",
+            "archived_at",
             "include_in_net_worth",
             "source_type",
             "routing_number",
@@ -563,6 +566,7 @@ class AccountService:
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]
             archived=bool(r["archived"]),
+            archived_at=r["archived_at"],  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
             source_type=r["source_type"],  # type: ignore[arg-type]
         )

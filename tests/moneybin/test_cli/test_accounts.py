@@ -71,6 +71,7 @@ def _as_account_summary(d: dict[str, object]) -> AccountSummary:
         holder_category=d.get("holder_category"),  # type: ignore[arg-type]
         currency_code=str(d.get("currency_code", "USD")),
         archived=bool(d.get("archived", False)),
+        archived_at=d.get("archived_at"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d.get("include_in_net_worth", True)),
         last_four=d.get("last_four"),  # type: ignore[arg-type]
         credit_limit=Decimal(str(credit)) if credit is not None else None,
@@ -373,6 +374,7 @@ class TestAccountsGet:
             routing_number="021000021",
             credit_limit=None,
             archived=False,
+            archived_at=None,
             include_in_net_worth=True,
             source_type="ofx",
         )

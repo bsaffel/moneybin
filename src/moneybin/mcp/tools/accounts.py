@@ -316,6 +316,7 @@ def accounts_set(
         default_cost_basis_method=d.get("default_cost_basis_method"),  # type: ignore[arg-type]
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
+        archived_at=d.get("archived_at"),  # type: ignore[arg-type]
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
     )
     return build_envelope(data=payload)
