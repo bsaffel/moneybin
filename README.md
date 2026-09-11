@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-09 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>
@@ -25,8 +25,8 @@ MoneyBin imports bank files (OFX/QFX/QBO, selectable-text PDF, CSV, TSV, Excel,
 Parquet, Feather), syncs Plaid-linked accounts, and connects [Google
 Sheets](docs/guides/connect-gsheet.md) — all into one
 AES-256-GCM-encrypted [DuckDB](https://duckdb.org) file. Query it three ways:
-the CLI, raw SQL, or a 50-tool MCP server for Claude, Cursor, VS Code, Gemini
-CLI, Codex, and other clients. Every surface reads the same tables.
+the CLI, raw SQL, or a 50-tool MCP server for Claude, Cursor, VS Code, Codex,
+the ChatGPT desktop app, and other clients. Every surface reads the same tables.
 
 <!-- markdownlint-disable MD033 -->
 <picture>
@@ -46,7 +46,7 @@ those claims is verifiable in source — AGPL-3.0.
 ## Ask your money anything
 
 ```bash
-uv run moneybin mcp install --client claude-desktop   # or claude-code, cursor, gemini-cli, codex, ...
+uv run moneybin mcp install --client claude-desktop   # or claude-code, cursor, codex, chatgpt-desktop, ...
 ```
 
 One command — run from the project checkout the [next
