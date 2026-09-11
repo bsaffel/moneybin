@@ -10,13 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+New changes are collected in [changelog fragments](changelog.d/README.md).
+The legacy entries below are retained for the next release preparation.
+
 ### Fixed
-- **A headerless Excel (`.xlsx`) import no longer loses its first
-  transaction.** The Excel reader now detects a missing header row on the
-  same terms as the CSV and Parquet readers, instead of always treating row 0
-  as column names. A headerless `.xlsx` file now previews with
-  `has_header: false` and keeps every row, matching the other tabular
-  formats. (PR #TBD)
+- **CLI categorization commits now retain reviewed merchant identities.**
+  `transactions categorize commit-from-file` now preserves
+  `canonical_merchant_name` while removing export-only fields, matching the
+  existing direct `commit` behavior. The file and stdin workflow retain
+  per-row validation, AI-source precedence, idempotency, and the post-commit
+  cascade. (PR #580)
 
 - **Profile configuration now honors database, data, and logging overrides.**
   `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
@@ -4376,6 +4379,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ---
 
 
+
+<!-- towncrier release notes start -->
 
 ## [M1] — 2026-05-04 (Data Integrity)
 
