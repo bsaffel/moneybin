@@ -11,6 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **CLI categorization commits now retain reviewed merchant identities.**
+  `transactions categorize commit-from-file` now preserves
+  `canonical_merchant_name` while removing export-only fields, matching the
+  existing direct `commit` behavior. The file and stdin workflow retain
+  per-row validation, AI-source precedence, idempotency, and the post-commit
+  cascade. (PR #580)
+
 - **Profile configuration now honors database, data, and logging overrides.**
   `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
   from the environment or active profile dotenv now override profile defaults.
