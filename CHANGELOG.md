@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+New changes are collected in [changelog fragments](changelog.d/README.md).
+The legacy entries below are retained for the next release preparation.
+
 ### Fixed
 - **Curation written against a superseded transaction id no longer becomes
   unreachable.** `transactions notes add`, `tags add`/`remove`/`set`,
@@ -4385,6 +4388,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ---
 
 
+
+<!-- towncrier release notes start -->
 
 ## [M1] — 2026-05-04 (Data Integrity)
 
