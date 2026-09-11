@@ -26,6 +26,7 @@
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
+    archived_at: DATE
 - name: '"moneybin"."app"."balance_assertions"'
   columns:
     account_id: TEXT
