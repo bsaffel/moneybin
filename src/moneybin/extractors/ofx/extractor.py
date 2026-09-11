@@ -434,6 +434,41 @@ class OFXLoadResult:
     transactions_loaded: int
     balances_loaded: int
 
+    @property
+    def total_rows(self) -> int:
+        """Sum across all four raw.ofx_* tables."""
+        return (
+            self.institutions_loaded
+            + self.accounts_loaded
+            + self.transactions_loaded
+            + self.balances_loaded
+        )
+
+
+class OFXLoadError(RuntimeError):
+    """A raw-table write failed partway through :meth:`OFXExtractor.load`.
+
+    Carries the per-table counts of what was actually written before the
+    failure. This matters because every ``raw.ofx_*`` write uses
+    ``on_conflict="upsert"`` (``INSERT OR REPLACE`` — load-bearing for the
+    FITID-collision repair, see ``_disambiguate_colliding_fitids``), and none
+    of the four tables' primary keys include ``import_id``: re-importing a
+    file whose rows already exist replaces those rows and re-stamps them with
+    *this* attempt's ``import_id`` — ``raw.ofx_institutions`` most sharply,
+    since its PK (``organization``, ``fid``) has no ``source_file`` at all, so
+    loading any file from a known institution re-stamps its shared row. A
+    caller that doesn't know what was actually written cannot safely clean up
+    on failure — a DELETE scoped to this ``import_id`` would remove rows that
+    belong to a previously successful import. The caller must instead
+    finalize the batch with these real partial counts, never a hardcoded
+    zero and never a same-``import_id`` DELETE.
+    """
+
+    def __init__(self, message: str, *, rows_loaded: OFXLoadResult) -> None:
+        """Store the per-table counts written before the failure."""
+        super().__init__(message)
+        self.rows_loaded = rows_loaded
+
 
 class OFXExtractor:
     """Extract financial data from OFX/QFX files into raw table structures."""
@@ -593,6 +628,11 @@ class OFXExtractor:
             RuntimeError: If this instance was constructed without a
                 Database — ``load()`` needs one; ``extract_from_file()``
                 alone does not.
+            OFXLoadError: If a raw-table write fails partway through. Carries
+                the per-table counts of what was actually written so the
+                caller can finalize with real partial progress — see the
+                exception's docstring for why the caller must never delete
+                by ``import_id`` to "clean up" instead.
         """
         if self.db is None:
             raise RuntimeError(
@@ -605,7 +645,12 @@ class OFXExtractor:
             source_origin=source_origin,
             source_bytes=source_bytes,
         )
-        rows_loaded: dict[str, int] = {}
+        rows_loaded: dict[str, int] = {
+            "institutions": 0,
+            "accounts": 0,
+            "transactions": 0,
+            "balances": 0,
+        }
         for table_key, qualified in (
             ("institutions", OFX_INSTITUTIONS.full_name),
             ("accounts", OFX_ACCOUNTS.full_name),
@@ -613,9 +658,20 @@ class OFXExtractor:
             ("balances", OFX_BALANCES.full_name),
         ):
             df = data[table_key]
-            if len(df) > 0:
-                self.db.ingest_dataframe(qualified, df, on_conflict="upsert")
-            rows_loaded[table_key] = len(df)
+            try:
+                if len(df) > 0:
+                    self.db.ingest_dataframe(qualified, df, on_conflict="upsert")
+                rows_loaded[table_key] = len(df)
+            except Exception as e:
+                raise OFXLoadError(
+                    f"OFX raw-table write failed on {table_key}: {type(e).__name__}",
+                    rows_loaded=OFXLoadResult(
+                        institutions_loaded=rows_loaded["institutions"],
+                        accounts_loaded=rows_loaded["accounts"],
+                        transactions_loaded=rows_loaded["transactions"],
+                        balances_loaded=rows_loaded["balances"],
+                    ),
+                ) from e
         return OFXLoadResult(
             institutions_loaded=rows_loaded["institutions"],
             accounts_loaded=rows_loaded["accounts"],

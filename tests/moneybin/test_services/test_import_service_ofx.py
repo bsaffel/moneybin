@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
-from moneybin.extractors.ofx.extractor import ofx_source_accounts
+from moneybin.extractors.ofx.extractor import OFXLoadError, ofx_source_accounts
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
 from moneybin.services.pdf_account_identity import derive_pdf_account_identity
@@ -242,6 +242,82 @@ class TestImportOFXBatchLifecycle:
             if h["source_type"] == "ofx" and h["source_file"] == canonical
         ]
         assert len(ofx_for_file) == 2
+
+
+class TestImportOFXMidLoadFailure:
+    """A load() failure partway through must not touch a prior import's rows.
+
+    Regression coverage for the OFXLoadError fix: raw.ofx_institutions and
+    raw.ofx_accounts write with on_conflict="upsert" (INSERT OR REPLACE), and
+    neither table's primary key includes import_id. Importing a second file
+    from an already-known institution therefore re-stamps that institution's
+    existing row with the SECOND import's import_id -- so a cleanup that
+    deletes "this import_id's rows" on failure would delete a row that
+    belongs to the first, already-successful import. The fix instead reports
+    the real partial row count OFXLoadError carries and never deletes.
+    """
+
+    def test_partial_failure_preserves_prior_import_and_reports_real_counts(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        second = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+        assert first.exists() and second.exists()
+
+        # Both fixtures declare <FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
+        # but different <ACCTID> (1111 vs 4242) -- same institution, distinct
+        # accounts, so the second import is a clean "new account" gate answer
+        # with no merge candidates, and its institution write collides with
+        # the first import's institution row by design.
+        import_answering_gate(ImportService(db), first, refresh=False)
+        institutions_after_first = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK'"
+        ).fetchone()
+        assert institutions_after_first is not None
+        assert institutions_after_first[0] == 1
+
+        # Force the second import to fail once it reaches the transactions
+        # write -- institutions and accounts (which re-stamp the shared
+        # institution row above with this import's import_id) have already
+        # landed by that point.
+        real_ingest = db.ingest_dataframe
+
+        def _fail_on_transactions(table: str, frame: object, **kwargs: object) -> int:
+            if "ofx_transactions" in table:
+                raise RuntimeError("simulated mid-load failure")
+            return real_ingest(table, frame, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "ingest_dataframe", _fail_on_transactions)
+
+        # OFXExtractor.load() wraps the raw RuntimeError in OFXLoadError so it
+        # can carry the partial-progress counts through to _import_ofx.
+        with pytest.raises(OFXLoadError, match="transactions"):
+            import_answering_gate(ImportService(db), second, refresh=False)
+
+        # Regression assertion: the first import's institution row must
+        # survive the second import's failure. Under the deleted-on-failure
+        # behavior this pins against, the row the second import re-stamped
+        # would have been removed here, taking the first import's data with it.
+        institutions_after_failure = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK'"
+        ).fetchone()
+        assert institutions_after_failure is not None
+        assert institutions_after_failure[0] == 1
+
+        # The failed batch must report what it actually wrote (institutions +
+        # accounts survived the failure), never a hardcoded zero that
+        # discards real partial progress. get_import_history() doesn't
+        # project rows_total, so read raw.import_log directly for both.
+        failed = db.execute(
+            "SELECT rows_total, rows_imported FROM raw.import_log "
+            "WHERE source_type = 'ofx' AND status = 'failed'"
+        ).fetchall()
+        assert len(failed) == 1
+        rows_total, rows_imported = failed[0]
+        assert rows_imported > 0
+        assert rows_imported == rows_total
 
 
 class TestImportOFXAccountResolution:
