@@ -1963,3 +1963,98 @@ class TestManualEntry:
         service = TransactionService(transaction_db)
         with pytest.raises(ValueError, match=r"entries\[0\]\.currency_code"):
             service.create_manual_batch([self._entry(currency_code="usd")], actor="cli")
+
+
+class TestCurationTransactionIdResolution:
+    """Curation writes resolve a superseded transaction_id (issue #538).
+
+    ``transaction_db`` seeds ``core.fct_transactions`` with a live 'T1'; each
+    test additionally aliases 'T1_OLD' -> 'T1' in ``app.transaction_id_aliases``
+    to model a dedup merge that re-keyed the canonical id after a caller had
+    already been handed the old one.
+    """
+
+    @pytest.fixture()
+    def superseded_db(self, transaction_db: Database) -> Database:
+        transaction_db.conn.execute(
+            "INSERT INTO app.transaction_id_aliases "
+            "(old_transaction_id, new_transaction_id, created_at) "
+            "VALUES ('T1_OLD', 'T1', CURRENT_TIMESTAMP)"
+        )
+        return transaction_db
+
+    @staticmethod
+    def _reachable_via_fct(
+        db: Database, *, table: str, id_column: str, id_value: str
+    ) -> bool:
+        """Whether a curation row is reachable by the doctor's own anti-join.
+
+        Same shape as the FK invariants: ``core.fct_transactions`` joined on
+        ``transaction_id``.
+        """
+        row = db.conn.execute(
+            f"SELECT 1 FROM {table} c "  # noqa: S608  # test-only table name from a fixed allowlist
+            "JOIN core.fct_transactions t ON t.transaction_id = c.transaction_id "
+            f"WHERE c.{id_column} = ?",
+            [id_value],
+        ).fetchone()
+        return row is not None
+
+    @pytest.mark.unit
+    def test_add_note_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        note = service.add_note("T1_OLD", "resolved note", actor="test")
+        assert note.transaction_id == "T1"
+        assert self._reachable_via_fct(
+            superseded_db,
+            table="app.transaction_notes",
+            id_column="note_id",
+            id_value=note.note_id,
+        )
+
+    @pytest.mark.unit
+    def test_add_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        added = service.add_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert added == ["roadtrip"]
+        assert service.list_tags("T1") == ["roadtrip"]
+        assert service.list_tags("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_add_split_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        split = service.add_split(
+            "T1_OLD", Decimal("-50.00"), note="half", actor="test"
+        )
+        assert split.transaction_id == "T1"
+        assert self._reachable_via_fct(
+            superseded_db,
+            table="app.transaction_splits",
+            id_column="split_id",
+            id_value=split.split_id,
+        )
+
+    @pytest.mark.unit
+    def test_add_note_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """An unresolvable id is refused, never silently written as an orphan.
+
+        No ``core.fct_transactions`` row, no alias — issue #538 acceptance
+        criterion 2.
+        """
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.add_note("NEVER_EXISTED", "x", actor="test")
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+        assert service.list_notes("NEVER_EXISTED") == []
+        orphan_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_notes"
+        ).fetchone()
+        assert orphan_count == (0,)

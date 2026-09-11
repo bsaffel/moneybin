@@ -67,10 +67,13 @@ primary key, so a row records the re-key that happened and is never rewritten:
 after a reversal or a split the edge still names the id the member forwarded to
 *then*, which may since have become a transaction of its own. The curation is
 reconciled; the map is not, and it is the *curation* that every consumer joins
-on. Nothing in the tree resolves a read through this table today, so treat it as
-the audit of past re-keys rather than a current redirect — a consumer that
-wanted one would need a supersession marker the schema does not carry, which is
-a decision about ``app.transaction_id_aliases``' shape, not a local fix.
+on. Nothing in the tree resolves a **read** through this table — every view and
+the doctor's FK invariants still join `core.fct_transactions` directly, so
+treat the map as the audit of past re-keys rather than a current redirect for
+a query. :func:`resolve_curation_transaction_id` is the one exception, and it
+is not a read-time consumer: it runs once, at the moment a curation writer
+accepts a caller-supplied id, precisely so nothing downstream ever needs a
+supersession marker the schema does not carry (issue #538).
 
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
@@ -87,8 +90,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import exception_origin
+from moneybin.errors import UserError, exception_origin
 from moneybin.metrics.registry import (
     TRANSACTION_CURATION_FORWARDED_TOTAL,
     TRANSACTION_CURATION_RESTORED_TOTAL,
@@ -101,6 +105,7 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    MANUAL_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
     TRANSACTION_NOTES,
@@ -110,6 +115,77 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A genuine re-key chain runs a handful of hops; this only bounds a
+# pathological or corrupted map so resolution can't loop forever (issue #538).
+_MAX_ALIAS_RESOLUTION_HOPS = 50
+
+
+def resolve_curation_transaction_id(db: Database, transaction_id: str) -> str:
+    """Resolve a caller-supplied id to the live id curation must attach to.
+
+    The single write-time resolution seam shared by every curation writer
+    (notes, tags, splits, categories) — issue #538. Tries the id as given
+    first; if it names no row in ``core.fct_transactions`` OR
+    ``raw.manual_transactions`` (the same two-relation liveness test the
+    doctor's ``orphan_app_state`` invariant uses, so a manual transaction
+    written moments before its ``refresh_run`` materializes it into
+    ``core.fct_transactions`` never misreads as unresolvable), walks the
+    append-only ``app.transaction_id_aliases`` forwarding chain to the
+    current canonical id. Raises ``UserError`` if neither the id nor
+    anything it forwards to names a live transaction, so a caller can never
+    write curation under an id that lands on a row no view joins.
+
+    Deliberately NOT mirrored at read time: see the module docstring's
+    "Forward at re-key, never resolve on read" for why one mechanism here
+    is preferable to repeating the walk in every consumer.
+    """
+    current = transaction_id
+    seen: set[str] = set()
+    for _ in range(_MAX_ALIAS_RESOLUTION_HOPS):
+        if current in seen:
+            break  # defensive: the append-only map should never cycle
+        seen.add(current)
+        if _is_live_transaction(db, current):
+            return current
+        next_id = _alias_forward_target(db, current)
+        if next_id is None:
+            break
+        current = next_id
+    raise UserError(
+        "The transaction reference did not match a transaction.",
+        code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
+    )
+
+
+def _is_live_transaction(db: Database, transaction_id: str) -> bool:
+    """Whether ``transaction_id`` names a row curation may legitimately attach to.
+
+    Checks ``core.fct_transactions`` OR ``raw.manual_transactions`` — the same
+    pair ``_run_orphan_app_state`` unions — so a manual entry's predicted id
+    resolves as live in the window before the next ``refresh_run``
+    materializes it into the fact view.
+    """
+    row = db.execute(
+        f"""
+        SELECT 1 FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?
+        UNION ALL
+        SELECT 1 FROM {MANUAL_TRANSACTIONS.full_name} WHERE transaction_id = ?
+        """,  # noqa: S608  # TableRef + parameterized values
+        [transaction_id, transaction_id],
+    ).fetchone()
+    return row is not None
+
+
+def _alias_forward_target(db: Database, old_transaction_id: str) -> str | None:
+    """The id ``old_transaction_id`` forwards to, or ``None`` if it never was aliased."""
+    row = db.execute(
+        f"SELECT new_transaction_id FROM {TRANSACTION_ID_ALIASES.full_name} "  # noqa: S608  # TableRef + parameterized value
+        "WHERE old_transaction_id = ?",
+        [old_transaction_id],
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
 
 _SOURCE_IDENTITY_HASH = (
     "SUBSTRING(SHA256({source_type} || '|' || {source_origin} || '|' || "

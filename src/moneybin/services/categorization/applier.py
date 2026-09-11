@@ -38,6 +38,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import resolve_curation_transaction_id
 from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
@@ -431,7 +432,8 @@ class MatchApplier:
 
         Captures the prior row (or NULL) as ``before`` and the new shape as
         ``after`` so the audit trail can reconstruct overwrites. Mutation +
-        audit row commit atomically.
+        audit row commit atomically. Resolution happens once, inside
+        :meth:`set_category_in_active_txn`.
         """
         with self._transaction():
             self.set_category_in_active_txn(
@@ -462,7 +464,15 @@ class MatchApplier:
         admitting a lower-priority source here would let it silently overwrite
         a higher-priority existing categorization. New callers needing a
         non-user write must route through :meth:`write_categorization`.
+
+        ``transaction_id`` is resolved through the shared curation seam first
+        (issue #538). Safe for ``TransactionService.create_manual_batch``'s
+        pre-materialization write too: the resolver's liveness check also
+        accepts a row still only in ``raw.manual_transactions`` (the manual
+        entry's own raw insert, already committed by the time this runs), the
+        same allowance the doctor's ``orphan_app_state`` invariant makes.
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         category_id = resolve_category_id(self._db, category, subcategory)
         # Routes through the repo (paired audit, full before/after — Req 4).
         # in_outer_txn=True: the caller already owns the transaction.
@@ -480,8 +490,10 @@ class MatchApplier:
         """Delete a transaction's category row and emit ``category.clear`` audit.
 
         Routes through the repo (full before-row capture, Req 4). No-op (and no
-        audit event) when no row exists.
+        audit event) when no row exists. ``transaction_id`` is resolved
+        through the shared curation seam first (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         self._tx_categories.clear(transaction_id, actor=actor)
 
     # -- Merchant management --
