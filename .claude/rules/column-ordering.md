@@ -35,19 +35,19 @@ _SNAPSHOT_COLUMNS]` directly into its execution, so for `core:networth` and
 `core:networth_history` the declared order is what JSON, MCP, `--wide`, and every
 export emit. Reordering that tuple is a user-visible change, not a cosmetic one.
 
-A service report in fact carries **three** parallel orderings, and reordering one
-means reordering all three:
+A service report in fact carries **three** positions that must stay in
+agreement, but only two of them are separate lists an author reorders by hand:
 
 1. The `columns` tuple — sets `result.columns`, drives `--wide`.
-2. A `column_types` list. `core:networth`'s `_SNAPSHOT_COLUMN_TYPES` is parallel
-   **by index alone**: reorder one without the other and every column is handed
-   the type of whichever column now occupies its slot — a silent mis-typing whose
-   only guard is the tripwire under Enforcement. `core:networth_history` carried
-   the same hazard in a subtler form, its `_decimal_column_type(rows,
-   "net_worth", …)` entries naming their column in an argument while position was
-   what bound. It now keys the types by name and projects them through
-   `_HISTORY_COLUMNS`, which is the shape to copy: an ordering derived once beats
-   an ordering duplicated and checked.
+2. A `column_types` sequence. Both `core:networth` and `core:networth_history`
+   key their types by column name (`_SNAPSHOT_COLUMN_TYPES_BY_NAME`,
+   `_execute_networth_history`'s local `types_by_name`) and project them
+   through their own columns tuple (`_SNAPSHOT_COLUMNS`, `_HISTORY_COLUMNS`),
+   so this one is derived, not a second hand-kept ordering — reordering the
+   columns tuple carries the types with it automatically.
+   `core:networth_history`'s `_decimal_column_type(rows, "net_worth", …)`
+   entries additionally name their column in an argument, since its types
+   depend on the resolved `Decimal` precision rather than being static.
 3. The **record dict literals** built in the row comprehensions. The envelope
    carries `data=records` and Python dicts preserve insertion order, so those
    keys — not the `columns` tuple — are what `--output json` and every MCP caller
@@ -252,7 +252,7 @@ reorders it expecting an effect and gets none.
 
 A **service-backed** report has nothing to mirror against — its tuple is already
 the projection, per the exception above. Rules B and C govern it directly, and
-the `column_types` list beside it moves with it.
+the derived `column_types` moves with it automatically.
 
 ## Enforcement
 
@@ -260,22 +260,18 @@ Honest about what is and is not caught.
 
 **Guarded, unit tier — the report specs.** `DataClass` and `money_kind` supply
 the categories Rule B needs, and both live on `OutputColumn`, so a spec can be
-checked with no database. Three assertions:
+checked with no database. Two assertions:
 
 1. `ReportSpec.columns` is non-decreasing under Rule B.
 2. `default_columns` is non-decreasing under Rule B.
-3. `_SNAPSHOT_COLUMN_TYPES` is the same length as `_SNAPSHOT_COLUMNS`, and the
-   three entries most likely to drift (`balance_date`, `net_worth`,
-   `account_count`) still pair with the column they name.
 
-Read the third one narrowly. It is a tripwire on `core:networth`, not a
-derivation: it does not check every column against its declared class. It is now
-also the last place the hazard lives — `core:networth_history` derives its
-`column_types` from `_HISTORY_COLUMNS` by name, so it has no second list to keep
-in step and needs no assertion. Giving `_SNAPSHOT_COLUMN_TYPES` the same
-treatment would retire this assertion entirely; it is a module constant read
-from more than one place, so that is a change to make deliberately rather than
-in passing.
+There used to be a third: a tripwire pairing `_SNAPSHOT_COLUMN_TYPES`'s three
+entries most likely to drift (`balance_date`, `net_worth`, `account_count`)
+against `_SNAPSHOT_COLUMNS`, because the two were parallel by position alone.
+Both `core:networth` and `core:networth_history` now derive `column_types`
+from a name-keyed dict projected through their own columns tuple, so neither
+has a second list to keep in step, and neither needs an assertion — the
+tripwire retired along with the hazard it guarded.
 
 **The SQL-backed mirror is checked per report, not globally.** A runner builds
 its own `SELECT` over the view rather than inheriting the model's projection, so

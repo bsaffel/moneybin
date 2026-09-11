@@ -17,8 +17,6 @@ Paths marked `<profile dir>` resolve to `<home>/profiles/<profile>/`.
 
 Database configuration settings.
 
-`MoneyBinSettings` builds this whole section from the active profile's directory when it is constructed, and a constructor value outranks the environment and the dotenv file, so the variables below are not read today: every profile runs on the defaults shown.
-
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `MONEYBIN_DATABASE__PATH` | Path | `<profile dir>/moneybin.duckdb` | Path to DuckDB database file |
@@ -35,8 +33,6 @@ Database configuration settings.
 
 Data processing and storage configuration.
 
-`MoneyBinSettings` builds this whole section from the active profile's directory when it is constructed, and a constructor value outranks the environment and the dotenv file, so the variables below are not read today: every profile runs on the defaults shown.
-
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `MONEYBIN_DATA__RAW_DATA_PATH` | Path | `<profile dir>/raw` | Path to raw data directory |
@@ -46,8 +42,6 @@ Data processing and storage configuration.
 ## logging
 
 Logging configuration settings.
-
-`MoneyBinSettings` builds this whole section from the active profile's directory when it is constructed, and a constructor value outranks the environment and the dotenv file, so the variables below are not read today: every profile runs on the defaults shown.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
