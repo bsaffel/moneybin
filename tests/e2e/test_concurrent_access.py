@@ -37,9 +37,8 @@ def _make_env(db_path: Path, encryption_key: str) -> dict[str, str]:
     """Build subprocess env with DB path and encryption key injected.
 
     Subprocesses use Database(db_path, secret_store=...) directly, passing
-    the key via a custom env var rather than relying on get_database() /
-    get_settings() — MoneyBinSettings.__init__ always builds the DB path from
-    the profile directory and ignores MONEYBIN_DATABASE__PATH.
+    the key via custom env vars rather than relying on get_database() /
+    get_settings().
     """
     env = os.environ.copy()
     env["_MB_TEST_DB_PATH"] = str(db_path)
