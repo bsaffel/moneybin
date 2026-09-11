@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol, cast
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import resolve_curation_transaction_id
 from moneybin.matching.hashing import gold_key_unmatched
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -1358,9 +1359,12 @@ class TransactionService:
 
         Generates a 12-hex truncated UUID4 for ``note_id``. The mutation and
         the audit row land in the same DuckDB transaction so failures roll
-        both back together.
+        both back together. ``transaction_id`` is resolved through the
+        shared curation seam first, so a superseded id lands on the live
+        transaction instead of a row no view joins (issue #538).
         """
         validate_note_text(text)
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         note_id = uuid.uuid4().hex[:12]
         self._notes_repo.add(
             transaction_id=transaction_id, note_id=note_id, text=text, actor=actor
@@ -1419,9 +1423,12 @@ class TransactionService:
         and no audit row (DN2: no ``noop`` audit noise). All tag patterns are
         validated up front so a bad tag never half-mutates state. Returns the
         list of tags that were actually inserted (excludes the skipped ones).
+        ``transaction_id`` is resolved through the shared curation seam first
+        (issue #538).
         """
         for t in tags:
             validate_slug(t)
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         added: list[str] = []
         self._db.begin()
         try:
@@ -1457,8 +1464,10 @@ class TransactionService:
 
         Idempotent: removing an absent tag is skipped silently — no row change
         and no audit row (DN2). Returns the list of tags that were actually
-        deleted.
+        deleted. ``transaction_id`` is resolved through the shared curation
+        seam first (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         removed: list[str] = []
         self._db.begin()
         try:
@@ -1496,8 +1505,10 @@ class TransactionService:
         them atomically in a single DuckDB transaction so the row state and
         all audit events commit (or roll back) together. The MCP-flavored
         counterpart to imperative ``add_tags`` / ``remove_tags``. Returns the
-        sorted final tag list.
+        sorted final tag list. ``transaction_id`` is resolved through the
+        shared curation seam first (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         prepared = self._prepare_tags_set(transaction_id, tags)
         self._db.begin()
         try:
@@ -1717,7 +1728,10 @@ class TransactionService:
 
         Generates a 12-hex truncated UUID4 ``split_id`` and computes the
         next ``ord`` as ``MAX(ord)+1`` for the parent (or 0 when first).
+        ``transaction_id`` is resolved through the shared curation seam first
+        (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         split_id = uuid.uuid4().hex[:12]
         try:
             if category is not None:
@@ -1786,8 +1800,10 @@ class TransactionService:
         """Delete all splits for a transaction; emit one ``split.remove`` per row.
 
         Per-row capture (DN3) keeps each split individually undoable. No-op (no
-        audit event, no SQL) when the parent has no splits.
+        audit event, no SQL) when the parent has no splits. ``transaction_id``
+        is resolved through the shared curation seam first (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         events = self._splits_repo.clear(transaction_id=transaction_id, actor=actor)
         logger.info(
             f"split.clear transaction_id={transaction_id} "
@@ -1806,7 +1822,10 @@ class TransactionService:
         Validates every input dict (``amount`` required and Decimal) before
         mutating state so a malformed input never leaves the row set in a
         half-applied state. The clear + adds run in one DuckDB transaction.
+        ``transaction_id`` is resolved through the shared curation seam first
+        (issue #538).
         """
+        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         targets: list[_GranularSplitTarget] = []
         for idx, s in enumerate(splits):
             # A malformed split is bad input to a write, so it carries the same

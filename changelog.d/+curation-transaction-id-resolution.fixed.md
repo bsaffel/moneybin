@@ -1,0 +1,1 @@
+A note, tag, split, or category written against a transaction id that a dedup merge had already superseded no longer lands on a row nothing joins. Curation writes now resolve the supplied id forward to the live transaction, so annotations added under an old id remain visible instead of disappearing permanently.
