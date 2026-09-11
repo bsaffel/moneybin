@@ -126,18 +126,19 @@ def db(
 def test_an_override_on_a_publication_day_is_live_with_no_replan(db: Database) -> None:
     """Writing an override changes the view on the next query — no `sqlmesh run`."""
     before = db.execute(
-        "SELECT rate, rate_source FROM core.fct_exchange_rates_effective "
+        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-09'"
     ).fetchone()
     assert before is not None
     assert before[1] == "provider"
+    assert before[2] == "frankfurter"
 
     _insert_override(
         db, from_currency="USD", to_currency="EEE", rate_date="2026-01-09", rate="0.999"
     )
 
     after = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-09'"
     ).fetchone()
@@ -145,7 +146,9 @@ def test_an_override_on_a_publication_day_is_live_with_no_replan(db: Database) -
     assert str(after[1]) == "2026-01-09"
     assert float(after[2]) == pytest.approx(0.999)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert after[3] == "override"
-    assert after[4] == 0
+    # The override supersedes the provider name too, not only the rate.
+    assert after[4] is None
+    assert after[5] == 0
 
 
 @pytest.mark.slow
@@ -181,7 +184,7 @@ def test_an_override_before_an_interior_gap_changes_every_carried_day(
     )
 
     rows = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'FFF' "
         "ORDER BY effective_date"
@@ -197,10 +200,12 @@ def test_an_override_before_an_interior_gap_changes_every_carried_day(
         assert str(r[1]) == "2026-01-05"
         assert float(r[2]) == pytest.approx(1.500)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
         assert r[3] == "override"
-    assert [r[4] for r in rows[:3]] == [0, 1, 2]
+        assert r[4] is None
+    assert [r[5] for r in rows[:3]] == [0, 1, 2]
     # Thursday's own (uncorrected) provider observation is untouched.
     assert float(rows[3][2]) == pytest.approx(2.000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert rows[3][3] == "provider"
+    assert rows[3][4] == "frankfurter"
 
 
 @pytest.mark.slow
@@ -215,7 +220,7 @@ def test_an_override_on_an_unpriced_pair_is_still_visible(db: Database) -> None:
     )
 
     row = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'GBP' AND to_currency = 'USD' AND effective_date = '2026-01-07'"
     ).fetchone()
@@ -223,7 +228,8 @@ def test_an_override_on_an_unpriced_pair_is_still_visible(db: Database) -> None:
     assert str(row[1]) == "2026-01-07"
     assert float(row[2]) == pytest.approx(1.2500)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert row[3] == "override"
-    assert row[4] == 0
+    assert row[4] is None
+    assert row[5] == 0
 
 
 @pytest.mark.slow

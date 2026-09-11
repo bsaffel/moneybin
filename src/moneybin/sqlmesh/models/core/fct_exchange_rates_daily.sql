@@ -42,18 +42,29 @@
 
    Multiple providers quoting the same pair and date is resolved by the same
    tie-break core.fct_exchange_rates uses for provider rows (freshest write,
-   then source_type) before the spine is built, so at most one provider
+   then provider name) before the spine is built, so at most one provider
    observation per (from_currency, to_currency, rate_date) ever reaches the
    densification below.
 
+   PROVIDER CARRIES FORWARD ALONGSIDE RATE AND PUBLISHED_DATE. A day carrying
+   from an earlier observation names the same named feed that priced it —
+   the forward-fill is one fact (a provider's quote persisting across
+   non-publication days), not three independent ones, so the three columns
+   move together through the same window function. See
+   core.fct_exchange_rates for why rate_source/provider is two columns
+   rather than one: the split is shared across all three rate models so a
+   caller reads one vocabulary regardless of which one it joins.
+
    IDENTITY ROWS. For every currency appearing in core.dim_accounts, an X → X
-   row at 1.0 with rate_source = 'identity' and days_since_published = 0,
-   spanning the date domain of core.fct_balances_daily (its global
-   MIN/MAX(balance_date), not scoped per account) — Requirement 11: one join
-   path, no branch, and a single-currency profile never sees a NULL converted
-   column. A currency that also carries real provider quotes for its own X→X
-   pair (never observed in practice) keeps the provider arm rather than
-   colliding with the identity one.
+   row at 1.0 with rate_source = 'identity', provider = NULL (an identity
+   price is definitional, not sourced from a feed), and
+   days_since_published = 0, spanning the date domain of
+   core.fct_balances_daily (its global MIN/MAX(balance_date), not scoped per
+   account) — Requirement 11: one join path, no branch, and a
+   single-currency profile never sees a NULL converted column. A currency
+   that also carries real provider quotes for its own X→X pair (never
+   observed in practice) keeps the provider arm rather than colliding with
+   the identity one.
 
    KIND FULL, recomputed every sqlmesh run. A retroactively corrected provider
    rate is picked up by the next run with no incremental bookkeeping and no
@@ -72,6 +83,7 @@ WITH provider_obs AS (
     to_currency,
     rate_date,
     rate,
+    source_type AS provider_name,
     loaded_at
   FROM prep.stg_exchange_rates
   QUALIFY
@@ -111,6 +123,7 @@ WITH provider_obs AS (
     s.effective_date,
     LAST_VALUE(o.rate_date IGNORE NULLS) OVER pair_order AS published_date,
     LAST_VALUE(o.rate IGNORE NULLS) OVER pair_order AS rate,
+    LAST_VALUE(o.provider_name IGNORE NULLS) OVER pair_order AS provider,
     'provider' AS rate_source
   FROM pair_spine AS s
   LEFT JOIN provider_obs AS o
@@ -147,6 +160,7 @@ WITH provider_obs AS (
     d.effective_date::DATE AS effective_date,
     d.effective_date::DATE AS published_date,
     1::DECIMAL(18, 8) AS rate,
+    NULL::TEXT AS provider,
     'identity' AS rate_source
   FROM identity_currencies AS c, balances_domain AS b, GENERATE_SERIES(b.first_date, b.last_date, INTERVAL '1' DAY) AS d(effective_date)
 ), unioned AS (
@@ -156,6 +170,7 @@ WITH provider_obs AS (
     effective_date,
     published_date,
     rate,
+    provider,
     rate_source
   FROM provider_filled
   UNION ALL
@@ -165,6 +180,7 @@ WITH provider_obs AS (
     effective_date,
     published_date,
     rate,
+    provider,
     rate_source
   FROM identity_rows
 )
@@ -174,6 +190,7 @@ SELECT
   u.effective_date, /* The calendar day this rate is applied ON (grain) */
   u.published_date, /* The day the provider priced it (= fct_exchange_rates.rate_date) */
   u.rate, /* Multiply a from_currency amount by this */
-  u.rate_source, /* 'provider' or 'identity' — never 'override'; see the header note */
+  u.rate_source, /* provider / identity — never override; see the header note */
+  u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'), carried forward with the rate it priced; NULL when rate_source = 'identity' */
   CAST(u.effective_date - u.published_date AS INT) AS days_since_published /* effective_date - published_date; 0 on a publication day */
 FROM unioned AS u

@@ -171,7 +171,7 @@ def test_a_friday_observation_prices_the_weekend(
     fct_exchange_rates_daily_db: Database,
 ) -> None:
     rows = fct_exchange_rates_daily_db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
         "FROM core.fct_exchange_rates_daily "
         "WHERE from_currency = 'USD' AND to_currency = 'BBB' "
         "ORDER BY effective_date"
@@ -181,7 +181,9 @@ def test_a_friday_observation_prices_the_weekend(
         assert str(r[1]) == "2026-01-09"
         assert float(r[2]) == pytest.approx(2.5000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
         assert r[3] == "provider"
-    assert [r[4] for r in rows] == [0, 1, 2]
+        # provider carries forward through the weekend hop with the rate it priced.
+        assert r[4] == "frankfurter"
+    assert [r[5] for r in rows] == [0, 1, 2]
 
 
 @pytest.mark.slow
@@ -231,7 +233,7 @@ def test_identity_rows_span_the_balance_spine_domain(
     fct_exchange_rates_daily_db: Database,
 ) -> None:
     rows = fct_exchange_rates_daily_db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
         "FROM core.fct_exchange_rates_daily "
         "WHERE from_currency = 'DDD' AND to_currency = 'DDD' "
         "ORDER BY effective_date"
@@ -243,7 +245,9 @@ def test_identity_rows_span_the_balance_spine_domain(
         assert r[0] == r[1]
         assert float(r[2]) == pytest.approx(1.0)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
         assert r[3] == "identity"
-        assert r[4] == 0
+        # An identity price is definitional, not sourced from a named feed.
+        assert r[4] is None
+        assert r[5] == 0
 
 
 @pytest.mark.slow

@@ -38,7 +38,12 @@
       the controlling invariant when that is ambiguous, so an uncovered gap
       between two standalone overrides stays unpriced rather than guessed.
 
-   Every row an override wins reads rate_source = 'override'.
+   Every row an override wins reads rate_source = 'override' and provider =
+   NULL — an override is user-authored, not sourced from a named feed, and a
+   row an override does NOT win carries whatever core.fct_exchange_rates_daily
+   already resolved (a named feed for 'provider', NULL for 'identity'). See
+   core.fct_exchange_rates for why rate_source/provider is two columns
+   rather than one, shared across all three rate models.
 
    The split exists because the two halves have opposite freshness
    requirements. A materialized override would regress against the path this
@@ -65,7 +70,8 @@ WITH daily_with_overrides AS (
       WHEN NOT oe.rate IS NULL OR NOT op.rate IS NULL
       THEN 'override'
       ELSE d.rate_source
-    END AS rate_source
+    END AS rate_source,
+    CASE WHEN NOT oe.rate IS NULL OR NOT op.rate IS NULL THEN NULL ELSE d.provider END AS provider
   FROM core.fct_exchange_rates_daily AS d
   LEFT JOIN app.exchange_rate_overrides AS oe
     ON oe.from_currency = d.from_currency
@@ -120,7 +126,8 @@ WITH daily_with_overrides AS (
     s.published_date,
     CAST(s.effective_date - s.published_date AS INT) AS days_since_published,
     s.rate,
-    'override' AS rate_source
+    'override' AS rate_source,
+    NULL::TEXT AS provider
   FROM uncovered_spine AS s
   /* Grain guard: an uncovered override's own weekend hop can only reach a
      date the daily spine already covers for the same pair when a provider
@@ -152,7 +159,8 @@ WITH daily_with_overrides AS (
     published_date,
     days_since_published,
     rate,
-    rate_source
+    rate_source,
+    provider
   FROM daily_with_overrides
   UNION ALL
   SELECT
@@ -162,7 +170,8 @@ WITH daily_with_overrides AS (
     published_date,
     days_since_published,
     rate,
-    rate_source
+    rate_source,
+    provider
   FROM uncovered_rows
 )
 SELECT
@@ -171,6 +180,7 @@ SELECT
   u.effective_date, /* The calendar day this rate is applied ON (grain) */
   u.published_date, /* The day this rate was actually priced — an override's own date under rule 1 or 3, else the carried observation's date */
   u.rate, /* Multiply a from_currency amount by this — the override when one won, else the daily spine's provider or identity rate */
-  u.rate_source, /* override / provider / identity */
+  u.rate_source, /* provider / identity / override */
+  u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override */
   u.days_since_published /* effective_date - published_date; 0 on a publication day or a same-day override */
 FROM unioned AS u

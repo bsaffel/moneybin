@@ -122,12 +122,15 @@ def fct_exchange_rates_db(
 @pytest.mark.slow
 def test_a_provider_row_alone_resolves(fct_exchange_rates_db: Database) -> None:
     row = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'AAA'"
     ).fetchone()
     assert row is not None
     assert float(row[0]) == pytest.approx(1.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
-    assert row[1] == "frankfurter"
+    # rate_source is the closed provider/identity/override vocabulary shared
+    # across all three rate models; provider carries the named feed.
+    assert row[1] == "provider"
+    assert row[2] == "frankfurter"
 
 
 @pytest.mark.slow
@@ -135,13 +138,15 @@ def test_an_override_outranks_a_provider_row_on_the_same_date(
     fct_exchange_rates_db: Database,
 ) -> None:
     rows = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'BBB'"
     ).fetchall()
     assert len(rows) == 1
-    rate, source = rows[0]
+    rate, source, provider = rows[0]
     assert float(rate) == pytest.approx(2.5000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert source == "override"
+    # An override is user-authored, not sourced from a named feed.
+    assert provider is None
 
 
 @pytest.mark.slow
@@ -149,13 +154,14 @@ def test_two_providers_on_one_day_resolve_by_freshest_write(
     fct_exchange_rates_db: Database,
 ) -> None:
     rows = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'CCC'"
     ).fetchall()
     assert len(rows) == 1
-    rate, source = rows[0]
+    rate, source, provider = rows[0]
     assert float(rate) == pytest.approx(3.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
-    assert source == "exchangerate_host"
+    assert source == "provider"
+    assert provider == "exchangerate_host"
 
 
 @pytest.mark.slow
