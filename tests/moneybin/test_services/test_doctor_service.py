@@ -3118,6 +3118,68 @@ def _overlap_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantR
     return next(r for r in report.invariants if r.name == "duplicate_account_overlap")
 
 
+# ---------------------------------------------------------------------------
+# currency_integrity x duplicate_account_overlap — GH #410 reproduction
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_currency_integrity_warns_about_overlap_before_recommending_assignment(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unknown-currency account that duplicates an existing one.
+
+    Must not be told to just assign a currency — that would admit its
+    duplicate rows into every total, which is the exact regression GH #410
+    reports.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    identity_idx = detail.find("accounts links run")
+    currency_idx = detail.find("accounts set")
+    assert identity_idx != -1, detail
+    assert currency_idx != -1, detail
+    assert identity_idx < currency_idx, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_plain_advice_unchanged_when_no_duplicate_overlap(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No duplicate-account overlap: the plain assign-a-currency advice stays as before."""
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'ACC1'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    assert result.detail == (
+        "1 account(s) have an unknown currency. Their amounts "
+        "are segmented out of every total until you assign one — "
+        "run `moneybin accounts set <account> --currency <ISO 4217>`, "
+        "then `moneybin transform`: the setting is app state, and "
+        "core.* only picks it up on the next transform, so this check "
+        "keeps failing until you re-run one. "
+        "MoneyBin never guesses a currency, because a wrong guess "
+        "would silently blend into a figure nothing could flag."
+    )
+
+
 @pytest.mark.unit
 def test_mirrored_accounts_at_one_institution_warn(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
