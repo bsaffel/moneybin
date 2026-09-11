@@ -10,7 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+New changes are collected in [changelog fragments](changelog.d/README.md).
+The legacy entries below are retained for the next release preparation.
+
 ### Fixed
+- **CLI categorization commits now retain reviewed merchant identities.**
+  `transactions categorize commit-from-file` now preserves
+  `canonical_merchant_name` while removing export-only fields, matching the
+  existing direct `commit` behavior. The file and stdin workflow retain
+  per-row validation, AI-source precedence, idempotency, and the post-commit
+  cascade. (PR #580)
+
+- **Profile configuration now honors database, data, and logging overrides.**
+  `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
+  from the environment or active profile dotenv now override profile defaults.
+  (PR #581)
+
 - **`sql_query` no longer masks a count of how many rows are missing a
   protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so
   `COUNT(*) - COUNT(last_four)` already returned the number of accounts with no
@@ -1743,6 +1758,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
+- **The storefront names the custody difference against Finances in ChatGPT.**
+  `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
+  "coming later" persona for the reader who wants a bank feed in a file they
+  hold rather than a vendor's database, with every claim scoped to file import
+  because Plaid keeps the feed when sync is on. The README's client list names
+  the ChatGPT desktop app in place of Gemini CLI, and the clients guide,
+  features page, and `mcp install` help stop listing the standalone Codex
+  desktop app that merged into it in July 2026. (#572)
 - **`moneybin stats` says what it is counting.** Every measurement printed a
   bare number under one alphabetical list, and every histogram printed its
   total with an `s` appended whether or not it measured time — so
@@ -4356,6 +4379,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ---
 
 
+
+<!-- towncrier release notes start -->
 
 ## [M1] — 2026-05-04 (Data Integrity)
 

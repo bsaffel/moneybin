@@ -43,10 +43,10 @@ moneybin mcp install --client claude-code --profile alice --yes
 # Print the snippet without writing
 moneybin mcp install --client claude-desktop --print
 
-# Codex (CLI / Desktop app / IDE extension all share ~/.codex/config.toml)
+# Codex (CLI and IDE extension share ~/.codex/config.toml)
 moneybin mcp install --client codex --yes
 
-# ChatGPT desktop app (same Codex-hosted config as above)
+# ChatGPT desktop app (hosts Codex; same config as above)
 moneybin mcp install --client chatgpt-desktop --yes
 
 # Workspace-local .vscode/mcp.json

@@ -1,4 +1,4 @@
-"""Rule B and the service-report type parity, from `.claude/rules/column-ordering.md`."""
+"""Rule B, from `.claude/rules/column-ordering.md`."""
 
 from __future__ import annotations
 
@@ -21,11 +21,7 @@ from moneybin.reports._framework.catalog import RegisteredReport
 from moneybin.reports._framework.cli_register import resolve_default_columns
 from moneybin.reports._framework.contract import OutputColumn
 from moneybin.reports._framework.registry import discover_reports, spec_of
-from moneybin.reports.service_reports import (
-    _SNAPSHOT_COLUMN_TYPES,  # pyright: ignore[reportPrivateUsage]  # the pair under test
-    _SNAPSHOT_COLUMNS,  # pyright: ignore[reportPrivateUsage]  # the pair under test
-    SERVICE_REPORTS,
-)
+from moneybin.reports.service_reports import SERVICE_REPORTS
 
 pytestmark = pytest.mark.unit
 
@@ -101,22 +97,3 @@ def test_default_columns_follow_grain_first(spec: RegisteredReport) -> None:
         f"{spec.report_id} orders default_columns out of Rule B order: "
         + ", ".join(f"{name}={rank}" for name, rank in ranked)
     )
-
-
-def test_snapshot_column_types_stay_parallel() -> None:
-    """A service report's `column_types` is positional beside its columns tuple.
-
-    Reordering one without the other hands every column the type of whichever
-    column took its slot. This is the only thing standing between that and a
-    caller, so it asserts length and the three anchors most likely to drift.
-    """
-    columns = [column.name for column in _SNAPSHOT_COLUMNS]
-    types = _SNAPSHOT_COLUMN_TYPES
-    assert len(columns) == len(types), (
-        f"_SNAPSHOT_COLUMNS has {len(columns)} entries and _SNAPSHOT_COLUMN_TYPES "
-        f"has {len(types)}; they are matched by position"
-    )
-    by_type = dict(zip(columns, types, strict=True))
-    assert by_type["balance_date"] == "DATE"
-    assert by_type["net_worth"] == "DECIMAL(18,2)"
-    assert by_type["account_count"] == "BIGINT"

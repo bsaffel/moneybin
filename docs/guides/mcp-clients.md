@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-10 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -28,8 +28,8 @@ The supported `--client` values are:
 - `windsurf`
 - `vscode`
 - `gemini-cli`
-- `codex` (CLI, Desktop app, IDE extension — all share `~/.codex/config.toml`)
-- `chatgpt-desktop` (the ChatGPT desktop app hosts Codex and shares that same file — installing for either covers both)
+- `codex` (CLI and IDE extension — both share `~/.codex/config.toml`)
+- `chatgpt-desktop` (the ChatGPT desktop app, which has hosted Codex since the two apps merged in July 2026 per [OpenAI's desktop app docs](https://learn.chatgpt.com/docs/app), shares that same file — installing for either covers both)
 
 ChatGPT on the **web** cannot reach a local MoneyBin. See [ChatGPT desktop app](#chatgpt-desktop-app).
 
@@ -203,9 +203,9 @@ moneybin mcp install --client gemini-cli -y
 - **Confirmation UI:** `gemini` prompts in the terminal before invoking tools by default. Tool annotations are not currently surfaced in the prompt text.
 - **`trust` is deliberately not set.** Gemini CLI supports a per-server `"trust"` boolean that, in its own words, "bypasses all tool call confirmations for this server (default: `false`)." MoneyBin does not write it. Our surface includes write tools — import, categorize, delete, refresh — and those should ask before they act on your financial data. Add it by hand only if you accept that every MoneyBin tool call runs unprompted.
 
-### Codex (CLI, Desktop app, IDE extension)
+### Codex (CLI, IDE extension)
 
-OpenAI's Codex products share `~/.codex/config.toml`. A single install covers all three surfaces.
+OpenAI's Codex surfaces share `~/.codex/config.toml`. A single install covers the CLI, the IDE extension, and the ChatGPT desktop app. The standalone Codex desktop app merged into the ChatGPT desktop app in July 2026; see [ChatGPT desktop app](#chatgpt-desktop-app).
 
 ```bash
 moneybin mcp install --client codex -y
@@ -215,17 +215,16 @@ moneybin mcp install --client codex -y
 - **Format:** TOML, under `[mcp_servers.<name>]`. The merge is done through `tomlkit`, so existing comments, key ordering, and unrelated settings in `config.toml` survive.
 - **Surfaces covered:**
   - **Codex CLI** — the `codex` command.
-  - **Codex Desktop app** — macOS / Windows app from [developers.openai.com/codex/app](https://developers.openai.com/codex/app).
   - **Codex IDE extension** — VS Code and JetBrains.
-- **Restart required:** Restart the Codex app or IDE extension after install. The CLI re-reads `config.toml` on each invocation.
-- **Server lifecycle:** Per-invocation for the CLI; per-app-instance for Desktop and the IDE extension.
-- **Confirmation UI:** Codex Desktop and the IDE extension render an approval dialog for tool calls. Today they don't visibly distinguish `destructiveHint` from non-destructive read tools — assume every approval is "yes, run this" without a softer "read-only" path.
+- **Restart required:** Restart the IDE extension after install. The CLI re-reads `config.toml` on each invocation.
+- **Server lifecycle:** Per-invocation for the CLI; per-app-instance for the IDE extension.
+- **Confirmation UI:** The IDE extension renders an approval dialog for tool calls. Today it doesn't visibly distinguish `destructiveHint` from non-destructive read tools — assume every approval is "yes, run this" without a softer "read-only" path.
 
 As an alternative install path, OpenAI also documents `codex mcp add` for managing servers from the CLI. The block `moneybin mcp install --client codex` writes is equivalent.
 
 ### ChatGPT desktop app
 
-The ChatGPT desktop app **hosts Codex**, and shares its MCP configuration: per OpenAI's docs, "The ChatGPT desktop app, Codex CLI, and IDE extension support MCP servers and share MCP configuration for the same Codex host." So it takes an ordinary local stdio server — the same `~/.codex/config.toml` entry the Codex CLI uses.
+The ChatGPT desktop app **hosts Codex** (the standalone Codex desktop app merged into it in July 2026, and Codex is now a mode beside Chat and Work), and shares its MCP configuration: per OpenAI's docs, "The ChatGPT desktop app, Codex CLI, and IDE extension support MCP servers and share MCP configuration for the same Codex host." So it takes an ordinary local stdio server — the same `~/.codex/config.toml` entry the Codex CLI uses.
 
 ```bash
 moneybin mcp install --client chatgpt-desktop -y
@@ -332,7 +331,7 @@ Every MoneyBin tool emits the four MCP protocol annotations (`readOnlyHint`, `de
 | Windsurf | Honored | Not currently distinguished in UI |
 | VS Code Copilot Chat | Honored | Version-dependent |
 | Gemini CLI | Not surfaced in prompt | Not surfaced in prompt |
-| Codex (CLI / Desktop / IDE) | Approval dialog uniform | Approval dialog uniform |
+| Codex (CLI / IDE) | Approval dialog uniform | Approval dialog uniform |
 | ChatGPT desktop app | Approval dialog uniform (Codex host) | Approval dialog uniform (Codex host) |
 
 Where the client doesn't render a distinct destructive-tool confirmation, treat every tool-call approval as "yes, run this." MoneyBin's tool descriptions name the mutation surface explicitly — read them before approving.
