@@ -122,7 +122,7 @@ def fct_exchange_rates_db(
 @pytest.mark.slow
 def test_a_provider_row_alone_resolves(fct_exchange_rates_db: Database) -> None:
     row = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'AAA'"
     ).fetchone()
     assert row is not None
@@ -138,15 +138,15 @@ def test_an_override_outranks_a_provider_row_on_the_same_date(
     fct_exchange_rates_db: Database,
 ) -> None:
     rows = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'BBB'"
     ).fetchall()
     assert len(rows) == 1
-    rate, source, provider = rows[0]
+    rate, source, rate_vendor = rows[0]
     assert float(rate) == pytest.approx(2.5000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert source == "override"
     # An override is user-authored, not sourced from a named feed.
-    assert provider is None
+    assert rate_vendor is None
 
 
 @pytest.mark.slow
@@ -154,14 +154,14 @@ def test_two_providers_on_one_day_resolve_by_freshest_write(
     fct_exchange_rates_db: Database,
 ) -> None:
     rows = fct_exchange_rates_db.execute(
-        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates "
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates "
         "WHERE from_currency = 'USD' AND to_currency = 'CCC'"
     ).fetchall()
     assert len(rows) == 1
-    rate, source, provider = rows[0]
+    rate, source, rate_vendor = rows[0]
     assert float(rate) == pytest.approx(3.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
     assert source == "provider"
-    assert provider == "exchangerate_host"
+    assert rate_vendor == "exchangerate_host"
 
 
 @pytest.mark.slow

@@ -126,7 +126,7 @@ def db(
 def test_an_override_on_a_publication_day_is_live_with_no_replan(db: Database) -> None:
     """Writing an override changes the view on the next query — no `sqlmesh run`."""
     before = db.execute(
-        "SELECT rate, rate_source, provider FROM core.fct_exchange_rates_effective "
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-09'"
     ).fetchone()
     assert before is not None
@@ -138,7 +138,7 @@ def test_an_override_on_a_publication_day_is_live_with_no_replan(db: Database) -
     )
 
     after = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-09'"
     ).fetchone()
@@ -184,7 +184,7 @@ def test_an_override_before_an_interior_gap_changes_every_carried_day(
     )
 
     rows = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'USD' AND to_currency = 'FFF' "
         "ORDER BY effective_date"
@@ -220,7 +220,7 @@ def test_an_override_on_an_unpriced_pair_is_still_visible(db: Database) -> None:
     )
 
     row = db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor, days_since_published "
         "FROM core.fct_exchange_rates_effective "
         "WHERE from_currency = 'GBP' AND to_currency = 'USD' AND effective_date = '2026-01-07'"
     ).fetchone()

@@ -171,7 +171,7 @@ def test_a_friday_observation_prices_the_weekend(
     fct_exchange_rates_daily_db: Database,
 ) -> None:
     rows = fct_exchange_rates_daily_db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor, days_since_published "
         "FROM core.fct_exchange_rates_daily "
         "WHERE from_currency = 'USD' AND to_currency = 'BBB' "
         "ORDER BY effective_date"
@@ -233,7 +233,7 @@ def test_identity_rows_span_the_balance_spine_domain(
     fct_exchange_rates_daily_db: Database,
 ) -> None:
     rows = fct_exchange_rates_daily_db.execute(
-        "SELECT effective_date, published_date, rate, rate_source, provider, days_since_published "
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor, days_since_published "
         "FROM core.fct_exchange_rates_daily "
         "WHERE from_currency = 'DDD' AND to_currency = 'DDD' "
         "ORDER BY effective_date"

@@ -75,7 +75,7 @@ SELECT
   from_currency, /* ISO 4217, upper (grain) */
   to_currency, /* ISO 4217, upper (grain) */
   rate_source_value AS rate_source, /* provider / override */
-  provider_name AS provider, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source = 'override' */
+  provider_name AS rate_vendor, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source = 'override' */
   rate, /* Multiply a from_currency amount by this to get to_currency */
   rate_date, /* The business day this rate was published for (grain) */
   updated_at /* When the winning row was recorded: loaded_at for a provider row, updated_at for an override */

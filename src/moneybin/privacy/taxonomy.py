@@ -882,6 +882,46 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "observation_source": DataClass.TXN_TYPE,
         "reconciliation_delta": DataClass.BALANCE,
     },
+    # The rate spine. Classed from ("app", "exchange_rate_overrides") rather
+    # than freshly argued: core.fct_exchange_rates unions that table with the
+    # provider cache, and fct_exchange_rates_effective resolves an override at
+    # read time, so an override's own date reaches both — the day the user
+    # actually converted money, which is why rate_date is TXN_DATE there and
+    # stays TXN_DATE here. fct_exchange_rates_daily carries no override row by
+    # construction, but takes the same classes: one vocabulary across the three
+    # models a caller may join interchangeably beats a per-model argument.
+    ("core", "fct_exchange_rates"): {
+        "from_currency": DataClass.CURRENCY,
+        "rate_vendor": DataClass.TXN_TYPE,
+        "rate": DataClass.CURRENCY,
+        "rate_date": DataClass.TXN_DATE,
+        "rate_source": DataClass.TXN_TYPE,
+        "to_currency": DataClass.CURRENCY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    ("core", "fct_exchange_rates_daily"): {
+        # A calendar day the spine densified to, not a day anything happened on.
+        # TXN_DATE anyway: the window it spans is bounded by the pair's own
+        # observations, and the sibling models' dates are TXN_DATE.
+        "days_since_published": DataClass.AGGREGATE,
+        "effective_date": DataClass.TXN_DATE,
+        "from_currency": DataClass.CURRENCY,
+        "rate_vendor": DataClass.TXN_TYPE,
+        "published_date": DataClass.TXN_DATE,
+        "rate": DataClass.CURRENCY,
+        "rate_source": DataClass.TXN_TYPE,
+        "to_currency": DataClass.CURRENCY,
+    },
+    ("core", "fct_exchange_rates_effective"): {
+        "days_since_published": DataClass.AGGREGATE,
+        "effective_date": DataClass.TXN_DATE,
+        "from_currency": DataClass.CURRENCY,
+        "rate_vendor": DataClass.TXN_TYPE,
+        "published_date": DataClass.TXN_DATE,
+        "rate": DataClass.CURRENCY,
+        "rate_source": DataClass.TXN_TYPE,
+        "to_currency": DataClass.CURRENCY,
+    },
     ("core", "fct_investment_lots"): {
         "lot_id": DataClass.RECORD_ID,
         "account_id": DataClass.RECORD_ID,

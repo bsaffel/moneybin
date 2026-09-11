@@ -71,7 +71,11 @@ WITH daily_with_overrides AS (
       THEN 'override'
       ELSE d.rate_source
     END AS rate_source,
-    CASE WHEN NOT oe.rate IS NULL OR NOT op.rate IS NULL THEN NULL ELSE d.provider END AS provider
+    CASE
+      WHEN NOT oe.rate IS NULL OR NOT op.rate IS NULL
+      THEN NULL
+      ELSE d.rate_vendor
+    END AS rate_vendor
   FROM core.fct_exchange_rates_daily AS d
   LEFT JOIN app.exchange_rate_overrides AS oe
     ON oe.from_currency = d.from_currency
@@ -127,7 +131,7 @@ WITH daily_with_overrides AS (
     CAST(s.effective_date - s.published_date AS INT) AS days_since_published,
     s.rate,
     'override' AS rate_source,
-    NULL::TEXT AS provider
+    NULL::TEXT AS rate_vendor
   FROM uncovered_spine AS s
   /* Grain guard: an uncovered override's own weekend hop can only reach a
      date the daily spine already covers for the same pair when a provider
@@ -160,7 +164,7 @@ WITH daily_with_overrides AS (
     days_since_published,
     rate,
     rate_source,
-    provider
+    rate_vendor
   FROM daily_with_overrides
   UNION ALL
   SELECT
@@ -171,14 +175,14 @@ WITH daily_with_overrides AS (
     days_since_published,
     rate,
     rate_source,
-    provider
+    rate_vendor
   FROM uncovered_rows
 )
 SELECT
   u.from_currency, /* ISO 4217, upper (grain) */
   u.to_currency, /* ISO 4217, upper (grain) */
   u.rate_source, /* provider / identity / override */
-  u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override */
+  u.rate_vendor, /* The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override */
   u.rate, /* Multiply a from_currency amount by this — the override when one won, else the daily spine's provider or identity rate */
   u.days_since_published, /* effective_date - published_date; 0 on a publication day or a same-day override */
   u.effective_date, /* The calendar day this rate is applied ON (grain) */

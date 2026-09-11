@@ -123,7 +123,7 @@ WITH provider_obs AS (
     s.effective_date,
     LAST_VALUE(o.rate_date IGNORE NULLS) OVER pair_order AS published_date,
     LAST_VALUE(o.rate IGNORE NULLS) OVER pair_order AS rate,
-    LAST_VALUE(o.provider_name IGNORE NULLS) OVER pair_order AS provider,
+    LAST_VALUE(o.provider_name IGNORE NULLS) OVER pair_order AS rate_vendor,
     'provider' AS rate_source
   FROM pair_spine AS s
   LEFT JOIN provider_obs AS o
@@ -160,7 +160,7 @@ WITH provider_obs AS (
     d.effective_date::DATE AS effective_date,
     d.effective_date::DATE AS published_date,
     1::DECIMAL(18, 8) AS rate,
-    NULL::TEXT AS provider,
+    NULL::TEXT AS rate_vendor,
     'identity' AS rate_source
   FROM identity_currencies AS c, balances_domain AS b, GENERATE_SERIES(b.first_date, b.last_date, INTERVAL '1' DAY) AS d(effective_date)
 ), unioned AS (
@@ -170,7 +170,7 @@ WITH provider_obs AS (
     effective_date,
     published_date,
     rate,
-    provider,
+    rate_vendor,
     rate_source
   FROM provider_filled
   UNION ALL
@@ -180,7 +180,7 @@ WITH provider_obs AS (
     effective_date,
     published_date,
     rate,
-    provider,
+    rate_vendor,
     rate_source
   FROM identity_rows
 )
@@ -188,7 +188,7 @@ SELECT
   u.from_currency, /* ISO 4217, upper (grain) */
   u.to_currency, /* ISO 4217, upper (grain) */
   u.rate_source, /* provider / identity — never override; see the header note */
-  u.provider, /* The named feed behind a provider row (e.g. 'frankfurter'), carried forward with the rate it priced; NULL when rate_source = 'identity' */
+  u.rate_vendor, /* The named feed behind a provider row (e.g. 'frankfurter'), carried forward with the rate it priced; NULL when rate_source = 'identity' */
   u.rate, /* Multiply a from_currency amount by this */
   CAST(u.effective_date - u.published_date AS INT) AS days_since_published, /* effective_date - published_date; 0 on a publication day */
   u.effective_date, /* The calendar day this rate is applied ON (grain) */
