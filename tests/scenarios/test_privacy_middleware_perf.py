@@ -37,13 +37,14 @@ import statistics
 import time
 from collections.abc import Callable, Generator
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any
 from unittest.mock import patch
 
 import duckdb
 import pytest
 
-from moneybin.database import DatabaseNotInitializedError, get_database
+from moneybin.database import Database, DatabaseNotInitializedError, get_database
 from moneybin.mcp import decorator as mcp_decorator
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.mcp.tools.accounts import accounts
@@ -91,6 +92,45 @@ _PERSONA_SETUP_HINT = (
     "`moneybin synthetic generate family --seed 8229 --years 3 "
     "&& moneybin transform apply` first"
 )
+_PERF_BUDGET_CATEGORY = "Housing & Utilities"
+_PERF_BUDGET_AMOUNT = Decimal("2500.00")
+
+
+def _seed_active_perf_budget(db: Database) -> None:
+    """Seed one active budget through the supported service before timing it."""
+    service = BudgetService(db)
+    service.set_budget(
+        _PERF_BUDGET_CATEGORY,
+        _PERF_BUDGET_AMOUNT,
+        start_month=date.today().strftime("%Y-%m"),
+        actor="cli",
+    )
+    assert service.status().categories, "perf budget flow requires an active category"
+
+
+async def _call_raw_in_event_loop(raw: Callable[[], object]) -> object:
+    """Give static raw samples the protected sync-body worker boundary."""
+    return await asyncio.to_thread(raw)
+
+
+def _run_static_raw(runner: asyncio.Runner, raw: Callable[[], object]) -> object:
+    """Run one raw sync callback on the reused timed-sample loop."""
+    return runner.run(_call_raw_in_event_loop(raw))
+
+
+def _log_timing_summary(
+    timing_summary: list[tuple[str, float, float, float, float, float, float]],
+    *,
+    total_raw_p50: float,
+    total_protected_p50: float,
+    total_pct: float,
+) -> None:
+    """Make complete timing evidence visible in default CI output."""
+    logger.warning(
+        "privacy protected-egress timings: "
+        f"{timing_summary}; sum-of-p50 raw {total_raw_p50:.2f}ms, "
+        f"protected {total_protected_p50:.2f}ms, overhead {total_pct:+.1f}%"
+    )
 
 
 @pytest.fixture(scope="module")
@@ -110,6 +150,7 @@ def build_perf_persona() -> Generator[None, None, None]:
     with scenario_env(scenario) as (db, _tmpdir, env):
         run_step("generate", scenario.setup, db, env=env)
         run_step("transform", scenario.setup, db, env=env)
+        _seed_active_perf_budget(db)
         db.close()
         assert _persona_db_skip_reason() is None
         yield
@@ -241,10 +282,6 @@ def test_privacy_middleware_within_budget() -> None:
         assert protected.error is None
         return protected
 
-    async def _call_raw_in_event_loop(raw: Callable[[], object]) -> object:
-        """Give static raw samples the protected call's event-loop boundary."""
-        return raw()
-
     def _measure_counterbalanced(
         name: str, raw: Callable[[], object], protected: Callable[[], object]
     ) -> tuple[FlowResult, FlowResult]:
@@ -314,39 +351,43 @@ def test_privacy_middleware_within_budget() -> None:
     assert _audit_event_count() == spending_audit_before + 1
     assert _audit_event_count() >= audit_before + 5
 
-    flows = {
-        "transactions_get": (
-            lambda: asyncio.run(_call_raw_in_event_loop(_transactions_raw)),
-            lambda: _require_protected_success(asyncio.run(_transactions_protected())),
-        ),
-        "reports_spending": (
-            _spending_raw,
-            lambda: _require_protected_success(_spending_protected()),
-        ),
-        "accounts": (
-            lambda: asyncio.run(_call_raw_in_event_loop(_accounts_raw)),
-            lambda: _require_protected_success(asyncio.run(_accounts_protected())),
-        ),
-        "budget_status_service": (
-            lambda: asyncio.run(_call_raw_in_event_loop(_budget_raw)),
-            lambda: _require_protected_success(asyncio.run(_budget_protected())),
-        ),
-        "reports_networth_history": (
-            lambda: asyncio.run(_call_raw_in_event_loop(_networth_raw)),
-            lambda: _require_protected_success(asyncio.run(_networth_protected())),
-        ),
-    }
-
     measurements: list[tuple[str, FlowResult, FlowResult, float, float]] = []
     total_raw_p50 = 0.0
     total_protected_p50 = 0.0
-    for name, (raw, protected) in flows.items():
-        raw_result, protected_result = _measure_counterbalanced(name, raw, protected)
-        d_p50 = protected_result.p50_ms - raw_result.p50_ms
-        d_p99 = protected_result.p99_ms - raw_result.p99_ms
-        measurements.append((name, raw_result, protected_result, d_p50, d_p99))
-        total_raw_p50 += raw_result.p50_ms
-        total_protected_p50 += protected_result.p50_ms
+    with asyncio.Runner() as runner:
+        flows = {
+            "transactions_get": (
+                lambda: _run_static_raw(runner, _transactions_raw),
+                lambda: _require_protected_success(
+                    runner.run(_transactions_protected())
+                ),
+            ),
+            "reports_spending": (
+                _spending_raw,
+                lambda: _require_protected_success(_spending_protected()),
+            ),
+            "accounts": (
+                lambda: _run_static_raw(runner, _accounts_raw),
+                lambda: _require_protected_success(runner.run(_accounts_protected())),
+            ),
+            "budget_status_service": (
+                lambda: _run_static_raw(runner, _budget_raw),
+                lambda: _require_protected_success(runner.run(_budget_protected())),
+            ),
+            "reports_networth_history": (
+                lambda: _run_static_raw(runner, _networth_raw),
+                lambda: _require_protected_success(runner.run(_networth_protected())),
+            ),
+        }
+        for name, (raw, protected) in flows.items():
+            raw_result, protected_result = _measure_counterbalanced(
+                name, raw, protected
+            )
+            d_p50 = protected_result.p50_ms - raw_result.p50_ms
+            d_p99 = protected_result.p99_ms - raw_result.p99_ms
+            measurements.append((name, raw_result, protected_result, d_p50, d_p99))
+            total_raw_p50 += raw_result.p50_ms
+            total_protected_p50 += protected_result.p50_ms
 
     total_pct = (
         ((total_protected_p50 - total_raw_p50) / total_raw_p50) * 100.0
@@ -365,10 +406,11 @@ def test_privacy_middleware_within_budget() -> None:
         )
         for name, raw, protected, p50_delta, p99_delta in measurements
     ]
-    logger.info(
-        "privacy protected-egress timings: "
-        f"{timing_summary}; sum-of-p50 raw {total_raw_p50:.2f}ms, "
-        f"protected {total_protected_p50:.2f}ms, overhead {total_pct:+.1f}%"
+    _log_timing_summary(
+        timing_summary,
+        total_raw_p50=total_raw_p50,
+        total_protected_p50=total_protected_p50,
+        total_pct=total_pct,
     )
     for name, raw_result, protected_result, d_p50, d_p99 in measurements:
         assert d_p50 <= P50_BUDGET_MS, (

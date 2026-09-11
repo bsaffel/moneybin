@@ -538,10 +538,10 @@ builds the persona. That dispatcher retries external telemetry delivery, which
 is outside MoneyBin's privacy egress and would otherwise perturb local p99
 samples.
 
-Static raw samples also enter an event loop before their callback runs, matching
-the protected callback's `asyncio.run` boundary. The startup cost is therefore
-controlled rather than attributed to the decorator; FastMCP normally supplies
-the loop in production.
+Static raw samples enter a reused event loop and run their synchronous callback
+via `asyncio.to_thread`, matching the protected decorator's worker boundary.
+The loop and executor lifecycle sit outside timed samples, as FastMCP normally
+supplies the loop in production.
 
 ### Persona
 
@@ -575,7 +575,7 @@ by its decorator, and its report-derived result supplies the per-call tier.
 | `transactions` | `TransactionService.get(limit=100)` | high (static) | ~100-row list |
 | `reports(report_id="core:spending")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
 | `accounts` | `AccountService.list_accounts()` | critical (static) | ~4-row list (critical fields masked) |
-| Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool` | high | aggregate + per-budget rows; no public route is added |
+| Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool`; setup creates one active `Housing & Utilities` budget through `BudgetService.set_budget()` | high | aggregate + nonempty per-budget rows; no public route is added |
 | Net-worth history (test-only typed egress) | `NetworthService.history()` under `@mcp_tool`; the public route is `reports(report_id="core:networth_history", parameters={...})` | high | balance time-series |
 
 The gate proves each protected callback produces the expected redacted result

@@ -159,7 +159,8 @@ test-scenarios: venv ## Development: Run all whole-pipeline scenarios except per
 
 test-perf: venv ## Development: Run privacy performance budgets serially
 	@echo "$(BLUE)🧪 Running privacy performance budgets...$(RESET)"
-	@uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
+	@uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v \
+		-o log_cli=true --log-cli-level=INFO
 
 generate-report-classes: venv ## Development: Regenerate the derived reports.* privacy-class module; commit the result
 	@echo "$(BLUE)🔐 Regenerating derived report-class module...$(RESET)"

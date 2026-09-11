@@ -356,7 +356,9 @@ jobs:
           # The persona fixture creates an encrypted database before measuring.
           # CI runners do not have a keyring backend, so use an ephemeral key.
           MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
-        run: uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
+        run: >-
+          uv run pytest tests/scenarios/test_privacy_middleware_perf.py -m perf -n 0 -v
+          -o log_cli=true --log-cli-level=INFO
 
   record-test-durations:
     name: Record CI test durations

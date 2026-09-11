@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import threading
 from collections.abc import Generator
 from contextlib import contextmanager
+from types import SimpleNamespace
+from typing import cast
+from unittest.mock import MagicMock
 
 import pytest
 
-from moneybin.database import DatabaseKeyError, DatabaseNotInitializedError
+from moneybin.database import Database, DatabaseKeyError, DatabaseNotInitializedError
+from moneybin.services.budget_service import BudgetService
 from tests.scenarios import test_privacy_middleware_perf as perf
 
 pytestmark = pytest.mark.unit
@@ -146,3 +153,75 @@ def test_persona_probe_reraises_malformed_profile_config(
 
     with pytest.raises(ValueError, match="Configuration error"):
         perf._persona_db_skip_reason()  # pyright: ignore[reportPrivateUsage]
+
+
+def test_perf_budget_seed_uses_service_and_requires_categories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The budget perf flow must exercise an active, nonempty status payload."""
+    service = MagicMock()
+    service.status.return_value = SimpleNamespace(categories=[object()])
+
+    def _budget_service(_: Database) -> BudgetService:
+        return cast(BudgetService, service)
+
+    monkeypatch.setattr(perf, "BudgetService", _budget_service)
+
+    perf._seed_active_perf_budget(cast(Database, object()))  # pyright: ignore[reportPrivateUsage]
+
+    service.set_budget.assert_called_once()
+    service.status.assert_called_once()
+
+
+def test_perf_budget_seed_rejects_empty_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty budget status cannot silently become a timed perf flow."""
+    service = MagicMock()
+    service.status.return_value = SimpleNamespace(categories=[])
+
+    def _budget_service(_: Database) -> BudgetService:
+        return cast(BudgetService, service)
+
+    monkeypatch.setattr(perf, "BudgetService", _budget_service)
+
+    with pytest.raises(AssertionError, match="active category"):
+        perf._seed_active_perf_budget(cast(Database, object()))  # pyright: ignore[reportPrivateUsage]
+
+
+def test_raw_static_callback_reuses_the_shared_worker_boundary() -> None:
+    """Static raw samples retain the decorator's sync-worker boundary."""
+    main_thread = threading.get_ident()
+
+    with asyncio.Runner() as runner:
+        first_worker = perf._run_static_raw(  # pyright: ignore[reportPrivateUsage]
+            runner, threading.get_ident
+        )
+        second_worker = perf._run_static_raw(  # pyright: ignore[reportPrivateUsage]
+            runner, threading.get_ident
+        )
+
+    assert first_worker != main_thread
+    assert second_worker == first_worker
+
+
+def test_perf_timing_summary_is_visible_at_warning_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Successful CI output retains all five flow timings for later diagnosis."""
+    measurements = [
+        ("transactions_get", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("reports_spending", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("accounts", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("budget_status_service", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("reports_networth_history", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+    ]
+
+    with caplog.at_level(logging.WARNING, logger=perf.__name__):
+        perf._log_timing_summary(  # pyright: ignore[reportPrivateUsage]
+            measurements, total_raw_p50=5.0, total_protected_p50=6.0, total_pct=20.0
+        )
+
+    assert caplog.records[-1].levelno == logging.WARNING
+    for name, *_ in measurements:
+        assert name in caplog.text
