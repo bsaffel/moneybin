@@ -624,6 +624,8 @@ def test_google_oauth_authorizes_with_the_shipped_client_id_and_secret_pair(
         granted_scopes=[GOOGLE_SHEETS_READ_SCOPE],
     )
     monkeypatch.setattr(InstalledAppFlow, "from_client_config", from_config)
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("MONEYBIN_GSHEET__OAUTH_CLIENT_SECRET", raising=False)
     client = GoogleOAuthClient(_store_with({}), MoneyBinSettings.model_validate({}))
 
     client.authorize()

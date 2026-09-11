@@ -1671,6 +1671,29 @@ def test_augassign_does_not_alias_its_rhs_name(tmp_path: Path) -> None:
     assert _scan_source(tmp_path, source) == []
 
 
+def test_augassign_records_the_added_text_within_a_function(tmp_path: Path) -> None:
+    """Positive control for the test above — `x += "..."` records the literal.
+
+    Pairs with `test_augassign_does_not_alias_its_rhs_name`: that test pins
+    what the `ast.AugAssign` branch must NOT do (alias a Name RHS), this one
+    pins what it DOES do — record a literal RHS onto the target name so it
+    still reaches `execute()`.
+    """
+    source = (
+        "def f(db):\n"
+        '    query = ""\n'
+        '    query += "SELECT * FROM core.foo"\n'
+        "    db.execute(query)\n"
+    )
+    assert _scan_source(tmp_path, source) == [(3, "FROM", "core.foo")]
+
+
+def test_augassign_records_the_added_text_at_module_scope(tmp_path: Path) -> None:
+    """Control for the test above — the same recording holds at module scope."""
+    source = 'query = ""\nquery += "SELECT * FROM core.foo"\ndb.execute(query)\n'
+    assert _scan_source(tmp_path, source) == [(2, "FROM", "core.foo")]
+
+
 def test_fstring_interpolation_placeholder_does_not_hide_adjacent_literal(
     tmp_path: Path,
 ) -> None:

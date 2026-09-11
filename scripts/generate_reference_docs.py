@@ -1011,18 +1011,6 @@ def _settings_rows(model: type[BaseModel], prefix: list[str]) -> list[list[str]]
     return rows
 
 
-#: Sections `MoneyBinSettings.__init__` passes whole from the active profile.
-#: A constructor value is the highest-precedence source, so nothing in these
-#: sections can be set from the environment or the dotenv file.
-_PROFILE_BOUND_SECTIONS = {"database", "data", "logging"}
-_PROFILE_BOUND_NOTE = (
-    "`MoneyBinSettings` builds this whole section from the active profile's "
-    "directory when it is constructed, and a constructor value outranks the "
-    "environment and the dotenv file, so the variables below are not read "
-    "today: every profile runs on the defaults shown."
-)
-
-
 def render_configuration(settings_cls: type[BaseSettings]) -> str:
     """Render the configuration reference from the settings model."""
     config = settings_cls.model_config
@@ -1063,8 +1051,6 @@ def render_configuration(settings_cls: type[BaseSettings]) -> str:
         lines += [f"## {key}", ""]
         if description:
             lines += [description, ""]
-        if field_name in _PROFILE_BOUND_SECTIONS:
-            lines += [_PROFILE_BOUND_NOTE, ""]
         lines += _table(
             ["Variable", "Type", "Default", "Description"],
             _settings_rows(model, [field_name]),

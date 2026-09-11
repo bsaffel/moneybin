@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-10 -->
 # Where MoneyBin Fits
 
 Choosing a personal-finance platform is a high-switching-cost decision — your data, your categorization history, the habits you build around it. This page is the honest version: what MoneyBin is, and who should use something else.
@@ -28,9 +28,10 @@ Honest mismatches matter more than feature checklists. If any of these describe 
 - **You want a proven real-broker 1099-B tie-out.** Use [Wealthfolio](https://wealthfolio.app/), [Beancount](https://beancount.github.io/), or [Portfolio Performance](https://www.portfolio-performance.info/) if that trail matters today. MoneyBin prices holdings from a connected broker's close, a Tiingo or CoinGecko feed, or a price you set by hand, and computes cost basis under four methods (FIFO, HIFO, specific-ID, average) — checked against a hand-labeled fixture, not yet against a real broker's 1099-B.
 - **You need realized FX gain/loss on currency conversions today.** Use [Firefly III](https://www.firefly-iii.org/) or [Beancount](https://beancount.github.io/). MoneyBin preserves each transaction's original currency and converts net worth, balance drift, and large-transactions reports to one display currency; a deliberate conversion's realized gain/loss isn't computed yet.
 - **You want a battle-tested self-host stack you can deploy this afternoon.** Use [Firefly III](https://www.firefly-iii.org/) or [Sure](https://github.com/we-promise/sure) — MoneyBin's container story is on the roadmap, not in the box.
+- **You want zero setup and don't mind your bank feed living in a vendor's database.** Use [Finances in ChatGPT](https://help.openai.com/en/articles/20001222-finances-in-chatgpt) (Plus and Pro plans, US only today). MoneyBin is the opposite bet: import from OFX, QFX, or CSV and your accounts live in an encrypted file on your machine and nowhere else. Turn on Plaid sync and Plaid keeps the feed too; the [threat model](guides/threat-model.md#plaid-itself-when-you-use-bank-direct-sync) says exactly what it holds.
 
 ## A note on maturity
 
-MoneyBin is **pre-v1** and in daily use by its author. The tools above have been refined for years. If you need a finished, polished product right now, one of them is the safer bet — come back when v1 lands. If you'd rather get in early on the local-first, AI-native, fully-queryable approach and tolerate some rough edges, that's exactly who MoneyBin is for today.
+MoneyBin is **pre-v1** and in daily use by its author. Most of the tools above have been refined for years. If you need a finished, polished product right now, one of them is the safer bet — come back when v1 lands. If you'd rather get in early on the local-first, AI-native, fully-queryable approach and tolerate some rough edges, that's exactly who MoneyBin is for today.
 
 For the persona-by-persona breakdown — including the migration paths from each tool — see [Who MoneyBin Is For](audience.md).

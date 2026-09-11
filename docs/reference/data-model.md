@@ -559,14 +559,16 @@ All non-transfer transactions with z-scores against account and category baselin
 |---|---|---|
 | `transaction_id` | VARCHAR | Joinable to `core.fct_transactions.transaction_id`. |
 | `account_id` | VARCHAR | Owning account. |
+| `merchant_id` | VARCHAR | FK → `core.dim_merchants.merchant_id`. NULL when no canonical merchant was resolved. |
 | `account_name` | VARCHAR | Resolved display name. |
 | `merchant_normalized` | VARCHAR | Resolved merchant; NULL when not curated. |
 | `description` | VARCHAR | Source description. |
 | `category` | VARCHAR | Spending category; NULL if uncategorized. |
+| `currency_code` | VARCHAR | ISO 4217 the amount is denominated in; NULL is the unknown-currency segment, never resolved to the home currency. |
 | `txn_date` | DATE | Transaction date. |
 | `amount_zscore_account` | DECIMAL | Modified z-score relative to account median + MAD. NULL when MAD = 0. |
 | `amount_zscore_category` | DECIMAL | Modified z-score relative to category median + MAD; NULL when category has fewer than 5 transactions or MAD = 0. |
-| `is_top_100` | BOOLEAN | TRUE if in the top 100 by `ABS(amount)` overall. |
+| `is_top_100` | BOOLEAN | TRUE if in the top 100 by `ABS(amount)` among transactions sharing this `currency_code`. |
 | `amount` | DECIMAL(18,2) | Signed (source sign preserved). |
 
 ### `reports.balance_drift`
