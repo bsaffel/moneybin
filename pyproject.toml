@@ -196,6 +196,7 @@ moneybin = "moneybin.cli.main:main"
 # Documentation: https://peps.python.org/pep-0735/
 # Modern dependency groups standard (PEP 735) for optional/development dependencies
 dev = [
+    "towncrier>=26.9.0,<27",
     # Code quality and formatting
     "ruff>=0.15.10",
     "pyright>=1.1.408",
