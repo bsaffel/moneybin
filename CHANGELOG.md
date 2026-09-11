@@ -14,14 +14,6 @@ New changes are collected in [changelog fragments](changelog.d/README.md).
 The legacy entries below are retained for the next release preparation.
 
 ### Fixed
-- **`system doctor`'s currency-integrity check now warns about account overlap
-  before recommending a currency assignment.** When an unknown-currency
-  account mirrors an existing account's transactions, the remediation now
-  says so and points at account-identity resolution first — assigning a
-  currency to a duplicate account before merging it would have admitted its
-  duplicate rows into every total. Accounts with no such overlap keep the
-  original assign-a-currency advice unchanged. (PR #TBD)
-
 - **CLI categorization commits now retain reviewed merchant identities.**
   `transactions categorize commit-from-file` now preserves
   `canonical_merchant_name` while removing export-only fields, matching the

@@ -259,6 +259,7 @@ class DoctorService:
     def __init__(self, db: Database) -> None:
         """Store the open database connection for invariant queries."""
         self._db = db
+        self._duplicate_account_pairs: list[tuple[str, str, float]] | None = None
 
     def run_all(self, verbose: bool = False, full: bool = False) -> DoctorReport:
         """Run all invariants and return a DoctorReport.
@@ -2499,7 +2500,15 @@ class DoctorService:
         unknown-currency account is one side of a pair here before telling the
         user to assign it a currency. Raises on core-layer unavailability;
         callers translate that into their own ``skipped`` status.
+
+        Memoized per instance because both callers run in one ``run_all`` pass
+        and this self-joins the fact view — the pruning CTE below exists to keep
+        that cost down, which a second execution would hand straight back. The
+        cache is safe only because a DoctorService is built per command and
+        never outlives the report it produces.
         """
+        if self._duplicate_account_pairs is not None:
+            return self._duplicate_account_pairs
         settings = get_settings()
         rows = self._db.execute(
             f"""
@@ -2583,7 +2592,10 @@ class DoctorService:
                 settings.doctor.duplicate_account_overlap_ratio,
             ],
         ).fetchall()
-        return [(str(a), str(b), float(ratio)) for a, b, ratio in rows]
+        self._duplicate_account_pairs = [
+            (str(a), str(b), float(ratio)) for a, b, ratio in rows
+        ]
+        return self._duplicate_account_pairs
 
     def _run_duplicate_account_overlap(self) -> InvariantResult:
         """One real account imported under two canonical identities.
@@ -3183,40 +3195,25 @@ class DoctorService:
                     name=name,
                     status="fail",
                     detail=(
-                        f"{', '.join(parts)} have an unknown currency. "
-                        f"{len(overlapping_unknown_accounts)} of the "
-                        "unknown-currency account(s) mirror the transactions of "
-                        "an existing account at the same institution — most "
-                        "likely the same account imported twice, and the "
-                        "unknown currency is the only reason its duplicate rows "
-                        "are excluded from every total today. Resolve account "
-                        "identity FIRST, before assigning a currency: run "
-                        "`moneybin accounts links run`, review with `accounts "
-                        "links pending`, and decide with `accounts links set "
-                        "<decision_id> --into <account_id>` (or `--standalone` "
-                        "if the accounts are genuinely distinct). Assigning a "
-                        "currency to a duplicate before that merge would admit "
-                        "its rows into every total. Only once identity is "
-                        "settled, assign a currency to any account confirmed "
-                        "distinct with `moneybin accounts set <account> "
-                        "--currency <ISO 4217>`, then `moneybin transform`. "
-                        "MoneyBin never guesses a currency, because a wrong "
-                        "guess would silently blend into a figure nothing "
-                        "could flag."
+                        f"{', '.join(parts)} have an unknown currency, and "
+                        f"{len(overlapping_unknown_accounts)} of those "
+                        "account(s) mirror an existing account's transactions "
+                        "at the same institution — most likely one account "
+                        "imported twice. The unknown currency is the only "
+                        "thing holding those duplicate rows out of every "
+                        "total, so resolve account identity FIRST: run "
+                        "`moneybin accounts links run`, then decide with "
+                        "`moneybin accounts links set <decision_id> --into "
+                        "<account_id>` (or `--standalone` if they are "
+                        "genuinely distinct). Only then assign a currency with "
+                        "`moneybin accounts set <account> --currency "
+                        "<ISO 4217>` and re-run `moneybin transform`."
                     ),
-                    # Prefixed by grain, matching orphan_app_state's note:/tag:
-                    # convention: the id kinds need different fixes, and a
-                    # recipe reading a bare mixed list cannot tell which is
-                    # which without re-querying.
                     affected_ids=[
                         *(f"account:{account_id}" for account_id in unknown_accounts),
                         *(
                             f"transaction:{transaction_id}"
                             for transaction_id in unknown_transactions
-                        ),
-                        *(
-                            f"overlap:{account_id} (unknown currency)"
-                            for account_id in overlapping_unknown_accounts
                         ),
                     ],
                 )
