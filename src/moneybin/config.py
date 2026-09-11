@@ -1051,30 +1051,6 @@ class MoneyBinSettings(BaseSettings):
         # Update kwargs with normalized profile name
         kwargs["profile"] = profile
 
-        # Resolve all relative paths against the base directory so they work
-        # regardless of the process's working directory (e.g. Claude Desktop MCP).
-        base = get_base_dir()
-        profile_dir = base / "profiles" / profile
-
-        # Set database path if not explicitly provided
-        if "database" not in kwargs:
-            kwargs["database"] = DatabaseConfig(
-                path=profile_dir / "moneybin.duckdb",
-                backup_path=profile_dir / "backups",
-                temp_directory=profile_dir / "temp",
-            )
-
-        if "data" not in kwargs:
-            kwargs["data"] = DataConfig(
-                raw_data_path=profile_dir / "raw",
-                temp_data_path=profile_dir / "temp",
-            )
-
-        if "logging" not in kwargs:
-            kwargs["logging"] = LoggingConfig(
-                log_file_path=profile_dir / "logs" / "moneybin.log"
-            )
-
         super().__init__(**kwargs)
 
     @classmethod
@@ -1115,12 +1091,30 @@ class MoneyBinSettings(BaseSettings):
             env_file_encoding="utf-8",
         )
 
-        # Return sources in priority order (later sources override earlier ones)
+        profile_dir = get_base_dir() / "profiles" / profile
+
+        def profile_path_defaults() -> dict[str, Any]:
+            """Provide profile paths after operator configuration sources."""
+            return {
+                "database": {
+                    "path": profile_dir / "moneybin.duckdb",
+                    "backup_path": profile_dir / "backups",
+                    "temp_directory": profile_dir / "temp",
+                },
+                "data": {
+                    "raw_data_path": profile_dir / "raw",
+                    "temp_data_path": profile_dir / "temp",
+                },
+                "logging": {"log_file_path": profile_dir / "logs" / "moneybin.log"},
+            }
+
+        # Return sources in priority order: the first source wins.
         return (
             init_settings,
             env_settings,
             custom_dotenv,
             file_secret_settings,
+            profile_path_defaults,
         )
 
     model_config = SettingsConfigDict(
