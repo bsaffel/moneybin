@@ -12,7 +12,9 @@ from typing import Any
 import pytest
 import yaml
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
@@ -1561,6 +1563,20 @@ def test_categorize_assist_clamps_to_max_batch_size(
 class TestSetCategoryAudit:
     """Audit emission for set_category / clear_category (Req 25-31)."""
 
+    @pytest.fixture(autouse=True)
+    def _live_transaction(self, db: Database) -> None:
+        """Seed the transaction these audit tests categorize.
+
+        They assert on audit rows, not on id resolution, but a curation write
+        now refuses an id that names no transaction (issue #538) — so the id
+        has to exist for the audit assertions to be reachable at all.
+        """
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date) "
+            "VALUES ('T1', -5, '2026-05-01')"
+        )
+
     @pytest.mark.unit
     def test_set_category_emits_audit_event(self, db: Database) -> None:
         svc = CategorizationService(db)
@@ -1618,12 +1634,31 @@ class TestSetCategoryAudit:
 
     @pytest.mark.unit
     def test_clear_category_noop_when_absent_emits_no_event(self, db: Database) -> None:
+        """A live transaction with no category clears silently, emitting no event.
+
+        Uses a transaction that exists: this pins the *absent category* no-op,
+        and an id naming no transaction at all is a separate case that now
+        refuses outright — see ``test_clear_category_refuses_an_unknown_id``.
+        """
         svc = CategorizationService(db)
-        svc.clear_category("T-missing", actor="cli")
+        svc.clear_category("T1", actor="cli")
         cnt = db.conn.execute(
             "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.clear'"
         ).fetchone()
         assert cnt is not None and cnt[0] == 0
+
+    @pytest.mark.unit
+    def test_clear_category_refuses_an_unknown_id(self, db: Database) -> None:
+        """Clearing against an id that names no transaction refuses (issue #538).
+
+        This used to succeed as a silent no-op. The refusal is the deliberate
+        change: a caller who mistypes an id now learns it, instead of being
+        told a clear succeeded against nothing.
+        """
+        svc = CategorizationService(db)
+        with pytest.raises(UserError) as excinfo:
+            svc.clear_category("T-missing", actor="cli")
+        assert excinfo.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
 
     @pytest.mark.unit
     def test_set_category_overwrite_captures_before_and_after(
