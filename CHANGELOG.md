@@ -1758,18 +1758,6 @@ The legacy entries below are retained for the next release preparation.
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
-- **Four report ids and CLI commands now match their view names.** `reports
-  cashflow` is `reports cash-flow` (`core:cashflow` → `core:cash_flow`),
-  `reports spending` is `reports spending-trend` (`core:spending` →
-  `core:spending_trend`), `reports recurring` is `reports
-  recurring-subscriptions` (`core:recurring` → `core:recurring_subscriptions`),
-  and `reports merchants` is `reports merchant-activity` (`core:merchants` →
-  `core:merchant_activity`). No `reports.*` view is renamed — only the id and
-  the command derived from it. The old spellings are unregistered; a script or
-  saved prompt using them fails with an unknown-command or unregistered-report
-  error and must switch to the new name. A test now holds the rule for every
-  runner in `ALL_REPORTS` — the id's name half, the spec name, and the view
-  name must agree — so the next report cannot re-introduce the drift.
 - **The storefront names the custody difference against Finances in ChatGPT.**
   `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
   "coming later" persona for the reader who wants a bank feed in a file they
