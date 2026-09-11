@@ -10,12 +10,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+New changes are collected in [changelog fragments](changelog.d/README.md).
+The legacy entries below are retained for the next release preparation.
+
 ### Fixed
-- **A bundle export's manifest now names the build that produced it.**
-  `manifest.provenance` previously wrote `null` for a bundle export while a
-  report export populated it, leaving a bundle artifact with no record of
-  which code wrote it. Both subject kinds now carry the same version and
-  revision `system_status.overview.build` reports. (PR #TBD)
+- **CLI categorization commits now retain reviewed merchant identities.**
+  `transactions categorize commit-from-file` now preserves
+  `canonical_merchant_name` while removing export-only fields, matching the
+  existing direct `commit` behavior. The file and stdin workflow retain
+  per-row validation, AI-source precedence, idempotency, and the post-commit
+  cascade. (PR #580)
 
 - **Profile configuration now honors database, data, and logging overrides.**
   `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
@@ -4375,6 +4379,8 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
 ---
 
 
+
+<!-- towncrier release notes start -->
 
 ## [M1] — 2026-05-04 (Data Integrity)
 
