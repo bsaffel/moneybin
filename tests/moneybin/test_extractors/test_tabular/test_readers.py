@@ -1,5 +1,6 @@
 """Tests for Stage 2 file readers."""
 
+import datetime
 from pathlib import Path
 
 import polars as pl
@@ -668,6 +669,36 @@ class TestHeaderlessAcrossFormats:
         for row in self._ROWS:
             ws.append(list(row))
         path = tmp_path / "headerless.xlsx"
+        wb.save(path)
+
+        info = FormatInfo(file_type="excel")
+        result = read_file(path, info)
+        assert result.has_header is False
+        assert len(result.df) == len(self._ROWS)
+        assert result.rows_in_file == len(self._ROWS)
+
+    def test_xlsx_with_native_date_cells(self, tmp_path: Path) -> None:
+        """A spreadsheet-native export stores dates as date cells, not text.
+
+        openpyxl hands those back as ``datetime``, whose ``str()`` carries a
+        time suffix that the date-only ``_DATE_FORMATS`` cannot match — so
+        without normalization the classifier sees no date anywhere, falls back
+        to "row 0 is a header", and eats the first transaction exactly as
+        before the fix. Every other fixture here writes the date as a string,
+        which is a text cell, so this path is the one they leave uncovered.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        for row in self._ROWS:
+            ws.append([
+                datetime.date.fromisoformat(row[0]),
+                float(row[1]),
+                row[2],
+            ])
+        path = tmp_path / "headerless_native_dates.xlsx"
         wb.save(path)
 
         info = FormatInfo(file_type="excel")

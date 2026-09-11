@@ -5,6 +5,7 @@ string column names. This is the format-agnostic boundary — everything
 downstream operates on DataFrames regardless of source format.
 """
 
+import datetime
 import logging
 import re
 from dataclasses import dataclass
@@ -537,11 +538,31 @@ def _excel_sample_rows(
     try:
         ws = wb[sheet_name]
         return [
-            ["" if v is None else str(v) for v in row]
+            [_excel_cell_text(v) for v in row]
             for row in ws.iter_rows(min_row=1, max_row=n, values_only=True)
         ]
     finally:
         wb.close()
+
+
+def _excel_cell_text(value: object) -> str:
+    """Render one sampled cell as the text the header classifier expects.
+
+    A native Excel date cell arrives as ``datetime``, whose ``str()`` carries a
+    time suffix (``2026-01-01 00:00:00``). ``_DATE_FORMATS`` is date-only, so
+    ``detect_date_format`` would reject every such cell, ``_looks_like_data_row``
+    would never fire, and ``_classify_header_rows`` would fall back to treating
+    row 0 as a header — re-creating the eaten-first-row bug for the shape a
+    spreadsheet-native export actually has. Normalize to ISO instead; only the
+    classification sample is affected, never the values polars reads.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    return str(value)
 
 
 def _read_excel(
