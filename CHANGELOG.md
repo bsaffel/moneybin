@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Fixed
+- **Profile configuration now honors database, data, and logging overrides.**
+  `MONEYBIN_DATABASE__*`, `MONEYBIN_DATA__*`, and `MONEYBIN_LOGGING__*` values
+  from the environment or active profile dotenv now override profile defaults.
+  (PR #581)
+
 - **`sql_query` no longer masks a count of how many rows are missing a
   protected value.** `COUNT(col)` has always collapsed to a plain aggregate, so
   `COUNT(*) - COUNT(last_four)` already returned the number of accounts with no
