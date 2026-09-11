@@ -13,6 +13,9 @@ import pytest
 from pytest_mock import MockerFixture
 
 from moneybin.config import (
+    DatabaseConfig,
+    DataConfig,
+    LoggingConfig,
     MoneyBinSettings,
     clear_settings_cache,
     get_base_dir,
@@ -379,6 +382,86 @@ class TestProfileDirectoryLayout:
             settings.database.backup_path == tmp_path / "profiles" / "alice" / "backups"
         )
 
+    def test_all_profile_path_defaults_are_base_anchored_outside_the_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Profile defaults stay under MONEYBIN_HOME when CWD is elsewhere."""
+        home = tmp_path / "home"
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        monkeypatch.chdir(elsewhere)
+        monkeypatch.setenv("MONEYBIN_HOME", str(home))
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        settings = get_settings()
+        profile_dir = home / "profiles" / "alice"
+
+        assert settings.database.path == profile_dir / "moneybin.duckdb"
+        assert settings.database.backup_path == profile_dir / "backups"
+        assert settings.database.temp_directory == profile_dir / "temp"
+        assert settings.data.raw_data_path == profile_dir / "raw"
+        assert settings.data.temp_data_path == profile_dir / "temp"
+        assert settings.logging.log_file_path == profile_dir / "logs" / "moneybin.log"
+
+    def test_exported_section_values_override_profile_path_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exported nested values outrank profile-derived section defaults."""
+        custom_backup = tmp_path / "custom-backups"
+        custom_raw_data = tmp_path / "custom-raw"
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setenv("MONEYBIN_DATABASE__BACKUP_PATH", str(custom_backup))
+        monkeypatch.setenv("MONEYBIN_DATA__RAW_DATA_PATH", str(custom_raw_data))
+        monkeypatch.setenv("MONEYBIN_LOGGING__LEVEL", "DEBUG")
+        clear_settings_cache()
+        set_current_profile("alice")
+
+        settings = get_settings()
+
+        assert settings.database.backup_path == custom_backup
+        assert settings.data.raw_data_path == custom_raw_data
+        assert settings.logging.level == "DEBUG"
+
+    def test_profile_dotenv_section_values_override_profile_path_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The active profile dotenv outranks profile-derived section defaults."""
+        custom_backup = tmp_path / "dotenv-backups"
+        custom_raw_data = tmp_path / "dotenv-raw"
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        (tmp_path / ".env.alice").write_text(
+            f"MONEYBIN_DATABASE__BACKUP_PATH={custom_backup}\n"
+            f"MONEYBIN_DATA__RAW_DATA_PATH={custom_raw_data}\n"
+            "MONEYBIN_LOGGING__LEVEL=DEBUG\n"
+        )
+
+        settings = MoneyBinSettings(profile="alice")
+
+        assert settings.database.backup_path == custom_backup
+        assert settings.data.raw_data_path == custom_raw_data
+        assert settings.logging.level == "DEBUG"
+
+    def test_explicit_section_values_override_environment_and_profile_defaults(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Explicit section values retain their highest precedence."""
+        monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+        monkeypatch.setenv(
+            "MONEYBIN_DATABASE__BACKUP_PATH", str(tmp_path / "env-backups")
+        )
+
+        settings = MoneyBinSettings(
+            profile="alice",
+            database=DatabaseConfig(backup_path=tmp_path / "init-backups"),
+            data=DataConfig(raw_data_path=tmp_path / "init-raw"),
+            logging=LoggingConfig(level="ERROR"),
+        )
+
+        assert settings.database.backup_path == tmp_path / "init-backups"
+        assert settings.data.raw_data_path == tmp_path / "init-raw"
+        assert settings.logging.level == "ERROR"
+
 
 def test_tabular_config_balance_validation_defaults() -> None:
     """TabularProviderConfig exposes balance validation tunables with safe defaults."""
@@ -565,14 +648,14 @@ def test_assignment_inside_a_quoted_multiline_value_is_not_a_key(
     """Text *inside* a quoted value is a value, not an assignment.
 
     python-dotenv continues a quoted value across newlines, so only
-    ``MONEYBIN_LOGGING__LEVEL`` is defined here. A line-by-line scan saw the
+    ``MONEYBIN_UNUSED_PROBE`` is defined here. A line-by-line scan saw the
     continuation line as its own binding and refused to start over a key the
     loader never defines — locking the operator out of their data because of
     a substring in an unrelated value.
     """
     monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
     (tmp_path / ".env.test").write_text(
-        'MONEYBIN_LOGGING__LEVEL="DEBUG\nMONEYBIN_HOME=/elsewhere\ntrailing"\n'
+        'MONEYBIN_UNUSED_PROBE="DEBUG\nMONEYBIN_HOME=/elsewhere\ntrailing"\n'
     )
 
     settings = MoneyBinSettings(profile="test")
