@@ -1,0 +1,1 @@
+`system doctor`'s currency-integrity check now warns when an unknown-currency account mirrors an existing account's transactions, and directs you to resolve account identity before assigning a currency. Assigning one to a duplicate account admitted its duplicate rows into every total, so following the old advice left totals worse than before the check ran.

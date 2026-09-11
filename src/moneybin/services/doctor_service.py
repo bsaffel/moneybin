@@ -259,6 +259,7 @@ class DoctorService:
     def __init__(self, db: Database) -> None:
         """Store the open database connection for invariant queries."""
         self._db = db
+        self._duplicate_account_pairs: list[tuple[str, str, float]] | None = None
 
     def run_all(self, verbose: bool = False, full: bool = False) -> DoctorReport:
         """Run all invariants and return a DoctorReport.
@@ -2492,6 +2493,110 @@ class DoctorService:
         row = self._db.execute(sql).fetchone()
         return int(row[0]) if row else 0
 
+    def _query_duplicate_account_pairs(self) -> list[tuple[str, str, float]]:
+        """Raw (account_a, account_b, ratio) overlap pairs — see ``_run_duplicate_account_overlap``.
+
+        Shared with ``_run_currency_integrity``, which asks whether an
+        unknown-currency account is one side of a pair here before telling the
+        user to assign it a currency. Raises on core-layer unavailability;
+        callers translate that into their own ``skipped`` status.
+
+        Memoized per instance because both callers run in one ``run_all`` pass
+        and this self-joins the fact view — the pruning CTE below exists to keep
+        that cost down, which a second execution would hand straight back. The
+        cache is safe only because a DoctorService is built per command and
+        never outlives the report it produces.
+        """
+        if self._duplicate_account_pairs is not None:
+            return self._duplicate_account_pairs
+        settings = get_settings()
+        rows = self._db.execute(
+            f"""
+            -- Prune to institutions holding more than one account before
+            -- touching the (expensive) fact view: a profile's transactions
+            -- are overwhelmingly at institutions with a single account,
+            -- and those can never form a pair.
+            WITH contested_accounts AS (
+                SELECT account_id, institution_slug
+                FROM {DIM_ACCOUNTS.full_name}
+                WHERE NOT institution_slug IS NULL
+                  AND institution_slug IN (
+                    SELECT institution_slug
+                    FROM {DIM_ACCOUNTS.full_name}
+                    WHERE NOT institution_slug IS NULL
+                    GROUP BY institution_slug
+                    HAVING COUNT(*) > 1
+                  )
+            ),
+            scoped AS MATERIALIZED (
+                SELECT t.transaction_id, t.account_id, t.transaction_date,
+                       t.amount, t.currency_code, c.institution_slug
+                FROM {FCT_TRANSACTIONS.full_name} AS t
+                JOIN contested_accounts AS c ON c.account_id = t.account_id
+            ),
+            totals AS (
+                SELECT account_id, COUNT(*) AS row_count
+                FROM scoped GROUP BY account_id
+            ),
+            -- DISTINCT on the LEFT row: one transaction with three
+            -- counterparts on the sibling still covers exactly one row, so
+            -- a repeating amount cannot inflate the ratio past 100%.
+            mirrored AS (
+                SELECT DISTINCT x.account_id AS lhs, y.account_id AS rhs,
+                       x.transaction_id, x.amount
+                FROM scoped AS x
+                JOIN scoped AS y
+                  ON y.institution_slug = x.institution_slug
+                 AND y.account_id <> x.account_id
+                 AND y.amount = x.amount
+                 -- Equal numerals across currencies are not mirroring: one
+                 -- bank's USD checking and EUR travel accounts can align on
+                 -- nominal amounts by coincidence, which is exactly what the
+                 -- distinct-amount floor and coverage ratio below exist to
+                 -- rule out. NULL-tolerant for the same reason as the
+                 -- matcher's blocking join — an unrecorded currency is not a
+                 -- known mismatch, and treating it as one would hide a real
+                 -- split account behind a quiet source.
+                 AND (
+                     y.currency_code IS NULL
+                     OR x.currency_code IS NULL
+                     OR y.currency_code = x.currency_code
+                 )
+                 AND ABS(
+                     DATEDIFF('day', x.transaction_date, y.transaction_date)
+                 ) <= ?
+            ),
+            directional AS (
+                SELECT lhs, rhs, COUNT(*) AS mirrored_rows,
+                       COUNT(DISTINCT amount) AS distinct_amounts
+                FROM mirrored GROUP BY lhs, rhs
+            ),
+            qualifying AS (
+                SELECT d.lhs, d.rhs,
+                       d.mirrored_rows * 1.0 / t.row_count AS ratio
+                FROM directional AS d
+                JOIN totals AS t ON t.account_id = d.lhs
+                WHERE d.distinct_amounts >= ?
+                  AND d.mirrored_rows >= t.row_count * ?
+            )
+            SELECT LEAST(lhs, rhs) AS account_a,
+                   GREATEST(lhs, rhs) AS account_b,
+                   MAX(ratio) AS ratio
+            FROM qualifying
+            GROUP BY account_a, account_b
+            ORDER BY account_a, account_b
+            """,  # TableRef constants, parameterized values
+            [
+                settings.matching.date_window_days,
+                settings.doctor.duplicate_account_min_distinct_amounts,
+                settings.doctor.duplicate_account_overlap_ratio,
+            ],
+        ).fetchall()
+        self._duplicate_account_pairs = [
+            (str(a), str(b), float(ratio)) for a, b, ratio in rows
+        ]
+        return self._duplicate_account_pairs
+
     def _run_duplicate_account_overlap(self) -> InvariantResult:
         """One real account imported under two canonical identities.
 
@@ -2530,90 +2635,8 @@ class DoctorService:
         large sibling covers little of the sibling but all of itself).
         """
         name = "duplicate_account_overlap"
-        settings = get_settings()
         try:
-            rows = self._db.execute(
-                f"""
-                -- Prune to institutions holding more than one account before
-                -- touching the (expensive) fact view: a profile's transactions
-                -- are overwhelmingly at institutions with a single account,
-                -- and those can never form a pair.
-                WITH contested_accounts AS (
-                    SELECT account_id, institution_slug
-                    FROM {DIM_ACCOUNTS.full_name}
-                    WHERE NOT institution_slug IS NULL
-                      AND institution_slug IN (
-                        SELECT institution_slug
-                        FROM {DIM_ACCOUNTS.full_name}
-                        WHERE NOT institution_slug IS NULL
-                        GROUP BY institution_slug
-                        HAVING COUNT(*) > 1
-                      )
-                ),
-                scoped AS MATERIALIZED (
-                    SELECT t.transaction_id, t.account_id, t.transaction_date,
-                           t.amount, t.currency_code, c.institution_slug
-                    FROM {FCT_TRANSACTIONS.full_name} AS t
-                    JOIN contested_accounts AS c ON c.account_id = t.account_id
-                ),
-                totals AS (
-                    SELECT account_id, COUNT(*) AS row_count
-                    FROM scoped GROUP BY account_id
-                ),
-                -- DISTINCT on the LEFT row: one transaction with three
-                -- counterparts on the sibling still covers exactly one row, so
-                -- a repeating amount cannot inflate the ratio past 100%.
-                mirrored AS (
-                    SELECT DISTINCT x.account_id AS lhs, y.account_id AS rhs,
-                           x.transaction_id, x.amount
-                    FROM scoped AS x
-                    JOIN scoped AS y
-                      ON y.institution_slug = x.institution_slug
-                     AND y.account_id <> x.account_id
-                     AND y.amount = x.amount
-                     -- Equal numerals across currencies are not mirroring: one
-                     -- bank's USD checking and EUR travel accounts can align on
-                     -- nominal amounts by coincidence, which is exactly what the
-                     -- distinct-amount floor and coverage ratio below exist to
-                     -- rule out. NULL-tolerant for the same reason as the
-                     -- matcher's blocking join — an unrecorded currency is not a
-                     -- known mismatch, and treating it as one would hide a real
-                     -- split account behind a quiet source.
-                     AND (
-                         y.currency_code IS NULL
-                         OR x.currency_code IS NULL
-                         OR y.currency_code = x.currency_code
-                     )
-                     AND ABS(
-                         DATEDIFF('day', x.transaction_date, y.transaction_date)
-                     ) <= ?
-                ),
-                directional AS (
-                    SELECT lhs, rhs, COUNT(*) AS mirrored_rows,
-                           COUNT(DISTINCT amount) AS distinct_amounts
-                    FROM mirrored GROUP BY lhs, rhs
-                ),
-                qualifying AS (
-                    SELECT d.lhs, d.rhs,
-                           d.mirrored_rows * 1.0 / t.row_count AS ratio
-                    FROM directional AS d
-                    JOIN totals AS t ON t.account_id = d.lhs
-                    WHERE d.distinct_amounts >= ?
-                      AND d.mirrored_rows >= t.row_count * ?
-                )
-                SELECT LEAST(lhs, rhs) AS account_a,
-                       GREATEST(lhs, rhs) AS account_b,
-                       MAX(ratio) AS ratio
-                FROM qualifying
-                GROUP BY account_a, account_b
-                ORDER BY account_a, account_b
-                """,  # TableRef constants, parameterized values
-                [
-                    settings.matching.date_window_days,
-                    settings.doctor.duplicate_account_min_distinct_amounts,
-                    settings.doctor.duplicate_account_overlap_ratio,
-                ],
-            ).fetchall()
+            rows = self._query_duplicate_account_pairs()
         except Exception as e:  # core views absent before first transform
             return InvariantResult(
                 name=name,
@@ -3134,6 +3157,66 @@ class DoctorService:
                 parts.append(f"{unknown_transaction_count} transaction(s)")
             if unknown_balances:
                 parts.append(f"{unknown_balances} balance observation(s)")
+            # An unknown-currency account can be a duplicate of one already in
+            # core — its unknown currency is the only reason its rows are
+            # excluded from every total today, so telling the user to just
+            # assign it a currency (below) would admit them. Reuse
+            # duplicate_account_overlap's own detection rather than a second
+            # notion of "duplicate" (GH #410).
+            overlapping_unknown_accounts: list[str] = []
+            if unknown_account_count:
+                try:
+                    pairs = self._query_duplicate_account_pairs()
+                except Exception as e:  # core views absent before first transform
+                    logger.debug(
+                        f"currency_integrity overlap probe skipped: {e}",
+                        exc_info=True,
+                    )
+                    pairs = []
+                pair_account_ids = sorted(
+                    {a for a, _, _ in pairs} | {b for _, b, _ in pairs}
+                )
+                if pair_account_ids:
+                    placeholders = ", ".join("?" for _ in pair_account_ids)
+                    overlapping_unknown_accounts = [
+                        str(row[0])
+                        for row in self._db.execute(
+                            f"""
+                            SELECT account_id FROM {DIM_ACCOUNTS.full_name}
+                            WHERE currency_code IS NULL
+                              AND account_id IN ({placeholders})
+                            ORDER BY account_id
+                            """,  # TableRef constant, parameterized values
+                            pair_account_ids,
+                        ).fetchall()
+                    ]
+            if overlapping_unknown_accounts:
+                return InvariantResult(
+                    name=name,
+                    status="fail",
+                    detail=(
+                        f"{', '.join(parts)} have an unknown currency, and "
+                        f"{len(overlapping_unknown_accounts)} of those "
+                        "account(s) mirror an existing account's transactions "
+                        "at the same institution — most likely one account "
+                        "imported twice. The unknown currency is the only "
+                        "thing holding those duplicate rows out of every "
+                        "total, so resolve account identity FIRST: run "
+                        "`moneybin accounts links run`, then decide with "
+                        "`moneybin accounts links set <decision_id> --into "
+                        "<account_id>` (or `--standalone` if they are "
+                        "genuinely distinct). Only then assign a currency with "
+                        "`moneybin accounts set <account> --currency "
+                        "<ISO 4217>` and re-run `moneybin transform`."
+                    ),
+                    affected_ids=[
+                        *(f"account:{account_id}" for account_id in unknown_accounts),
+                        *(
+                            f"transaction:{transaction_id}"
+                            for transaction_id in unknown_transactions
+                        ),
+                    ],
+                )
             return InvariantResult(
                 name=name,
                 status="fail",
