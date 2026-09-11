@@ -459,10 +459,18 @@ excluded after archive-then-unarchive — and pays for it by overwriting a
 user-authored preference with a derived one.
 
 So the fix is to retire the cascade and let `archived_at` carry the exclusion,
-date-scoped: `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
-archived_at)`. That is a change to a service write path, an `app.*` column
-semantic, and a backfill that reconstructs pre-archive intent from
-`before_value.include_in_net_worth` on the `archived` FALSE→TRUE audit row.
+date-scoped: `include_in_net_worth AND (NOT archived OR (archived_at IS NOT
+NULL AND balance_date <= archived_at))`. `archived` does not drop out of the
+predicate — it is what a NULL `archived_at` falls back to. An archived account
+with no `archived_at` (no audit evidence for when the FALSE→TRUE transition
+happened — see §Prerequisites) has no date to scope by, so it is excluded at
+every `balance_date` rather than every date after some inferred cutoff: the
+same blanket exclusion `NOT archived` already applies today, preserved rather
+than narrowed. Only an archived account that *does* carry an `archived_at`
+gets the date-scoped exclusion this requirement exists to add. That is a
+change to a service write path, an `app.*` column semantic, and a backfill
+that reconstructs pre-archive intent from `before_value.include_in_net_worth`
+on the `archived` FALSE→TRUE audit row.
 `.claude/rules/design-principles.md` puts `app.*` schema semantics on the
 one-way-door trigger list, and a change of that shape earns its own review
 rather than approval alongside three report views. It is therefore a
@@ -862,13 +870,18 @@ approved as a footnote rather than reviewed on its own terms.
   user chose, and restoring `include_in_net_worth` only for the former. An
   archived account with no audit evidence for the transition was left
   untouched rather than guessed at — `archived_at` stays NULL, preserving
-  today's behavior for that account. `core.dim_accounts` now resolves
+  today's behavior for that account: still excluded at every date, because
+  `archived` alone (with no date to scope by) is what today's blanket
+  `NOT archived` filter already keys on. `core.dim_accounts` now resolves
   `archived_at` alongside `archived`. What remains **for this spec**:
   Requirement 9's own eligibility filter —
-  `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
-  archived_at)` — on the three net-worth rungs themselves; this prerequisite
-  only made that filter possible. Rationale and the redundancy that made the
-  cascade removable: §`app.account_settings`.
+  `include_in_net_worth AND (NOT archived OR (archived_at IS NOT NULL AND
+  balance_date <= archived_at))` — on the three net-worth rungs themselves;
+  this prerequisite only made that filter possible. `archived` does not drop
+  out once `archived_at` exists: a NULL `archived_at` on an archived row falls
+  back to it, so the row stays excluded at every date rather than reading as
+  active. Rationale and the redundancy that made the cascade removable:
+  §`app.account_settings`.
 - **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
   spec, which is the sequencing this section describes working as intended. The
   guard its neighbouring docstring implied — a test that fails when a wire field

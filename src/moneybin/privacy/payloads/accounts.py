@@ -244,10 +244,6 @@ class AccountSettingsPayload:
     include_in_net_worth: Annotated[bool, DataClass.TXN_TYPE]
     archived: Annotated[bool, DataClass.TXN_TYPE]
     warnings: Annotated[list[str], DataClass.DESCRIPTION] = field(default_factory=list)
-    # Always None: the archive cascade was retired (archived and
-    # include_in_net_worth are independent fields). Kept for wire
-    # compatibility rather than removing the field outright.
-    cascaded_include_in_net_worth: Annotated[bool | None, DataClass.TXN_TYPE] = None
 
 
 # ---------------------------------------------------------------------------

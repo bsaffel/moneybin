@@ -269,8 +269,6 @@ def accounts_set(
     ``is_archived`` and ``include_in_net_worth`` are independent — archiving no
     longer changes ``include_in_net_worth``; pass it explicitly alongside
     ``is_archived`` if the account should also stop contributing to net worth.
-    ``cascaded_include_in_net_worth`` in the response is always ``None`` now
-    (the retired cascade's signal; kept for wire compatibility).
 
     Soft-validation warnings (for non-canonical ``account_subtype`` or
     ``holder_category`` values) are embedded in ``data['warnings']``.
@@ -319,8 +317,6 @@ def accounts_set(
         include_in_net_worth=bool(d["include_in_net_worth"]),
         archived=bool(d["archived"]),
         warnings=[w.get("message", str(w)) for w in warnings] if warnings else [],
-        # No cascade fires anymore; kept at its None default for wire
-        # compatibility rather than removing the field outright.
     )
     return build_envelope(data=payload)
 

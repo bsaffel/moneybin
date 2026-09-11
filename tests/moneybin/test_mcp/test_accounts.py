@@ -1303,8 +1303,6 @@ class TestAccountsSetExtended:
         assert parsed["data"]["display_name"] == "My Custom Name"
         assert parsed["data"]["include_in_net_worth"] is False
         assert parsed["data"]["archived"] is False
-        # No cascade: cascaded_include_in_net_worth is None when is_archived != True.
-        assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
     async def test_is_archived_no_longer_cascades_to_include(
@@ -1317,7 +1315,10 @@ class TestAccountsSetExtended:
         assert parsed["data"]["archived"] is True
         # include_in_net_worth is untouched — no cascade.
         assert parsed["data"]["include_in_net_worth"] is True
-        assert parsed["data"]["cascaded_include_in_net_worth"] is None
+        # The retired cascade's signal field is gone outright, not merely
+        # null — an absent field is unambiguous to an agent; a null one
+        # invites interpretation.
+        assert "cascaded_include_in_net_worth" not in parsed["data"]
 
     @pytest.mark.unit
     async def test_unarchive_leaves_include_untouched(self, mcp_db: Path) -> None:
@@ -1327,7 +1328,6 @@ class TestAccountsSetExtended:
         parsed = result.to_dict()
         assert parsed["data"]["archived"] is False
         assert parsed["data"]["include_in_net_worth"] is True
-        assert parsed["data"]["cascaded_include_in_net_worth"] is None
 
     @pytest.mark.unit
     async def test_clear_display_name(self, mcp_db: Path) -> None:

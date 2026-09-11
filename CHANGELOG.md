@@ -1758,6 +1758,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   transition is left exactly as it reads today. This is the prerequisite for
   date-scoped account exclusion in [`reports-net-worth-sql-surface.md`](docs/specs/reports-net-worth-sql-surface.md);
   the net-worth eligibility filter itself is unchanged by this entry.
+  `accounts_set`'s `cascaded_include_in_net_worth` response field — the
+  retired cascade's signal — is removed outright rather than kept as an
+  always-`null` field: pre-launch, a field an agent has to interpret is worse
+  than one that is simply absent.
 - **The storefront names the custody difference against Finances in ChatGPT.**
   `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
   "coming later" persona for the reader who wants a bank feed in a file they
