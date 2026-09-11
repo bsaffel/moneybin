@@ -1,0 +1,1 @@
+Exchange rates are now queryable from the `core` layer as a daily spine, with one rate per currency pair per day carried across days a provider never priced. A user's rate override outranks the cached provider quote for the same pair and date, and takes effect without waiting for a rebuild.
