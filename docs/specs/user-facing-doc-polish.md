@@ -57,7 +57,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 16. **No false claims of "first" or "only."** Every superlative claim ("the first AI-native…", "the only local-first…") is removed or replaced with a non-superlative conjunction ("local-first AND AI-native AND open-source AND encrypted-by-default" — defensible without claiming primacy).
 
-17. **MCP client list is precise about transport.** "Connect Claude, ChatGPT, Cursor…" stays, but a clarifying note distinguishes local-stdio support today (works for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex CLI/Desktop/IDE, ChatGPT Desktop) from Streamable HTTP support arriving with hosted in M3D + M3H (which unlocks ChatGPT web/mobile and other remote clients).
+17. **MCP client list is precise about transport.** "Connect Claude, ChatGPT, Cursor…" stays, but a clarifying note distinguishes local-stdio support today (works for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex CLI/IDE, ChatGPT Desktop — which has hosted Codex since the standalone Codex desktop app merged into it in July 2026) from Streamable HTTP support arriving with hosted in M3D + M3H (which unlocks ChatGPT web/mobile and other remote clients).
 
 18. **CONTRIBUTING.md gains a "where the strategy lives" pointer.** One short paragraph noting that `docs/specs/` and `docs/decisions/` are the public planning artifacts; project-internal strategy is private. Helps Sam understand what's open and what isn't.
 

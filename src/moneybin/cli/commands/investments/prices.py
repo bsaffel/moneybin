@@ -72,7 +72,7 @@ def _report_refresh_failure(error: str | None) -> None:
 
     ``refresh()`` soft-fails so the pull's already-committed rows survive, which
     leaves the exit code as the only thing a script can gate on. The retry is a
-    bare ``refresh run``: ``raw.security_prices`` is append-only and the closes
+    bare ``refresh``: ``raw.security_prices`` is append-only and the closes
     are already stored, so re-pulling would spend the provider's rate limit
     re-fetching rows that are sitting there. Mirrors ``sync pull``.
     """
@@ -80,7 +80,7 @@ def _report_refresh_failure(error: str | None) -> None:
         return
     logger.warning(
         f"⚠️  transforms failed ({error}); the new closes landed in raw and are "
-        "not valuing holdings yet. Retry with 'moneybin refresh run'."
+        "not valuing holdings yet. Retry with 'moneybin refresh'."
     )
     raise typer.Exit(1)
 
@@ -100,7 +100,7 @@ def _echo_refresh_hint(what: str, *, stale: bool) -> None:
     if not stale:
         return
     typer.echo(
-        f"💡 {what} once the models rebuild — run 'moneybin refresh run', "
+        f"💡 {what} once the models rebuild — run 'moneybin refresh', "
         "or pass --refresh next time"
     )
 
@@ -135,7 +135,7 @@ def investments_prices_pull(
     same symbol can name a different security at the provider.
 
     Closes land in raw.security_prices; holdings value from core. Pass --refresh
-    to rebuild the models in the same command, or run 'moneybin refresh run'
+    to rebuild the models in the same command, or run 'moneybin refresh'
     afterwards.
     """
     with handle_cli_errors(
@@ -253,7 +253,7 @@ def investments_prices_set(
     would write successfully and value nothing for any non-USD position.
 
     The mark lands in app; holdings value from core. Pass --refresh to rebuild
-    the models in the same command, or run 'moneybin refresh run' afterwards.
+    the models in the same command, or run 'moneybin refresh' afterwards.
     """
     parsed_date = parse_cli_date(price_date, "DATE")
     parsed_price = parse_cli_decimal(price, "PRICE")
@@ -333,7 +333,7 @@ def investments_prices_delete(
     records it, but the previous value is not restored by re-running anything.
 
     The removal lands in app; holdings value from core. Pass --refresh to rebuild
-    the models in the same command, or run 'moneybin refresh run' afterwards.
+    the models in the same command, or run 'moneybin refresh' afterwards.
     """
     parsed_date = parse_cli_date(price_date, "DATE")
     with handle_cli_errors(

@@ -2820,7 +2820,7 @@ def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
     assert result.status == "warn"
     detail = result.detail or ""
     assert "carried" in detail
-    assert "balance_drift" in detail
+    assert "balance-drift" in detail
 
 
 @pytest.mark.unit

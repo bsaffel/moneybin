@@ -3141,7 +3141,7 @@ class DoctorService:
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
                     "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-                    "then `moneybin transform`: the setting is app state, and "
+                    "then `moneybin transform apply`: the setting is app state, and "
                     "core.* only picks it up on the next transform, so this check "
                     "keeps failing until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
@@ -3170,8 +3170,10 @@ class DoctorService:
                     "denominated differently from its account is also left out of "
                     "that account's carried daily balance — it cannot be added "
                     "without a rate — and shows up as the account's "
-                    "reconciliation drift in `moneybin reports balance_drift`. "
-                    "Conversion to a single display currency is not built yet."
+                    "reconciliation drift in `moneybin reports balance-drift`. "
+                    "To read the converting reports in one currency, set a home "
+                    "currency with `moneybin profile set home_currency <ISO>` and "
+                    "run `moneybin refresh` to gather rates."
                 ),
                 affected_ids=[],
             )
