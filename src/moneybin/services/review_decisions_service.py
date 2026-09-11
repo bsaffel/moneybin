@@ -564,6 +564,7 @@ class ReviewDecisionsService:
             kind="account-link",
         )
         source_id = str(decision["provisional_account_id"])
+        selection_disposal_ids: tuple[str, ...] = ()
         candidate_id = str(decision["candidate_account_id"])
         target_id = request.target_id or candidate_id
         status: Literal["accepted", "rejected"] = (
@@ -591,6 +592,7 @@ class ReviewDecisionsService:
                 )
                 source_id = impact.provisional_account_id
                 target_id = impact.candidate_account_id
+                selection_disposal_ids = impact.lot_selection_disposal_ids
         decisions = _query_json_rows(
             self._db,
             f"""
@@ -611,6 +613,29 @@ class ReviewDecisionsService:
             [source_id],
         )
         material_accept = changed and request.decision == "accept"
+        from moneybin.investments.identity import manual_identity_sql
+
+        manual_identity = (
+            _query_json_rows(
+                self._db,
+                f"""
+            SELECT * FROM ({manual_identity_sql()}) AS i
+            WHERE account_id IN (?, ?) ORDER BY source_transaction_id
+            """,  # canonical model query and parameterized ids
+                [source_id, target_id],
+            )
+            if material_accept
+            else []
+        )
+        selections = [
+            row
+            for disposal_id in selection_disposal_ids
+            for row in _query_json_rows(
+                self._db,
+                f"SELECT * FROM {LOT_SELECTIONS.full_name} WHERE investment_transaction_id = ? ORDER BY lot_id",  # TableRef and parameterized id
+                [disposal_id],
+            )
+        ]
         transactions = (
             _query_ids(
                 self._db,
@@ -636,6 +661,8 @@ class ReviewDecisionsService:
                 "decision": _json_safe(decision),
                 "affected_decisions": decisions,
                 "accepted_links": links,
+                "manual_identity": manual_identity,
+                "lot_selections": selections,
             }),
             affected_ids={
                 "accounts": tuple(dict.fromkeys((source_id, target_id)))
@@ -826,12 +853,18 @@ class ReviewDecisionsService:
             """,  # TableRef constant + parameterized values
             [source_id, target_id],
         )
+        from moneybin.investments.identity import manual_identity_sql
+
         manual = _query_json_rows(
             self._db,
             f"""
-            SELECT * FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name}
-            WHERE security_id = ?
-            ORDER BY source_transaction_id
+            SELECT t.*, i.account_id AS effective_account_id,
+                   i.security_id AS effective_security_id,
+                   i.account_identity_generation, i.security_identity_generation
+            FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
+            JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
+            WHERE i.security_id = ?
+            ORDER BY t.source_transaction_id
             """,  # TableRef constant + parameterized value
             [source_id],
         )
@@ -901,11 +934,12 @@ class ReviewDecisionsService:
                 self._db,
                 f"""
                 SELECT DISTINCT COALESCE(
-                    investment_transaction_id,
-                    source_transaction_id
+                    t.investment_transaction_id,
+                    t.source_transaction_id
                 )
-                FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name}
-                WHERE security_id = ?
+                FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
+                JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
+                WHERE i.security_id = ?
                 ORDER BY 1
                 """,  # TableRef constant + parameterized value
                 [source_id],

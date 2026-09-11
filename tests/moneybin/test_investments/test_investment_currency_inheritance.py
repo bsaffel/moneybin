@@ -6,7 +6,7 @@ applied to the investment ledger. The cash grain already resolves it this way in
 ``core.fct_transactions``; these tests hold the same chain for the investment
 grain — ``raw.manual_investment_transactions`` →
 ``prep.stg_manual__investment_transactions`` → ``core.fct_investment_transactions``
-— by installing the two shipped models as views over hand-made sources.
+— by installing the shipped identity and ledger models over hand-made sources.
 
 The discriminating fixture is a **EUR** account: a USD one passes whether the
 model inherits or fabricates. The unknown-account-currency case is the other
@@ -28,6 +28,9 @@ from moneybin.database import SQLMESH_ROOT, Database
 
 _MANUAL_STG = (
     SQLMESH_ROOT / "models" / "prep" / "stg_manual__investment_transactions.sql"
+)
+_MANUAL_IDENTITY = (
+    SQLMESH_ROOT / "models" / "prep" / "int_manual__investment_identity.sql"
 )
 _LEDGER = SQLMESH_ROOT / "models" / "core" / "fct_investment_transactions.sql"
 
@@ -85,7 +88,7 @@ def _install_ledger_chain(
     account_currency: str | None,
     account_updated_at: str = "2026-05-10 08:00:00",
 ) -> None:
-    """Install the two shipped models over hand-made sources."""
+    """Install the shipped identity and ledger models over hand-made sources."""
     db.execute("CREATE SCHEMA IF NOT EXISTS prep")
     db.execute(
         f"CREATE TABLE prep.stg_plaid__investment_transactions ({_PLAID_COLUMNS}, ledger_include BOOLEAN)"
@@ -103,6 +106,10 @@ def _install_ledger_chain(
     db.execute(
         "INSERT INTO core.dim_accounts VALUES (?, ?, ?::TIMESTAMP)",
         [_ACCOUNT_ID, account_currency, account_updated_at],
+    )
+    db.execute(  # shipped model body, not user SQL
+        "CREATE OR REPLACE VIEW prep.int_manual__investment_identity AS "
+        + _model_body(_MANUAL_IDENTITY)
     )
     db.execute(  # shipped model body, not user SQL
         "CREATE OR REPLACE VIEW prep.stg_manual__investment_transactions AS "
@@ -180,8 +187,8 @@ class TestInvestmentEventCurrencyInheritance:
         """A newer Account Currency timestamp advances the inherited event."""
         _install_ledger_chain(
             db,
-            account_currency="EUR",
-            account_updated_at="2026-05-13 10:00:00",
+            account_currency="GBP",
+            account_updated_at="2026-05-10 08:00:00",
         )
         _record_event(
             db,
@@ -189,9 +196,24 @@ class TestInvestmentEventCurrencyInheritance:
             created_at="2026-05-12 09:00:00",
         )
 
+        raw = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        assert _ledger_currency_and_updated_at(db) == (
+            "GBP",
+            datetime(2026, 5, 12, 9),
+        )
+        db.execute(
+            """UPDATE core.dim_accounts
+            SET currency_code = 'EUR', updated_at = TIMESTAMP '2026-05-13 10:00:00'
+            WHERE account_id = ?""",
+            [_ACCOUNT_ID],
+        )
         assert _ledger_currency_and_updated_at(db) == (
             "EUR",
             datetime(2026, 5, 13, 10),
+        )
+        assert (
+            db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+            == raw
         )
 
     def test_cleared_inherited_currency_uses_account_freshness(

@@ -123,6 +123,9 @@ LOT_SELECTIONS = TableRef("app", "lot_selections")
 MANUAL_INVESTMENT_TRANSACTIONS = TableRef("raw", "manual_investment_transactions")
 PLAID_SECURITIES = TableRef("raw", "plaid_securities")
 PLAID_INVESTMENT_TRANSACTIONS = TableRef("raw", "plaid_investment_transactions")
+PLAID_INVESTMENT_TRANSACTION_RECEIPTS = TableRef(
+    "raw", "plaid_investment_transaction_receipts"
+)
 PLAID_INVESTMENT_HOLDINGS = TableRef("raw", "plaid_investment_holdings")
 PLAID_INVESTMENT_HOLDING_LOTS = TableRef("raw", "plaid_investment_holding_lots")
 PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS = TableRef(
@@ -180,6 +183,7 @@ STG_PLAID_INVESTMENT_TRANSACTIONS = TableRef(
     "prep", "stg_plaid__investment_transactions"
 )
 STG_PLAID_INVESTMENT_HOLDINGS = TableRef("prep", "stg_plaid__investment_holdings")
+INT_MANUAL_INVESTMENT_IDENTITY = TableRef("prep", "int_manual__investment_identity")
 STG_PLAID_OPENING_LOT_REVIEW = TableRef("prep", "stg_plaid__opening_lot_review")
 
 # -- Meta schema (cross-source provenance + lineage) --

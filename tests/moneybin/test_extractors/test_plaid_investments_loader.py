@@ -122,15 +122,20 @@ def test_same_payload_reload_is_idempotent(
         assert row is not None and row[0] == expected, table
 
 
-def test_new_job_replaces_transactional_and_retains_snapshots(
+def test_new_job_reuses_transaction_versions_and_retains_receipts_and_snapshots(
     db: Database, sync_data: SyncDataResponse
 ) -> None:
     _load(db, sync_data, job_id="job-inv-1")
     _load(db, sync_data, job_id="job-inv-2")
     txn = db.execute(
-        "SELECT COUNT(*), MAX(source_file) FROM raw.plaid_investment_transactions"
+        "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
     ).fetchone()
-    assert txn == (4, "sync_job-inv-2")  # re-delivery replaced, lineage updated
+    assert txn == (4,)
+    receipts = db.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT source_file) "
+        "FROM raw.plaid_investment_transaction_receipts"
+    ).fetchone()
+    assert receipts == (8, 2)
     snap = db.execute(
         "SELECT COUNT(DISTINCT source_file), COUNT(*) FROM raw.plaid_investment_holdings"
     ).fetchone()

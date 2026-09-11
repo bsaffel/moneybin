@@ -44,7 +44,6 @@ Usage: `moneybin investments add [OPTIONS]`
 | `--subtype` | text |  | Type-specific refinement (e.g. qualified, interest, capital_gain) |
 | `--acquired` | text |  | Original acquisition date YYYY-MM-DD (transfer_in only) |
 | `--basis` | text |  | Supplied cost basis (transfer_in only) |
-| `--event-group` | text |  | Link this event to an existing economic-event group |
 | `--currency` | text |  | ISO-4217 currency code; defaults to the account's own currency |
 | `--description` | text |  | Free-text description |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

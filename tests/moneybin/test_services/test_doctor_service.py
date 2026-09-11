@@ -1474,8 +1474,8 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
         """
         INSERT INTO raw.plaid_investment_transactions (
             investment_transaction_id, account_id, transaction_date, amount,
-            source_file, source_origin
-        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
     db.execute(
@@ -1505,6 +1505,37 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
     assert [a.tool for a in result.recovery_actions] == ["import_revert"]
 
 
+def test_source_overlap_detects_holdings_before_bootstrap_transform(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("""
+        INSERT INTO raw.plaid_investment_holdings (
+            account_id, security_id, quantity, transactions_window_start,
+            source_file, source_origin
+        ) VALUES ('native_holdings', 'native_security', 10, '2026-01-01',
+                  'sync_holdings', 'item_holdings')
+    """)
+    db.execute("""
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type, source_origin,
+            status, decided_by, decided_at
+        ) VALUES ('holdings_link', 'ACC_HOLDINGS', 'source_native', 'native_holdings',
+                  'plaid', 'item_holdings', 'accepted', 'user', CURRENT_TIMESTAMP)
+    """)
+    db.execute("""
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_holdings', 'imp_holdings', 'ACC_HOLDINGS', 'buy',
+                  '2026-01-02', 'cli')
+    """)
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["ACC_HOLDINGS"]
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
+    ).fetchone() == (0,)
+
+
 @pytest.mark.unit
 def test_source_overlap_pass_when_only_one_source(
     db: Database, monkeypatch: pytest.MonkeyPatch
@@ -1513,8 +1544,8 @@ def test_source_overlap_pass_when_only_one_source(
         """
         INSERT INTO raw.plaid_investment_transactions (
             investment_transaction_id, account_id, transaction_date, amount,
-            source_file, source_origin
-        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
@@ -1589,7 +1620,8 @@ def _create_snapshot_receipts_table(db: Database) -> None:
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
         "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
-        "holdings_count INTEGER, extracted_at TIMESTAMP)"
+        "holdings_count INTEGER, extracted_at TIMESTAMP, "
+        "ingestion_sequence BIGINT DEFAULT nextval('raw.investment_ingestion_sequence'))"
     )
 
 

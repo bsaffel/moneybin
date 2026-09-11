@@ -26,12 +26,26 @@ MODEL (
    CTE. Two are GOLDEN-GATED on a Plaid Sandbox capture. The third (split
    routing) is NOT, and must not be re-filed as one: no Sandbox payload can
    carry a `transfer/split` row at all -- see its own note below. */
-WITH classified AS (
+WITH current_receipts AS (
+  SELECT
+    *
+  FROM raw.plaid_investment_transaction_receipts
+  QUALIFY
+    ROW_NUMBER() OVER (
+      PARTITION BY investment_transaction_id, source_origin
+      ORDER BY extracted_at DESC, ingestion_sequence DESC
+    ) = 1
+), classified AS (
   SELECT
     t.*,
+    receipt.source_file,
+    receipt.extracted_at,
+    receipt.loaded_at,
     LOWER(COALESCE(t.investment_transaction_type, '')) AS ptype,
     LOWER(COALESCE(t.investment_transaction_subtype, '')) AS psub
   FROM raw.plaid_investment_transactions AS t
+  JOIN current_receipts AS receipt
+    USING (investment_transaction_id, source_origin, observation_version)
 ), mapped AS (
   /* is_lifecycle marks rows captured in raw for audit that are never ledger
      events; the next CTE filters them out entirely. (cancel_transaction_id is a
@@ -253,11 +267,13 @@ WITH classified AS (
 )
 SELECT
   r.investment_transaction_id,
+  r.observation_version,
   COALESCE(al.account_id, r.account_id) AS account_id,
   r.account_id AS source_account_key,
   sl.security_id AS security_id,
   r.security_id AS source_security_key,
   COALESCE(r.transaction_datetime::DATE, r.transaction_date) AS trade_date,
+  CASE WHEN r.transaction_datetime IS NULL THEN 'posting_fallback' ELSE 'explicit' END AS trade_date_basis,
   r.transaction_date AS settlement_date,
   NULL::DATE AS original_acquisition_date,
   COALESCE(r.mapped_type, 'other') AS type,

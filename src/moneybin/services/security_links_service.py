@@ -10,23 +10,18 @@ called with ``in_outer_txn=True``.
 ``accept_merge`` is the app-state cascade for a provisional-security merge.
 Within ONE transaction it re-points ``app.lot_selections`` at the survivor
 (recomputing ``lot_id``, a content hash that includes ``security_id``),
-re-points every accepted provider ref off the provisional security, re-points
-every manual ledger row carrying the provisional's ``security_id`` directly
-(``raw.manual_investment_transactions`` — user state resolved at entry, with no
-link-table indirection), re-points the user's ``app.security_price_overrides``
+re-points every accepted provider ref off the provisional security, routes
+manual observations through accepted Security Links without rewriting Raw,
+re-points the user's ``app.security_price_overrides``
 marks, resolves the decision (auto-rejecting the ref's sibling candidates), and
 deletes the provisional catalog row. A selection that cannot be deterministically
 remapped BLOCKS the merge (``UserError``) rather than silently downgrading a
 specific-ID election to FIFO on the next rebuild; so does a price mark that
 would collide with one the survivor already holds.
 
-The cascade's contract: after the merge, NOTHING still references the deleted
-catalog row. That means every link-free reference — lot selections, manual
-events, price marks — not only the ones a link table would carry. Atomicity is
-the correctness bar: a half-applied merge (links re-pointed but lot selections
-stranded, or the catalog row deleted while a manual event still points at it)
-leaves cost basis silently wrong with no error raised and no doctor check to
-catch it. A failed merge is retryable; a half-merge is not detectable.
+After the merge, effective identities resolve to the surviving catalog entry.
+Frozen Raw assignments remain provenance. Complete selection preflight, ordered
+audited writes, and rollback keep routing and dependent curation atomic.
 
 ``actor`` is the audit surface (``cli``/``mcp``); ``decided_by`` is the domain
 column (``user``/``auto``). The caller supplies both.
@@ -46,6 +41,8 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
+from moneybin.investments.identity import manual_identity_sql
+from moneybin.investments.identity_preflight import validate_selection_quantities
 from moneybin.metrics.registry import SECURITY_LINK_DECISION_OUTCOMES_TOTAL
 from moneybin.price_sources import FEED_KEY_REF_KINDS
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
@@ -60,6 +57,7 @@ from moneybin.tables import (
     FCT_INVESTMENT_LOTS,
     FCT_INVESTMENT_TRANSACTIONS,
     LOT_SELECTIONS,
+    MANUAL_INVESTMENT_TRANSACTIONS,
     SECURITIES,
     SECURITY_LINK_DECISIONS,
     SECURITY_LINKS,
@@ -602,11 +600,10 @@ class SecurityLinksService:
         4. Re-point ``app.lot_selections`` at the survivor's re-hashed lots.
         5. Re-point EVERY accepted link on the provisional (the plaid ref and the
            institution ref both) onto the survivor.
-        6. Re-point every ``raw.manual_investment_transactions`` row that carries
-           the provisional's ``security_id`` — the ledger's other, link-free
-           reference to the catalog (see :meth:`_repoint_manual_events`).
+        6. Route every affected manual observation through an accepted Security
+           Link, preserving its frozen Raw values.
         7. Re-point the user's ``app.security_price_overrides`` marks — the
-           fourth link-free reference (see :meth:`_repoint_price_marks`).
+           price reference (see :meth:`_repoint_price_marks`).
         8. Auto-reject the ref's sibling pending candidates — accepting one answers
            them all, so a tie resolves in a single review action.
         9. Delete the provisional ``created_by='plaid'`` catalog row.
@@ -687,6 +684,7 @@ class SecurityLinksService:
             # Plan (and validate) BEFORE the first write: a blocked merge should
             # not depend on rollback to leave the database untouched.
             plan = self._plan_lot_selections(provisional, survivor)
+            manual_source_ids = self._manual_events.list_ids_for_security(provisional)
             if verify_accept is not None:
                 verify_accept(self.accept_impact(decision_id, into=into))
 
@@ -714,7 +712,10 @@ class SecurityLinksService:
                 parent_audit_id=parent_audit_id,
             )
             manual_repointed = self._repoint_manual_events(
-                provisional, survivor, parent_audit_id=parent_audit_id
+                provisional,
+                survivor,
+                parent_audit_id=parent_audit_id,
+                source_ids=manual_source_ids,
             )
             marks_repointed = self._repoint_price_marks(
                 provisional, survivor, parent_audit_id=parent_audit_id
@@ -818,7 +819,7 @@ class SecurityLinksService:
         return str(row[0]) if row is not None else None
 
     def _plan_lot_selections(self, provisional: str, survivor: str) -> _SelectionSet:
-        """Compute the post-merge selection set for every disposal on the provisional.
+        """Compute complete selection sets for both affected positions.
 
         ``lot_id`` hashes ``security_id``, so the merge re-keys every lot of the
         provisional security. Each selection on one of its disposals therefore
@@ -831,14 +832,9 @@ class SecurityLinksService:
           from the survivor's pool, which that lot will never join, so the
           engine would silently drop the election and fall back to FIFO. Block.
 
-        Two selections on the same disposal can re-hash onto the SAME
-        ``new_lot_id`` — e.g. the survivor already holds a lot at the exact
-        ``(account_id, acquisition_date, source_transaction_id)`` a
-        provisional lot remaps onto. Post-merge those genuinely ARE one lot,
-        so their quantities are summed rather than written as two rows: a
-        duplicate ``lot_id`` for one disposal would violate
-        ``lot_selections``'s ``(investment_transaction_id, lot_id)`` primary
-        key.
+        Colliding target lot keys are aggregated, then checked against a complete
+        ledger replay. Duplicate acquisition identities or insufficient selected
+        quantities refuse the merge instead of asserting a safe collapse.
 
         Returns the full replacement set per touched disposal (unchanged disposals
         omitted) — ``set_for_disposal`` is a whole-set replace, so a partial set
@@ -857,16 +853,15 @@ class SecurityLinksService:
                 f"""
                 SELECT ls.investment_transaction_id, ls.lot_id, ls.quantity,
                        l.security_id, l.account_id, l.acquisition_date,
-                       l.source_transaction_id
+                       l.source_transaction_id, t.security_id,
+                       t.investment_transaction_id
                 FROM {LOT_SELECTIONS.full_name} AS ls
-                JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
+                LEFT JOIN {FCT_INVESTMENT_TRANSACTIONS.full_name} AS t
                   ON t.investment_transaction_id = ls.investment_transaction_id
                 LEFT JOIN {FCT_INVESTMENT_LOTS.full_name} AS l
                   ON l.lot_id = ls.lot_id
-                WHERE t.security_id = ?
                 ORDER BY ls.investment_transaction_id, ls.lot_id
-                """,  # TableRef constants + parameterized value
-                [provisional],
+                """,  # TableRef constants
             ).fetchall()
         except duckdb.CatalogException:
             # core is not materialized, so remappability cannot be verified. With
@@ -884,12 +879,44 @@ class SecurityLinksService:
         before: _SelectionSet = {}
         after_quantities: dict[str, dict[str, Decimal]] = {}
         unremappable = 0
+        affected_disposals = {
+            str(row[0]) for row in rows if provisional in (row[3], row[7])
+        }
+        live_manual = dict(
+            self._db.execute(
+                f"""
+            SELECT COALESCE(t.investment_transaction_id, t.source_transaction_id),
+                   i.security_id
+            FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
+            JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
+            """,  # TableRef and canonical repository query
+            ).fetchall()
+        )
         for row in rows:
             disposal_id = str(row[0])
             lot_id, quantity = str(row[1]), Decimal(row[2])
             lot_security = row[3]
+            if row[8] is None or lot_security is None:
+                unremappable += 1
+                continue
+            if (disposal_id in live_manual and live_manual[disposal_id] != row[7]) or (
+                row[6] in live_manual and live_manual[row[6]] != lot_security
+            ):
+                unremappable += 1
+                continue
+            if disposal_id not in affected_disposals:
+                continue
+            if row[7] not in (provisional, survivor):
+                unremappable += 1
+                continue
             before.setdefault(disposal_id, []).append((lot_id, quantity))
             if lot_security == provisional:
+                # Transfer-derived hashes contain lineage not present in this map.
+                if lot_id != compute_lot_id(
+                    str(row[4]), str(lot_security), row[5], str(row[6])
+                ):
+                    unremappable += 1
+                    continue
                 new_lot_id = compute_lot_id(str(row[4]), survivor, row[5], str(row[6]))
             elif lot_security == survivor:
                 new_lot_id = lot_id
@@ -911,6 +938,9 @@ class SecurityLinksService:
             disposal_id: sorted(totals.items())
             for disposal_id, totals in after_quantities.items()
         }
+        validate_selection_quantities(
+            self._db, "security_id", provisional, survivor, after
+        )
         return {
             disposal_id: selections
             for disposal_id, selections in after.items()
@@ -934,38 +964,37 @@ class SecurityLinksService:
         return int(row[0]) if row else 0
 
     def _repoint_manual_events(
-        self, provisional: str, survivor: str, *, parent_audit_id: str | None
+        self,
+        provisional: str,
+        survivor: str,
+        *,
+        parent_audit_id: str | None,
+        source_ids: list[str] | None = None,
     ) -> int:
-        """Re-point every manual ledger row that references the provisional security.
+        """Route the pre-enumerated manual observations inside the merge transaction.
 
-        The ledger's OTHER reference to ``security_id``, alongside the provider
-        refs ``_repoint_links`` moves. ``raw.manual_investment_transactions`` is
-        user-entered state, not provider-owned raw: ``investments record``
-        resolves the security at entry and stores the resolved id, and
-        ``stg_manual__investment_transactions`` carries it verbatim — no link
-        table sits in between, so the link repoint does not move it, and nothing
-        restricts a manual entry to ``created_by='user'`` catalog rows in the
-        first place.
-
-        Left behind, those rows would point at the catalog id step 9 deletes:
-        ``core.fct_investment_lots`` would keep building lots under a security
-        that no longer exists while the Plaid side moved to the survivor, so the
-        user's single real position is split across a live security and a dead
-        one and BOTH cost bases are computed on a partial pool. There is no FK
-        and no doctor check between the investment fact and the catalog, so
-        ``moneybin doctor`` would report clean.
-
-        Audited through a repo (Invariant 10's contract, applied to a table that
-        is nominally ``raw`` but is really user state) and threaded onto the
-        merge's ``parent_audit_id``, so the repoint undoes with the rest of the
-        cascade rather than stranding the ledger on the survivor after an undo.
-        Runs inside the caller's open transaction. Returns the row count.
+        Existing manual Links have already moved with the provider Links. Rows
+        using their frozen assignment receive a first Link, whose undo removes
+        that route and restores the same immutable fallback.
         """
-        source_ids = self._manual_events.list_ids_for_security(provisional)
+        if source_ids is None:
+            source_ids = self._manual_events.list_ids_for_security(provisional)
         for source_transaction_id in source_ids:
-            self._manual_events.repoint_security(
-                source_transaction_id=source_transaction_id,
-                new_security_id=survivor,
+            if (
+                self._links.lookup(
+                    source_type="manual",
+                    ref_kind="manual_investment_transaction_id",
+                    ref_value=source_transaction_id,
+                )
+                == survivor
+            ):
+                continue
+            self._links.insert(
+                ref_value=source_transaction_id,
+                ref_kind="manual_investment_transaction_id",
+                source_type="manual",
+                security_id=survivor,
+                decided_by="user",
                 actor=self._actor,
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,

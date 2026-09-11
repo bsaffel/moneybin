@@ -1,4 +1,4 @@
-/* Investment ledger events from Plaid investments/transactions/get; one record per transaction per sync payload */
+/* Immutable investment transaction observation revisions from Plaid investments/transactions/get; delivery lineage lives on receipts. */
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     investment_transaction_id VARCHAR NOT NULL, -- Plaid investment_transaction_id; stable unique identifier
     account_id VARCHAR NOT NULL,                -- Plaid account_id; foreign key to raw.plaid_accounts
@@ -14,13 +14,9 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_transactions (
     unofficial_currency_code VARCHAR,           -- Non-ISO (crypto) currency
     investment_transaction_type VARCHAR,        -- Plaid type (6-value: buy, sell, cash, fee, transfer, cancel)
     investment_transaction_subtype VARCHAR,     -- Plaid subtype (48-value); preserved to core as provider_subtype
-    source_file VARCHAR NOT NULL,               -- Logical identifier: sync_{job_id}
+    observation_version VARCHAR NOT NULL,       -- Immutable source-prefixed content digest; delivery lineage lives on receipts
     source_type VARCHAR NOT NULL                -- Always 'plaid' for this table
         DEFAULT 'plaid',
     source_origin VARCHAR NOT NULL,             -- Plaid item_id; part of the PK
-    extracted_at TIMESTAMP                      -- When the server fetched this data from Plaid
-        DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                         -- When this record was inserted into the local database
-        DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (investment_transaction_id, source_origin)
+    PRIMARY KEY (investment_transaction_id, source_origin, observation_version)
 );

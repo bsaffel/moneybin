@@ -124,6 +124,7 @@ class SecurityLinksRepo(BaseRepo):
         status: str = "accepted",
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Insert a new security-link binding + paired audit. ``target_id`` is ``link_id``.
 
@@ -161,6 +162,8 @@ class SecurityLinksRepo(BaseRepo):
                 after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                is_undo=undoes_operation_id is not None,
+                undoes_operation_id=undoes_operation_id,
             )
 
     def repoint(
@@ -172,6 +175,7 @@ class SecurityLinksRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Re-point an accepted link onto a different canonical security_id (merge primitive).
 
@@ -212,6 +216,8 @@ class SecurityLinksRepo(BaseRepo):
                 after=self._serialize_for_audit(after_reversal),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                is_undo=undoes_operation_id is not None,
+                undoes_operation_id=undoes_operation_id,
             )
             self.insert(
                 link_id=uuid.uuid4().hex[:12],
@@ -233,6 +239,7 @@ class SecurityLinksRepo(BaseRepo):
                 status="accepted",
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
+                undoes_operation_id=undoes_operation_id,
             )
             return event
 

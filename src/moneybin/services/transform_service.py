@@ -34,8 +34,8 @@ logger = logging.getLogger(__name__)
 # transaction, which the single-writer lock orders strictly against an apply.
 #
 # `test_pending_scan_set_covers_every_raw_table_the_transforms_read` asserts
-# this key set equals `raw_tables_read_by_models()`, so a new raw table wired
-# into a model fails loudly here rather than going silently unwatched.
+# direct scans plus receipt-backed coverage equal `raw_tables_read_by_models()`,
+# so a new model input cannot go silently unwatched.
 _RAW_LANDING_COLUMNS: dict[str, str] = {
     "exchange_rates": "loaded_at",
     "ofx_accounts": "loaded_at",
@@ -47,7 +47,7 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
     "plaid_investment_holding_lots": "loaded_at",
     "plaid_investment_holdings": "loaded_at",
     "plaid_investment_holdings_snapshots": "loaded_at",
-    "plaid_investment_transactions": "loaded_at",
+    "plaid_investment_transaction_receipts": "loaded_at",
     "plaid_securities": "loaded_at",
     "plaid_transactions": "loaded_at",
     "security_prices": "loaded_at",
@@ -57,6 +57,11 @@ _RAW_LANDING_COLUMNS: dict[str, str] = {
     # no `loaded_at` — same instant, different name.
     "manual_investment_transactions": "created_at",
     "manual_transactions": "created_at",
+}
+
+# Revisions and receipts commit atomically; only receipts carry landing time.
+_RAW_RECEIPT_COVERAGE: dict[str, str] = {
+    "plaid_investment_transactions": "plaid_investment_transaction_receipts",
 }
 
 # Those of the above whose rows name the import batch that wrote them, so a

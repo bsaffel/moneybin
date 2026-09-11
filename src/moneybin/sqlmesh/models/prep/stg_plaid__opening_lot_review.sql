@@ -62,7 +62,7 @@ WITH guard_reasons AS (
     SELECT
       source_origin,
       transactions_window_start,
-      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at, source_file) AS snapshot_rank
+      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at, ingestion_sequence) AS snapshot_rank
     FROM prep.stg_plaid__investment_holdings_snapshots
   )
   WHERE

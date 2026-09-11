@@ -98,7 +98,7 @@ WITH positions AS (
       source_origin,
       source_file,
       extracted_at,
-      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, source_file DESC) AS snapshot_rank
+      ROW_NUMBER() OVER (PARTITION BY source_origin ORDER BY extracted_at DESC, ingestion_sequence DESC) AS snapshot_rank
     FROM prep.stg_plaid__investment_holdings_snapshots
   )
   WHERE
@@ -263,14 +263,10 @@ WITH positions AS (
      synthesizes only the gap the in-window transactions leave). It is not a second
      observation of an event the other source also reported, so it double-counts
      nothing. Counting it would make every broker-covered account holding any manual
-     entry read as overlapping — and, worse, would put this model at odds with the
-     doctor check that REPORTS the state: investment_source_overlap joins
-     raw.plaid_investment_transactions to raw.manual_investment_transactions, so a
-     holdings snapshot alone is not an overlap there. A user would then hold a
-     withheld portfolio with a passing check and no remedy named anywhere, which is
-     strictly worse than the double-count this withhold exists to contain. The
-     subtype is not user-authorable, so it cannot be spoofed into hiding a real
-     overlap.
+     entry read as overlapping. Doctor and sync also detect holdings/bootstrap
+     evidence for review, but that broader detection does not expand this shipped
+     withholding predicate. The subtype is not user-authorable, so it cannot be
+     spoofed into hiding a real transaction overlap.
 
      Distinct source_type rather than a manual/plaid pair: two importers of the same
      kind are one accounting, and the failure is generic to any second source.

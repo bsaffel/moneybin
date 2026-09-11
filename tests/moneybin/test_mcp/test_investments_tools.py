@@ -848,6 +848,26 @@ class TestInvestmentsRecord:
     """Tests for the investments_record MCP tool (batch event recording)."""
 
     @pytest.mark.unit
+    async def test_caller_group_is_rejected_without_a_partial_write(self) -> None:
+        _seed_investment_core()
+        result = await investments_record(
+            events=[
+                {
+                    "account": _ACCOUNT,
+                    "type": "deposit",
+                    "date": "2026-01-01",
+                    "amount": "10",
+                    "event_group_id": "caller-group",
+                }
+            ]
+        )
+        assert result.to_dict()["status"] == "error"
+        with get_database(read_only=True) as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM raw.manual_investment_transactions"
+            ).fetchone() == (0,)
+
+    @pytest.mark.unit
     async def test_records_single_buy_event(self, mcp_db: Path) -> None:
         _seed_investment_core()
         _add_security(security_id="sec_1", ticker="AAPL")
