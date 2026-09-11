@@ -468,6 +468,24 @@ def test_a_currency_basis_outside_the_vocabulary_is_refused() -> None:
         )
 
 
+def test_a_currency_basis_on_a_column_that_holds_no_money_is_refused() -> None:
+    """A basis nothing will ever read is a silent no-op, not a harmless extra.
+
+    `convert_records` prices only the classes in `MONEY_CLASSES`, so a basis on
+    an `AGGREGATE` column — counts, ratios, z-scores — is never consulted. The
+    author gets a column that reads as "already converted" and behaves as if it
+    had never said so, with nothing raised anywhere. Refused at construction for
+    the same reason the vocabulary is.
+    """
+    with pytest.raises(ValueError, match="currency_basis"):
+        OutputColumn(
+            name="ratio",
+            description="A ratio, which no rate applies to.",
+            data_class=DataClass.AGGREGATE,
+            currency_basis="home",
+        )
+
+
 def test_a_home_currency_basis_constructs_cleanly() -> None:
     column = OutputColumn(
         name="value",

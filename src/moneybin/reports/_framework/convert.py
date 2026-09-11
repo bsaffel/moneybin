@@ -31,7 +31,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     OutputColumn,
@@ -55,16 +55,6 @@ _NO_DECLARED_BASIS = (
     "this report does not declare which column names each row's currency and "
     "which dates it, so its amounts cannot be priced"
 )
-
-#: The classes whose values are money and therefore convert. ``AGGREGATE`` is
-#: deliberately absent: it covers counts, ratios, z-scores, and confidences,
-#: and converting one would corrupt it. A money column declared ``AGGREGATE``
-#: is a declaration bug in that report, not a case to handle here.
-MONEY_CLASSES = frozenset({
-    DataClass.BALANCE,
-    DataClass.TXN_AMOUNT,
-    DataClass.INCOME_AMOUNT,
-})
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +118,7 @@ def rates_pricing(
     *,
     date_column: str | None,
     columns: Sequence[OutputColumn] | None = None,
+    home_currency: str | None = None,
 ) -> tuple[ResolvedRate, ...]:
     """The subset of ``rates`` that priced a figure in ``rows``.
 
@@ -147,13 +138,23 @@ def rates_pricing(
     real provenance. Provenance is audit evidence: publishing one rate too many
     is a smaller error than dropping the rate behind a figure on screen.
 
-    A report declaring a home-basis column (``columns``) is the same case by
-    construction: ``ORIGINAL_CURRENCY_COLUMN`` names only the row's own
-    currency, so a rate resolved to price a home-basis column would never
-    match it and would be pruned even though it priced a surviving row. Never
-    narrowed for such a report — every applied rate rides along instead.
+    A report declaring a home-basis column needs a second key beside the row's
+    own: ``ORIGINAL_CURRENCY_COLUMN`` names only the row's currency, so a rate
+    resolved to price a home-basis column matches nothing there and would be
+    pruned even though it priced a surviving row. ``home_currency`` supplies
+    that key, added for a row that actually carries a home-basis value. Without
+    it — a caller that declares such a column but passes no home currency —
+    there is no way to tell that rate from a stale one, so nothing is narrowed.
+
+    Narrowing still applies in the home-basis case, deliberately: the sentinel
+    row is exactly what this function exists to cut, and a report with a
+    home-basis column has no weaker claim to that than any other.
     """
-    if not rates or date_column is None or _home_basis_columns(columns):
+    if not rates or date_column is None:
+        return rates
+    home_basis = _home_basis_columns(columns)
+    home = canonical_currency(home_currency) if home_currency else None
+    if home_basis and (home is None or not _is_currency_code(home)):
         return rates
     priced: set[tuple[str, date]] = set()
     for row in rows:
@@ -162,6 +163,8 @@ def rates_pricing(
         if not isinstance(source, str) or on is None:
             return rates
         priced.add((source, on))
+        if home is not None and any(row.get(name) is not None for name in home_basis):
+            priced.add((home, on))
     return tuple(
         rate for rate in rates if (rate.from_currency, rate.requested_date) in priced
     )
@@ -202,6 +205,10 @@ def convert_records(
 
     home_basis = _home_basis_columns(columns)
     amounts = money_columns(classes)
+    #: The home-basis columns conversion will actually price. A declared basis
+    #: on a column no longer projected by this read names nothing to resolve a
+    #: rate for, so it must not force one.
+    home_amounts = tuple(name for name in amounts if name in home_basis)
     if not _holds_money(rows, amounts):
         # Nothing to convert is not a degraded conversion. A report of counts and
         # categories has no amounts to denominate, so it reports no currency and
@@ -297,7 +304,12 @@ def convert_records(
                     rows, None, _missing_reason(service, base, target)
                 )
 
-        if home is None:
+        # Resolved only for a row that actually holds a home-basis amount. A
+        # report whose home-basis column is null on some rows would otherwise
+        # degrade the whole result over a rate that would never have been
+        # applied — the same fail-shut that is correct for a value being priced
+        # is wrong for a value that is not there.
+        if home is None or not any(row.get(name) is not None for name in home_amounts):
             home_plan.append(None)
         else:
             home_key = (home, on)
@@ -337,10 +349,11 @@ def convert_records(
                     "be priced in another currency",
                 )
             if column in home_basis:
-                # `home_key` is set on every row whenever `home_basis` is
-                # non-empty: both are gated by the same `home is not None`
-                # check above, so a home-basis column always finds its rate.
-                assert home_key is not None  # noqa: S101  # narrowed by home_basis membership
+                # Reached only for a column in `amounts` holding a non-None
+                # value, which is exactly the condition `home_amounts` tested
+                # when it set `home_key` — so a home-basis column being priced
+                # always has its rate.
+                assert home_key is not None  # noqa: S101  # narrowed by home_amounts
                 priced[column] = apply_rate(amount, resolved[home_key].rate)
             else:
                 priced[column] = apply_rate(amount, rate)

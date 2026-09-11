@@ -125,6 +125,18 @@ _TIER_BY_CLASS: dict[DataClass, Tier] = {
     DataClass.FLOORED: Tier.LOW,
 }
 
+#: The data classes whose columns hold an amount of money. ``AGGREGATE`` is
+#: deliberately absent: it covers counts, ratios, z-scores, and confidences,
+#: and converting one would corrupt it. Lives beside ``DataClass`` rather than
+#: in the report framework because two callers need it — currency conversion,
+#: which prices these columns, and the ``OutputColumn`` contract, which refuses
+#: a currency declaration on a column that will never be priced.
+MONEY_CLASSES = frozenset({
+    DataClass.BALANCE,
+    DataClass.TXN_AMOUNT,
+    DataClass.INCOME_AMOUNT,
+})
+
 # Keyed by (schema, table) -> {column: DataClass}. Every column in
 # core.* and app.* must appear here; the completeness test enforces
 # this. Judgment calls are documented in

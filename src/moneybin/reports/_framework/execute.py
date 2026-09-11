@@ -165,6 +165,13 @@ class CatalogReportExecution:
     names no home-basis column and converts exactly as it always has."""
     # Same contract as ReportResult.display_currency — see the note there.
     display_currency: str | None = None
+    home_currency: str | None = None
+    """The profile home currency a home-basis column was priced FROM.
+
+    Recorded by ``convert_execution`` because ``truncate_execution`` runs later
+    and needs it to tell a rate that priced a surviving home-basis value from
+    one that priced only the row the cap discarded (``rates_pricing``). ``None``
+    for every report that declares no home-basis column."""
     #: Why a requested display currency was not applied, when one was requested
     #: and the rows fell back to per-currency segmentation (Requirement 15).
     degraded_reason: str | None = None
@@ -310,6 +317,7 @@ def convert_execution(
         # asking. Only a conversion that happened replaces it.
         display_currency=outcome.display_currency or execution.display_currency,
         degraded_reason=outcome.degraded_reason,
+        home_currency=home_currency,
     )
 
 
@@ -345,6 +353,7 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
             execution.applied_rates,
             date_column=execution.semantics.fx_date,
             columns=execution.output_columns,
+            home_currency=execution.home_currency,
         )
         if truncated
         else execution.applied_rates,

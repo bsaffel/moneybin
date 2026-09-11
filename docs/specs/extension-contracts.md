@@ -551,6 +551,13 @@ checker, not the interpreter, and an author running none would otherwise get
 no signal that a misspelled value silently fell back to pricing the column
 from the row's own currency.
 
+The same check refuses a basis on a column whose `data_class` holds no money.
+`convert_records` prices only `MONEY_CLASSES` — `BALANCE`, `TXN_AMOUNT`,
+`INCOME_AMOUNT` — so a basis declared on, say, an `AGGREGATE` column is never
+consulted: the declaration reads as "already converted" and behaves as though
+it were absent, with nothing raised. That is the same silent no-op a misspelled
+value would be, so it fails the same way, at construction.
+
 ### Choosing which columns a text reader sees first
 
 `@report` carries an optional `default_columns` — the columns the CLI's text

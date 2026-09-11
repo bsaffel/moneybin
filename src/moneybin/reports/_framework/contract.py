@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.tables import TableRef
 
 # A runner takes an open Database plus keyword-only params and returns the
@@ -247,7 +247,10 @@ class OutputColumn:
         the same silent way — ``convert_records`` reads only the one value it
         recognizes and treats anything else as the row-currency default — so it
         is rejected here rather than left to price a column wrong with no
-        error anywhere.
+        error anywhere. A basis on a column whose ``data_class`` holds no money
+        fails the same way and is refused for the same reason: ``convert_records``
+        prices only the classes in ``MONEY_CLASSES``, so the declaration would
+        be a silent no-op rather than an error the author could see.
         """
         if self.money_kind is not None and self.money_kind not in _MONEY_KINDS:
             raise ValueError(
@@ -276,6 +279,13 @@ class OutputColumn:
             raise ValueError(
                 f"money column {self.name!r} is not a delta, so its polarity "
                 f"{self.polarity!r} would be ignored rather than applied"
+            )
+        if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
+            raise ValueError(
+                f"column {self.name!r} declares currency_basis "
+                f"{self.currency_basis!r} but its data_class "
+                f"{self.data_class.value!r} is not one that holds money, so "
+                f"nothing would ever price it from that basis"
             )
 
 
