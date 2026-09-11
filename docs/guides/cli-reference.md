@@ -283,9 +283,11 @@ after a rule change.
 
 Categorization workflow. Engines: deterministic rules + merchant mappings
 (local, no LLM). LLM-assist is exposed as `assist` (read) → `commit` (write).
-`commit` reads a JSON array of `{transaction_id, category, subcategory?}`
-objects from `--input <path>` or `-` for stdin; `commit-from-file <path>` is
-the convenience wrapper.
+`commit` reads a JSON array of `{transaction_id, category, subcategory?,
+canonical_merchant_name?}` objects from `--input <path>` or `-` for stdin;
+`commit-from-file <path>` is the convenience wrapper. A canonical merchant
+name accumulates the row's exact merchant exemplar for later deterministic
+matching.
 
 `run` executes the engine cascade over uncategorized rows in order; a rule
 write blocks a merchant write at the same priority. `assist` returns

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-10 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -7,7 +7,7 @@ The lane is narrow on purpose: your data stays on your machine, AI assists rathe
 
 > **MoneyBin is pre-v1.** Dates aren't committed. Where a persona is listed under "Coming later" below, the honest answer to "when?" is "we're not promising a quarter." If you need a finished product today, the post-launch personas should stay on the tool they're using.
 
-**Quick navigator.** MoneyBin's strongest fit today is power users comfortable in a terminal — the four personas under "Already a good fit." If that's not you, skip straight to **[Coming later](#personas--coming-later)** for the visual / FIRE / non-USD personas, or **[Not yet for you](#not-yet-for-you)** for the cases where another tool is genuinely better.
+**Quick navigator.** MoneyBin's strongest fit today is power users comfortable in a terminal — the four personas under "Already a good fit." If that's not you, skip straight to **[Coming later](#personas--coming-later)** for the visual / ChatGPT / FIRE / non-USD personas, or **[Not yet for you](#not-yet-for-you)** for the cases where another tool is genuinely better.
 
 ## Personas — already a good fit
 
@@ -92,6 +92,16 @@ These are the people MoneyBin is being built for but doesn't fully serve yet. No
 
 **What's still rough:** No production web UI yet. A CLI/MCP review queue exists for the AI-categorization workflow; there is no web surface yet. **Stay on Monarch or Copilot until the web UI ships.**
 
+### The ChatGPT finance user
+
+**Stack:** ChatGPT Plus or Pro. Tried Finances in ChatGPT with a linked bank feed, liked asking about money in plain language, and noticed the feed now lives in a vendor's database.
+
+**Job to be done:** The same conversation about their money, with the data in a file they hold.
+
+**Why MoneyBin will fit:** The ChatGPT desktop app already drives MoneyBin over MCP, so the assistant answers from an encrypted file on your machine. The model still sees the rows it asks for. Import from OFX, QFX, or CSV and nobody but you keeps the feed. Turn on Plaid sync and Plaid keeps it too; the [threat model](guides/threat-model.md#plaid-itself-when-you-use-bank-direct-sync) says exactly what it holds.
+
+**What's still rough:** Install is `git clone` + `uv`, there is no web UI, and ChatGPT on the web cannot reach a local MoneyBin. Web UI and remote-client support are planned. **If zero setup matters more than who holds the feed, [Finances in ChatGPT](https://help.openai.com/en/articles/20001222-finances-in-chatgpt) is the right answer today.**
+
 ### The FIRE / wealth-builder
 
 **Stack:** A taxable brokerage at Fidelity or Schwab, a Roth IRA, maybe a 401(k), maybe some crypto. Tracks net worth in a spreadsheet and updates it monthly. Cares about cost basis, realized/unrealized gain/loss, and short-term vs long-term classification at tax time.
@@ -116,7 +126,7 @@ Plaid investment ingestion is available through `moneybin sync pull`; manual ent
 
 ## Not yet for you
 
-If a hard requirement falls outside MoneyBin's lane, [Where MoneyBin Fits](comparison.md) names the better tool for a shared household budget, pure envelope budgeting, plain-text double-entry ledgers, a polished mobile app, and a self-host stack you can deploy today. Four more that page does not cover:
+If a hard requirement falls outside MoneyBin's lane, [Where MoneyBin Fits](comparison.md) names the better tool for a shared household budget, pure envelope budgeting, plain-text double-entry ledgers, a polished mobile app, a self-host stack you can deploy today, and zero-setup finance in a vendor's cloud. Four more that page does not cover:
 
 | If you need… | Use instead |
 |---|---|

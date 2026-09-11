@@ -196,6 +196,7 @@ moneybin = "moneybin.cli.main:main"
 # Documentation: https://peps.python.org/pep-0735/
 # Modern dependency groups standard (PEP 735) for optional/development dependencies
 dev = [
+    "towncrier>=26.9.0,<27",
     # Code quality and formatting
     "ruff>=0.15.10",
     "pyright>=1.1.408",
@@ -253,17 +254,17 @@ preview = true
 [tool.ruff.lint]
 # Documentation: https://docs.astral.sh/ruff/rules/
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-    "N",   # pep8-naming
-    "D",   # pydocstring
-    "S",   # flake8-bandit (security)
-    "T20", # flake8-print
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "N",      # pep8-naming
+    "D",      # pydocstring
+    "S",      # flake8-bandit (security)
+    "T20",    # flake8-print
     "RUF100", # unused-noqa: a noqa directive that suppresses nothing
 ]
 ignore = [
