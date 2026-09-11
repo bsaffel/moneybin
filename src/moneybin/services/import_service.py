@@ -2217,9 +2217,14 @@ class ImportService:
             # sharply, since its PK (organization, fid) has no source_file at
             # all. Finalize with the real partial counts OFXLoadError carries
             # instead of a hardcoded zero or a destructive cleanup.
-            partial_total = (
-                e.rows_loaded.total_rows if isinstance(e, OFXLoadError) else 0
-            )
+            #
+            # OFXLoadError is raised only once extraction has succeeded and a
+            # raw-table write failed, so it is also what keeps the error metric
+            # honest now that load() fuses the two phases behind one except:
+            # without it, a schema rejection during extraction — which never
+            # touches the database — would be counted as a write failure.
+            write_failed = isinstance(e, OFXLoadError)
+            partial_total = e.rows_loaded.total_rows if write_failed else 0
             import_log.finalize_import(
                 self._db,
                 import_id,
@@ -2228,7 +2233,10 @@ class ImportService:
                 rows_imported=partial_total,
             )
             OFX_IMPORT_BATCHES.labels(status="failed").inc()
-            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
+            IMPORT_ERRORS_TOTAL.labels(
+                source_type="ofx",
+                error_type="load" if write_failed else "extract",
+            ).inc()
             raise
 
         rows_loaded: dict[str, int] = {

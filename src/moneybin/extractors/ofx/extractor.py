@@ -482,6 +482,7 @@ class OFXExtractor:
     def __init__(
         self,
         config: OFXProviderConfig | None = None,
+        *,
         db: Database | None = None,
     ):
         """Initialize the OFX extractor.
@@ -492,11 +493,12 @@ class OFXExtractor:
                 matching ``PlaidExtractor``'s shape. Required only for
                 ``load()``; ``extract_from_file()`` alone needs no database,
                 so existing callers that construct with just a config keep
-                working. Keyword-preferred: unlike ``PlaidExtractor`` (which
-                takes ``db`` first and always requires it), OFX has long
-                had ``config`` as its sole positional argument across many
-                call sites — reordering would silently mis-bind ``db`` for
-                any caller still passing it positionally.
+                working. Keyword-only, and placed after ``config`` rather
+                than first like ``PlaidExtractor`` (which always requires
+                it): OFX has long had ``config`` as its sole positional
+                argument across many call sites, and the ``*`` makes a
+                positional ``db`` a type error instead of a silent
+                mis-binding.
         """
         from moneybin.config import get_raw_data_path
 

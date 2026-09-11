@@ -4,11 +4,16 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
-from moneybin.extractors.ofx.extractor import OFXLoadError, ofx_source_accounts
+from moneybin.extractors.ofx.extractor import (
+    OFXExtractor,
+    OFXLoadError,
+    ofx_source_accounts,
+)
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
 from moneybin.services.pdf_account_identity import derive_pdf_account_identity
@@ -318,6 +323,62 @@ class TestImportOFXMidLoadFailure:
         rows_total, rows_imported = failed[0]
         assert rows_imported > 0
         assert rows_imported == rows_total
+
+
+class TestImportOFXFailurePhaseMetrics:
+    """`IMPORT_ERRORS_TOTAL` must keep naming the phase that actually failed.
+
+    `OFXExtractor.load()` fuses extraction and the raw-table write behind one
+    `except` in `_import_ofx`, so the phase is no longer readable from the
+    control flow. `OFXLoadError` is what separates them: `load()` raises it only
+    once extraction has succeeded and a table write failed. Without that
+    distinction, a schema rejection that never touches the database would be
+    counted as a write failure, and operational telemetry would point at the
+    wrong subsystem. Both halves are asserted because a one-sided test passes
+    just as well with the label hardcoded.
+    """
+
+    def test_extraction_failure_is_labeled_extract(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.import_service.IMPORT_ERRORS_TOTAL", errors
+        )
+
+        def _fail_extraction(*args: object, **kwargs: object) -> object:
+            # What extract_from_file actually raises for an unparseable file.
+            raise ValueError("Invalid OFX file format: KeyError")
+
+        monkeypatch.setattr(OFXExtractor, "extract_from_file", _fail_extraction)
+
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        with pytest.raises(ValueError, match="Invalid OFX file format"):
+            import_answering_gate(ImportService(db), fixture, refresh=False)
+
+        errors.labels.assert_called_once_with(source_type="ofx", error_type="extract")
+
+    def test_raw_table_write_failure_is_labeled_load(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.import_service.IMPORT_ERRORS_TOTAL", errors
+        )
+        real_ingest = db.ingest_dataframe
+
+        def _fail_on_transactions(table: str, frame: object, **kwargs: object) -> int:
+            if "ofx_transactions" in table:
+                raise RuntimeError("simulated raw-table write failure")
+            return real_ingest(table, frame, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "ingest_dataframe", _fail_on_transactions)
+
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        with pytest.raises(OFXLoadError, match="transactions"):
+            import_answering_gate(ImportService(db), fixture, refresh=False)
+
+        errors.labels.assert_called_once_with(source_type="ofx", error_type="load")
 
 
 class TestImportOFXAccountResolution:

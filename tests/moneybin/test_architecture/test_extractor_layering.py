@@ -27,6 +27,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = REPO_ROOT / "src" / "moneybin"
+ROOT_PACKAGE = SRC_ROOT.name
 EXTRACTOR_ROOTS = (SRC_ROOT / "extractors",)
 GUARDED_PACKAGES = ("moneybin.services",)
 
@@ -82,16 +83,44 @@ def _format_violation(relpath: str, module: str, name: str) -> str:
     return f"  - {relpath}: from {module} import {name}"
 
 
+def _absolute_module(
+    relpath: str, node: ast.ImportFrom, root_package: str
+) -> str | None:
+    """Resolve one `from ... import` target to the absolute module Python imports.
+
+    A relative import splits its target across two fields: the leading dots land
+    in `node.level` and only the remainder in `node.module`. So
+    `from ..services.account_display_name import AccountNameFacts` written in
+    `extractors/ofx/extractor.py` arrives as `level=2` with the bare string
+    `services.account_display_name`, and reaches `moneybin.services.…` at
+    runtime. Reading `node.module` without rejoining the dots would score that
+    as an unguarded module.
+
+    Returns None when the dots walk above the root package — Python rejects that
+    import itself, so there is nothing for the guard to classify.
+    """
+    if node.level == 0:
+        return node.module
+    package = (root_package, *relpath.split("/")[:-1])
+    kept = len(package) - (node.level - 1)
+    if kept < 1:
+        return None
+    base = package[:kept]
+    return ".".join((*base, node.module) if node.module else base)
+
+
 def _collect_imports(
     path: Path, src_root: Path = SRC_ROOT
 ) -> list[tuple[str, str, str]]:
     """Return (module_relpath, imported_module, imported_name) triples for a file.
 
     The guard has to recognize every statement form that reaches a guarded
-    package, not just `from X import Y`: a bare `import moneybin.services.x` is
-    an `ast.Import` node and `from moneybin import services` is an `ast.ImportFrom`
-    whose own module is unguarded, so matching on `ast.ImportFrom.module` alone
-    would let either form import the same symbols with the guard silent.
+    package, not just `from <absolute> import Y`. A bare
+    `import moneybin.services.x` is an `ast.Import` node; `from moneybin import
+    services` is an `ast.ImportFrom` whose own module is unguarded; and a
+    relative `from ..services.x import Y` keeps its package hops in
+    `node.level`. Matching on `ast.ImportFrom.module` alone lets all three
+    import the same symbols with the guard silent.
     """
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
@@ -100,19 +129,14 @@ def _collect_imports(
     triples: list[tuple[str, str, str]] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
-            # A relative import cannot leave its own package, so it cannot reach
-            # a guarded one from here.
-            if node.module is None:
+            module = _absolute_module(relpath, node, ROOT_PACKAGE)
+            if module is None:
                 continue
             for alias in node.names:
-                if _is_guarded(node.module):
-                    triples.append((relpath, node.module, alias.name))
-                elif _is_guarded(f"{node.module}.{alias.name}"):
-                    triples.append((
-                        relpath,
-                        f"{node.module}.{alias.name}",
-                        MODULE_IMPORT,
-                    ))
+                if _is_guarded(module):
+                    triples.append((relpath, module, alias.name))
+                elif _is_guarded(f"{module}.{alias.name}"):
+                    triples.append((relpath, f"{module}.{alias.name}", MODULE_IMPORT))
         elif isinstance(node, ast.Import):
             triples.extend(
                 (relpath, alias.name, MODULE_IMPORT)
@@ -221,5 +245,64 @@ def test_collect_imports_ignores_unguarded_statements(tmp_path: Path) -> None:
     module.write_text(
         "import moneybin.tables\nfrom moneybin import error_codes\n", encoding="utf-8"
     )
+
+    assert _collect_imports(module, src_root=tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("relpath", "statement", "expected"),
+    [
+        # One dot from `moneybin/extractors/evasion.py` stays in
+        # `moneybin.extractors`; two walk up to `moneybin` and reach services/.
+        (
+            "extractors/evasion.py",
+            "from ..services.account_display_name import AccountNameFacts",
+            (
+                "extractors/evasion.py",
+                "moneybin.services.account_display_name",
+                "AccountNameFacts",
+            ),
+        ),
+        # Three dots from one package deeper reach the same place.
+        (
+            "extractors/ofx/evasion.py",
+            "from ...services import account_resolver",
+            ("extractors/ofx/evasion.py", "moneybin.services", "account_resolver"),
+        ),
+    ],
+)
+def test_collect_imports_resolves_relative_statements(
+    tmp_path: Path, relpath: str, statement: str, expected: tuple[str, str, str]
+) -> None:
+    """A relative import that crosses packages must resolve before the guard check.
+
+    The dots live in `ast.ImportFrom.level`, not in `node.module`, so an
+    unresolved check reads `from ..services.x import Y` as the unguarded string
+    `services.x` while Python imports `moneybin.services.x`.
+    """
+    module = tmp_path / relpath
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(f"{statement}\n", encoding="utf-8")
+
+    assert _collect_imports(module, src_root=tmp_path) == [expected]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "from . import sibling",
+        "from .helpers import parse",
+        # More dots than the package is deep: Python rejects this itself, so
+        # there is nothing for the guard to classify.
+        "from .... import anything",
+    ],
+)
+def test_collect_imports_ignores_relative_statements_inside_the_layer(
+    tmp_path: Path, statement: str
+) -> None:
+    """A relative import that stays inside `extractors/` is not an inversion."""
+    module = tmp_path / "extractors" / "ofx" / "innocent.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(f"{statement}\n", encoding="utf-8")
 
     assert _collect_imports(module, src_root=tmp_path) == []
