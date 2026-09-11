@@ -33,7 +33,7 @@ def test_persona_probe_does_not_skip_database_key_errors(
 def test_persona_probe_skips_missing_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A genuinely absent persona DB remains an intentional perf-test skip."""
+    """A genuinely absent persona DB is reported as unavailable."""
 
     @contextmanager
     def _raise_missing_db(*, read_only: bool) -> Generator[object, None, None]:
@@ -53,7 +53,7 @@ def test_persona_probe_skips_missing_database(
 def test_persona_probe_skips_missing_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Running perf tests without MONEYBIN_PROFILE is a setup skip."""
+    """Running perf tests without MONEYBIN_PROFILE reports setup failure."""
 
     @contextmanager
     def _raise_no_profile(*, read_only: bool) -> Generator[object, None, None]:
@@ -72,7 +72,7 @@ def test_persona_probe_skips_missing_profile(
 def test_persona_probe_skips_missing_fct_transactions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An untransformed DB with no core table is a setup skip."""
+    """An untransformed DB with no core table reports setup failure."""
     import duckdb
 
     @contextmanager
@@ -94,7 +94,7 @@ def test_persona_probe_skips_missing_fct_transactions(
 def test_persona_probe_skips_missing_core_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An initialized but untransformed DB is a setup skip."""
+    """An initialized but untransformed DB reports setup failure."""
     import duckdb
 
     @contextmanager

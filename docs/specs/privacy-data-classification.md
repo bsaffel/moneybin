@@ -518,10 +518,20 @@ Both `sql_query` and `sql_schema` use `dynamic_classification=True`. `sql_schema
 
 ## Performance validation (PR 2)
 
-Privacy middleware introduces redaction + log-write overhead on every
-MCP/CLI egress. PR 2's acceptance gate caps the regression budget at
-≤50 ms p50, ≤200 ms p99, ≤20% total-flow wall-clock vs the
-pre-middleware baseline captured before introspection code landed.
+Privacy middleware adds typed redaction where applicable and a privacy-audit
+write on protected egress. The acceptance gate compares the same operation
+within one populated-persona run: a raw callback versus that callback through
+the production `@mcp_tool` decorator. The report flow is the precise exception:
+both paths call the actual `reports()` route, while the raw path temporarily
+replaces only terminal row redaction and the audit writer with test-local
+no-ops. Parameter redaction, limit selection, profile currency lookup,
+conversion, truncation, payload construction, and envelope assembly remain
+enabled on both paths. Matching scoped patches keep their setup cost controlled
+and restore the production callables even if the call fails; the preflight
+checks the protected response and its audit event. The gate caps
+protected-egress overhead at ≤50 ms p50 and ≤200 ms p99 per flow, and ≤20%
+across the sums of the five per-flow p50 values. The aggregate is not an
+end-to-end wall-clock measure.
 
 ### Persona
 
@@ -537,22 +547,25 @@ Generated via `moneybin synthetic generate family --seed 8229 --years 3`.
 The plan's original target of 5000+ transactions was relaxed to ~2700
 after enumerating the available persona library — `family.yaml` is the
 largest existing fixture and growing it was out of scope for this PR.
-The baseline is still load-bearing for the regression-budget gate;
-absolute latency values may be smaller than they would be on a denser
-fixture, but the delta-vs-baseline measurement is unaffected.
+The historical baseline remains as provenance for the original PR 2
+measurement. It is no longer the gate comparator: later exact-count work made
+its transaction operation non-equivalent to the original baseline.
 
 ### Measured flows
 
-Each flow runs ≥30 iterations to produce stable percentiles. Baseline
-stored at `tests/scenarios/fixtures/perf_baseline_pre_privacy.json`,
-post-middleware assertion at `tests/scenarios/test_privacy_middleware_perf.py`.
+Each raw and protected flow runs ≥30 iterations to produce stable percentiles.
+The historical artifact remains at
+`tests/scenarios/fixtures/perf_baseline_pre_privacy.json`; the same-run
+protected-egress assertion is at `tests/scenarios/test_privacy_middleware_perf.py`.
 
 | Tool / command | Service method | Tier | Shape |
 |---|---|---|---|
 | `transactions` | `TransactionService.get(limit=100)` | high (static) | ~100-row list |
-| `reports(report_id="core:spending")` | `ReportCatalog.execute()` → `spending_trend` | high | transaction-amount aggregates |
-| `accounts` | `AccountService.list_accounts()` | dynamic; maximum critical | ~4-row list (critical fields masked) |
-| Budget reporting (not registered) | `BudgetService.status()` | low | aggregate + per-budget rows — synthesized from `BudgetService`, not a `reports.*` view; it registers through the report framework when M3C ships a `reports.budget` view |
-| `reports(report_id="core:networth_history", parameters={"from_date":"2026-01-01","to_date":"2026-06-30"})` | `NetworthService.history()` | high | balance time-series |
+| `reports(report_id="core:spending")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
+| `accounts` | `AccountService.list_accounts()` | critical (static) | ~4-row list (critical fields masked) |
+| Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool` | high | aggregate + per-budget rows; no public route is added |
+| Net-worth history | `NetworthService.history()` under `@mcp_tool` | high | balance time-series |
 
-Concrete numbers are populated by Phase 9 after the post-middleware run.
+The gate proves each protected callback produces the expected redacted result
+and writes privacy-audit events before timing it. Concrete numbers are
+recorded by the serial populated-persona CI run.
