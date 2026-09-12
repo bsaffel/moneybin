@@ -378,6 +378,20 @@ class UndoService:
             for image in (event.before_value, event.after_value):
                 if image is None:
                     continue
+                if (
+                    event.target_table == "account_link_decisions"
+                    and image.get("status") != "accepted"
+                ):
+                    continue
+                if event.target_table == "security_links":
+                    from moneybin.services.security_links_service import (
+                        SecurityLinksService,
+                    )
+
+                    if SecurityLinksService.binds_a_feed_key(
+                        str(image.get("ref_kind", ""))
+                    ):
+                        continue
                 if event.target_table in {"account_links", "account_link_decisions"}:
                     accounts.update(
                         str(image[key])

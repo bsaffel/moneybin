@@ -52,11 +52,17 @@ def _preflight_account_activation(conn: object) -> None:
     try:
         selections = conn.execute(  # type: ignore[attr-defined]
             """
-            SELECT t.account_id, l.account_id
+            SELECT t.account_id, l.account_id, mt.account_id, ml.account_id
             FROM app.lot_selections AS ls
             LEFT JOIN core.fct_investment_transactions AS t
               ON t.investment_transaction_id = ls.investment_transaction_id
             LEFT JOIN core.fct_investment_lots AS l ON l.lot_id = ls.lot_id
+            LEFT JOIN raw.manual_investment_transactions AS mt
+              ON COALESCE(mt.investment_transaction_id, mt.source_transaction_id)
+                 = ls.investment_transaction_id
+            LEFT JOIN raw.manual_investment_transactions AS ml
+              ON COALESCE(ml.investment_transaction_id, ml.source_transaction_id)
+                 = l.source_transaction_id
             """
         ).fetchall()
     except (duckdb.CatalogException, duckdb.BinderException):
@@ -77,10 +83,11 @@ def _preflight_account_activation(conn: object) -> None:
         affected.update(reachable)
     if any(
         account is None
-        or lot_account is None
         or account in affected
         or lot_account in affected
-        for account, lot_account in selections
+        or frozen_account in affected
+        or frozen_lot_account in affected
+        for account, lot_account, frozen_account, frozen_lot_account in selections
     ):
         raise RuntimeError(prerequisite)
 

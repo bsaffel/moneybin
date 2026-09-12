@@ -171,9 +171,6 @@ def plan_account_lot_selections(
         ).fetchone()
     except (duckdb.CatalogException, duckdb.BinderException):
         raise _refuse() from None
-    if any(row[3] is None or row[6] is None for row in rows):
-        raise _refuse()
-    affected = {str(row[0]) for row in rows if provisional in (row[3], row[6])}
     current_manual = {
         str(row[0]): (row[1], row[2])
         for row in db.execute(
@@ -185,9 +182,32 @@ def plan_account_lot_selections(
             """,  # noqa: S608  # TableRef and canonical repository query
         ).fetchall()
     }
+    affected: set[str] = set()
+    checked: set[str] = set()
+    for row in rows:
+        identities = (
+            row[3],
+            row[6],
+            current_manual.get(str(row[0]), (None, None))[0],
+            current_manual.get(str(row[10]), (None, None))[0],
+        )
+        if provisional in identities:
+            affected.add(str(row[0]))
+        if any(identity in (provisional, survivor) for identity in identities):
+            checked.add(str(row[0]))
     plan: dict[str, list[tuple[str, Decimal]]] = {}
     for row in rows:
         disposal, lot_id = str(row[0]), str(row[1])
+        # A missing disposal or unresolved live route cannot prove unrelatedness.
+        if row[3] is None or any(
+            key in current_manual and current_manual[key][0] is None
+            for key in (disposal, str(row[10]))
+        ):
+            raise _refuse()
+        if disposal not in checked:
+            continue
+        if row[6] is None:
+            raise _refuse()
         if (
             disposal in current_manual and current_manual[disposal] != (row[3], row[4])
         ) or (

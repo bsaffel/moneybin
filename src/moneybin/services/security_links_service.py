@@ -879,9 +879,6 @@ class SecurityLinksService:
         before: _SelectionSet = {}
         after_quantities: dict[str, dict[str, Decimal]] = {}
         unremappable = 0
-        affected_disposals = {
-            str(row[0]) for row in rows if provisional in (row[3], row[7])
-        }
         live_manual = dict(
             self._db.execute(
                 f"""
@@ -892,11 +889,37 @@ class SecurityLinksService:
             """,  # TableRef and canonical repository query
             ).fetchall()
         )
+        affected_disposals: set[str] = set()
+        checked_disposals: set[str] = set()
+        for row in rows:
+            identities = (
+                row[3],
+                row[7],
+                live_manual.get(row[0]),
+                live_manual.get(row[6]),
+            )
+            if provisional in identities:
+                affected_disposals.add(str(row[0]))
+            if any(identity in (provisional, survivor) for identity in identities):
+                checked_disposals.add(str(row[0]))
         for row in rows:
             disposal_id = str(row[0])
             lot_id, quantity = str(row[1]), Decimal(row[2])
             lot_security = row[3]
-            if row[8] is None or lot_security is None:
+            # Unknown disposal identity remains ambiguous even with an unrelated lot.
+            if (
+                row[8] is None
+                or row[7] is None
+                or any(
+                    key in live_manual and live_manual[key] is None
+                    for key in (disposal_id, row[6])
+                )
+            ):
+                unremappable += 1
+                continue
+            if disposal_id not in checked_disposals:
+                continue
+            if lot_security is None:
                 unremappable += 1
                 continue
             if (disposal_id in live_manual and live_manual[disposal_id] != row[7]) or (
