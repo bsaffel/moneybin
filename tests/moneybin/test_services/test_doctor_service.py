@@ -3835,6 +3835,22 @@ def test_currency_integrity_masks_an_account_number_shaped_id(
     # A masked id cannot be pasted back, so the message has to say where the
     # real one is.
     assert "moneybin accounts list" in detail, detail
+    # affected_ids is the sibling field of the SAME result and is not gated
+    # behind --verbose: `system/doctor.py` copies it into the unconditional
+    # --output json payload and `mcp/tools/system.py` into the MCP response,
+    # neither of which masks it. Masking only the prose would publish the id
+    # this test just proved was redacted.
+    assert result.affected_ids is not None
+    assert "account:****1098" in result.affected_ids, result.affected_ids
+    assert "account:987654321098" not in result.affected_ids, result.affected_ids
+    # A transaction id is a content hash or a source-provided <FITID>, not an
+    # account number — running it through an account masker would mangle a
+    # dispatch id for no privacy gain, so that grain stays verbatim.
+    assert all(
+        "****" not in entry
+        for entry in result.affected_ids
+        if entry.startswith("transaction:")
+    ), result.affected_ids
 
 
 @pytest.mark.unit

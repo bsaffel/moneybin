@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Collection
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
@@ -196,6 +196,33 @@ def _is_live_fingerprint(raw: str | None) -> bool:
     if not isinstance(headers, list) or not all(isinstance(h, str) for h in headers):
         return False
     return serialize_fingerprint(fp) == raw
+
+
+def _masked_account_affected_ids(account_ids: Iterable[str]) -> list[str]:
+    """``account:<id>`` entries with an account-number-shaped id masked.
+
+    ``affected_ids`` is not a debug-only channel, whatever the ``--verbose``
+    gate on the CLI's *text* output suggests: ``system/doctor.py`` copies it
+    verbatim into the unconditional ``--output json`` payload, and
+    ``mcp/tools/system.py`` into ``InvariantResultResult.affected_ids``, which
+    the privacy middleware classifies ``RECORD_ID`` and never masks. So a raw
+    source-native key here reaches exactly the surfaces the ``detail`` masking
+    exists to protect, through the sibling field of the same result.
+
+    Only the ``account:`` grain is masked. A ``transaction:`` id is a content
+    hash or a source-provided id — an OFX ``<FITID>`` is frequently a long
+    digit run — and putting it through an account-number masker would mangle a
+    dispatch id without protecting an account identifier.
+
+    The cost: a future ``currency_integrity`` recipe cannot resolve a masked
+    account id by parsing this list and has to re-query. That is the trade
+    ``identifiers.md`` takes — no recipe consumes this check today, and an
+    unmasked ``<ACCTID>`` on the MCP surface is not recoverable once sent.
+    """
+    return [
+        f"account:{mask_embedded_account_number(account_id)}"
+        for account_id in account_ids
+    ]
 
 
 def _orient_overlap_pair(
@@ -3475,7 +3502,7 @@ class DoctorService:
                         "<ISO 4217>` and re-run `moneybin transform`."
                     ),
                     affected_ids=[
-                        *(f"account:{account_id}" for account_id in unknown_accounts),
+                        *_masked_account_affected_ids(unknown_accounts),
                         *(
                             f"transaction:{transaction_id}"
                             for transaction_id in unknown_transactions
@@ -3522,10 +3549,7 @@ class DoctorService:
                             "still needed."
                         ),
                         affected_ids=[
-                            *(
-                                f"account:{account_id}"
-                                for account_id in unknown_accounts
-                            ),
+                            *_masked_account_affected_ids(unknown_accounts),
                             *(
                                 f"transaction:{transaction_id}"
                                 for transaction_id in unknown_transactions
@@ -3637,7 +3661,7 @@ class DoctorService:
                         f"{transform_note}{masked_note}"
                     ),
                     affected_ids=[
-                        *(f"account:{account_id}" for account_id in unknown_accounts),
+                        *_masked_account_affected_ids(unknown_accounts),
                         *(
                             f"transaction:{transaction_id}"
                             for transaction_id in unknown_transactions
@@ -3662,7 +3686,7 @@ class DoctorService:
                 # recipe reading a bare mixed list cannot tell which is which
                 # without re-querying.
                 affected_ids=[
-                    *(f"account:{account_id}" for account_id in unknown_accounts),
+                    *_masked_account_affected_ids(unknown_accounts),
                     *(
                         f"transaction:{transaction_id}"
                         for transaction_id in unknown_transactions
