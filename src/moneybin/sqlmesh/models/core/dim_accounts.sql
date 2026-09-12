@@ -360,8 +360,8 @@ SELECT
   COALESCE(s.currency_code, w.source_currency) AS currency_code, /* ISO 4217 currency this account is denominated in: user override (app.account_settings) else the currency its own source reported (OFX CURDEF, Plaid iso_currency_code, tabular currency column). NULL means genuinely unknown and stays that way — every monetary grain COALESCEs onto this column, so a literal default here would relabel the whole ledger and make the unknown-currency segment unreachable (multi-currency.md Requirements 3 and 8). system doctor's currency_integrity check surfaces NULLs for the user to resolve with `accounts set --currency`. */
   s.credit_limit, /* User-asserted credit limit on credit cards / lines */
   COALESCE(s.archived, FALSE) AS archived, /* Hides account from default list and from reports.net_worth */
-  s.archived_at, /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
-  COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth /* Whether this account contributes to reports.net_worth */
+  COALESCE(s.include_in_net_worth, TRUE) AS include_in_net_worth, /* Whether this account contributes to reports.net_worth */
+  s.archived_at /* The date the account stopped being part of the position; NULL while active. Lets a stock-measure report exclude the account only for dates after this one, instead of retroactively */
 FROM merged AS w
 LEFT JOIN app.account_settings AS s
   ON w.account_id = s.account_id

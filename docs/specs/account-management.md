@@ -310,11 +310,11 @@ Documentation:
 - `docs/reference/account-identifiers.md` — `account_id` vs `account_number` vs `last_four` vs `routing_number`, masking story (per Requirement 14 and §Identifier and PII Documentation)
 
 Tests:
-- `tests/moneybin/test_services/test_account_service.py` — extended for settings + soft-validation + cascade logic
+- `tests/moneybin/test_services/test_account_service.py` — extended for settings + soft-validation + archive/net-worth independence
 - `tests/moneybin/test_cli/test_accounts.py` — CLI tests for the new surface
 - `tests/e2e/test_e2e_help.py` — `--help` entries for `accounts` and every subcommand
 - `tests/e2e/test_e2e_readonly.py` / `test_e2e_mutating.py` — E2E entries per `.claude/rules/testing.md`
-- `tests/scenarios/scenario_account_settings.yaml` (+ pytest entry) — settings combinations, archive cascade, soft-validation
+- `tests/scenarios/scenario_account_settings.yaml` (+ pytest entry) — settings combinations, archive/net-worth independence, soft-validation
 
 ### Files to Modify
 

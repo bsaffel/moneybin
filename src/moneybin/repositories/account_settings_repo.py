@@ -121,6 +121,39 @@ class AccountSettingsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
+        """Restore, deriving ``archived_at`` when a legacy capture omits it.
+
+        A pre-V060 ``account_settings.set`` audit row was captured before
+        ``archived_at`` existed, so neither its ``before`` nor ``after`` image
+        carries the key -- ``BaseRepo._restore_row`` only sets columns present
+        in ``before``, so undoing one of these rows would leave ``archived_at``
+        at whatever it currently holds. Restoring ``archived=TRUE`` from such a
+        row could then leave ``archived=TRUE`` with ``archived_at`` stale or
+        NULL, breaking the "NULL while active" invariant. This is not a guess
+        about history: the undo performs the archive/unarchive transition
+        *right now*, so deriving from today's date is the same rule
+        ``AccountService.settings_update`` already applies to every live
+        FALSE->TRUE call. A post-V060 capture always carries the key and takes
+        the base-class path unchanged.
+        """
+        super()._restore_row(before=before, locate=locate)
+        if "archived_at" in before:
+            return
+        where, where_params = self._pk_where(locate)
+        if before.get("archived") is True:
+            self._db.execute(
+                f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+                f"SET archived_at = CURRENT_DATE WHERE {where}",
+                where_params,
+            )
+        else:
+            self._db.execute(
+                f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+                f"SET archived_at = NULL WHERE {where}",
+                where_params,
+            )
+
     def delete(
         self,
         account_id: str,
