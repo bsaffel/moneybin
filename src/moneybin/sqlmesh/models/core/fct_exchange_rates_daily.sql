@@ -55,16 +55,21 @@
    rather than one: the split is shared across all three rate models so a
    caller reads one vocabulary regardless of which one it joins.
 
-   IDENTITY ROWS. For every currency appearing in core.dim_accounts, an X → X
-   row at 1.0 with rate_source = 'identity', rate_vendor = NULL (an identity
-   price is definitional, not sourced from a feed), and
-   days_since_published = 0, spanning the date domain of
-   core.fct_balances_daily (its global MIN/MAX(balance_date), not scoped per
-   account) — Requirement 11: one join path, no branch, and a
-   single-currency profile never sees a NULL converted column. A currency
-   that also carries real provider quotes for its own X→X pair (never
-   observed in practice) keeps the provider arm rather than colliding with
-   the identity one.
+   IDENTITY ROWS. For every currency appearing in core.dim_accounts OR
+   core.fct_balances_daily, an X → X row at 1.0 with rate_source =
+   'identity', rate_vendor = NULL (an identity price is definitional, not
+   sourced from a feed), and days_since_published = 0, spanning the date
+   domain of core.fct_balances_daily (its global MIN/MAX(balance_date), not
+   scoped per account) — Requirement 11: one join path, no branch, and a
+   single-currency profile never sees a NULL converted column. BOTH SOURCES
+   ARE NEEDED: core.fct_balances retains a balance observation's own
+   captured currency over the account dimension's current one
+   (Requirement 3, multi-currency.md), and core.fct_balances_daily carries
+   that forward — a currency that only ever appears there, never on
+   dim_accounts, still needs its own identity row or it converts to
+   nothing. A currency that also carries real provider quotes for its own
+   X→X pair (never observed in practice) keeps the provider arm rather than
+   colliding with the identity one.
 
    KIND FULL, recomputed every sqlmesh run. A retroactively corrected provider
    rate is picked up by the next run with no incremental bookkeeping and no
@@ -158,17 +163,32 @@ WITH provider_obs AS (
     ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
   )
 ), identity_currencies AS (
+  /* Both arms feed this, not core.dim_accounts alone: core.fct_balances
+     coalesces a balance observation's own captured currency over the
+     account's (Requirement 3, multi-currency.md), and
+     core.fct_balances_daily carries that forward, so a balance can retain a
+     currency dim_accounts no longer reports. Without this arm, that balance
+     finds no identity row at all — not even a rate of 1.0 for its own
+     currency — and converts to nothing. */
   SELECT DISTINCT
-    a.currency_code
-  FROM core.dim_accounts AS a
+    currency_code
+  FROM (
+    SELECT
+      a.currency_code
+    FROM core.dim_accounts AS a
+    UNION
+    SELECT
+      d.currency_code
+    FROM core.fct_balances_daily AS d
+  ) AS c
   WHERE
-    NOT a.currency_code IS NULL
+    NOT c.currency_code IS NULL
     AND NOT EXISTS(
       SELECT
         1
       FROM pair_bounds AS b
       WHERE
-        b.from_currency = a.currency_code AND b.to_currency = a.currency_code
+        b.from_currency = c.currency_code AND b.to_currency = c.currency_code
     )
 ), balances_domain AS (
   SELECT

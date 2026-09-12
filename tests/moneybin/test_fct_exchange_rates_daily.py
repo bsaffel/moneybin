@@ -55,6 +55,7 @@ def _insert_ofx_balance(
     on_date: str,
     balance: str,
     currency_code: str,
+    extracted_at: str = "2026-01-05 09:00:00",
 ) -> None:
     db.execute(
         """
@@ -62,9 +63,9 @@ def _insert_ofx_balance(
             (account_id, statement_end_date, ledger_balance, ledger_balance_date,
              source_file, extracted_at, source_type, source_origin, currency_code)
         VALUES (?, ?::TIMESTAMP, ?::DECIMAL(18, 2), ?::TIMESTAMP, 'ofx_test',
-                CURRENT_TIMESTAMP, 'ofx', 'test_bank', ?)
+                ?::TIMESTAMP, 'ofx', 'test_bank', ?)
         """,  # test fixture, not executing user SQL
-        [account_id, on_date, balance, on_date, currency_code],
+        [account_id, on_date, balance, on_date, extracted_at, currency_code],
     )
 
 
@@ -160,6 +161,30 @@ def fct_exchange_rates_daily_db(
         on_date="2026-01-14",
         balance="100.00",
         currency_code="DDD",
+    )
+
+    # Currency drift: core.dim_accounts.currency_code reports only the
+    # account's most-recently-extracted balance currency (EUR here), but
+    # core.fct_balances/fct_balances_daily retain each observation's own
+    # currency, so the account's earlier daily rows (Jan 2 - Jan 9) still
+    # carry GBP. Both dates stay inside acct_identity's Jan 1 - Jan 14 domain
+    # so this fixture does not also widen it.
+    _insert_ofx_account(db, account_id="acct_currency_drift")
+    _insert_ofx_balance(
+        db,
+        account_id="acct_currency_drift",
+        on_date="2026-01-02",
+        balance="50.00",
+        currency_code="GBP",
+        extracted_at="2026-01-02 09:00:00",
+    )
+    _insert_ofx_balance(
+        db,
+        account_id="acct_currency_drift",
+        on_date="2026-01-10",
+        balance="50.00",
+        currency_code="EUR",
+        extracted_at="2026-01-10 09:00:00",
     )
 
     with sqlmesh_context(db) as ctx:
@@ -272,6 +297,48 @@ def test_identity_rows_span_the_balance_spine_domain(
         # An identity price is definitional, not sourced from a named feed.
         assert r[4] is None
         assert r[5] == 0
+
+
+@pytest.mark.slow
+def test_identity_rows_cover_a_balance_currency_not_on_dim_accounts(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """A currency retained only on a balance observation still gets an identity row.
+
+    acct_currency_drift's dim_accounts.currency_code resolves to EUR (its
+    most-recently-extracted balance), but its Jan 2 observation retained GBP
+    -- and core.fct_balances_daily carries GBP forward through Jan 9, before
+    the EUR observation supersedes it. If identity_currencies read only
+    core.dim_accounts, GBP would get no identity row at all and those days
+    would fail to convert.
+    """
+    gbp_rows = fct_exchange_rates_daily_db.execute(
+        "SELECT effective_date, rate, rate_source, rate_vendor "
+        "FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'GBP' AND to_currency = 'GBP' "
+        "ORDER BY effective_date"
+    ).fetchall()
+    assert len(gbp_rows) > 0, (
+        "GBP is retained on a balance observation but has no identity row"
+    )
+    for r in gbp_rows:
+        assert float(r[1]) == pytest.approx(1.0)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+        assert r[2] == "identity"
+        assert r[3] is None
+    # The GBP-carrying window on acct_currency_drift, before EUR supersedes it.
+    assert str(gbp_rows[0][0]) == "2026-01-01"
+    assert str(gbp_rows[-1][0]) == "2026-01-14"
+
+    # EUR -- the account's dim_accounts.currency_code -- still gets its own
+    # identity row too; this fix adds a union, it does not replace the arm.
+    eur_row = fct_exchange_rates_daily_db.execute(
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'EUR' AND to_currency = 'EUR' AND effective_date = '2026-01-10'"
+    ).fetchone()
+    assert eur_row is not None
+    assert float(eur_row[0]) == pytest.approx(1.0)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert eur_row[1] == "identity"
+    assert eur_row[2] is None
 
 
 @pytest.mark.slow
