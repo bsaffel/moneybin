@@ -5,6 +5,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from pytest_mock import MockerFixture
 
 from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
@@ -503,6 +504,70 @@ class TestExcelReader:
         assert result.has_header is True
         assert result.header_row_looks_like_data is False
 
+    def test_summary_row_above_header_not_headerless(self, tmp_path: Path) -> None:
+        """A summary/opening-balance row above the real header is preamble.
+
+        Mirrors the CSV test of the same name. Proves fastexcel's
+        ``header_row`` read option is an ABSOLUTE physical row index in the
+        sheet, not relative to some other offset: ``_classify_header_rows``
+        returns ``skip_rows=1`` (the physical row holding "Date,Amount,
+        Description"), and passing that straight through as ``header_row``
+        must make ``pl.read_excel`` skip the summary row above it and land on
+        the real header — asserted via both the resulting column names and
+        the two data rows' values, not just ``has_header``.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-01-01", 100.00])
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-02", 42.50, "Coffee"])
+        ws.append(["2026-01-03", 10.00, "Tea"])
+        path = tmp_path / "summary.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.skip_rows == 1
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert result.df["Date"].to_list() == ["2026-01-02", "2026-01-03"]
+        assert result.df["Amount"].to_list() == ["42.5", "10"]
+        assert result.df["Description"].to_list() == ["Coffee", "Tea"]
+
+    def test_multiple_summary_rows_above_header_not_headerless(
+        self, tmp_path: Path
+    ) -> None:
+        """Several data-like preamble rows above the header are all skipped.
+
+        Mirrors the CSV test of the same name, with two summary rows instead
+        of one. Confirms ``header_row``'s absolute-index semantics hold past
+        a single-row preamble too: ``skip_rows=2`` must make
+        ``pl.read_excel`` skip both summary rows and land on the physical
+        row actually holding the header, not one relative to them.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["2026-01-01", 100.00])
+        ws.append(["2026-01-31", 150.00])
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-02", 42.50, "Coffee"])
+        ws.append(["2026-01-03", 10.00, "Tea"])
+        path = tmp_path / "two_summary.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.skip_rows == 2
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert result.df["Date"].to_list() == ["2026-01-02", "2026-01-03"]
+        assert result.df["Amount"].to_list() == ["42.5", "10"]
+        assert result.df["Description"].to_list() == ["Coffee", "Tea"]
+
     def test_non_midnight_timestamp_text_passes_through_unmodified(
         self, tmp_path: Path
     ) -> None:
@@ -635,6 +700,45 @@ class TestExcelReader:
         )
         assert result.has_header is False
         assert len(result.df) == 2
+
+    def test_openpyxl_failure_falls_back_instead_of_raising(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A workbook openpyxl can't open must not crash the read.
+
+        The auto-detection sample (_excel_sample_rows) is new in this PR and
+        runs whenever skip_rows is None, even when the caller supplied
+        --sheet — a combination that used to bypass openpyxl entirely and
+        let calamine/fastexcel (which reads legacy .xls, unlike openpyxl)
+        handle the file alone. Simulates openpyxl's real failure mode
+        (InvalidFileException — exactly what it raises for a file format it
+        was never built to open, such as legacy binary .xls) and confirms
+        the reader falls back to the pre-detection default (row 0 is the
+        header) instead of propagating the exception. Mocks only
+        openpyxl.load_workbook; pl.read_excel underneath is real, so this
+        also proves the fallback's read actually succeeds.
+        """
+        import openpyxl
+        from openpyxl.utils.exceptions import InvalidFileException
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        path = tmp_path / "unreadable_by_openpyxl.xlsx"
+        wb.save(path)
+
+        mocker.patch(
+            "openpyxl.load_workbook",
+            side_effect=InvalidFileException("unsupported format"),
+        )
+
+        result = read_file(path, FormatInfo(file_type="excel"), sheet="Sheet")
+        assert result.skip_rows == 0
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert result.df["Date"].to_list() == ["2026-01-01"]
 
 
 class TestParquetReader:

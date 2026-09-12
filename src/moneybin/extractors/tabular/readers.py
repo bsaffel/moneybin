@@ -660,6 +660,7 @@ def _read_excel(
         ReadResult with the parsed DataFrame and sheet metadata.
     """
     import openpyxl
+    from openpyxl.utils.exceptions import InvalidFileException
 
     sheet_used = sheet
     if sheet_used is None:
@@ -687,8 +688,20 @@ def _read_excel(
     explicit_skip = skip_rows is not None
     resolved_has_header = True
     if skip_rows is None:
-        sample_rows = _excel_sample_rows(path, sheet_used, source_bytes=source_bytes)
-        skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
+        try:
+            sample_rows = _excel_sample_rows(
+                path, sheet_used, source_bytes=source_bytes
+            )
+            skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
+        except InvalidFileException:
+            # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
+            # legacy binary .xls. This sampling call is new: pre-PR,
+            # supplying --sheet skipped openpyxl entirely and let
+            # calamine/fastexcel (which does read legacy .xls) handle the
+            # file alone. Fall back to that pre-detection default (row 0 is
+            # the header) rather than refuse a file the actual read can
+            # still parse.
+            skip_rows = 0
     elif has_header is not None:
         resolved_has_header = has_header
 
