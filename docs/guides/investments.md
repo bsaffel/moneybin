@@ -76,7 +76,7 @@ Using profile: demo
 └──────────────┴────────┴────────────────────────┴────────┘
 ```
 
-Seven types are accepted: `equity`, `etf`, `mutual_fund`, `bond`, `crypto`, `cash`, `other`. `average` cost is accepted for `mutual_fund` and `etf` only, which is where the IRS allows it. `securities set <id>` changes any attribute except the type — its required `SECURITY_ID` argument is the literal catalog id only, since this command never invokes the resolver. Every other command below that asks for a security accepts a ticker, CUSIP, ISIN, name, or id.
+Seven types are accepted: `equity`, `etf`, `mutual_fund`, `bond`, `crypto`, `cash`, `other`. `average` cost is accepted for `mutual_fund` and `etf` only, which is where the IRS allows it. `securities set <id>` changes any attribute except the type and cash-equivalent status — `--cash-equivalent` exists only on `securities add`, so that flag is fixed at creation. Its required `SECURITY_ID` argument is the literal catalog id only, since this command never invokes the resolver. Every other command below that asks for a security accepts a ticker, CUSIP, ISIN, name, or id.
 
 ## Record the ledger
 

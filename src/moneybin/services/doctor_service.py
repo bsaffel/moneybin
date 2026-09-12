@@ -3173,7 +3173,9 @@ class DoctorService:
                     "reconciliation drift in `moneybin reports balance-drift`. "
                     "To read the converting reports in one currency, set a home "
                     "currency with `moneybin profile set home_currency <ISO>` and "
-                    "run `moneybin refresh` to gather rates."
+                    "run `moneybin refresh` to gather rates — for a pair the "
+                    "provider does not publish, `moneybin fx set <from> <to> "
+                    "<date> <rate>` is the only way to fill it."
                 ),
                 affected_ids=[],
             )

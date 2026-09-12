@@ -79,7 +79,7 @@ Using profile: demo
 65 invariants checked across 1,468 transactions — 64 passing, 1 warn, 0 skipped
 ```
 
-The `currency_integrity` warning line is trimmed from the transcript above. It says the profile holds 5 currencies (AED, CAD, EUR, GBP, USD), that reports sub-total each currency separately and withhold any combined figure, that a transaction denominated differently from its account is left out of that account's carried daily balance and shows up as that account's reconciliation drift in `reports balance-drift`, and that setting a home currency and running `moneybin refresh` reads the converting reports in one currency.
+The `currency_integrity` warning line is trimmed from the transcript above. It says the profile holds 5 currencies (AED, CAD, EUR, GBP, USD), that reports sub-total each currency separately and withhold any combined figure, that a transaction denominated differently from its account is left out of that account's carried daily balance and shows up as that account's reconciliation drift in `reports balance-drift`, and that setting a home currency and running `moneybin refresh` reads the converting reports in one currency — naming `moneybin fx set <from> <to> <date> <rate>` as the only way to fill a pair the provider does not publish, which on this profile is exactly AED's case.
 
 The second sentence is the one rule that reaches below the reports: a daily balance carries forward only the transactions in the currency it is carrying. A EUR charge on a USD account is not added to the USD balance, and the difference shows up as that account's drift instead of as a wrong total. A profile that holds one currency never sees any of this.
 

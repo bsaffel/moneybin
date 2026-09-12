@@ -2849,6 +2849,11 @@ def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
     detail = result.detail or ""
     assert "carried" in detail
     assert "balance-drift" in detail
+    # `refresh` can never gather a pair the provider does not publish
+    # (run_rate_backfill records it as `unsupported` and stores nothing), so
+    # the remedy must name `fx set` as the only way to fill that pair — not
+    # just point at `refresh` and imply it always resolves the mix.
+    assert "moneybin fx set <from> <to> <date> <rate>" in detail
 
 
 @pytest.mark.unit
