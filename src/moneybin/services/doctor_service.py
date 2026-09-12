@@ -7,7 +7,6 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
-import duckdb
 from sqlglot import exp
 
 from moneybin.audits import recipes as recipe_registry
@@ -3174,7 +3173,7 @@ class DoctorService:
             if unknown_account_count:
                 try:
                     pairs = self._query_duplicate_account_pairs()
-                except duckdb.Error as e:
+                except Exception as e:
                     # DIM_ACCOUNTS and FCT_TRANSACTIONS were already queried
                     # successfully above, so this is NOT the core-views-absent
                     # case the outer try guards — it is a failure inside the
@@ -3183,6 +3182,17 @@ class DoctorService:
                     # currency" advice below: an unresolved overlap check must
                     # never read as a clean one (that silent fallthrough is the
                     # GH #410 regression).
+                    #
+                    # Broad on purpose, matching _run_duplicate_account_overlap's
+                    # catch on the identical call: two callers of one method must
+                    # not disagree about what its failure means. Breadth is also
+                    # what keeps the blast radius here local — run_all invokes
+                    # every invariant bare, so anything escaping this frame costs
+                    # the user the whole doctor report rather than this one row,
+                    # and _query_duplicate_account_pairs reaches get_settings(),
+                    # whose failure is not a duckdb.Error. Catching narrowly
+                    # would buy no safety the fail-closed branch below does not
+                    # already provide, and would spend the report to do it.
                     logger.debug(
                         f"currency_integrity overlap probe failed: {e}",
                         exc_info=True,
