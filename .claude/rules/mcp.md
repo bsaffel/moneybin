@@ -19,8 +19,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
 
 - **MCP/CLI layer** — parameter validation, input/output formatting only.
 - **Privacy middleware** — sensitivity classification, critical-field masking,
-  and response filtering. Global consent enforcement is deferred, so tools
-  must not rely on an automatic consent gate or degraded response.
+  and response filtering (see Design Philosophy 2 on what is *not* enforced).
 - **Service layer** — business logic, parameterized SQL, returns typed Python objects (dataclasses or Pydantic models).
 
 **Enforcement:** `tests/moneybin/test_architecture/test_adapter_layering.py` fails CI when adapters in `src/moneybin/mcp/tools/` or `src/moneybin/cli/commands/` import write-callable symbols from `moneybin.loaders`, `moneybin.extractors`, or `moneybin.matching`. Pure constants, pure read helpers, DI targets, and type/format descriptors are allowlisted explicitly. If you hit the guardrail, the cleanest fix is a new service method; only add an allowlist entry for a genuine exception with a `# why` comment.
@@ -169,9 +168,9 @@ tell callers to refine the query or rerun with a larger limit.
 | `high` | Financial amounts and balances | Consent ledger exists; enforcement deferred |
 | `critical` | Account and routing identifiers | Critical masking wired; consent enforcement deferred |
 
-The consent ledger is not yet a global runtime gate. Tools cannot assume that a
-missing consent grant automatically degrades or blocks data. A future gate may
-use degraded envelopes, but only after the corresponding enforcement ships.
+The consent ledger is not yet a global runtime gate, so a missing grant neither
+degrades nor blocks data today. Tool code must not assume otherwise — never rely
+on an automatic consent gate, or on a degraded response that has not shipped.
 
 ## When CLI-only is justified
 
@@ -179,13 +178,18 @@ Default: every non-exempt user capability is covered by MCP. CLI-only
 capability status requires a justified exception; granular CLI commands may
 still sit behind an MCP umbrella. Two acceptable justifications:
 
-1. **Secret material through the LLM context window.** Tools that accept or display passphrases, encryption keys, or key-derivation material (`db_init`, `db_unlock`, `db_key_rotate`, `db_key_show`, `db_key_export`, `db_key_import`, `db_key_verify`, `sync_key_rotate`). Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
-2. **Hands-on operator territory.** Bootstrapping, recovery, and developer-tooling operations that require physical operator presence. The MCP server cannot even start when the database is locked, so exposing lifecycle tools to MCP would be meaningless. Covers:
-   - **Database lifecycle:** `db_init`, `db_lock`, `db_ps`, `db_kill`, `db_shell`, `db_ui`, `db_migrate_apply`, `db_migrate_status`, `db_backup`, `db_restore`, `db_info`, `db_query` (raw SQL access; agent path is `sql_query`). Note: `db_query`, `db_shell`, and `db_ui` emit an operator-bypass banner (stderr) and include it in their `--help` text warning that no privacy middleware applies — account numbers and other CRITICAL-tier fields are NOT masked. The MCP `sql_query` tool is the privacy-safe agent path for ad-hoc SQL.
-   - **Server lifecycle:** `mcp_serve`, `mcp_install`, `mcp_config_path`, `mcp_list_tools`, `mcp_list_prompts` (operator introspection of the local MCP surface).
-   - **Profile + identity:** profile *lifecycle* — `profile create`, `profile switch`, `profile delete`, `profile list`, `profile show`. These select or create the profile a session runs against, so they must run before an MCP session can exist. Managed *settings* on the already-active profile are not lifecycle and are exposed: `profile` and `profile_set` read and write `app.profile_settings`, which the SQLMesh report guards read (`docs/specs/multi-currency.md` Requirement 4).
-   - **Developer tooling:** `logs`, `stats`, `synthetic_generate`, `synthetic_reset`, `transform_seed`, `transform_restate`.
-   - **Bootstrapping:** `demo` — CLI-only for the same reason as profile lifecycle (it creates and activates a profile, so it must run *before* an MCP session can exist), but its audience is the external evaluator, not the developer.
+The permitted categories are defined by
+[`moneybin-capabilities.md`](../../docs/specs/moneybin-capabilities.md)
+§Exemptions — `secret-material`, `operator-territory`,
+`granular-operator-debug`, `protocol-only`, and the one temporary
+`admission-pending`. That section names the categories only; which rows carry
+each one lives in
+[`outcome-map.json`](../../tests/fixtures/mcp_capabilities/outcome-map.json).
+Read membership there rather than from a list here; CI checks that map, not
+this file. The two that carry most of the weight:
+
+1. **Secret material through the LLM context window** (`secret-material`). Tools that accept or display passphrases, encryption keys, or key-derivation material. Routing those through an LLM-mediated channel is a security model violation, not a capability gap.
+2. **Hands-on operator territory** (`operator-territory`). Bootstrapping, recovery, and database/server/profile lifecycle that require physical operator presence. The MCP server cannot even start when the database is locked, so exposing lifecycle tools to MCP would be meaningless. Profile *lifecycle* is exempt because it must run before an MCP session can exist; managed *settings* on the already-active profile are not lifecycle and are exposed. Developer tooling — `logs`, `stats`, the synthetic-data and transform commands — is **not** this category: the map files those under `granular-operator-debug`, and citing `operator-territory` for one records a reason that row does not carry. Note that `db_query`, `db_shell`, and `db_ui` emit an operator-bypass banner (stderr, and in `--help`) because no privacy middleware applies — CRITICAL-tier fields are NOT masked; `sql_query` is the privacy-safe agent path for ad-hoc SQL.
 
 What is NOT a valid CLI-only justification:
 - "Long-running" — MCP supports progress notifications.
@@ -231,7 +235,7 @@ and [`privacy-data-protection.md`](../../docs/specs/privacy-data-protection.md).
 
 ## Error Messages
 
-- **Minimize data in errors** — no account numbers, balances, or PII in error messages. Classification and critical-field masking are middleware concerns; global consent enforcement remains deferred and must not be assumed by tool code.
+- **Minimize data in errors** — no account numbers, balances, or PII in error messages. Classification and critical-field masking are middleware concerns.
 
 ## Entity resolution
 
@@ -338,7 +342,7 @@ Reviewers verify both updates AND that the capability's user-language descriptio
 - Reviewers grep for `@mcp_tool` diffs and Typer command registrations and verify each touches both specs.
 - Removed tools/commands require both spec updates AND a `removed` changelog fragment per `changelog.d/README.md`.
 - Renamed tools/commands require updating every reference in the surface-specific spec, updating the relevant row in the capabilities map, plus tests, plus a `changed` changelog fragment.
-- Exempting a surface (e.g., CLI-only by secret-material policy) requires citing the category by number from "When CLI-only is justified" above; the citation must match the exemption-category index in the capabilities map.
+- Exempting a surface (e.g., CLI-only by secret-material policy) requires naming the category from the capabilities map's Exemptions table — `secret-material`, `operator-territory`, `granular-operator-debug`, `protocol-only`, or `admission-pending` — and the name cited must be the one that row carries.
 
 ## Description requirements
 
@@ -367,12 +371,9 @@ Do not add a global coercion layer without supported-client evidence.
 
 ## Agent-experience reports
 
-Any session in which the agent **invokes MoneyBin's MCP tools as a
-first-person consumer** — real use, smoke probing, or incidental lookup —
-must produce an agent-experience report per
-[`agent-experience.md`](agent-experience.md). Running the project test
-suite or editing MCP code/tests does not trigger a report; the signal is
-what it felt like to use the surface. Reports are session-internal: present
-to the developer in chat, never paste into PRs, commits, CHANGELOG, or ADRs. See
-`agent-experience.md` for the full trigger list; it links the report
-template and reporting workflow.
+Invoking MoneyBin's MCP tools as a first-person consumer obliges you to write an
+agent-experience report. Reports are session-internal: present them in the
+conversation, and never paste one — or a link to one — into a PR body, commit
+message, CHANGELOG, or ADR. [`agent-experience.md`](agent-experience.md) is
+always loaded and carries the trigger list, the exclusions, the template, and
+the reporting workflow.

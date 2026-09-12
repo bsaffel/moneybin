@@ -119,12 +119,10 @@ The remote filesystems httpfs carries are then revoked on that same connection: 
 make format-sql
 ```
 
-`make format-sql` sets `MAX_FORK_WORKERS=1` before invoking the formatter. The
-bare `uv run sqlmesh -p src/moneybin/sqlmesh format` doesn't import `moneybin.database` (which
-sets that for all runtime), so it falls back to a forked worker pool — disallowed
-by the encrypted-DB design (orphan FDs vs the single-writer lock) and blocked by
-the macOS sandbox's denied semaphore syscall. Run it whenever you touch
-`src/moneybin/sqlmesh/models/**/*.sql`.
+Run it whenever you touch `src/moneybin/sqlmesh/models/**/*.sql`. Never the
+bare `uv run sqlmesh … format`, which forks a worker pool the encrypted-DB
+design disallows — AGENTS.md → Critical Rules and `.claude/rules/sandboxing.md`
+both carry the reason.
 
 ## File Types
 
@@ -205,10 +203,9 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
   | Data type | SQL | Polars | Examples |
   |---|---|---|---|
   | Money amounts | `DECIMAL(18,2)` | `pl.Decimal(18, 2)` | Balances, transaction amounts, wages, taxes, budget targets, gains/losses, filter thresholds on money |
-  | Quantities | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Share counts (fractional shares), units held |
-  | Unit prices | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Stock/crypto prices, NAV, cost basis per share |
+  | Quantities | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Share counts (fractional shares), units held |
+  | Unit prices | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Stock/crypto prices, NAV, cost basis per share |
   | Exchange rates | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Currency conversion rates |
-- No string concatenation for queries (use parameterized).
 
 ### Authoritative References
 
