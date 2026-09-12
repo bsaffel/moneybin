@@ -453,6 +453,34 @@ def test_dedup_reconciliation_fails_when_rows_collapse_without_decision(
 
 
 @pytest.mark.unit
+def test_dedup_reconciliation_fail_names_the_transform_that_applies_the_fix(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors currency_integrity's guard: this fail detail names the same fix.
+
+    `dedup_reconciliation`'s message names `moneybin transform apply` as the
+    remedy for a mismatch caused by data imported since the last transform —
+    the identical stale-command defect `_run_currency_integrity` had, fixed in
+    the same PR. Without this test, only `currency_integrity`'s copy of the
+    fix was guarded against regression.
+    """
+    # 3 imported rows collapse to 2 core rows, no dedup decision explains it.
+    _seed_prep_unioned(doctor_db, row_count=3)
+
+    result = _dedup_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "transform apply" in detail
+    # "transform" alone is a substring of both the fixed text and the stale
+    # bare-`transform` invocation this test guards against, so it cannot tell
+    # the two apart. The stale spelling was the exact substring
+    # "`moneybin transform`:" (backtick, then colon, with no "apply" between)
+    # — assert it directly rather than "transform" alone.
+    assert "`moneybin transform`:" not in detail
+
+
+@pytest.mark.unit
 def test_dedup_reconciliation_fails_when_decision_did_not_collapse(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -149,7 +149,7 @@ Using profile: demo
 └────────────┴────────────┴─────────────┘
 ```
 
-Rates are stored to 8 decimal places, and the first answer cached for a pair on a date is the one kept: once a date is on disk MoneyBin does not ask the provider about it again, so a later revision to that date never arrives. On a pair whose `refresh` reported a clean, fully-covered backfill, the only dates with no row are weekends and ECB holidays, which the provider never publishes. A pair with a discarded or interrupted backfill can also be missing an ordinary weekday — an interior gap `fx list` cannot distinguish from a holiday, because it only reads what is on disk and never fetches.
+Rates are stored to 8 decimal places. `moneybin refresh`'s rate step never checks the cache before fetching: it re-asks the provider for the whole implied span, per pair, on every run, because reading stored dates as coverage would strand any gap between two separately-fetched spans, and a date-set model would re-request every weekend and holiday forever. The store then keeps only the first answer written for a given pair and date — a conflicting re-offer is discarded — so a later revision to an already-stored date never arrives no matter how many times refresh re-asks for it. Its coverage check only looks at the span's two edges (whether the earliest stored rate reaches the window's opening day, and the latest reaches near its closing day), never at whether every date between them landed a row, so a clean, warning-free backfill can still hide an interior weekday gap exactly as a discarded or interrupted one can. `fx list` reads only what's on disk and never fetches, so it cannot tell that gap apart from an ordinary weekend or ECB holiday either way.
 
 ## Record your own rate
 
