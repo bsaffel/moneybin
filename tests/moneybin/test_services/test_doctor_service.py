@@ -3534,6 +3534,16 @@ def _insert_pending_decision(
     )
 
 
+def _decided_at(db: Database, decision_id: str) -> Any:
+    """Read one decision's ``decided_at`` timestamp; fails loudly if the row is missing."""
+    row = db.execute(
+        "SELECT decided_at FROM app.account_link_decisions WHERE decision_id = ?",
+        [decision_id],
+    ).fetchone()
+    assert row is not None, f"no decision row for {decision_id!r}"
+    return row[0]
+
+
 @pytest.mark.unit
 def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
@@ -3637,6 +3647,175 @@ def test_currency_integrity_merge_survivor_keeps_its_own_standalone_relief(
         detail
     ), detail
     assert "resolve account identity FIRST" not in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_isolates_a_distinctness_query_failure(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure inside the overlap-relief queries must not abort the whole report.
+
+    Every other query this method runs already degrades to a fail-closed
+    detail on failure. ``run_all()`` has no per-invariant wrapper of its own,
+    so an exception escaping ``_run_currency_integrity`` would propagate
+    through ``run_all()`` itself and lose every OTHER invariant's result too
+    — not just this one row. ``duplicate_account_overlap`` is computed before
+    ``currency_integrity`` in ``run_all()`` but is only appended to the
+    report's invariant list afterward, so it is the one whose survival this
+    test can actually observe.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+
+    def _boom(self: DoctorService, account_ids: object) -> set[tuple[str, str]]:
+        raise RuntimeError("simulated app.account_link_decisions failure")
+
+    monkeypatch.setattr(DoctorService, "_query_distinctness_decided_pairs", _boom)
+    mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
+
+    @contextmanager
+    def _fake_ctx(*args: Any, **kwargs: Any) -> Generator[Any, None, None]:
+        yield mock_ctx
+
+    monkeypatch.setattr("moneybin.audits.runner.sqlmesh_context", _fake_ctx)
+
+    report = DoctorService(doctor_db).run_all()  # must not raise
+
+    currency_result = next(
+        r for r in report.invariants if r.name == "currency_integrity"
+    )
+    assert currency_result.status == "fail"
+    assert "could not run" in (currency_result.detail or ""), currency_result.detail
+
+    # The regression this guards against loses every OTHER invariant too —
+    # not just currency_integrity's own fail-closed detail.
+    overlap_result = next(
+        r for r in report.invariants if r.name == "duplicate_account_overlap"
+    )
+    assert overlap_result.status == "warn"
+
+
+@pytest.mark.unit
+def test_currency_integrity_grants_no_relief_when_pair_was_reconsidered(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standalone rejection followed by a fresh re-propose must NOT relieve the pair.
+
+    ``propose_pair`` makes a rejected pair re-proposable, and a re-propose
+    writes a NEW decision row rather than mutating the old one — so the stale
+    ``rejected`` row must not outlive a newer ``pending`` decision on the
+    identical pair. "Newer" is decided on ``decided_at``, the column every
+    write in ``LinkDecisionsRepoBase`` stamps with ``CURRENT_TIMESTAMP`` on
+    both insert and status transition.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_old",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+    AccountLinksService(doctor_db, actor="cli").set("dec_old", target_account_id=None)
+    rejected_at = _decided_at(doctor_db, "dec_old")
+
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_new",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+    reproposed_at = _decided_at(doctor_db, "dec_new")
+    assert reproposed_at > rejected_at, (
+        "test precondition: the re-propose must be strictly newer than the "
+        "rejection for this test to exercise the reconsideration guard"
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "resolve account identity FIRST" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_overlap_label_is_accurate_when_both_are_unknown(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pair label must not claim a known-currency side that doesn't exist.
+
+    Two never-currency-assigned duplicate imports at one institution is a
+    realistic profile state. ``_orient_overlap_pair``'s own docstring admits
+    there is "no correct answer to protect" when both sides are
+    unknown-currency, so the header text must not assert the second id is
+    known-currency in that case.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL "
+        "WHERE account_id IN ('DUP_A', 'DUP_B')"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "resolve account identity FIRST" in detail, detail
+    # "unknown-currency-account" itself contains the substring
+    # "known-currency-account", so check for the old label's distinguishing
+    # colon-prefixed form specifically, not the bare substring.
+    assert ":known-currency-account" not in detail, detail
+    assert "unknown-currency-account:other-account" in detail, detail
+    assert "DUP_A:DUP_B" in detail or "DUP_B:DUP_A" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """An accepted-but-not-yet-transformed merge must not send the user to `accounts links run`.
+
+    ``AccountLinksService.set``'s merge branch commits the accept before
+    ``rematch_after_merge`` runs a transform, so a refresh/transform failure
+    right after a successful accept leaves the pair still mirroring each
+    other in ``core.*`` — but ``propose_pair`` refuses to re-propose a pair
+    an accepted decision already covers, so pointing the user at
+    ``accounts links run`` here would be a dead end. The message must name
+    ``moneybin transform`` instead.
+    """
+    _mock_rematch_refresh(mocker)
+    _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
+    _insert_source_native_link(
+        doctor_db, link_id="link_dup_a", account_id="DUP_A", ref_value="native-ref-a"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_merge", target_account_id="DUP_B"
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "moneybin transform" in detail, detail
+    assert "resolve account identity FIRST" not in detail, detail
+    # `accounts links run` is still named to explain WHY it would refuse, but
+    # it must not appear as an actionable command with this pair's own ids —
+    # that fallback command shape is what the old identity-resolution path
+    # would have offered, and offering it here is exactly the dead end.
+    assert "accounts links run DUP_A DUP_B" not in detail, detail
+    assert "accounts links run DUP_B DUP_A" not in detail, detail
 
 
 @pytest.mark.unit

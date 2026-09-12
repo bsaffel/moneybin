@@ -2651,6 +2651,19 @@ class DoctorService:
         an accepted decision — the survivor sits in ``candidate_account_id`` of
         that same row and must keep any relief it separately earned.
 
+        A rejected row can also be stale for a second reason: ``propose_pair``
+        makes a rejected pair re-proposable, and a re-propose writes a FRESH
+        ``decision_id`` rather than mutating the old one (``AccountLinkDecisions
+        Repo.insert``), so a user who manually re-proposes a pair they earlier
+        declared standalone leaves the old ``rejected`` row in place alongside a
+        new ``pending``/``accepted`` one for the identical normalized pair. The
+        old row must not keep granting relief once a live reconsideration exists.
+        "Newer" is decided on ``decided_at`` — the column every write in
+        ``LinkDecisionsRepoBase`` stamps with ``CURRENT_TIMESTAMP``, on both the
+        original insert and every later status transition, so it is set on
+        every row regardless of status and moves forward each time a row is
+        touched.
+
         One query for every candidate pair, not one per pair.
         """
         if not account_ids:
@@ -2664,6 +2677,21 @@ class DoctorService:
                 FROM {ACCOUNT_LINK_DECISIONS.full_name}
                 WHERE status = 'accepted'
                   AND reversed_at IS NULL
+            ),
+            reconsidered AS (
+                SELECT d.decision_id
+                FROM {ACCOUNT_LINK_DECISIONS.full_name} AS d
+                JOIN {ACCOUNT_LINK_DECISIONS.full_name} AS newer
+                  ON LEAST(newer.provisional_account_id, newer.candidate_account_id)
+                   = LEAST(d.provisional_account_id, d.candidate_account_id)
+                 AND GREATEST(newer.provisional_account_id, newer.candidate_account_id)
+                   = GREATEST(d.provisional_account_id, d.candidate_account_id)
+                 AND newer.decision_id != d.decision_id
+                 AND newer.status IN ('pending', 'accepted')
+                 AND newer.reversed_at IS NULL
+                 AND newer.decided_at > d.decided_at
+                WHERE d.status = 'rejected'
+                  AND d.reversed_at IS NULL
             )
             SELECT LEAST(d.provisional_account_id, d.candidate_account_id) AS account_a,
                    GREATEST(d.provisional_account_id, d.candidate_account_id) AS account_b
@@ -2674,6 +2702,43 @@ class DoctorService:
               AND d.candidate_account_id IN ({placeholders})
               AND d.provisional_account_id NOT IN (SELECT account_id FROM merged_away)
               AND d.candidate_account_id NOT IN (SELECT account_id FROM merged_away)
+              AND d.decision_id NOT IN (SELECT decision_id FROM reconsidered)
+            """,  # TableRef constant, parameterized values
+            [*ids, *ids],
+        ).fetchall()
+        return {(str(a), str(b)) for a, b in rows}
+
+    def _query_merge_awaiting_transform_pairs(
+        self, account_ids: Collection[str]
+    ) -> set[tuple[str, str]]:
+        """Normalized pairs with an accepted, non-reversed decision not yet in ``core.*``.
+
+        ``AccountLinksService.set``'s merge branch commits the accept —
+        decision status plus repointed links — *before* running
+        ``rematch_after_merge`` (its own post-commit tail). A refresh/transform
+        failure after that commit leaves the pair genuinely decided while
+        ``core.fct_transactions`` still shows the two accounts mirroring each
+        other, which is exactly the shape ``_query_duplicate_account_pairs``
+        keeps surfacing. Pointing the user at ``accounts links run`` for such a
+        pair is a dead end: ``propose_pair`` refuses to re-propose a pair a
+        pending/accepted decision already covers. The caller uses this to name
+        ``moneybin transform`` instead.
+
+        One query for every candidate pair, not one per pair.
+        """
+        if not account_ids:
+            return set()
+        ids = list(account_ids)
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._db.execute(
+            f"""
+            SELECT LEAST(provisional_account_id, candidate_account_id) AS account_a,
+                   GREATEST(provisional_account_id, candidate_account_id) AS account_b
+            FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE status = 'accepted'
+              AND reversed_at IS NULL
+              AND provisional_account_id IN ({placeholders})
+              AND candidate_account_id IN ({placeholders})
             """,  # TableRef constant, parameterized values
             [*ids, *ids],
         ).fetchall()
@@ -3148,9 +3213,15 @@ class DoctorService:
           --standalone`` is excluded from that gate — see
           ``_query_distinctness_decided_pairs``, which also excludes a
           rejection that is merely a merge's stale-sibling auto-reject rather
-          than an actual distinctness declaration — so the currency advice is
-          not withheld forever for accounts that really are two different
-          ones.
+          than an actual distinctness declaration, and a rejection a later
+          ``pending``/``accepted`` decision on the same pair has superseded —
+          so the currency advice is not withheld forever for accounts that
+          really are two different ones. A pair with an accepted, non-reversed
+          decision that has not yet reached ``core.*`` (a refresh/transform
+          that failed between accept and apply — see
+          ``_query_merge_awaiting_transform_pairs``) is named separately and
+          pointed at ``moneybin transform`` rather than ``accounts links
+          run``, which would refuse to re-propose it.
         - **warn** — two or more known currencies and nothing unknown. Legal,
           but every cross-currency total is withheld until conversion ships
           (M1K.2), which is worth saying out loud rather than leaving the user
@@ -3258,19 +3329,94 @@ class DoctorService:
             # notion of "duplicate" (GH #410).
             overlapping_unknown_accounts: list[str] = []
             overlap_pairs: list[tuple[str, str, float]] = []
+            # A pair already covered by an accepted, non-reversed decision
+            # cannot be sent through `accounts links run` — `propose_pair`
+            # refuses to re-propose a pair a decision already covers — so it
+            # is split from `review_pairs` and answered with `moneybin
+            # transform` instead of the identity-resolution advice.
+            transform_ready_pairs: list[tuple[str, str, float]] = []
+            review_pairs: list[tuple[str, str, float]] = []
             overlap_probe_failed = False
             if unknown_account_count:
                 try:
                     pairs = self._query_duplicate_account_pairs()
+                    pair_account_ids = sorted(
+                        {a for a, _, _ in pairs} | {b for _, b, _ in pairs}
+                    )
+                    if pair_account_ids:
+                        placeholders = ", ".join("?" for _ in pair_account_ids)
+                        overlapping_unknown_accounts = [
+                            str(row[0])
+                            for row in self._db.execute(
+                                f"""
+                                SELECT account_id FROM {DIM_ACCOUNTS.full_name}
+                                WHERE currency_code IS NULL
+                                  AND account_id IN ({placeholders})
+                                ORDER BY account_id
+                                """,  # TableRef constant, parameterized values
+                                pair_account_ids,
+                            ).fetchall()
+                        ]
+                        overlap_pairs = [
+                            (a, b, ratio)
+                            for a, b, ratio in pairs
+                            if a in overlapping_unknown_accounts
+                            or b in overlapping_unknown_accounts
+                        ]
+                        # A user who followed this check's own guidance and ran
+                        # `accounts links set --standalone` declared the pair
+                        # genuinely distinct — admitting those rows into every
+                        # total is then the CORRECT outcome, not a convenience
+                        # override, so honor it here rather than re-detecting
+                        # the same "overlap" on every later run.
+                        if overlap_pairs:
+                            distinctness_pairs = self._query_distinctness_decided_pairs(
+                                {a for a, _, _ in overlap_pairs}
+                                | {b for _, b, _ in overlap_pairs}
+                            )
+                            if distinctness_pairs:
+                                overlap_pairs = [
+                                    (a, b, ratio)
+                                    for a, b, ratio in overlap_pairs
+                                    if (a, b) not in distinctness_pairs
+                                ]
+                                overlapping_unknown_accounts = sorted({
+                                    account_id
+                                    for a, b, _ in overlap_pairs
+                                    for account_id in (a, b)
+                                    if account_id in overlapping_unknown_accounts
+                                })
+                        if overlap_pairs:
+                            awaiting_transform_pairs = (
+                                self._query_merge_awaiting_transform_pairs(
+                                    {a for a, _, _ in overlap_pairs}
+                                    | {b for _, b, _ in overlap_pairs}
+                                )
+                            )
+                            transform_ready_pairs = [
+                                pair
+                                for pair in overlap_pairs
+                                if (pair[0], pair[1]) in awaiting_transform_pairs
+                            ]
+                            review_pairs = [
+                                pair
+                                for pair in overlap_pairs
+                                if (pair[0], pair[1]) not in awaiting_transform_pairs
+                            ]
                 except Exception as e:
                     # DIM_ACCOUNTS and FCT_TRANSACTIONS were already queried
                     # successfully above, so this is NOT the core-views-absent
                     # case the outer try guards — it is a failure inside the
-                    # shared overlap query itself. Fail closed rather than
-                    # falling through to the unqualified "just assign a
-                    # currency" advice below: an unresolved overlap check must
-                    # never read as a clean one (that silent fallthrough is the
-                    # GH #410 regression).
+                    # shared overlap query, the follow-up unknown-currency
+                    # lookup, the distinctness-relief query, or the
+                    # awaiting-transform query. Fail closed
+                    # rather than falling through to the unqualified "just
+                    # assign a currency" advice below: an unresolved overlap
+                    # check must never read as a clean one (that silent
+                    # fallthrough is the GH #410 regression). Every query in
+                    # this block must share one isolation boundary — splitting
+                    # it after the fact is how the distinctness query shipped
+                    # unwrapped in the first place.
                     #
                     # Broad on purpose, matching _run_duplicate_account_overlap's
                     # catch on the identical call: two callers of one method must
@@ -3278,62 +3424,19 @@ class DoctorService:
                     # what keeps the blast radius here local — run_all invokes
                     # every invariant bare, so anything escaping this frame costs
                     # the user the whole doctor report rather than this one row,
-                    # and _query_duplicate_account_pairs reaches get_settings(),
-                    # whose failure is not a duckdb.Error. Catching narrowly
-                    # would buy no safety the fail-closed branch below does not
-                    # already provide, and would spend the report to do it.
+                    # and the queries above reach get_settings(), whose failure
+                    # is not a duckdb.Error. Catching narrowly would buy no
+                    # safety the fail-closed branch below does not already
+                    # provide, and would spend the report to do it.
                     logger.debug(
                         f"currency_integrity overlap probe failed: {e}",
                         exc_info=True,
                     )
                     overlap_probe_failed = True
-                    pairs = []
-                pair_account_ids = sorted(
-                    {a for a, _, _ in pairs} | {b for _, b, _ in pairs}
-                )
-                if pair_account_ids:
-                    placeholders = ", ".join("?" for _ in pair_account_ids)
-                    overlapping_unknown_accounts = [
-                        str(row[0])
-                        for row in self._db.execute(
-                            f"""
-                            SELECT account_id FROM {DIM_ACCOUNTS.full_name}
-                            WHERE currency_code IS NULL
-                              AND account_id IN ({placeholders})
-                            ORDER BY account_id
-                            """,  # TableRef constant, parameterized values
-                            pair_account_ids,
-                        ).fetchall()
-                    ]
-                    overlap_pairs = [
-                        (a, b, ratio)
-                        for a, b, ratio in pairs
-                        if a in overlapping_unknown_accounts
-                        or b in overlapping_unknown_accounts
-                    ]
-                    # A user who followed this check's own guidance and ran
-                    # `accounts links set --standalone` declared the pair
-                    # genuinely distinct — admitting those rows into every
-                    # total is then the CORRECT outcome, not a convenience
-                    # override, so honor it here rather than re-detecting the
-                    # same "overlap" on every later run.
-                    if overlap_pairs:
-                        distinctness_pairs = self._query_distinctness_decided_pairs(
-                            {a for a, _, _ in overlap_pairs}
-                            | {b for _, b, _ in overlap_pairs}
-                        )
-                        if distinctness_pairs:
-                            overlap_pairs = [
-                                (a, b, ratio)
-                                for a, b, ratio in overlap_pairs
-                                if (a, b) not in distinctness_pairs
-                            ]
-                            overlapping_unknown_accounts = sorted({
-                                account_id
-                                for a, b, _ in overlap_pairs
-                                for account_id in (a, b)
-                                if account_id in overlapping_unknown_accounts
-                            })
+                    overlapping_unknown_accounts = []
+                    overlap_pairs = []
+                    transform_ready_pairs = []
+                    review_pairs = []
             if overlap_probe_failed:
                 return InvariantResult(
                     name=name,
@@ -3361,6 +3464,53 @@ class DoctorService:
                     ],
                 )
             if overlapping_unknown_accounts:
+                if not review_pairs:
+                    # Every remaining pair already has an accepted decision —
+                    # see _query_merge_awaiting_transform_pairs for why
+                    # `accounts links run` would be a dead end here.
+                    shown = transform_ready_pairs[:5]
+                    pair_descriptions = ", ".join(
+                        f"{a}:{b} ({round(ratio * 100)}% overlap)"
+                        for a, b, ratio in shown
+                    )
+                    overflow = len(transform_ready_pairs) - len(shown)
+                    overflow_note = (
+                        f", plus {overflow} more pair(s) not shown — resolve "
+                        "these first and re-run to see the rest"
+                        if overflow
+                        else ""
+                    )
+                    return InvariantResult(
+                        name=name,
+                        status="fail",
+                        detail=(
+                            f"{', '.join(parts)} have an unknown currency, and "
+                            f"{len(overlapping_unknown_accounts)} of those "
+                            "account(s) already have an accepted account-link "
+                            f"decision ({pair_descriptions}{overflow_note}) "
+                            "that has not reached `core.*` yet — the merge is "
+                            "recorded, but a refresh/transform did not "
+                            "complete after it, so the transactions still "
+                            "show as two accounts. Run `moneybin transform` "
+                            "to apply it (`moneybin accounts links run` would "
+                            "refuse — a decision already covers this pair), "
+                            "then re-run `moneybin system doctor`; once it "
+                            "reports clean, assign a currency with `moneybin "
+                            "accounts set <account> --currency <ISO 4217>` "
+                            "and re-run `moneybin transform` again if one is "
+                            "still needed."
+                        ),
+                        affected_ids=[
+                            *(
+                                f"account:{account_id}"
+                                for account_id in unknown_accounts
+                            ),
+                            *(
+                                f"transaction:{transaction_id}"
+                                for transaction_id in unknown_transactions
+                            ),
+                        ],
+                    )
                 # Capped like transform_model_presence's missing[:5] above: an
                 # unbounded pair count must not make this message unbounded.
                 # Oriented unknown-currency-first (see _orient_overlap_pair)
@@ -3370,7 +3520,7 @@ class DoctorService:
                 # which has no relationship to which side is trustworthy.
                 shown_pairs = [
                     (*_orient_overlap_pair(a, b, overlapping_unknown_accounts), ratio)
-                    for a, b, ratio in overlap_pairs[:5]
+                    for a, b, ratio in review_pairs[:5]
                 ]
                 pair_descriptions = ", ".join(
                     f"{absorbed}:{survivor} ({round(ratio * 100)}% overlap)"
@@ -3380,11 +3530,23 @@ class DoctorService:
                     f"`moneybin accounts links run {absorbed} {survivor}`"
                     for absorbed, survivor, _ in shown_pairs
                 )
-                overflow = len(overlap_pairs) - len(shown_pairs)
+                overflow = len(review_pairs) - len(shown_pairs)
                 overflow_note = (
                     f", plus {overflow} more pair(s) not shown — resolve "
                     "these first and re-run to see the rest"
                     if overflow
+                    else ""
+                )
+                # transform_ready_pairs can be non-empty here too (a mix of
+                # decided and undecided pairs) — named separately rather than
+                # folded into fallback_commands, which only ever names pairs
+                # `accounts links run` can still act on.
+                transform_note = (
+                    f" Separately, {len(transform_ready_pairs)} pair(s) "
+                    "already have an accepted decision awaiting `moneybin "
+                    "transform` — that may resolve those without further "
+                    "review."
+                    if transform_ready_pairs
                     else ""
                 )
                 return InvariantResult(
@@ -3395,7 +3557,15 @@ class DoctorService:
                         f"{len(overlapping_unknown_accounts)} of those "
                         "account(s) mirror an existing account's transactions "
                         "at the same institution, each pair shown as "
-                        f"unknown-currency-account:known-currency-account "
+                        # Not "unknown:known" — when both sides of a pair lack
+                        # a currency (a realistic profile: two never-assigned
+                        # duplicate imports), the second id is unknown-currency
+                        # too, and _orient_overlap_pair's own docstring keeps
+                        # the incoming order as-is for that case since there is
+                        # no correct side to name first. "other-account" is
+                        # true in every case; only the first id is guaranteed
+                        # unknown-currency (see _orient_overlap_pair).
+                        f"unknown-currency-account:other-account "
                         f"({pair_descriptions}{overflow_note}) — most likely "
                         "one account imported twice. The unknown currency is "
                         "the only thing holding those duplicate rows out of "
@@ -3417,7 +3587,8 @@ class DoctorService:
                         "surviving accounts, and that is what to check before "
                         "confirming. Only then assign a currency with "
                         "`moneybin accounts set <account> --currency "
-                        "<ISO 4217>` and re-run `moneybin transform`."
+                        f"<ISO 4217>` and re-run `moneybin transform`."
+                        f"{transform_note}"
                     ),
                     affected_ids=[
                         *(f"account:{account_id}" for account_id in unknown_accounts),
