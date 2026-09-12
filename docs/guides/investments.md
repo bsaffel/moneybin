@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-12 -->
 # Investments
 
 One ledger of investment events is the source of truth. Tax lots, positions, and realized gain or loss are derived from it on every refresh, under one of four cost-basis methods, and nothing derived is ever stored as authoritative. Prices come from the broker's own closes, from Tiingo and CoinGecko, from the trades you recorded, or from a mark you set by hand, and a position with no usable price says so rather than reporting zero.
@@ -76,7 +76,7 @@ Using profile: demo
 └──────────────┴────────┴────────────────────────┴────────┘
 ```
 
-Seven types are accepted: `equity`, `etf`, `mutual_fund`, `bond`, `crypto`, `cash`, `other`. `average` cost is accepted for `mutual_fund` and `etf` only, which is where the IRS allows it. `securities set <id>` changes any attribute except the type, and every command below takes a ticker, CUSIP, ISIN, name, or id wherever it asks for a security.
+Seven types are accepted: `equity`, `etf`, `mutual_fund`, `bond`, `crypto`, `cash`, `other`. `average` cost is accepted for `mutual_fund` and `etf` only, which is where the IRS allows it. `securities set <id>` changes any attribute except the type — its required `SECURITY_ID` argument is the literal catalog id only, since this command never invokes the resolver. Every other command below that asks for a security accepts a ticker, CUSIP, ISIN, name, or id.
 
 ## Record the ledger
 

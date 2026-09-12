@@ -63,9 +63,9 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 12. **`docs/guides/database-security.md` adds a threat-model summary paragraph.** One-paragraph summary near the top + link to the new threat-model guide + ADR-009 reference + explicit "passphrase loss = data loss" note with the auto-key + `db key show` mitigation pattern.
 
-13. **`docs/architecture.md` placeholder exists, gated on M0D.** A short placeholder file links forward to `architecture-shared-primitives.md` once it lands. The full distillation (one-page user-facing version of the spec) ships in a follow-up PR after M0D closes — this spec doesn't block on that.
+13. **`docs/architecture.md` placeholder exists, gated on M0D.** A short placeholder file links forward to `architecture-shared-primitives.md` once it lands. The full distillation (one-page user-facing version of the spec) ships in a follow-up PR after M0D closes — this spec doesn't block on that. **Delivered:** M0D closed; `docs/architecture.md` is the real one-page distillation today, not the placeholder this requirement describes.
 
-14. **Demo asset placeholder exists, gated on M3B.** Acknowledged in the README's `Documentation` or `Quick Start` section as "demo coming with brew install in M3B." Don't fake it; don't pretend it exists yet.
+14. **Demo asset placeholder exists, gated on M3B.** Acknowledged in the README's `Documentation` or `Quick Start` section as "demo coming with brew install in M3B." Don't fake it; don't pretend it exists yet. **Delivered (superseded):** the demo shipped early as the real `moneybin demo` command (see the README's synthetic-data walkthrough) rather than a placeholder acknowledgment; the asciinema cast originally scoped alongside it was cut (see Out of Scope).
 
 15. **Documentation section links surface the decision log.** README's `Documentation` section adds an explicit link to `docs/decisions/` (ADRs) — most projects bury these; surfacing them is a credibility signal.
 
@@ -89,7 +89,7 @@ None. This spec does not introduce or modify any database schemas, migrations, o
 |---|---|---|
 | `CHANGELOG.md` | Keep-A-Changelog format. Backfill from recent PRs (M0 Foundation + M1 Ingestion Core cumulative entries grouped by milestone, then per-PR going forward). | None |
 | `docs/guides/threat-model.md` | One-page user-facing threat model. Pulls from [`privacy-data-protection.md`](privacy-data-protection.md) and ADR-009. | None |
-| `docs/architecture.md` | Placeholder with forward-pointer. Real content ships post-M0D once `architecture-shared-primitives.md` lands. | None for placeholder; M0D for full distillation |
+| `docs/architecture.md` | Placeholder with forward-pointer. Real content ships post-M0D once `architecture-shared-primitives.md` lands. **Delivered:** M0D closed; this is the real one-page distillation, not the placeholder. | None for placeholder; M0D for full distillation |
 
 ### Files to Modify
 
