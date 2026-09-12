@@ -31,7 +31,7 @@ from moneybin.services.price_service import PullResult, UnpricedSecurity
 
 runner = CliRunner()
 
-_REFRESH_HINT = "moneybin refresh run"
+_REFRESH_HINT = "moneybin refresh"
 
 
 def _pull_result(
@@ -129,7 +129,7 @@ class TestPricesPullRefresh:
         """A soft-failing refresh leaves the exit code as the only stop signal.
 
         raw.security_prices is append-only and the pull already committed, so
-        the retry is a bare `refresh run` — re-pulling would fetch the same
+        the retry is a bare `refresh` — re-pulling would fetch the same
         closes again against a rate-limited provider for nothing.
         """
         mock_refresh.return_value = RefreshResult(

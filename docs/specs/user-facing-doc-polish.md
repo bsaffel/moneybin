@@ -17,7 +17,7 @@ implemented
 > [Information architecture (2026-09)](#information-architecture-2026-09)
 > remains open, so the spec moves to `implemented`.
 
-> **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M0D and M3B close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land.
+> **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. At the time of this note, Requirements 13–14 were still open: `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` (M0D), plus the brew-install Quick Start flip and demo asset (M3B). Requirement 13 shipped once M0D closed — `docs/architecture.md` is the real one-page distillation today, not the placeholder this note describes. Requirement 14's demo asset landed as the `moneybin demo` command (see the README's synthetic-data walkthrough); the brew-install Quick Start flip remains M3B packaging work, tracked in [`docs/roadmap.md`](../roadmap.md) rather than this spec — see the 2026-09-11 note above for the current disposition.
 
 > **Progress note (2026-09-02).** A repo-wide pass over every human-facing public doc started; its structure decisions are recorded in [Information architecture (2026-09)](#information-architecture-2026-09) below. The structure, broken commands, one privacy misstatement, and the CLI-invocation guard shipped on `docs/public-docs-structure`. The spec now moves to `implemented` when the remaining scope listed there is delivered.
 
@@ -106,7 +106,7 @@ None. This spec does not introduce or modify any database schemas, migrations, o
 - **No superlative claims.** "First," "only," "the best" do not appear in user-facing copy. Replaced by descriptive conjunctions.
 - **Honesty disarms scrutiny.** The "who this isn't for yet" block is load-bearing. It actively repels personas who'd bounce in frustration; it earns trust from those who'd otherwise scrutinize harder.
 - **Milestone terminology in user-facing roadmap.** Public README references milestones directly with their codes (M0 Foundation, M1 Ingestion Core, M2 Analysis & Reports, M3 Productization). Sam/Devon/Priya can plan around named milestones; they can't plan around "soon."
-- **Demo asset and architecture distillation are forward-pointers in this spec.** They land in follow-up work tied to M3B and M0D respectively. This spec doesn't block on either.
+- **Demo asset and architecture distillation were forward-pointers in this spec, both since resolved.** The architecture distillation shipped with M0D (`docs/architecture.md`). The demo asset shipped early as the `moneybin demo` command rather than the asciinema cast originally scoped (cut; see "Out of Scope"). Neither blocked this spec's `implemented` status.
 - **MCP transport clarity over generality.** "Connect Claude, ChatGPT, Cursor" is too broad; the list explicitly distinguishes today's local-stdio coverage from M3D's Streamable HTTP coverage. Devon notices precision and rewards it.
 - **Quality badges must have receipts.** Scenario tests, CI/security checks, privacy/redaction, doctor, and audit/undo are trust signals only if they link to real commands, workflows, or check results. Otherwise omit them.
 - **No archiving of existing material.** Per project convention, implemented specs and existing guides stay where they are. This spec adds and refreshes; it does not move or delete.
@@ -123,16 +123,15 @@ The work splits cleanly into "ship now (no product dependencies)" and "ship at m
 5. `CONTRIBUTING.md` strategy-pointer paragraph.
 6. `pyproject.toml` metadata polish.
 
-**At M0D close (separate PR):**
-7. `docs/architecture.md` becomes the user-facing distillation of `architecture-shared-primitives.md`. Placeholder is replaced with real content.
+**At M0D close (shipped):**
+7. `docs/architecture.md` became the user-facing distillation of `architecture-shared-primitives.md`, replacing the placeholder with real content — done.
 
-**At M3B close (separate PR):**
+**At M3B close (tracked in `docs/roadmap.md`, not this spec):**
 8. README Quick Start flips to brew-install-primary.
-9. Demo asciinema cast or screen-recording asset added to `docs/assets/` and embedded in README.
-10. README adds "demo profile preset" reference (`moneybin demo`).
-11. README/docs add earned quality-gate trust signals with links to doctor, scenario suite, CI/security checks, privacy/redaction behavior, and audit/undo docs where those surfaces exist.
+9. README adds "demo profile preset" reference — shipped early as the `moneybin demo` command, ahead of the rest of M3B.
+10. README/docs add earned quality-gate trust signals with links to doctor, scenario suite, CI/security checks, privacy/redaction behavior, and audit/undo docs where those surfaces exist.
 
-The `now` batch is the bulk of this spec. The `M0D` and `M3B` items are explicitly out-of-scope for the initial implementation PR but tracked here so the spec is the single source of truth for the doc surface.
+The `now` batch and the M0D item above are the bulk of this spec, and both are shipped. The remaining M3B packaging items (brew install, the trust-signal additions) are [`docs/roadmap.md`](../roadmap.md)'s M3B row to close, not a follow-up this spec still owns — see the 2026-09-11 note at the top for the current disposition. The demo asciinema cast or screen-recording asset originally planned alongside item 9 was cut; see "Out of Scope" below.
 
 ## CLI Interface
 
@@ -163,8 +162,8 @@ None. This spec does not exercise the data pipeline.
 - **`privacy-data-protection.md`** (✅ implemented) — source material for the threat model guide.
 - **ADR-009** (encryption key management, ✅ written) — referenced from the threat model.
 - **No code dependencies.** This work does not require any product change to ship the `now` batch.
-- **`architecture-shared-primitives.md`** (M0D, not yet written) — required only for the *full* `docs/architecture.md` distillation. The placeholder version ships without it.
-- **M3B distribution work** (`brew install`, PyPI publish, demo profile) — required only for the M3B-close batch (Quick Start flip, demo asset). The `now` batch does not block on this.
+- **`architecture-shared-primitives.md`** (M0D) — shipped and `implemented`; the full `docs/architecture.md` distillation it gated is live, replacing the placeholder.
+- **M3B distribution work** (`brew install`, PyPI publish) — the demo profile shipped early as `moneybin demo`; `brew install` and PyPI publish remain open M3B packaging work, tracked in `docs/roadmap.md` rather than this spec.
 
 ## Information architecture (2026-09)
 

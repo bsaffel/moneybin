@@ -415,7 +415,7 @@ day's own. `fx set` writes `app.exchange_rate_overrides` with a paired
 audit-log row; `fx delete` is the only way to withdraw one, since `set` can
 only change the number.
 
-**Related guides:** [`multi-currency.md`](multi-currency.md), [`multi-currency.md`](../specs/multi-currency.md) (spec, `docs/specs/`).
+**Related guides:** [`multi-currency.md` (guide)](multi-currency.md), [`multi-currency.md` (spec, `docs/specs/`)](../specs/multi-currency.md).
 
 ## Reports
 

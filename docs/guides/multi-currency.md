@@ -233,7 +233,7 @@ Using profile: demo
 
 Seven of the ten rows are cut above. The AED rows are dated on days that carry no AED rate, since the one recorded so far covers 2025-12-19 only, so the report stays in original currencies. `--top` ranks within each currency and interleaves the results, so a truncated list still holds every currency; a converted read also returns the two z-score columns and `is_top_100` as `null` for every repriced row, because those were scored against the row's original currency and a per-date conversion is not one scaling of them.
 
-`refresh` gathers rates into the home currency only, and only for the currencies your rows hold. Any other target falls back until its own rates are stored:
+`refresh` gathers rates into the home currency only, and only for the currencies your rows hold. Any other target falls back until its own rates are stored — and since `refresh` never gathers into a non-home target, `fx set` is the only way to store one; the warning below's "run `moneybin refresh`" half applies only when the target is the home currency, EUR here, not the USD asked for below:
 
 ```console
 $ uv run moneybin reports networth --as-of 2025-12-19 --display-currency USD
