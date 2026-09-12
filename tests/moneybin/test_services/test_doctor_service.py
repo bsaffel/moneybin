@@ -3555,7 +3555,17 @@ def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
     decision on DUP_A — here, DUP_A/DUP_B — as a side effect of DUP_A dying,
     not because a user ever reviewed DUP_A vs. DUP_B and called them distinct.
     The overlap gate must keep withholding the currency advice for DUP_B
-    exactly as if no decision existed at all.
+    exactly as if no decision existed at all — proven by the absence of the
+    plain assign-a-currency fallback, which only appears once a pair is fully
+    relieved out of ``overlap_pairs``.
+
+    This exact setup also makes DUP_A itself merged-away (into DUP_C), so the
+    DUP_A/DUP_B pair is correctly routed to the transform-first branch rather
+    than identity resolution — that per-account routing is
+    ``test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair``'s
+    and ``test_currency_integrity_transform_routing_is_per_account_not_per_pair``'s
+    concern, not this test's; asserted here only enough to confirm it didn't
+    regress into the identity-resolution dead end.
     """
     _mock_rematch_refresh(mocker)
     _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
@@ -3589,8 +3599,13 @@ def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "resolve account identity FIRST" in detail, detail
-    assert "DUP_B:DUP_A" in detail, detail
+    assert (
+        "Their amounts are segmented out of every total until you assign" not in detail
+    ), detail
+    assert "resolve account identity FIRST" not in detail, detail
+    assert "moneybin transform" in detail, detail
+    assert "DUP_A" in detail, detail
+    assert "DUP_B" in detail, detail
 
 
 @pytest.mark.unit
@@ -3816,6 +3831,67 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     # would have offered, and offering it here is exactly the dead end.
     assert "accounts links run DUP_A DUP_B" not in detail, detail
     assert "accounts links run DUP_B DUP_A" not in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_transform_routing_is_per_account_not_per_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """A merged-away account breaks EVERY pair it is in, not just its own decision's pair.
+
+    DUP_U merges into DUP_A (accepted, not yet transformed) — same as the
+    single-pair test above — but DUP_U is ALSO party to a SEPARATE, unrelated
+    overlap with DUP_B (no decision at all between DUP_U and DUP_B). Matching
+    only the exact decided pair (DUP_U, DUP_A) would leave (DUP_U, DUP_B) in
+    ``review_pairs`` and publish ``accounts links run DUP_U DUP_B`` as
+    actionable — but ``AccountLinksService.set``'s merge already repointed
+    every accepted link for DUP_U onto DUP_A, so ``AccountResolver.
+    knows_account_id(DUP_U)`` now reads "no accepted links" and returns
+    ``False`` (merged-away), and ``propose_pair`` raises ``UserError`` the
+    moment it sees DUP_U fail that check — before it even looks at which
+    account DUP_U is paired with. The published command would be a dead end.
+
+    Realistic for this PR's own motivating scenario (GH #410): the same real
+    account imported a third time gives DUP_U mirroring both DUP_A (already
+    decided) and DUP_B (still unresolved).
+    """
+    _mock_rematch_refresh(mocker)
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_U", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "DUP_U", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_U'"
+    )  # test input, not user data
+    _insert_source_native_link(
+        doctor_db, link_id="link_dup_u", account_id="DUP_U", ref_value="native-ref-u"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge",
+        provisional_account_id="DUP_U",
+        candidate_account_id="DUP_A",
+    )
+
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_merge", target_account_id="DUP_A"
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "moneybin transform" in detail, detail
+    assert "resolve account identity FIRST" not in detail, detail
+    # The dead-end command this fix exists to prevent — DUP_U is merged-away,
+    # so any `accounts links run` naming it (either order) would refuse.
+    assert "accounts links run DUP_U DUP_B" not in detail, detail
+    assert "accounts links run DUP_B DUP_U" not in detail, detail
 
 
 @pytest.mark.unit

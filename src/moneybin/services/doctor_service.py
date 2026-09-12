@@ -2708,23 +2708,33 @@ class DoctorService:
         ).fetchall()
         return {(str(a), str(b)) for a, b in rows}
 
-    def _query_merge_awaiting_transform_pairs(
-        self, account_ids: Collection[str]
-    ) -> set[tuple[str, str]]:
-        """Normalized pairs with an accepted, non-reversed decision not yet in ``core.*``.
+    def _query_merged_away_accounts(self, account_ids: Collection[str]) -> set[str]:
+        """Which of ``account_ids`` are the provisional side of an accepted, non-reversed decision.
 
-        ``AccountLinksService.set``'s merge branch commits the accept —
-        decision status plus repointed links — *before* running
-        ``rematch_after_merge`` (its own post-commit tail). A refresh/transform
-        failure after that commit leaves the pair genuinely decided while
-        ``core.fct_transactions`` still shows the two accounts mirroring each
-        other, which is exactly the shape ``_query_duplicate_account_pairs``
-        keeps surfacing. Pointing the user at ``accounts links run`` for such a
-        pair is a dead end: ``propose_pair`` refuses to re-propose a pair a
-        pending/accepted decision already covers. The caller uses this to name
-        ``moneybin transform`` instead.
+        Per-account, not per-pair: ``AccountResolver.knows_account_id`` treats
+        an account as merged-away the moment its ``app.account_links`` rows are
+        all non-``accepted`` — which ``AccountLinksService.set``'s merge branch
+        produces the instant it repoints them, *before* ``rematch_after_merge``
+        (its own post-commit tail) runs. A refresh/transform failure in that
+        window leaves ``core.fct_transactions`` still showing the merged-away
+        account mirroring EVERY account it overlaps, not only the one named in
+        the accepted decision — the same real account imported a third time
+        mirrors both its merge target and an unrelated duplicate. Matching only
+        the exact decided pair therefore under-detects: ``propose_pair``
+        rejects *either* argument that fails ``knows_account_id`` (raising
+        ``UserError`` before it even looks at the pairing), so a merged-away
+        account breaks every ``accounts links run`` command it appears in, not
+        just the one for its own accepted decision. The caller uses this set to
+        route every pair touching a merged-away account to ``moneybin
+        transform`` instead.
 
-        One query for every candidate pair, not one per pair.
+        Same "merged away" predicate as the ``merged_away`` CTE in
+        :meth:`_query_distinctness_decided_pairs` — kept as a second
+        self-contained query rather than sharing one round trip, because that
+        CTE needs the result inline as a same-query subquery filter, while this
+        one needs it as a standalone python set to partition pairs in Python.
+
+        One query for every candidate account, not one per account.
         """
         if not account_ids:
             return set()
@@ -2732,17 +2742,15 @@ class DoctorService:
         placeholders = ", ".join("?" for _ in ids)
         rows = self._db.execute(
             f"""
-            SELECT LEAST(provisional_account_id, candidate_account_id) AS account_a,
-                   GREATEST(provisional_account_id, candidate_account_id) AS account_b
+            SELECT DISTINCT provisional_account_id AS account_id
             FROM {ACCOUNT_LINK_DECISIONS.full_name}
             WHERE status = 'accepted'
               AND reversed_at IS NULL
               AND provisional_account_id IN ({placeholders})
-              AND candidate_account_id IN ({placeholders})
             """,  # TableRef constant, parameterized values
-            [*ids, *ids],
+            ids,
         ).fetchall()
-        return {(str(a), str(b)) for a, b in rows}
+        return {str(row[0]) for row in rows}
 
     def _run_duplicate_account_overlap(self) -> InvariantResult:
         """One real account imported under two canonical identities.
@@ -3216,12 +3224,15 @@ class DoctorService:
           than an actual distinctness declaration, and a rejection a later
           ``pending``/``accepted`` decision on the same pair has superseded —
           so the currency advice is not withheld forever for accounts that
-          really are two different ones. A pair with an accepted, non-reversed
+          really are two different ones. A pair where either account is
+          merged-away — the provisional side of an accepted, non-reversed
           decision that has not yet reached ``core.*`` (a refresh/transform
           that failed between accept and apply — see
-          ``_query_merge_awaiting_transform_pairs``) is named separately and
-          pointed at ``moneybin transform`` rather than ``accounts links
-          run``, which would refuse to re-propose it.
+          ``_query_merged_away_accounts``) — is named separately and pointed
+          at ``moneybin transform`` rather than ``accounts links run``, which
+          ``AccountResolver.knows_account_id`` would refuse for either
+          argument named in the pair, not only the account's own accepted
+          decision.
         - **warn** — two or more known currencies and nothing unknown. Legal,
           but every cross-currency total is withheld until conversion ships
           (M1K.2), which is worth saying out loud rather than leaving the user
@@ -3387,21 +3398,25 @@ class DoctorService:
                                     if account_id in overlapping_unknown_accounts
                                 })
                         if overlap_pairs:
-                            awaiting_transform_pairs = (
-                                self._query_merge_awaiting_transform_pairs(
-                                    {a for a, _, _ in overlap_pairs}
-                                    | {b for _, b, _ in overlap_pairs}
-                                )
+                            merged_away_accounts = self._query_merged_away_accounts(
+                                {a for a, _, _ in overlap_pairs}
+                                | {b for _, b, _ in overlap_pairs}
                             )
+                            # Per account, not per pair: a merged-away account
+                            # breaks `accounts links run` for EVERY pair it is
+                            # in, not only the one naming its own accepted
+                            # decision (see _query_merged_away_accounts).
                             transform_ready_pairs = [
                                 pair
                                 for pair in overlap_pairs
-                                if (pair[0], pair[1]) in awaiting_transform_pairs
+                                if pair[0] in merged_away_accounts
+                                or pair[1] in merged_away_accounts
                             ]
                             review_pairs = [
                                 pair
                                 for pair in overlap_pairs
-                                if (pair[0], pair[1]) not in awaiting_transform_pairs
+                                if pair[0] not in merged_away_accounts
+                                and pair[1] not in merged_away_accounts
                             ]
                 except Exception as e:
                     # DIM_ACCOUNTS and FCT_TRANSACTIONS were already queried
@@ -3465,9 +3480,9 @@ class DoctorService:
                 )
             if overlapping_unknown_accounts:
                 if not review_pairs:
-                    # Every remaining pair already has an accepted decision —
-                    # see _query_merge_awaiting_transform_pairs for why
-                    # `accounts links run` would be a dead end here.
+                    # Every remaining pair touches a merged-away account — see
+                    # _query_merged_away_accounts for why `accounts links run`
+                    # would be a dead end for it.
                     shown = transform_ready_pairs[:5]
                     pair_descriptions = ", ".join(
                         f"{a}:{b} ({round(ratio * 100)}% overlap)"
