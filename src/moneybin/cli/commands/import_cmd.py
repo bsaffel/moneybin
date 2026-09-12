@@ -2559,7 +2559,10 @@ def import_preview(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.readers import read_file
+    from moneybin.extractors.tabular.readers import (
+        normalize_excel_date_columns_before_mapping,
+        read_file,
+    )
 
     source = Path(file_path)
 
@@ -2648,6 +2651,24 @@ def import_preview(
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
+
+        # This command has no --date-format flag, so the only declared
+        # format that can ever reach here is a matched format's own
+        # persisted one (explicit --format or the implicit header-signature
+        # match just above). See
+        # normalize_excel_date_columns_before_mapping's docstring: skipping
+        # this for a native-date Excel column doesn't just miss the date
+        # column when map_columns runs below — it misidentifies it as
+        # `description` while the real description column drops out
+        # entirely.
+        df = normalize_excel_date_columns_before_mapping(
+            df,
+            file_type=format_info.file_type,
+            date_format=matched_format.date_format if matched_format else None,
+            date_column=matched_format.field_mapping.get("transaction_date")
+            if matched_format
+            else None,
+        )
 
         typer.echo(f"\nFile: {source.name}")
         typer.echo(f"Type: {format_info.file_type}")

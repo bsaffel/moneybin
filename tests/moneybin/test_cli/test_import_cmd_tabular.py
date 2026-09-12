@@ -523,6 +523,39 @@ class TestPreview:
         assert "2 in file = 0 skipped + 0 header + 2 read" in result.output
         assert not any("parses as a transaction" in r.message for r in caplog.records)
 
+    def test_preview_maps_native_date_excel_column_correctly(
+        self, tmp_path: Path
+    ) -> None:
+        """A native-date Excel column with unaliased headers must still map right.
+
+        Regression: `import preview` has no --date-format flag, so no
+        declared time-bearing format can ever reach this command's
+        normalize-before-map step. Headers are deliberately unaliased
+        ("Col1"/"Col2"/"Col3") so map_columns's content-based discovery is
+        what has to get this right — skipping normalization here doesn't
+        just fail to detect the date column, it misidentifies it as
+        `description` while the real description column drops out of the
+        mapping entirely.
+        """
+        from datetime import date
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Col1", "Col2", "Col3"])
+        ws.append([date(2026, 1, 1), 42.50, "Coffee"])
+        ws.append([date(2026, 1, 2), 10.00, "Tea"])
+        path = tmp_path / "native_dates_unaliased.xlsx"
+        wb.save(path)
+
+        result = runner.invoke(app, ["preview", str(path)])
+
+        assert result.exit_code == 0
+        assert "transaction_date ← Col1" in result.output
+        assert "description ← Col1" not in result.output
+
     def test_permission_error_is_classified_not_raw(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:

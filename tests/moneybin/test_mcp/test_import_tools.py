@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -772,6 +772,42 @@ async def test_import_preview_binds_parse_hash_and_storage_to_one_byte_read(
         assert row["file_sha256"] == hashlib.sha256(original).hexdigest()
         assert row["file_size_bytes"] == len(original)
         assert repo.get_source_bytes(preview_id) == original
+
+
+async def test_import_preview_coarse_maps_native_date_excel_column_correctly(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A native-date Excel column with unaliased headers must still map right.
+
+    Regression: this preview path has no saved/matched format and no
+    date-format parameter, so ``normalize_excel_date_columns_before_mapping``
+    must run unconditionally before ``map_columns`` here — skipping it
+    doesn't just fail to detect the date column, it actively misidentifies
+    it as ``description`` while the real description column drops out of
+    the mapping entirely (worse than refusing to detect a date at all).
+    Headers are deliberately unaliased ("Col1"/"Col2"/"Col3") so
+    ``map_columns``'s content-based discovery is what has to get this right,
+    not a name-alias shortcut.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Col1", "Col2", "Col3"])
+    ws.append([date(2026, 1, 1), 42.50, "Coffee"])
+    ws.append([date(2026, 1, 2), 10.00, "Tea"])
+    xlsx = tmp_path / "native_dates_unaliased.xlsx"
+    wb.save(xlsx)
+
+    response = await import_preview_coarse(file_path=str(xlsx))
+
+    assert response.error is None, response.error
+    assert response.data.mapping.get("transaction_date") == "Col1"
+    assert response.data.mapping.get("description") != "Col1"
 
 
 @pytest.mark.parametrize(

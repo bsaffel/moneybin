@@ -619,6 +619,58 @@ def normalize_excel_date_columns(
     )
 
 
+def date_format_has_time_component(date_format: str | None) -> bool:
+    """True if a strptime format string declares a time-of-day directive.
+
+    A declared time component (%H/%M/%S/%I/%p) means the caller — or a
+    saved/reviewed format — is stating what the raw bytes look like, so
+    ``normalize_excel_date_columns`` must not collapse a column out from
+    under a format that expects the time-bearing shape.
+    """
+    return date_format is not None and any(
+        directive in date_format for directive in ("%H", "%M", "%S", "%I", "%p")
+    )
+
+
+def normalize_excel_date_columns_before_mapping(
+    df: pl.DataFrame,
+    *,
+    file_type: str,
+    date_format: str | None,
+    date_column: str | None = None,
+) -> pl.DataFrame:
+    """Shared normalize-then-map sequence for every ``read_file`` caller.
+
+    There are three such callers — ``import_service.py``'s
+    ``_import_tabular``, the MCP ``import_preview_coarse`` tool
+    (``import_tools.py``), and the CLI ``import preview`` command
+    (``import_cmd.py``) — and each needs the identical decision: whether to
+    normalize at all, and if so, whether to scope it to a single known
+    column. Duplicating that decision at three call sites is exactly how one
+    of them drifted and regressed (a native-date Excel column reaching
+    column mapping unnormalized doesn't just fail to detect the date column —
+    it gets misidentified as ``description`` while the real description
+    column drops out of the mapping entirely, a worse failure than refusing
+    to detect a date at all).
+
+    No-op for non-Excel file types. Skips normalization entirely when
+    ``date_format`` declares a time component — see
+    ``date_format_has_time_component`` and ``normalize_excel_date_columns``
+    for why. Otherwise normalizes, scoped to ``date_column`` when the caller
+    already knows which column maps to ``transaction_date`` (a saved/matched
+    format or a reviewed plan); ``None`` normalizes broadly, matching what
+    ``map_columns``'s own content-based discovery needs when no mapping
+    exists yet.
+    """
+    if file_type != "excel":
+        return df
+    if date_format_has_time_component(date_format):
+        return df
+    return normalize_excel_date_columns(
+        df, columns=[date_column] if date_column else None
+    )
+
+
 def _excel_cell_text(value: object) -> str:
     """Render one sampled cell as the text the header classifier expects.
 

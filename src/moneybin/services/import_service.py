@@ -771,19 +771,6 @@ class ReviewedTabularPlan:
         return TypeAdapter(cls).validate_python(value)
 
 
-def _date_format_has_time_component(date_format: str | None) -> bool:
-    """True if a strptime format string declares a time-of-day directive.
-
-    A declared time component (%H/%M/%S/%I/%p) means the caller is stating
-    what the raw bytes look like — Excel's native-date normalization must
-    not collapse a column out from under a format that expects the
-    time-bearing shape. See ``normalize_excel_date_columns`` in readers.py.
-    """
-    return date_format is not None and any(
-        directive in date_format for directive in ("%H", "%M", "%S", "%I", "%p")
-    )
-
-
 def _validate_date_format_override(
     df: Any,
     field_mapping: dict[str, str],
@@ -2821,7 +2808,7 @@ class ImportService:
             save_format_to_db,
         )
         from moneybin.extractors.tabular.readers import (
-            normalize_excel_date_columns,
+            normalize_excel_date_columns_before_mapping,
             read_file,
         )
         from moneybin.extractors.tabular.transforms import transform_dataframe
@@ -2919,43 +2906,34 @@ class ImportService:
                     break
 
         # Excel's native-date columns still read as "<date> 00:00:00" text
-        # here (readers.py never normalizes them — see
-        # normalize_excel_date_columns's docstring for why). map_columns
-        # below needs that collapsed to a recognized shape to find/validate
-        # the date column, by name alias or by scanning unclaimed columns —
-        # UNLESS the format that will actually parse this column is already
-        # known here and declares a time component: a replayed preview's
-        # persisted format, or a saved TabularFormat's persisted format
-        # (matched by name OR by the implicit header-signature match just
-        # above — both are resolved by this point), is the caller stating
-        # what the raw bytes look like, and normalizing would turn a working
-        # import into IMPORT_INVALID_DATE_FORMAT where it used to succeed.
-        # Mirrors exactly which format each branch below actually uses to
-        # parse (reviewed_plan/matched_format ignore a fresh override for
-        # that — see their ResolvedMapping constructions; only the
-        # auto-detect branch's date_format_effective honors one), so this
-        # can't disagree with the parse that follows it. Scoped to the
-        # already-known mapped date column when reviewed_plan/matched_format
-        # supplies a mapping; the auto-detect case (neither) has no mapping
-        # yet, so it normalizes broadly, matching what map_columns itself
-        # needs to find an unaliased date column via content.
-        if format_info.file_type == "excel":
-            if reviewed_plan is not None:
-                effective_date_format = reviewed_plan.date_format
-                known_mapping: dict[str, str] | None = reviewed_plan.field_mapping
-            elif matched_format:
-                effective_date_format = matched_format.date_format
-                known_mapping = matched_format.field_mapping
-            else:
-                effective_date_format = date_format_override
-                known_mapping = None
-            if not _date_format_has_time_component(effective_date_format):
-                date_col = (
-                    known_mapping.get("transaction_date") if known_mapping else None
-                )
-                df = normalize_excel_date_columns(
-                    df, columns=[date_col] if date_col else None
-                )
+        # here (readers.py never normalizes them at read time — see
+        # normalize_excel_date_columns_before_mapping's docstring for why).
+        # The format that will actually parse this column is fully resolved
+        # by this point — a replayed preview's persisted format, or a saved
+        # TabularFormat's persisted format (matched by name OR by the
+        # implicit header-signature match just above) — so normalizing here
+        # can't disagree with the parse that follows it. Mirrors exactly
+        # which format each branch below actually uses (reviewed_plan/
+        # matched_format ignore a fresh override for that — see their
+        # ResolvedMapping constructions; only the auto-detect branch's
+        # date_format_effective honors one).
+        if reviewed_plan is not None:
+            effective_date_format = reviewed_plan.date_format
+            known_mapping: dict[str, str] | None = reviewed_plan.field_mapping
+        elif matched_format:
+            effective_date_format = matched_format.date_format
+            known_mapping = matched_format.field_mapping
+        else:
+            effective_date_format = date_format_override
+            known_mapping = None
+        df = normalize_excel_date_columns_before_mapping(
+            df,
+            file_type=format_info.file_type,
+            date_format=effective_date_format,
+            date_column=known_mapping.get("transaction_date")
+            if known_mapping
+            else None,
+        )
 
         sign_evidence_header: str | None = None
         if reviewed_plan is not None:
