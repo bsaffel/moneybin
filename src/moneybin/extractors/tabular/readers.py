@@ -546,32 +546,34 @@ def _excel_sample_rows(
         wb.close()
 
 
-# Same shape `_excel_cell_text` normalizes for the classification sample —
-# fastexcel renders a native Excel date/datetime cell as this exact ISO
-# datetime string (`"%Y-%m-%d %H:%M:%S"`) once `pl.read_excel` reads the
-# column as Utf8. Anchored so it only ever matches that full-string shape;
-# genuine non-date text never happens to be a complete timestamp and passes
-# through untouched.
-_EXCEL_DATETIME_TEXT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}$")
+# A native Excel *date* cell (openpyxl's datetime.datetime with a midnight
+# time — Excel has no separate date type) is what _excel_cell_text normalizes
+# for the classification sample via value.date().isoformat(). fastexcel
+# stringifies that same cell as "2026-01-01 00:00:00" once pl.read_excel
+# reads the column as Utf8. Matching only the midnight time keeps this to
+# that one case: a non-midnight time means the cell held a real timestamp,
+# not a date, so it is left alone rather than truncated.
+_EXCEL_MIDNIGHT_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) 00:00:00$")
 
 
 def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
-    """Collapse a native-date/datetime cell's rendered text to its date.
+    """Collapse a native-date cell's rendered text to its date.
 
     ``_excel_cell_text`` closes this gap for the header-classification
     sample, which reads cells directly via openpyxl and sees the original
     ``datetime`` object. The real data ``pl.read_excel`` returns never goes
-    through that path — fastexcel stringifies a native date/datetime cell as
+    through that path — fastexcel stringifies a native date cell as
     ``"2026-01-01 00:00:00"`` on its own, and every ``_DATE_FORMATS`` entry
     (date_detection.py) is date-only, so without this a spreadsheet-native
     date column never reaches ``detect_date_format`` as a recognized date and
-    a correctly-headered file is refused as having none. Applies to every
-    string column since the match is exact-shape anchored, not column-name
-    based — cheaper than inspecting each column for date-likeness first, and
-    just as safe.
+    a correctly-headered file is refused as having none. A genuine timestamp
+    column (a real, non-midnight time) does not match and is left as-is —
+    that shape still isn't recognized by any ``_DATE_FORMATS`` entry, which
+    is a separate, disclosed gap for ``date_detection`` to close, not this
+    reader.
     """
     return df.with_columns(
-        cs.string().str.replace(_EXCEL_DATETIME_TEXT_RE.pattern, "${1}")
+        cs.string().str.replace(_EXCEL_MIDNIGHT_DATETIME_RE.pattern, "${1}")
     )
 
 

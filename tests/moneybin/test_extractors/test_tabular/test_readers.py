@@ -503,6 +503,32 @@ class TestExcelReader:
         assert result.has_header is True
         assert result.header_row_looks_like_data is False
 
+    def test_non_midnight_timestamp_text_passes_through_unmodified(
+        self, tmp_path: Path
+    ) -> None:
+        """A real (non-midnight) timestamp string must not be truncated.
+
+        _normalize_excel_date_columns only collapses the exact
+        "<date> 00:00:00" shape fastexcel renders for a native Excel *date*
+        cell (always midnight — Excel has no separate date type). A string
+        cell that happens to hold a genuine timestamp with a real time of
+        day must be left alone: pinning this stops the regex from silently
+        re-widening to match any time, which would mutate a raw column value
+        AGENTS.md's data-layer contract says loaders must leave untouched.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Posted At", "Amount", "Description"])
+        ws.append(["2026-01-01 14:30:00", 42.50, "Coffee"])
+        path = tmp_path / "timestamp_text.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.df["Posted At"].to_list() == ["2026-01-01 14:30:00"]
+
     def test_headerless_excel_keeps_row0(self, tmp_path: Path) -> None:
         """A headerless Excel sheet must not lose its first transaction.
 
