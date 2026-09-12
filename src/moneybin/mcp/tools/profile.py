@@ -2,22 +2,23 @@
 
 Tools:
     - profile     — read the active profile's metadata and managed settings
-    - profile_set — set a managed setting (currently the home currency)
+    - profile_set — set either the home currency or display-currency targets
 
-The home currency lives in ``app.profile_settings`` rather than ``config.yaml``
-because the no-blend guard and the report views that read it are SQLMesh models
-(``docs/specs/multi-currency.md`` Requirement 4). Reports segment money per
-currency until conversion ships (M1K.2), so an agent reading a segmented report
-uses this tool to learn which segment is home.
+These settings live in ``app.profile_settings`` rather than ``config.yaml``
+because the no-blend guard and the report views that read them are SQLMesh
+models (``docs/specs/multi-currency.md`` Requirement 4). Reports segment money
+per currency until conversion ships (M1K.2), so an agent reading a segmented
+report uses this tool to learn which segment is home.
 """
 
 from __future__ import annotations
 
 from fastmcp import FastMCP
 
+from moneybin import error_codes
 from moneybin.config import get_current_profile
 from moneybin.database import get_database
-from moneybin.errors import RecoveryAction
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.mcp._registration import register
 from moneybin.mcp.decorator import mcp_tool
 from moneybin.privacy.payloads.profile import ProfilePayload, ProfileSetPayload
@@ -32,8 +33,8 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
 
     ``home_currency`` is the currency this profile treats as home. It is null
     when the user has not chosen one — MoneyBin does not assume USD.
-    ``display_currency_targets`` names additional currencies refresh prepares
-    for report reads.
+    ``display_currency_targets`` names optional additional currencies refresh
+    prepares for report reads.
     """
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
@@ -43,7 +44,18 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
             home_currency=settings.home_currency,
             display_currency_targets=settings.display_currency_targets,
         ),
-        actions=['Use profile_set(display_currency_targets=["EUR"]) to change it'],
+        actions=(
+            (
+                [
+                    'Use profile_set(home_currency="USD") to set your home currency',
+                ]
+                if settings.home_currency is None
+                else []
+            )
+            + [
+                'Use profile_set(display_currency_targets=["EUR"]) to add report targets'
+            ]
+        ),
     )
 
 
@@ -52,15 +64,15 @@ def profile_set(
     home_currency: str | None = None,
     display_currency_targets: list[str] | None = None,
 ) -> ResponseEnvelope[ProfileSetPayload]:
-    """Set the profile's home currency or explicit display targets.
+    """Set one independent profile preference: home currency or display targets.
 
     Args:
         home_currency: ISO 4217 code, three uppercase letters (USD, EUR, GBP).
         display_currency_targets: ISO 4217 codes to prepare for report reads.
 
-    This does not convert any stored amount — every transaction and balance
-    keeps its original currency. It records which currency this profile
-    considers home.
+    A home-currency change restates FX accounting; a display-target change only
+    prepares direct provider pairs for reports. Neither converts a stored
+    transaction or balance, which keeps its original currency.
 
     Writes one row in ``app.profile_settings`` for the active profile.
     Reversible via system_audit_undo(operation_id). The agent-visible copy of
@@ -68,8 +80,9 @@ def profile_set(
     not served.
     """
     if (home_currency is None) == (display_currency_targets is None):
-        raise ValueError(
-            "Set exactly one of home_currency or display_currency_targets."
+        raise UserError(
+            "Set exactly one of home_currency or display_currency_targets.",
+            code=error_codes.MUTATION_INVALID_INPUT,
         )
     with get_database(read_only=False) as db:
         service = ProfileSettingsService(db)

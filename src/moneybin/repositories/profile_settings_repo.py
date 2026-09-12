@@ -2,10 +2,12 @@
 
 Per ``docs/specs/app-integrity-invariant.md`` (Invariant 10), every mutation of
 this table flows through a ``*Repo`` that pairs the write with an
-``app.audit_log`` row inside the same DuckDB transaction.
+``app.audit_log`` row inside the same DuckDB transaction. It holds two
+independent settings: the accounting home currency and optional report display
+targets.
 
-The home currency lives here rather than in ``config.yaml`` because the
-no-blend guard and the report views that read it are SQLMesh models
+Both live here rather than in ``config.yaml`` because the no-blend guard and
+the report views that read them are SQLMesh models
 (``docs/specs/multi-currency.md`` Requirement 4).
 """
 
@@ -102,7 +104,7 @@ class ProfileSettingsRepo(BaseRepo):
         refreshes ``updated_at`` in the ``DO UPDATE`` clause: DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
         """
-        validate_currency_code(currency_code)
+        currency_code = _normalize_currency(currency_code)
 
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row()
@@ -163,12 +165,18 @@ class ProfileSettingsRepo(BaseRepo):
 
 def _normalize_currency_targets(currency_codes: Sequence[str]) -> tuple[str, ...]:
     """Canonicalize each ISO code while retaining its first declared order."""
-    from moneybin.services.currency_service import canonical_currency
-
     targets: list[str] = []
     for value in currency_codes:
-        currency = canonical_currency(value)
-        validate_currency_code(currency)
+        currency = _normalize_currency(value)
         if currency not in targets:
             targets.append(currency)
     return tuple(targets)
+
+
+def _normalize_currency(value: str) -> str:
+    """Canonicalize and validate a profile currency without a cold-start import."""
+    from moneybin.services.currency_service import canonical_currency
+
+    currency = canonical_currency(value)
+    validate_currency_code(currency)
+    return currency

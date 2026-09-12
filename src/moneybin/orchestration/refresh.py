@@ -625,9 +625,9 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     sync already held that lock. Refresh holds the lock and is already slow.
 
     Returns ``(backfill, error)``. Both are None when there was nothing to
-    gather — no home currency set means nothing is ever converted, so no rate is
-    implied, and ``core.*`` not existing yet is a first-load precondition. The
-    error is what separates those declines from a step that ran and crashed:
+    gather — no home currency or display target set means no rate is implied,
+    and ``core.*`` not existing yet is a first-load precondition. The error is
+    what separates those declines from a step that ran and crashed:
     the backfill is null on all three, so a caller reading only that would tell
     the user nothing happened when in fact something broke.
     """

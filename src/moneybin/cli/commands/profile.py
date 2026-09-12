@@ -291,7 +291,8 @@ def profile_show(
         if settings:
             logger.info("  Settings (database):")
             for k, v in settings.items():
-                logger.info(f"    {k}: {v if v is not None else '(not set)'}")
+                shown = "(not set)" if v is None or v == () else v
+                logger.info(f"    {k}: {shown}")
 
 
 @app.command("set")

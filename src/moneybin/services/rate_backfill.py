@@ -375,6 +375,11 @@ def plan_rate_backfill(
             # request would repeat on every refresh.
             unusable += 1
             continue
+        if not any(from_currency != target for target in targets):
+            # A profile can hold its home currency, or choose a display target
+            # equal to a held currency. Neither case implies an outbound pair,
+            # so it must leave neither a provider call nor a skipped-pair count.
+            continue
         # Every row this currency has is dated after the window ends — a
         # scheduled transaction, or a clock-skewed import. Dropping the pair
         # rather than letting it out as a backwards range matters because the

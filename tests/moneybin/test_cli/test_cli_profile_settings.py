@@ -148,6 +148,19 @@ def test_show_reports_the_home_currency_from_the_database(
     assert "Config (config.yaml):" in caplog.text
 
 
+def test_show_calls_empty_display_targets_not_set(
+    profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The empty default is a missing preference, not a Python tuple display."""
+    ProfileSettingsService(db).set_setting("home_currency", "GBP", actor="test")
+
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
+        result = runner.invoke(app, ["show"])
+
+    assert result.exit_code == 0
+    assert "display_currency_targets: (not set)" in caplog.text
+
+
 def test_show_survives_a_database_that_predates_the_settings_table(
     profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -6,11 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from moneybin import error_codes
 from moneybin.mcp.tools.profile import (
     profile,
     profile_set,
     register_profile_tools,
 )
+from tests.moneybin.test_mcp.schema_assertions import call_tool_raw, isolated_server
 
 pytestmark = pytest.mark.usefixtures("mcp_db")
 
@@ -138,6 +140,46 @@ async def test_profile_set_classifies_an_empty_target_as_invalid_input(
     assert env.error is not None
     assert env.error.code == "mutation_invalid_input"
     assert (await profile()).data.display_currency_targets == ("EUR",)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {},
+        {"home_currency": "USD", "display_currency_targets": ["GBP"]},
+    ],
+)
+async def test_registered_profile_set_requires_exactly_one_setting_without_mutation(
+    mcp_db: object,
+    arguments: dict[str, object],
+) -> None:
+    """The registered transport classifies either invalid shape as a mutation error."""
+    await profile_set(display_currency_targets=["EUR"])
+
+    response = await call_tool_raw(
+        isolated_server(register_profile_tools), "profile_set", arguments
+    )
+
+    assert response.structuredContent is not None
+    assert (
+        response.structuredContent["error"]["code"]
+        == error_codes.MUTATION_INVALID_INPUT
+    )
+    settings = (await profile()).data
+    assert settings.home_currency is None
+    assert settings.display_currency_targets == ("EUR",)
+
+
+async def test_profile_actions_explain_how_to_set_home_and_display_currencies(
+    mcp_db: object,
+) -> None:
+    """A first profile read leaves both the required and optional choices visible."""
+    env = await profile()
+
+    assert env.actions == [
+        'Use profile_set(home_currency="USD") to set your home currency',
+        'Use profile_set(display_currency_targets=["EUR"]) to add report targets',
+    ]
 
 
 def test_profile_read_is_annotated_read_only() -> None:

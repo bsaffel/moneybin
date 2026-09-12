@@ -128,6 +128,15 @@ def test_set_home_currency_persists_and_emits_one_audit_row(
     assert actor == "cli"
 
 
+def test_home_currency_is_normalized_before_it_is_persisted(
+    repo: ProfileSettingsRepo,
+) -> None:
+    """Home and display settings use the same canonical ISO spelling."""
+    repo.set_home_currency(" eur ", actor="cli")
+
+    assert repo.get_home_currency() == "EUR"
+
+
 def test_second_set_replaces_the_row_and_audits_the_prior_value(
     db: Database, repo: ProfileSettingsRepo
 ) -> None:
@@ -151,7 +160,7 @@ def test_second_set_replaces_the_row_and_audits_the_prior_value(
     assert audit[1][6] == "mcp"
 
 
-@pytest.mark.parametrize("bad", ["eur", "EU", "EURO", "", "E1R", "US$"])
+@pytest.mark.parametrize("bad", ["EU", "EURO", "", "E1R", "US$"])
 def test_rejects_codes_that_are_not_iso_4217_shaped(
     repo: ProfileSettingsRepo, bad: str
 ) -> None:

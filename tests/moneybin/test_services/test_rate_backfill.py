@@ -400,6 +400,55 @@ def test_a_future_dated_currency_is_counted_rather_than_skipped_in_silence(
     assert "skipped 1 currency code(s) dated after the window" in caplog.text
 
 
+def test_a_future_home_currency_without_targets_is_not_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A home-only row has no provider pair, even when its date is in the future."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == ()
+    assert "dated after the window" not in caplog.text
+
+
+def test_a_future_currency_matching_its_only_target_is_not_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A target identical to the held currency also implies no provider pair."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency=None,
+            display_currency_targets=("USD",),
+            through=_TODAY,
+        )
+
+    assert windows == ()
+    assert "dated after the window" not in caplog.text
+
+
+def test_a_future_currency_with_a_distinct_target_is_still_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Suppress only identity-only rows; an implied USD/EUR pair remains observable."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency=None,
+            display_currency_targets=("EUR",),
+            through=_TODAY,
+        )
+
+    assert windows == ()
+    assert "skipped 1 currency code(s) dated after the window" in caplog.text
+
+
 def test_a_fully_cached_pair_is_still_requested(db: Database) -> None:
     """The accepted cost of not trusting stored rows as coverage.
 
