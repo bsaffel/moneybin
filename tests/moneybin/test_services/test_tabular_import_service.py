@@ -847,6 +847,65 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
+    def test_implicitly_matched_saved_format_time_bearing_date_still_imports(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """An implicitly (header-signature) matched format must not be defeated.
+
+        Ordering bug: Stage 2 (the read) used to normalize every native-date
+        Excel column unconditionally, but a saved TabularFormat matched only
+        by implicit header signature (no --format name) is resolved at
+        Stage 3, in import_service.py, AFTER that read — so its persisted
+        time-bearing date_format could never reach a gate living inside the
+        reader. No --date-format override is passed here at all: the format
+        is discovered purely by `fmt.matches_headers(headers)` matching this
+        file's own "Date"/"Amount"/"Description" columns.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "implicit_match_time_bearing.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="implicit_time_bearing_fixture",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d %H:%M:%S",
+                number_format="us",
+            ),
+            actor="test",
+        )
+
+        # No format_name= and no date_format= — the format must be found
+        # purely by the implicit header-signature match in Stage 3.
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
     ) -> None:

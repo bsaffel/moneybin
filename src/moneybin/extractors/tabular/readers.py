@@ -88,7 +88,6 @@ def read_file(
     no_row_limit: bool = False,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
-    date_format_override: str | None = None,
 ) -> ReadResult:
     """Read a file into a format-agnostic Polars DataFrame.
 
@@ -102,8 +101,6 @@ def read_file(
         no_row_limit: If True, skip row count limits.
         source_bytes: Already materialized source object to parse.
         has_header: Persisted header decision; None runs detection.
-        date_format_override: Caller-supplied strptime format. Excel-only
-            (see ``_normalize_excel_date_columns``); ignored for other formats.
 
     Returns:
         ReadResult with DataFrame and metadata.
@@ -128,7 +125,6 @@ def read_file(
             sheet=sheet,
             source_bytes=source_bytes,
             has_header=has_header,
-            date_format_override=date_format_override,
         )
     elif info.file_type == "parquet":
         result = _read_parquet(path, source_bytes=source_bytes)
@@ -561,8 +557,8 @@ def _excel_sample_rows(
 _EXCEL_MIDNIGHT_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) 00:00:00$")
 
 
-def _normalize_excel_date_columns(
-    df: pl.DataFrame, *, date_format_override: str | None = None
+def normalize_excel_date_columns(
+    df: pl.DataFrame, *, columns: list[str] | None = None
 ) -> pl.DataFrame:
     """Collapse a native-date column's rendered text to its date.
 
@@ -586,24 +582,34 @@ def _normalize_excel_date_columns(
     ``"2026-01-01 00:00:00"`` must not be silently truncated; only a column
     that is *entirely* that shape is treated as a native date column.
 
-    Skipped entirely when ``date_format_override`` declares a time component
-    (``%H``/``%M``/``%S``/``%I``/``%p``): an explicit format is the caller
-    declaring what the raw bytes look like — before this reader existed,
-    ``"%Y-%m-%d %H:%M:%S"`` was the only documented way to import this exact
-    native-date shape — so rewriting the column out from under a declared
-    format would turn a previously-working import into
-    ``IMPORT_INVALID_DATE_FORMAT``. An override with no time component is
-    asking for bare dates, so normalization still runs for it.
+    Public (no leading underscore) and Excel-only: called from
+    ``import_service.py``'s ``_import_tabular``, not from this module's own
+    ``_read_excel``. Normalization can't run at read time and still be
+    correct — Stage 3 (column mapping, including a saved format matched only
+    by implicit header signature) and the caller's effective date format are
+    both still unknown during the Stage 2 read, and either one can turn a
+    would-be normalization into a truncation of a format the caller
+    explicitly declared. The caller relocates this call to run after Stage 3
+    resolves both, and *before* ``map_columns`` (whose own content-based date
+    detection needs a recognized shape to identify or validate a native-date
+    column at all, by name alias or by scanning unclaimed columns).
+
+    Args:
+        df: DataFrame to normalize.
+        columns: Restrict the whole-column scan to these column names — pass
+            the already-known ``transaction_date`` mapping (a saved/matched
+            format's or a reviewed plan's) so an unrelated Description/Memo
+            column is never touched even incidentally. ``None`` (the
+            auto-detect case, where no mapping exists yet) scans every
+            qualifying string column, matching ``map_columns``'s own need to
+            find the date column before it is known.
     """
-    if date_format_override is not None and any(
-        directive in date_format_override
-        for directive in ("%H", "%M", "%S", "%I", "%p")
-    ):
-        return df
+    candidates = columns if columns is not None else df.select(cs.string()).columns
     date_cols = [
         col
-        for col in df.select(cs.string()).columns
-        if (non_null := df[col].drop_nulls()).len() > 0
+        for col in candidates
+        if col in df.columns
+        and (non_null := df[col].drop_nulls()).len() > 0
         and non_null.str.contains(_EXCEL_MIDNIGHT_DATETIME_RE.pattern).all()
     ]
     if not date_cols:
@@ -677,7 +683,6 @@ def _read_excel(
     sheet: str | None = None,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
-    date_format_override: str | None = None,
 ) -> ReadResult:
     """Read an Excel (.xlsx) file.
 
@@ -692,9 +697,6 @@ def _read_excel(
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
         source_bytes: Already materialized workbook object to parse.
         has_header: Persisted header decision; None runs detection.
-        date_format_override: Caller-supplied strptime format (CLI/MCP
-            ``--date-format`` or a saved ``TabularFormat.date_format``); see
-            ``_normalize_excel_date_columns`` for how it gates normalization.
 
     Returns:
         ReadResult with the parsed DataFrame and sheet metadata.
@@ -704,23 +706,34 @@ def _read_excel(
 
     sheet_used = sheet
     if sheet_used is None:
-        wb = openpyxl.load_workbook(
-            path if source_bytes is None else BytesIO(source_bytes),
-            read_only=True,
-            data_only=True,
-        )
         try:
-            best_sheet = wb.sheetnames[0]
-            best_rows = 0
-            for name in wb.sheetnames:
-                ws = wb[name]
-                row_count = ws.max_row or 0
-                if row_count > best_rows:
-                    best_rows = row_count
-                    best_sheet = name
-            sheet_used = best_sheet
-        finally:
-            wb.close()
+            wb = openpyxl.load_workbook(
+                path if source_bytes is None else BytesIO(source_bytes),
+                read_only=True,
+                data_only=True,
+            )
+            try:
+                best_sheet = wb.sheetnames[0]
+                best_rows = 0
+                for name in wb.sheetnames:
+                    ws = wb[name]
+                    row_count = ws.max_row or 0
+                    if row_count > best_rows:
+                        best_rows = row_count
+                        best_sheet = name
+                sheet_used = best_sheet
+            finally:
+                wb.close()
+        except (InvalidFileException, zipfile.BadZipFile):
+            # Same openpyxl-can't-open-this-container case the two sampler
+            # guards below handle (see their comments for why path vs. bytes
+            # raise different exceptions) — this call is the third and last
+            # unguarded openpyxl entry point in this reader. sheet_used stays
+            # None: pl.read_excel's own default (sheet_id/sheet_name both
+            # unset) is sheet 1, which is the same "let the component that
+            # can actually parse the file decide" fallback used everywhere
+            # else here, not a new policy invented for this call site.
+            sheet_used = None
 
     # Explicit skip_rows implies a header at that row; auto-detection both
     # locates the header and decides whether the sheet has one at all — same
@@ -728,34 +741,41 @@ def _read_excel(
     explicit_skip = skip_rows is not None
     resolved_has_header = True
     if skip_rows is None:
-        try:
-            sample_rows = _excel_sample_rows(
-                path, sheet_used, source_bytes=source_bytes
-            )
-            skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
-        except (InvalidFileException, zipfile.BadZipFile):
-            # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
-            # legacy binary .xls. This sampling call is new: pre-PR,
-            # supplying --sheet skipped openpyxl entirely and let
-            # calamine/fastexcel (which does read legacy .xls) handle the
-            # file alone. Both exceptions mean the same thing (openpyxl
-            # cannot open this container at all, so the sampler has no
-            # opinion and the real reader below should get its chance) but
-            # openpyxl raises one or the other depending on *how* it's
-            # asked to open the file, not on anything about the caller:
-            # given a path it runs its own extension check first and raises
-            # InvalidFileException; given bytes (BytesIO, e.g. the MCP
-            # confirm-after-preview replay path) it skips straight to
-            # `ZipFile(...)`, which raises BadZipFile for a non-zip
-            # (OLE2/legacy-.xls) container. Don't "simplify" this back to
-            # one exception — the two entry shapes genuinely fail
-            # differently. Fall back to the pre-detection default (row 0 is
-            # the header) rather than refuse a file the actual read can
-            # still parse. Side effect: a genuinely corrupt .xlsx now also
-            # falls through to the real read instead of failing here first —
-            # the right outcome, since the error then comes from the
-            # component that actually has to parse the file.
+        # sheet_used is None here only when the lookup above already proved
+        # openpyxl can't open this container — _excel_sample_rows would hit
+        # the identical failure on the identical bytes before ever indexing
+        # a sheet name, so skip straight to the same fallback it would reach.
+        if sheet_used is None:
             skip_rows = 0
+        else:
+            try:
+                sample_rows = _excel_sample_rows(
+                    path, sheet_used, source_bytes=source_bytes
+                )
+                skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
+            except (InvalidFileException, zipfile.BadZipFile):
+                # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
+                # legacy binary .xls. This sampling call is new: pre-PR,
+                # supplying --sheet skipped openpyxl entirely and let
+                # calamine/fastexcel (which does read legacy .xls) handle the
+                # file alone. Both exceptions mean the same thing (openpyxl
+                # cannot open this container at all, so the sampler has no
+                # opinion and the real reader below should get its chance) but
+                # openpyxl raises one or the other depending on *how* it's
+                # asked to open the file, not on anything about the caller:
+                # given a path it runs its own extension check first and raises
+                # InvalidFileException; given bytes (BytesIO, e.g. the MCP
+                # confirm-after-preview replay path) it skips straight to
+                # `ZipFile(...)`, which raises BadZipFile for a non-zip
+                # (OLE2/legacy-.xls) container. Don't "simplify" this back to
+                # one exception — the two entry shapes genuinely fail
+                # differently. Fall back to the pre-detection default (row 0 is
+                # the header) rather than refuse a file the actual read can
+                # still parse. Side effect: a genuinely corrupt .xlsx now also
+                # falls through to the real read instead of failing here first —
+                # the right outcome, since the error then comes from the
+                # component that actually has to parse the file.
+                skip_rows = 0
     elif has_header is not None:
         resolved_has_header = has_header
 
@@ -776,9 +796,11 @@ def _read_excel(
         infer_schema_length=0,
         read_options=read_options,
     )
-    # Normalize the values actually loaded, not just the classification
-    # sample — see _normalize_excel_date_columns.
-    df = _normalize_excel_date_columns(df, date_format_override=date_format_override)
+    # Native-date column normalization (normalize_excel_date_columns) does
+    # NOT run here. It needs Stage 3's resolved column mapping and effective
+    # date format to decide correctly, and neither is known during this
+    # read — see that function's docstring. The caller (import_service.py's
+    # _import_tabular) applies it after Stage 3, before map_columns.
 
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT
     # skip_rows path only (mirrors _read_text). Auto-detection
@@ -789,19 +811,28 @@ def _read_excel(
     # _excel_row_looks_like_data_at).
     header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
-        try:
-            header_row_looks_like_data = _excel_row_looks_like_data_at(
-                path, sheet_used, skip_rows, source_bytes=source_bytes
-            )
-        except (InvalidFileException, zipfile.BadZipFile):
-            # Same fallback as the auto-detect branch above, and for the same
-            # reason: a saved/matched TabularFormat with file_type="xls" and
-            # skip_rows > 0 reaches this defense-in-depth sampler too, and
-            # openpyxl still can't open a legacy .xls (path or bytes shape —
-            # see the auto-detect branch's comment for why the two shapes
-            # raise different exceptions). An unreadable sampler has no
-            # opinion; the real read below still succeeds via fastexcel.
+        # Same reasoning as the auto-detect branch's sheet_used check above:
+        # a None sheet_used already proves openpyxl can't open this file, so
+        # this sampler would hit the identical failure before indexing a
+        # sheet name.
+        if sheet_used is None:
             header_row_looks_like_data = False
+        else:
+            try:
+                header_row_looks_like_data = _excel_row_looks_like_data_at(
+                    path, sheet_used, skip_rows, source_bytes=source_bytes
+                )
+            except (InvalidFileException, zipfile.BadZipFile):
+                # Same fallback as the auto-detect branch above, and for the
+                # same reason: a .xls-sourced saved format (file_type is
+                # always "excel" — see format_detector.py's _EXTENSION_MAP —
+                # never the literal "xls") with skip_rows > 0 reaches this
+                # defense-in-depth sampler too, and openpyxl still can't open
+                # a legacy .xls (path or bytes shape — see the auto-detect
+                # branch's comment for why the two shapes raise different
+                # exceptions). An unreadable sampler has no opinion; the real
+                # read below still succeeds via fastexcel.
+                header_row_looks_like_data = False
 
     return ReadResult(
         df=df,

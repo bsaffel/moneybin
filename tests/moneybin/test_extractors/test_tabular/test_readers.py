@@ -11,6 +11,7 @@ from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _detect_header,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
+    normalize_excel_date_columns,
     read_file,
 )
 
@@ -568,32 +569,6 @@ class TestExcelReader:
         assert result.df["Amount"].to_list() == ["42.5", "10"]
         assert result.df["Description"].to_list() == ["Coffee", "Tea"]
 
-    def test_non_midnight_timestamp_text_passes_through_unmodified(
-        self, tmp_path: Path
-    ) -> None:
-        """A real (non-midnight) timestamp string must not be truncated.
-
-        _normalize_excel_date_columns only collapses the exact
-        "<date> 00:00:00" shape fastexcel renders for a native Excel *date*
-        cell (always midnight — Excel has no separate date type). A string
-        cell that happens to hold a genuine timestamp with a real time of
-        day must be left alone: pinning this stops the regex from silently
-        re-widening to match any time, which would mutate a raw column value
-        AGENTS.md's data-layer contract says loaders must leave untouched.
-        """
-        import openpyxl
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        ws.append(["Posted At", "Amount", "Description"])
-        ws.append(["2026-01-01 14:30:00", 42.50, "Coffee"])
-        path = tmp_path / "timestamp_text.xlsx"
-        wb.save(path)
-
-        result = read_file(path, FormatInfo(file_type="excel"))
-        assert result.df["Posted At"].to_list() == ["2026-01-01 14:30:00"]
-
     def test_headerless_excel_keeps_row0(self, tmp_path: Path) -> None:
         """A headerless Excel sheet must not lose its first transaction.
 
@@ -793,10 +768,12 @@ class TestExcelReader:
         check (_excel_row_looks_like_data_at, called only when
         explicit_skip and resolved_has_header) had no guard around openpyxl
         at all — unlike the auto-detect branch above, which already falls
-        back on InvalidFileException/BadZipFile. A saved/matched
-        TabularFormat with file_type="xls" and skip_rows > 0 went from
-        working (pre-PR: calamine/fastexcel handled the whole read, openpyxl
-        was never touched) to crashing with an unhandled InvalidFileException.
+        back on InvalidFileException/BadZipFile. A .xls-sourced saved/matched
+        TabularFormat (file_type is always "excel" — see
+        format_detector.py's _EXTENSION_MAP — never the literal "xls") with
+        skip_rows > 0 went from working (pre-PR: calamine/fastexcel handled
+        the whole read, openpyxl was never touched) to crashing with an
+        unhandled InvalidFileException.
         Mirrors test_openpyxl_failure_falls_back_instead_of_raising's mocking
         shape, but with an explicit skip_rows so the OTHER call site is the
         one under test.
@@ -861,10 +838,42 @@ class TestExcelReader:
         assert result.header_row_looks_like_data is False
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
 
-    def test_partial_midnight_match_column_left_untouched(self, tmp_path: Path) -> None:
+
+class TestNormalizeExcelDateColumns:
+    """Unit tests for readers.normalize_excel_date_columns.
+
+    This is Excel-only and public (no leading underscore): import_service.py's
+    _import_tabular calls it after Stage 3 resolves column mapping and the
+    effective date format, NOT this module's own _read_excel (which cannot
+    decide correctly — see the function's docstring for why). These tests
+    exercise the pure function directly rather than through read_file.
+    """
+
+    def test_non_midnight_timestamp_text_passes_through_unmodified(self) -> None:
+        """A real (non-midnight) timestamp string must not be truncated.
+
+        normalize_excel_date_columns only collapses the exact
+        "<date> 00:00:00" shape fastexcel renders for a native Excel *date*
+        cell (always midnight — Excel has no separate date type). A string
+        cell that happens to hold a genuine timestamp with a real time of
+        day must be left alone: pinning this stops the regex from silently
+        re-widening to match any time, which would mutate a raw column value
+        AGENTS.md's data-layer contract says loaders must leave untouched.
+        """
+        df = pl.DataFrame({
+            "Posted At": ["2026-01-01 14:30:00"],
+            "Amount": ["42.5"],
+            "Description": ["Coffee"],
+        })
+
+        result = normalize_excel_date_columns(df)
+
+        assert result["Posted At"].to_list() == ["2026-01-01 14:30:00"]
+
+    def test_partial_midnight_match_column_left_untouched(self) -> None:
         """A column with only ONE midnight-shaped value must not be rewritten.
 
-        _normalize_excel_date_columns must require the WHOLE column to match
+        normalize_excel_date_columns must require the WHOLE column to match
         the midnight pattern before rewriting any of it, not just the current
         cell — raw is untouched data from loaders (AGENTS.md's Data Layers
         table). A Description column holding one value shaped exactly like
@@ -872,22 +881,41 @@ class TestExcelReader:
         untouched, while a genuine all-midnight native date column beside it
         is still normalized.
         """
-        import openpyxl
+        df = pl.DataFrame({
+            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+            "Amount": ["42.5", "10"],
+            "Description": ["2026-01-01 00:00:00", "Coffee"],
+        })
 
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        ws.append(["Date", "Amount", "Description"])
-        ws.append([datetime.date(2026, 1, 1), 42.50, "2026-01-01 00:00:00"])
-        ws.append([datetime.date(2026, 1, 2), 10.00, "Coffee"])
-        path = tmp_path / "mixed_column.xlsx"
-        wb.save(path)
+        result = normalize_excel_date_columns(df)
 
-        result = read_file(path, FormatInfo(file_type="excel"))
-        assert result.df["Date"].to_list() == ["2026-01-01", "2026-01-02"]
-        assert result.df["Description"].to_list() == [
+        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
+        assert result["Description"].to_list() == ["2026-01-01 00:00:00", "Coffee"]
+
+    def test_columns_restriction_protects_a_qualifying_column_outside_it(
+        self,
+    ) -> None:
+        """Scoping to the resolved date column protects an unrelated match.
+
+        import_service.py passes columns=[mapped_date_col] once Stage 3
+        knows the mapping, so an all-midnight-shaped column that ISN'T the
+        mapped date field (e.g. a coincidentally uniform second export
+        column) is never touched, even though it would qualify under a
+        broad scan — the auto-detect case (no mapping yet) still passes
+        columns=None and scans broadly, matching what map_columns itself
+        needs to find an unaliased date column via content.
+        """
+        df = pl.DataFrame({
+            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+            "Memo": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+        })
+
+        result = normalize_excel_date_columns(df, columns=["Date"])
+
+        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
+        assert result["Memo"].to_list() == [
             "2026-01-01 00:00:00",
-            "Coffee",
+            "2026-01-02 00:00:00",
         ]
 
 
