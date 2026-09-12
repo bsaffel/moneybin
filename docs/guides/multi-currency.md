@@ -18,13 +18,14 @@ Nothing is ever assumed to be USD. Each row resolves its currency from its own s
 | Source | Currency read from |
 |---|---|
 | OFX / QFX / QBO | the file's `CURDEF` |
-| Plaid sync | `iso_currency_code`, or the unofficial code for a currency ISO 4217 does not cover |
+| Plaid sync — transactions | `iso_currency_code` alone; Plaid's transaction object carries no unofficial-code fallback |
+| Plaid sync — balances, investment holdings/transactions, securities | `iso_currency_code`, or the unofficial code for a currency ISO 4217 does not cover |
 | CSV, Excel, Parquet | a `currency` column when the file has one, else the account's |
 | `transactions create` | `--currency`, else the account's |
 | `investments add` | `--currency`, else the account's |
 | The account itself | `accounts set <id> --currency`, else what its source reported |
 
-An account with no currency anywhere in that chain is unknown, and `moneybin system doctor` fails on it rather than guessing, because two unknowns cannot be told apart and would sum into a figure in no unit. The fix is `accounts set <id> --currency EUR` followed by `moneybin refresh`, since the canonical account table is rebuilt rather than read live. The [data model reference](../reference/data-model.md#currency-handling) records the resolution order per table.
+An account with no currency anywhere in that chain is unknown, and `moneybin system doctor` fails on it rather than guessing, because two unknowns cannot be told apart and would sum into a figure in no unit. The fix is `accounts set <id> --currency EUR` followed by `moneybin transform apply` — the exact remediation `system doctor` prints — since the canonical account table is rebuilt rather than read live; a bare `moneybin refresh` also satisfies it, because its cascade includes that transform step. The [data model reference](../reference/data-model.md#currency-handling) records the resolution order per table.
 
 ## What a mixed profile reads like
 
@@ -172,7 +173,7 @@ Using profile: demo
 └────────────┴────────────┴──────────┘
 ```
 
-The rate is units of the second currency per one unit of the first, must be positive, and is written with an audit-log row. A correction is one rate per pair per date, not a per-transaction spread: two same-day conversions at different effective rates are one rate here, and the difference is realized FX gain or loss, which is [not reported yet](#what-is-not-built-yet). `fx delete AED EUR 2025-12-19` withdraws the correction and returns that date to provider pricing; it is the only way to withdraw one, since `set` can only change the number, and the removal is permanent.
+The rate is units of the second currency per one unit of the first, must be positive, and is written with an audit-log row. A correction is one rate per pair per date, not a per-transaction spread: two same-day conversions at different effective rates are one rate here, and the difference is realized FX gain or loss, which is [not reported yet](#what-is-not-built-yet). `fx delete AED EUR 2025-12-19` withdraws the correction and returns that date to provider pricing; it is the only way to withdraw one, since `set` can only change the number. The deletion is recorded like every other write: `moneybin system audit undo <operation_id>` restores the removed override, subject to the normal later-write guard.
 
 ## Read a report in one currency
 

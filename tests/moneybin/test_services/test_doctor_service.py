@@ -2842,7 +2842,14 @@ def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
     result = _currency_result(doctor_db, monkeypatch)
 
     assert result.status == "fail"
-    assert "transform" in (result.detail or "")
+    detail = result.detail or ""
+    assert "transform apply" in detail
+    # "transform" alone is a substring of both the fixed text above and the
+    # stale bare-`transform` invocation this test guards against, so it
+    # cannot tell the two apart. The stale spelling was the exact substring
+    # "`moneybin transform`:" (backtick, then colon, with no "apply" between)
+    # — assert it directly rather than "transform" alone.
+    assert "`moneybin transform`:" not in detail
 
 
 @pytest.mark.unit

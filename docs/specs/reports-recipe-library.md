@@ -544,13 +544,13 @@ Not a redesign — a rename plus an ownership transfer of a deferred migration t
 
 Rename of one SQLMesh view. Same SELECT body. Destructive in SQLMesh terms only (DROP + CREATE on a view); no source-of-truth data is involved because the view is fully derivable from `core.fct_balances_daily`.
 
-Steps on first `moneybin refresh run --steps transform` (or `refresh_run(steps=["transform"])` MCP call) after this spec ships:
+Steps on first `moneybin refresh --step transform` (or `refresh_run(steps=["transform"])` MCP call) after this spec ships:
 
 1. SQLMesh sees `core.agg_net_worth` is no longer in the model set and that `reports.net_worth` is new.
 2. SQLMesh drops the old view and creates the new one.
 3. The first `NetworthService` call post-migration reads from `reports.net_worth` and returns identical results.
 
-The CHANGELOG entry calls out the rename so users running `refresh run`
+The CHANGELOG entry calls out the rename so users running `refresh`
 understand the prompt.
 
 ### 3. `app.categories` (Python-built view) → `core.dim_categories` (SQLMesh model)

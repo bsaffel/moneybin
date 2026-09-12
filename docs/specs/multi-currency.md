@@ -358,7 +358,7 @@ Numbered, testable. Tagged by phase.
    any report path that would violate Requirement 5.
    **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
    unknown-currency account/transaction/balance (with the `accounts set --currency`
-   fix in the detail, the `moneybin transform` that makes it take effect in `core.*`,
+   fix in the detail, the `moneybin transform apply` that makes it take effect in `core.*`,
    and the affected ids attached), **warn** on two or more known
    currencies with nothing unknown — naming both consequences a user would
    otherwise read as a bug: reports sub-total per currency, and a transaction
