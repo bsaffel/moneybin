@@ -135,13 +135,16 @@ class AccountSettingsRepo(BaseRepo):
         moved); stamping the latter would corrupt a real ``archived_at`` with
         today's date. When the transition IS an archive/unarchive, deriving
         from today's date is the same rule ``AccountService.settings_update``
-        already applies to every live FALSE->TRUE call. Mutating ``before`` in
-        place also normalizes the legacy image so ``BaseRepo.undo_event``'s own
-        emitted audit row (``after=before``) reflects the value actually
-        written here -- otherwise undoing this undo would re-derive from
-        whatever "today" happens to be at redo time instead of restoring this
-        undo's date. A post-V060 capture always carries the key and takes the
-        base-class path unchanged.
+        already applies to every live FALSE->TRUE call. Mutating both ``before``
+        and ``locate`` in place normalizes both legacy images, because
+        ``BaseRepo.undo_event`` emits its own audit row as
+        ``before=locate, after=before`` (the caller's ``after`` argument *is*
+        this ``locate`` dict, passed by reference) -- stamping only ``before``
+        leaves that emitted row's ``before_value`` (from ``locate``) without
+        ``archived_at`` while its ``after_value`` (from ``before``) carries it,
+        so a later undo-of-that-undo hits ``_require_capture`` and fails with a
+        misleading "not reversible" error. A post-V060 capture always carries
+        the key and takes the base-class path unchanged.
         """
         super()._restore_row(before=before, locate=locate)
         if "archived_at" in before:
@@ -155,9 +158,9 @@ class AccountSettingsRepo(BaseRepo):
             f"SET archived_at = ? WHERE {where}",
             [derived_at, *where_params],
         )
-        before["archived_at"] = (
-            derived_at.isoformat() if derived_at is not None else None
-        )
+        archived_at_value = derived_at.isoformat() if derived_at is not None else None
+        before["archived_at"] = archived_at_value
+        locate["archived_at"] = archived_at_value
 
     def delete(
         self,
