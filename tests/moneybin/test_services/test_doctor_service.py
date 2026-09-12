@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import math
 import re
 from collections.abc import Generator
@@ -3106,6 +3107,42 @@ def _insert_repeated_amount(
     )
 
 
+def _insert_account_link_decision(
+    db: Database,
+    *,
+    decision_id: str,
+    provisional_account_id: str,
+    candidate_account_id: str,
+    status: str = "rejected",
+    reversed_at: str | None = None,
+) -> None:
+    """Insert one ``app.account_link_decisions`` row directly.
+
+    Mirrors ``_insert_overlap_account`` above: doctor's tests build the
+    state a check reads directly rather than driving the full account-links
+    pipeline, because the pipeline that PRODUCES a decision is not what these
+    tests exercise — only ``_run_currency_integrity``'s CONSUMPTION of an
+    already-decided row is.
+    """
+    db.execute(
+        """
+        INSERT INTO app.account_link_decisions (
+            decision_id, provisional_account_id, candidate_account_id,
+            confidence_score, match_signals, status, decided_by,
+            match_reason, decided_at, reversed_at
+        ) VALUES (?, ?, ?, 0.85, ?, ?, 'user', NULL, CURRENT_TIMESTAMP, ?)
+        """,  # test input, not executing SQL
+        [
+            decision_id,
+            provisional_account_id,
+            candidate_account_id,
+            json.dumps({"signal": "manual"}),
+            status,
+            reversed_at,
+        ],
+    )
+
+
 def _overlap_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantResult:
     """Run the full doctor report (SQLMesh mocked) and return the overlap invariant."""
     mock_ctx = _make_mock_ctx(_CLEAN_AUDITS)
@@ -3284,6 +3321,190 @@ def test_currency_integrity_overlap_message_names_a_fallback_for_every_pair(
     # prose, not a literal invocation, and is out of scope here.
     assert_published_commands_resolve("`moneybin accounts links run DUP_B DUP_A`")
     assert_published_commands_resolve("`moneybin accounts links run DUP_F DUP_E`")
+
+
+def _setup_overlap_pair_with_unknown_currency(
+    doctor_db: Database, *, unknown_id: str = "DUP_B"
+) -> None:
+    """DUP_A/DUP_B mirror each other at one institution; ``unknown_id`` has no currency."""
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+        [unknown_id],
+    )  # test input, not user data
+
+
+@pytest.mark.unit
+def test_currency_integrity_standalone_decision_lifts_the_overlap_gate(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A user who followed the check's own ``--standalone`` guidance gets relief.
+
+    ``accounts links set --standalone`` records a ``rejected``, non-reversed
+    decision for the pair. Once that decision exists, DUP_A and DUP_B are no
+    longer an unresolved overlap — the two accounts really are distinct, so
+    admitting DUP_B's rows into every total is correct — and the check must
+    reach the plain currency-assignment advice instead of repeating the
+    overlap warning forever.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+        status="rejected",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "Their amounts are segmented out of every total until you assign" in (
+        detail
+    ), detail
+    assert "resolve account identity FIRST" not in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_standalone_relief_is_orientation_independent(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Relief must not depend on which side of the pair the decision calls provisional.
+
+    ``_query_duplicate_account_pairs`` normalizes every pair with
+    ``LEAST``/``GREATEST`` (here, always ``(DUP_A, DUP_B)``), but a decision
+    row stores its own ``provisional_account_id``/``candidate_account_id``
+    order, which need not match. This decision is recorded exactly backwards
+    from the pair's normalized order — a fix that matched only one
+    orientation would leave this pair "unresolved" and fail this test.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_B",  # reverse of the pair's (LEAST, GREATEST) order
+        candidate_account_id="DUP_A",
+        status="rejected",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "Their amounts are segmented out of every total until you assign" in (
+        detail
+    ), detail
+    assert "resolve account identity FIRST" not in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_reversed_standalone_decision_grants_no_relief(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An undone standalone decision must not lift the overlap gate.
+
+    ``reversed_at IS NOT NULL`` means a past ``rejected`` answer was undone —
+    the pair is unresolved again, and the check must keep withholding the
+    currency-assignment advice exactly as if no decision existed.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+        status="rejected",
+        reversed_at="2026-01-02T00:00:00",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "resolve account identity FIRST" in detail, detail
+    assert "DUP_B:DUP_A" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_standalone_decision_partial_relief(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One cleared pair and one unresolved pair: relief must be per-pair, not all-or-nothing.
+
+    DUP_A/DUP_B is cleared with a standalone decision; DUP_E/DUP_F is not.
+    The check must still withhold currency advice for DUP_F (naming only that
+    pair), not fall through to the plain advice for either account.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _setup_overlap_pair_with_unknown_currency(doctor_db)
+    _insert_overlap_account(doctor_db, "DUP_E", institution_slug="wells")
+    _insert_overlap_account(doctor_db, "DUP_F", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "DUP_E", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_F", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_F'"
+    )  # test input, not user data
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+        status="rejected",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "resolve account identity FIRST" in detail, detail
+    assert "DUP_F:DUP_E" in detail, detail
+    assert "DUP_B:DUP_A" not in detail, detail
+    assert "1 of those" in detail, detail
+
+
+@pytest.mark.unit
+def test_duplicate_account_overlap_still_warns_after_standalone_decision(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``duplicate_account_overlap`` itself must never honor a standalone decision.
+
+    Its own message tells the user ``--standalone`` keeps the pair a warning
+    forever — that is this check's documented contract. The relief added to
+    ``currency_integrity`` lives in that check's own consumption of the
+    shared pairs query, not in ``_query_duplicate_account_pairs`` itself, so
+    a standalone decision must not change this check's verdict at all.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+        status="rejected",
+    )
+
+    result = _overlap_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    assert result.affected_ids == ["DUP_A:DUP_B (100% overlap)"]
 
 
 @pytest.mark.unit

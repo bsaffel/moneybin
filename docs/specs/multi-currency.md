@@ -384,10 +384,22 @@ Numbered, testable. Tagged by phase.
    merge preview as the actual confirmation surface. If the overlap check
    itself cannot run, the detail
    withholds the currency-assignment advice entirely rather than risk
-   admitting an unconfirmed duplicate. Only when no overlap is found or
-   suspected does the detail go straight to `accounts set --currency`. The
-   `moneybin transform` that makes an assignment take effect in `core.*`, and
-   the affected ids, are attached in every case.
+   admitting an unconfirmed duplicate. A pair the user has already declared
+   genuinely distinct via `accounts links set <decision_id> --standalone` is
+   excluded from this gate — a standalone decision is a `rejected`,
+   non-reversed `app.account_link_decisions` row, matched regardless of which
+   side it calls provisional — so following the check's own guidance
+   eventually reaches the plain currency-assignment advice instead of
+   re-detecting the same overlap forever. Relief is per-pair: an account
+   still party to an unresolved pair keeps the overlap advice even after a
+   sibling pair is cleared. `duplicate_account_overlap` itself is unaffected
+   by this — its own message documents that `--standalone` keeps that check
+   a warning permanently, so the decision filter lives only in
+   `currency_integrity`'s consumption of the shared pairs query, never in the
+   query itself. Only when no overlap is found, or every found overlap has
+   been declared standalone, does the detail go straight to `accounts set
+   --currency`. The `moneybin transform` that makes an assignment take effect
+   in `core.*`, and the affected ids, are attached in every case.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is
    code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`

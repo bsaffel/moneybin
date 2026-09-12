@@ -2626,6 +2626,39 @@ class DoctorService:
         ]
         return self._duplicate_account_pairs
 
+    def _query_standalone_decided_pairs(
+        self, account_ids: Collection[str]
+    ) -> set[tuple[str, str]]:
+        """Normalized ``(LEAST, GREATEST)`` pairs a ``--standalone`` decision cleared.
+
+        Consulted only by ``_run_currency_integrity``'s overlap gate, never by
+        ``_query_duplicate_account_pairs`` itself: ``duplicate_account_overlap``'s
+        own message tells the user ``--standalone`` keeps that check a warning
+        forever, so filtering the shared query would silently break its
+        documented contract for a check that never asked for relief. A
+        standalone decision is `status='rejected'` with `reversed_at IS NULL` —
+        see ``AccountLinksService.set_decision``'s standalone branch.
+
+        One query for every candidate pair, not one per pair.
+        """
+        if not account_ids:
+            return set()
+        ids = list(account_ids)
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._db.execute(
+            f"""
+            SELECT LEAST(provisional_account_id, candidate_account_id) AS account_a,
+                   GREATEST(provisional_account_id, candidate_account_id) AS account_b
+            FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE status = 'rejected'
+              AND reversed_at IS NULL
+              AND provisional_account_id IN ({placeholders})
+              AND candidate_account_id IN ({placeholders})
+            """,  # TableRef constant, parameterized values
+            [*ids, *ids],
+        ).fetchall()
+        return {(str(a), str(b)) for a, b in rows}
+
     def _run_duplicate_account_overlap(self) -> InvariantResult:
         """One real account imported under two canonical identities.
 
@@ -3090,7 +3123,11 @@ class DoctorService:
           checked against ``duplicate_account_overlap`` first — assigning a
           currency to a duplicate would admit its rows into every total
           (GH #410), so an overlapping or unconfirmed pair sequences account
-          identity resolution ahead of the currency fix instead.
+          identity resolution ahead of the currency fix instead. A pair the
+          user already declared genuinely distinct via ``accounts links set
+          --standalone`` is excluded from that gate — see
+          ``_query_standalone_decided_pairs`` — so the currency advice is not
+          withheld forever for accounts that really are two different ones.
         - **warn** — two or more known currencies and nothing unknown. Legal,
           but every cross-currency total is withheld until conversion ships
           (M1K.2), which is worth saying out loud rather than leaving the user
@@ -3251,6 +3288,29 @@ class DoctorService:
                         if a in overlapping_unknown_accounts
                         or b in overlapping_unknown_accounts
                     ]
+                    # A user who followed this check's own guidance and ran
+                    # `accounts links set --standalone` declared the pair
+                    # genuinely distinct — admitting those rows into every
+                    # total is then the CORRECT outcome, not a convenience
+                    # override, so honor it here rather than re-detecting the
+                    # same "overlap" on every later run.
+                    if overlap_pairs:
+                        standalone_pairs = self._query_standalone_decided_pairs(
+                            {a for a, _, _ in overlap_pairs}
+                            | {b for _, b, _ in overlap_pairs}
+                        )
+                        if standalone_pairs:
+                            overlap_pairs = [
+                                (a, b, ratio)
+                                for a, b, ratio in overlap_pairs
+                                if (a, b) not in standalone_pairs
+                            ]
+                            overlapping_unknown_accounts = sorted({
+                                account_id
+                                for a, b, _ in overlap_pairs
+                                for account_id in (a, b)
+                                if account_id in overlapping_unknown_accounts
+                            })
             if overlap_probe_failed:
                 return InvariantResult(
                     name=name,
