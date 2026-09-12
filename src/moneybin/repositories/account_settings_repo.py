@@ -121,6 +121,31 @@ class AccountSettingsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def _insert_row(self, row: dict[str, Any]) -> None:
+        """Normalize a legacy archived capture before an undo re-inserts it.
+
+        ``BaseRepo.undo_event`` re-inserts a captured row through this hook
+        whenever it undoes a DELETE-shaped event -- including the
+        undo-of-undo of a pre-V060 account's first settings write. That
+        write's ``before_value`` is NULL, so undoing it *deletes* the row
+        (the ``before is None`` branch of ``undo_event``), and undoing that
+        generated undo lands here rather than in :meth:`_restore_row`. The
+        deleted row's captured image is the original pre-V060
+        ``account_settings.set`` payload, which never carried ``archived_at``
+        -- reinserting it unmodified stands the row back up as
+        ``archived=True, archived_at=NULL``, which the date-scoped net-worth
+        predicate reads as "archived at every date," losing the date V060
+        backfilled onto the (now-deleted) live row. Mutating ``row`` in place
+        -- not a copy -- matters for the same reason :meth:`_restore_row`
+        mutates both its images: ``undo_event`` reuses this same dict as the
+        ``after_value`` of the audit row it emits for this undo, so leaving
+        it unmodified would misreport the row this call actually produced
+        and repeat the corruption on the next undo-of-this-undo.
+        """
+        if row.get("archived") is True and "archived_at" not in row:
+            row["archived_at"] = date.today().isoformat()
+        super()._insert_row(row)
+
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
 

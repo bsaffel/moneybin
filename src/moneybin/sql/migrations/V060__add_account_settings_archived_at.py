@@ -27,6 +27,20 @@ prior row on an account's first-ever settings write, and the absence of a row
 *is* the documented ``archived=FALSE`` default, just not in the JSON shape a
 bare ``json_extract_string(...) = 'false'`` comparison expects.
 
+The most-recent-FALSE->TRUE row is disqualified if a TRUE->FALSE (unarchive)
+row exists *after* it. Without that check, an account archived long ago (D1),
+audited-unarchived later (D2), then re-archived with no audit evidence at all
+(a direct write, a restore, or data predating the audit log) would still be
+``archived=TRUE`` today, and the naive most-recent-match query would pick D1
+— dating the account before the D1-D2 active period it legitimately holds and
+excluding valid balances from it. Requiring no later unarchive is exactly
+"no guess beats a documented gap" applied to the current archived streak, not
+just to whether any evidence exists at all: an archive row from a superseded
+streak is not evidence for this one. This does not regress the undo-produced
+re-archival case the broadened action match exists for — undoing an unarchive
+row emits a FALSE->TRUE row *after* that unarchive's own ``occurred_at``, so it
+still qualifies as the latest unsuperseded archive evidence.
+
 ``include_in_net_worth`` is left exactly as stored for every account this
 migration touches — never restored, even when
 ``before_value.include_in_net_worth`` reads ``'true'`` (the retired cascade's
@@ -88,18 +102,36 @@ def migrate(conn: object) -> None:
     for (account_id,) in archived_accounts:
         row = conn.execute(  # type: ignore[union-attr]
             """
-            SELECT CAST(occurred_at AS DATE)
-            FROM app.audit_log
-            WHERE target_schema = 'app'
-              AND target_table = 'account_settings'
-              AND target_id = ?
-              AND action LIKE 'account_settings.set%'
-              AND (
-                before_value IS NULL
-                OR json_extract_string(before_value, '$.archived') = 'false'
-              )
-              AND json_extract_string(after_value, '$.archived') = 'true'
-            ORDER BY occurred_at DESC
+            WITH transitions AS (
+                SELECT
+                    occurred_at,
+                    (
+                        before_value IS NULL
+                        OR json_extract_string(before_value, '$.archived') = 'false'
+                    ) AS from_false,
+                    json_extract_string(after_value, '$.archived') = 'true'
+                        AS to_true,
+                    json_extract_string(before_value, '$.archived') = 'true'
+                        AS from_true,
+                    json_extract_string(after_value, '$.archived') = 'false'
+                        AS to_false
+                FROM app.audit_log
+                WHERE target_schema = 'app'
+                  AND target_table = 'account_settings'
+                  AND target_id = ?
+                  AND action LIKE 'account_settings.set%'
+            ),
+            last_unarchive AS (
+                SELECT MAX(occurred_at) AS at
+                FROM transitions
+                WHERE from_true AND to_false
+            )
+            SELECT CAST(t.occurred_at AS DATE)
+            FROM transitions AS t, last_unarchive AS u
+            WHERE t.from_false
+              AND t.to_true
+              AND (u.at IS NULL OR t.occurred_at > u.at)
+            ORDER BY t.occurred_at DESC
             LIMIT 1
             """,
             [account_id],

@@ -42,6 +42,9 @@ _FIRST_WRITE = "acct-firstwrite1"  # archived on the account's first-ever settin
 _ACTIVE = "acct-activeacct1"  # archived=False -> untouched
 _RE_ARCHIVED = "acct-rearchived1"  # two transitions -> most recent wins
 _UNDO_REARCHIVED = "acct-undorearch1"  # re-archived via undo -> undo's date wins
+_STALE_AFTER_UNARCHIVE = "acct-staleafterunarch1"  # archive superseded by an
+# audited unarchive, then re-archived with no further audit evidence -> NULL,
+# not the superseded archive's date
 
 
 def _audit_row_sql(action: str = "account_settings.set") -> str:
@@ -80,6 +83,7 @@ def pre_v060_db(db: Database) -> Database:
             (_ACTIVE, "Active Account", False, True),
             (_RE_ARCHIVED, "Re-archived", True, False),
             (_UNDO_REARCHIVED, "Undo Re-archived", True, True),
+            (_STALE_AFTER_UNARCHIVE, "Stale After Unarchive", True, True),
         ],
     )
 
@@ -193,6 +197,35 @@ def pre_v060_db(db: Database) -> Database:
             "op-undorearch1c",
         ],
     )
+    # _STALE_AFTER_UNARCHIVE: archived on 2026-01-01, audited-unarchived on
+    # 2026-02-01, then re-archived with NO further audit evidence at all (a
+    # direct write, a restore, or data predating the audit log) -- the live
+    # row scans as archived=TRUE, but the only FALSE->TRUE audit row is the
+    # one the unarchive superseded. The migration must leave archived_at
+    # NULL, not date the account back to the superseded 2026-01-01 archive
+    # and exclude its legitimate 2026-01-01..2026-02-01 active period.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-staleafterunarch1a",
+            "2026-01-01 09:00:00",
+            _STALE_AFTER_UNARCHIVE,
+            '{"archived": false, "include_in_net_worth": true}',
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-staleafterunarch1a",
+        ],
+    )
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-staleafterunarch1b",
+            "2026-02-01 09:00:00",
+            _STALE_AFTER_UNARCHIVE,
+            '{"archived": true, "include_in_net_worth": true}',
+            '{"archived": false, "include_in_net_worth": true}',
+            "op-staleafterunarch1b",
+        ],
+    )
     return db
 
 
@@ -277,6 +310,26 @@ def test_v060_uses_most_recent_transition_including_undo(
     run_migration(pre_v060_db, migrate)
     archived_at, include = _settings_row(pre_v060_db, _UNDO_REARCHIVED)
     assert archived_at == date(2026, 3, 15)
+    assert include is True
+
+
+def test_v060_ignores_archive_evidence_superseded_by_a_later_unarchive(
+    pre_v060_db: Database,
+) -> None:
+    """An audited unarchive invalidates every archive row before it as evidence.
+
+    The account is currently ``archived=TRUE`` with no audit row for that
+    transition -- only an old archive followed by an audited unarchive. The
+    naive "most recent FALSE->TRUE row" query would pick the old archive,
+    dating the account before the active period between it and the
+    unarchive. The documented policy ("no guess beats a documented gap")
+    applies to the CURRENT archived streak, not just to whether any FALSE->
+    TRUE row exists at all -- so this must leave archived_at NULL, matching
+    an account with no evidence whatsoever.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_UNARCHIVE)
+    assert archived_at is None
     assert include is True
 
 

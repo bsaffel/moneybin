@@ -362,3 +362,108 @@ def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
     # never recoverable, matching the "no guess beats a documented gap" rule
     # the V060 migration itself follows.
     assert row == (True, None)
+
+
+def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
+    db: Database,
+) -> None:
+    """Undo-of-undo of a pre-V060 FIRST-write archive must not drop archived_at.
+
+    When archiving was a pre-V060 account's first settings write, its
+    ``before_value`` is NULL, so undoing that event takes ``undo_event``'s
+    INSERT-shaped path (``before is None`` -> ``_delete_by_pk``), never
+    ``_restore_row``. Undoing THAT generated undo (a redo) then reinserts the
+    captured legacy row through ``_insert_row`` -- a different hook than the
+    UPDATE-shaped undo ``_restore_row`` already normalizes. The legacy
+    captured image has no ``archived_at`` key at all, so without
+    ``AccountSettingsRepo._insert_row`` normalizing it, the account would
+    come back as ``archived=True, archived_at=NULL`` -- losing the date V060
+    backfilled and reading as excluded at every date under the date-scoped
+    net-worth predicate.
+    """
+    repo = AccountSettingsRepo(db)
+    # The live row mirrors what the first-write archive produced, with
+    # archived_at already backfilled by V060.
+    _set(repo, account_id="acct_legacy6", archived=True, archived_at=date(2024, 6, 1))
+
+    # The forward event this reverses was the account's FIRST settings write
+    # (before=NULL) -- a pre-V060 capture, so its after-image has no
+    # archived_at key.
+    first_write_event = AuditEvent(
+        audit_id="aud-legacy6",
+        occurred_at="2024-06-01T00:00:00",
+        actor="cli",
+        action="account_settings.set",
+        target_schema="app",
+        target_table="account_settings",
+        target_id="acct_legacy6",
+        before_value=None,
+        after_value=_legacy_row(account_id="acct_legacy6", archived=True),
+        parent_audit_id=None,
+        operation_id="op-legacy6",
+    )
+
+    # Undo #1: before is None -> deletes the row.
+    undo_result = repo.undo_event(first_write_event, actor="cli")
+    assert undo_result is not None
+    assert (
+        db.conn.execute(
+            "SELECT 1 FROM app.account_settings WHERE account_id = ?",
+            ["acct_legacy6"],
+        ).fetchone()
+        is None
+    )
+
+    # Undo #2 (redo): after is None -> reinserts via _insert_row, not
+    # _restore_row.
+    redo_result = repo.undo_event(undo_result, actor="cli")
+    assert redo_result is not None
+
+    row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy6"],
+    ).fetchone()
+    assert row == (True, date.today())
+
+    # The redo's own emitted audit row must carry the derived archived_at,
+    # not the omitted key -- otherwise undoing THIS redo repeats the bug.
+    assert redo_result.after_value is not None
+    assert redo_result.after_value["archived_at"] == date.today().isoformat()
+
+
+def test_undo_of_undo_of_legacy_first_write_unarchive_leaves_archived_at_null(
+    db: Database,
+) -> None:
+    """The insert-path normalization only fires for a reinstated archive=True row.
+
+    A legacy first-write whose captured value was ``archived=False`` must
+    reinsert with ``archived_at`` left NULL -- the natural state for an
+    active account -- not stamped with today's date.
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy7", archived=False, archived_at=None)
+
+    first_write_event = AuditEvent(
+        audit_id="aud-legacy7",
+        occurred_at="2024-06-01T00:00:00",
+        actor="cli",
+        action="account_settings.set",
+        target_schema="app",
+        target_table="account_settings",
+        target_id="acct_legacy7",
+        before_value=None,
+        after_value=_legacy_row(account_id="acct_legacy7", archived=False),
+        parent_audit_id=None,
+        operation_id="op-legacy7",
+    )
+
+    undo_result = repo.undo_event(first_write_event, actor="cli")
+    assert undo_result is not None
+    redo_result = repo.undo_event(undo_result, actor="cli")
+    assert redo_result is not None
+
+    row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy7"],
+    ).fetchone()
+    assert row == (False, None)

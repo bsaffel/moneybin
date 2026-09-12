@@ -266,9 +266,11 @@ def accounts_set(
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
 
-    ``is_archived`` and ``include_in_net_worth`` are independent — archiving no
-    longer changes ``include_in_net_worth``; pass it explicitly alongside
-    ``is_archived`` if the account should also stop contributing to net worth.
+    ``is_archived`` and ``include_in_net_worth`` are independent — archiving
+    alone already excludes the account from net worth from its
+    ``archived_at`` date forward, without touching earlier balances. Only
+    pass ``include_in_net_worth=False`` alongside ``is_archived`` to exclude
+    the account at every date, including its pre-archive history.
 
     Soft-validation warnings (for non-canonical ``account_subtype`` or
     ``holder_category`` values) are embedded in ``data['warnings']``.
@@ -1786,8 +1788,9 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "currency_code, credit_limit. Pass None to leave a field "
         "unchanged; include a text field's name in clear_fields to clear it "
         "(booleans are not clearable). is_archived and include_in_net_worth "
-        "are independent — set both explicitly if archiving should also "
-        "exclude the account from net worth. "
+        "are independent — archiving alone already excludes the account "
+        "from net worth from its archive date forward; pass "
+        "include_in_net_worth=False too only to exclude it at every date. "
         "Writes app.account_settings; revert by calling again with the prior "
         "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",
