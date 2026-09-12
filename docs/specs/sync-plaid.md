@@ -540,7 +540,7 @@ See `sync-overview.md` testing strategy. These tests are marked `@pytest.mark.in
 
 The synthetic data generator (`testing-synthetic-data.md`) should produce data that exercises the Plaid sync pipeline:
 
-- **Golden-file sync responses.** Representative JSON payloads matching the `api-contract.md` format, including accounts, transactions, balances, removed_transactions, and metadata. Used for offline PlaidLoader unit tests.
+- **Golden-file sync responses.** Representative JSON payloads matching the [server API contract](../reference/server-api-contract.md) format, including accounts, transactions, balances, removed_transactions, and metadata. Used for offline PlaidLoader unit tests.
 - **Sign convention edge cases.** Transactions with zero amount, very large amounts, and negative amounts (income) in Plaid convention.
 - **Pending → confirmed transitions.** Pairs of payloads where a transaction appears as `pending = true` in the first and `pending = false` in the second.
 - **Removed transactions.** Payloads with non-empty `removed_transactions[]` arrays.

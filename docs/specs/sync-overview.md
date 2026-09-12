@@ -244,7 +244,8 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 |---|---|
 | `moneybin sync login` | Authenticate with moneybin-sync via Device Authorization Flow |
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
-| `moneybin sync link` | Link a bank account — opens provider UI in browser, polls for completion |
+| `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
+| `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
 | `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger sync, poll, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
