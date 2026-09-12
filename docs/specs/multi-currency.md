@@ -357,14 +357,28 @@ Numbered, testable. Tagged by phase.
    currency is unknown (`NULL`) so the user can assign one before it can blend**, and flags
    any report path that would violate Requirement 5.
    **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
-   unknown-currency account/transaction/balance (with the `accounts set --currency`
-   fix in the detail, the `moneybin transform` that makes it take effect in `core.*`,
-   and the affected ids attached), **warn** on two or more known
+   unknown-currency account/transaction/balance, **warn** on two or more known
    currencies with nothing unknown — naming both consequences a user would
    otherwise read as a bug: reports sub-total per currency, and a transaction
    denominated differently from its account sits out of that account's carried
    balance and shows up as its drift — **pass** otherwise. It publishes
    `moneybin_profile_currencies` and `moneybin_unknown_currency_rows{grain}`.
+   The fail detail does not always carry the `accounts set --currency` fix
+   directly: an unknown-currency account is checked against
+   `duplicate_account_overlap`'s own overlap detection first, because an
+   unknown currency is the only thing holding a duplicate account's rows out
+   of every total, and assigning it a currency would admit them (GH #410). If
+   the account mirrors an existing one at the same institution, the detail
+   names the specific overlapping pair and sequences account-identity
+   resolution (`accounts links run` / `accounts links set`) ahead of the
+   currency fix, including the two-id `accounts links run <account_id>
+   <candidate_account_id>` fallback for when the automatic sweep raises no
+   proposal for that pair. If the overlap check itself cannot run, the detail
+   withholds the currency-assignment advice entirely rather than risk
+   admitting an unconfirmed duplicate. Only when no overlap is found or
+   suspected does the detail go straight to `accounts set --currency`. The
+   `moneybin transform` that makes an assignment take effect in `core.*`, and
+   the affected ids, are attached in every case.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is
    code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`

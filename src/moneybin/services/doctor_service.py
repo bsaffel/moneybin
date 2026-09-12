@@ -7,6 +7,7 @@ import logging
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
+import duckdb
 from sqlglot import exp
 
 from moneybin.audits import recipes as recipe_registry
@@ -3056,8 +3057,12 @@ class DoctorService:
         them is fixable:
 
         - **fail** — a row or account whose currency is ``NULL``. Its amount has
-          no unit, so it can never join a total. The user assigns one with
-          ``accounts set --currency``.
+          no unit, so it can never join a total. Ordinarily the user assigns one
+          with ``accounts set --currency``, but an unknown-currency account is
+          checked against ``duplicate_account_overlap`` first — assigning a
+          currency to a duplicate would admit its rows into every total
+          (GH #410), so an overlapping or unconfirmed pair sequences account
+          identity resolution ahead of the currency fix instead.
         - **warn** — two or more known currencies and nothing unknown. Legal,
           but every cross-currency total is withheld until conversion ships
           (M1K.2), which is worth saying out loud rather than leaving the user
@@ -3164,14 +3169,25 @@ class DoctorService:
             # duplicate_account_overlap's own detection rather than a second
             # notion of "duplicate" (GH #410).
             overlapping_unknown_accounts: list[str] = []
+            overlap_pairs: list[tuple[str, str, float]] = []
+            overlap_probe_failed = False
             if unknown_account_count:
                 try:
                     pairs = self._query_duplicate_account_pairs()
-                except Exception as e:  # core views absent before first transform
+                except duckdb.Error as e:
+                    # DIM_ACCOUNTS and FCT_TRANSACTIONS were already queried
+                    # successfully above, so this is NOT the core-views-absent
+                    # case the outer try guards — it is a failure inside the
+                    # shared overlap query itself. Fail closed rather than
+                    # falling through to the unqualified "just assign a
+                    # currency" advice below: an unresolved overlap check must
+                    # never read as a clean one (that silent fallthrough is the
+                    # GH #410 regression).
                     logger.debug(
-                        f"currency_integrity overlap probe skipped: {e}",
+                        f"currency_integrity overlap probe failed: {e}",
                         exc_info=True,
                     )
+                    overlap_probe_failed = True
                     pairs = []
                 pair_account_ids = sorted(
                     {a for a, _, _ in pairs} | {b for _, b, _ in pairs}
@@ -3190,7 +3206,44 @@ class DoctorService:
                             pair_account_ids,
                         ).fetchall()
                     ]
+                    overlap_pairs = [
+                        (a, b, ratio)
+                        for a, b, ratio in pairs
+                        if a in overlapping_unknown_accounts
+                        or b in overlapping_unknown_accounts
+                    ]
+            if overlap_probe_failed:
+                return InvariantResult(
+                    name=name,
+                    status="fail",
+                    detail=(
+                        f"{', '.join(parts)} have an unknown currency, and "
+                        "the duplicate-account overlap check that would "
+                        "confirm whether any of them mirror an existing "
+                        "account could not run. Do not assign a currency "
+                        "yet — an account with an unchecked duplicate risk "
+                        "is exactly the case whose rows a currency "
+                        "assignment would admit into every total. Run "
+                        "`moneybin accounts links run` to check for a "
+                        "duplicate manually, then re-run `moneybin system "
+                        "doctor`; once it reports clean, assign a currency with "
+                        "`moneybin accounts set <account> --currency "
+                        "<ISO 4217>` and re-run `moneybin transform`."
+                    ),
+                    affected_ids=[
+                        *(f"account:{account_id}" for account_id in unknown_accounts),
+                        *(
+                            f"transaction:{transaction_id}"
+                            for transaction_id in unknown_transactions
+                        ),
+                    ],
+                )
             if overlapping_unknown_accounts:
+                pair_descriptions = ", ".join(
+                    f"{a}:{b} ({round(ratio * 100)}% overlap)"
+                    for a, b, ratio in overlap_pairs
+                )
+                first_a, first_b, _ = overlap_pairs[0]
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3198,14 +3251,21 @@ class DoctorService:
                         f"{', '.join(parts)} have an unknown currency, and "
                         f"{len(overlapping_unknown_accounts)} of those "
                         "account(s) mirror an existing account's transactions "
-                        "at the same institution — most likely one account "
-                        "imported twice. The unknown currency is the only "
-                        "thing holding those duplicate rows out of every "
-                        "total, so resolve account identity FIRST: run "
-                        "`moneybin accounts links run`, then decide with "
-                        "`moneybin accounts links set <decision_id> --into "
-                        "<account_id>` (or `--standalone` if they are "
-                        "genuinely distinct). Only then assign a currency with "
+                        f"at the same institution ({pair_descriptions}) — "
+                        "most likely one account imported twice. The unknown "
+                        "currency is the only thing holding those duplicate "
+                        "rows out of every total, so resolve account "
+                        "identity FIRST: run `moneybin accounts links run`, "
+                        "then decide with `moneybin accounts links set "
+                        "<decision_id> --into <account_id>` (or "
+                        "`--standalone` if they are genuinely distinct). "
+                        "Identity resolution matches on institution+last-four "
+                        "and name similarity, not the transaction overlap "
+                        "this check measures, so this pair may raise no "
+                        "proposal at all — if so, name it yourself with "
+                        f"`moneybin accounts links run {first_a} {first_b}`, "
+                        "which queues the same reviewable proposal from the "
+                        "ids above. Only then assign a currency with "
                         "`moneybin accounts set <account> --currency "
                         "<ISO 4217>` and re-run `moneybin transform`."
                     ),

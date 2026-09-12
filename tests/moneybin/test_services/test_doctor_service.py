@@ -3157,6 +3157,84 @@ def test_currency_integrity_warns_about_overlap_before_recommending_assignment(
 
 
 @pytest.mark.unit
+def test_currency_integrity_overlap_message_names_the_pair_and_fallback(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The overlap-aware fail message must not fall short of the sibling check.
+
+    ``duplicate_account_overlap`` already names the specific account ids and
+    the two-id ``accounts links run`` fallback for the case where a bare
+    sweep raises no proposal. The currency_integrity message reuses the same
+    detection and must carry that same shape — specific ids plus the
+    actionable fallback — not a bare, id-less pointer.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "DUP_A:DUP_B" in detail, detail
+    assert "moneybin accounts links run DUP_A DUP_B" in detail, detail
+    # Scoped to the new two-id fallback command this test adds — the
+    # message's other, pre-existing `<decision_id> --into <account_id>`
+    # placeholder text is illustrative prose, not a literal invocation, and
+    # is out of scope here.
+    assert_published_commands_resolve("`moneybin accounts links run DUP_A DUP_B`")
+
+
+@pytest.mark.unit
+def test_currency_integrity_fails_closed_when_overlap_probe_errors(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An error inside the shared overlap probe must fail closed, not fall through.
+
+    By the time ``_query_duplicate_account_pairs`` runs, the outer
+    currency-integrity queries against ``DIM_ACCOUNTS``/``FCT_TRANSACTIONS``
+    have already succeeded, so a raised error here is a bug in the shared
+    overlap query itself, not the "core layer not available" case the outer
+    ``try`` guards. Silently swallowing it and falling through to the
+    unqualified "just assign a currency" advice is exactly the GH #410
+    regression this check exists to stop.
+    """
+    import duckdb
+
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'ACC1'"
+    )  # test input, not user data
+
+    def _boom(self: DoctorService) -> list[tuple[str, str, float]]:
+        raise duckdb.Error("simulated overlap-probe failure")
+
+    monkeypatch.setattr(DoctorService, "_query_duplicate_account_pairs", _boom)
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "could not run" in detail, detail
+    assert "check for a duplicate manually" in detail, detail
+    assert (
+        "Their amounts are segmented out of every total until you assign" not in detail
+    ), detail
+    assert_published_commands_resolve(detail)
+
+
+@pytest.mark.unit
 def test_currency_integrity_plain_advice_unchanged_when_no_duplicate_overlap(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
