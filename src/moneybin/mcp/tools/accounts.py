@@ -648,6 +648,7 @@ def _account_link_binding(
                 list(row) for row in impact.lot_selections_before
             ],
             "lot_selections_after": [list(row) for row in impact.lot_selections_after],
+            "manual_identity": [list(row) for row in impact.manual_identity],
         },
         resolved_ids=(
             impact.provisional_account_id,

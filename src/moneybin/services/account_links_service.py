@@ -22,6 +22,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.investments.identity import manual_identity_sql
 from moneybin.matching.reconciliation import record_account_merge_retirements
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
@@ -69,6 +70,7 @@ class AccountLinkAcceptImpact:
     lot_selection_disposal_ids: tuple[str, ...] = ()
     lot_selections_before: tuple[tuple[str, str, str], ...] = ()
     lot_selections_after: tuple[tuple[str, str, str], ...] = ()
+    manual_identity: tuple[tuple[str | bool | None, ...], ...] = ()
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -447,6 +449,13 @@ class AccountLinksService:
             for disposal, selections in sorted(selection_plan.items())
             for lot, quantity in sorted(selections)
         )
+        manual_identity = self._db.execute(
+            f"""
+            SELECT * FROM ({manual_identity_sql()}) AS i
+            WHERE account_id IN (?, ?) ORDER BY source_transaction_id
+            """,  # canonical repository identity query and parameterized accounts
+            [provisional_id, target_account_id],
+        ).fetchall()
         return AccountLinkAcceptImpact(
             provisional_account_id=provisional_id,
             candidate_account_id=str(decision["candidate_account_id"]),
@@ -463,6 +472,7 @@ class AccountLinksService:
             lot_selection_disposal_ids=tuple(sorted(selection_plan)),
             lot_selections_before=selections_before,
             lot_selections_after=selections_after,
+            manual_identity=tuple(manual_identity),
         )
 
     # ------------------------------------------------------------------
