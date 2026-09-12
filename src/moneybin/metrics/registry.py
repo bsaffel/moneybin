@@ -444,6 +444,16 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     ["source_type"],
 )
 
+# The rate spine's row and coverage counts (Requirement 12 of
+# reports-net-worth-sql-surface.md) land with the work that consumes the spine,
+# not here. Every gauge in this family is set from a Python SQLMesh model —
+# fct_currency_lots.py, fct_realized_fx_gains.py, bridge_currency_conversions.py
+# all call set_fx_accounting_rows — and the three rate-spine models are plain
+# .sql with no equivalent hook. A labeled Gauge emits no sample until a child is
+# instantiated, so declaring them now would put two metrics in the registry that
+# never appear in a scrape at all: absent rather than zero, which reads as
+# "not collected" and is worse than an honestly missing metric.
+
 # ── Categorization ────────────────────────────────────────────────────────────
 
 CATEGORIZATION_AUTO_RATE = Gauge(
