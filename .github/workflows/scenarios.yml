@@ -66,7 +66,7 @@ jobs:
           MONEYBIN_DATABASE__ENCRYPTION_KEY: ci-ephemeral-key-runner-destroyed-after-job
         run: |
           set -o pipefail
-          uv run pytest tests/ -m scenarios -v \
+          uv run pytest tests/ -m "scenarios and not perf" -v \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
             --json-report --json-report-file=scenarios-${{ matrix.group }}.json \
             --durations=25

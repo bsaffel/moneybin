@@ -83,6 +83,9 @@ class TestDbQueryInvocationBanner:
     def mock_create_init_script(self, mocker: Any, tmp_path: Path) -> MagicMock:
         script = tmp_path / "init.sql"
         script.touch()
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment", return_value={}
+        )
         return mocker.patch(
             "moneybin.cli.commands.db._create_init_script",
             return_value=script,
