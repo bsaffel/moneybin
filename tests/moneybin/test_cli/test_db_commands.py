@@ -7,15 +7,19 @@ and subprocess command building for DuckDB CLI wrapper commands.
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess  # noqa: S404  # test executes the installed DuckDB CLI with static arguments
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.commands import db as db_commands
 from moneybin.cli.commands.db import app
+from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
 
 
 def _make_settings_mock(db_path: Path, mocker: Any) -> MagicMock:
@@ -68,6 +72,28 @@ class TestDuckDBCLIInitialization:
         assert "getenv('MONEYBIN_DATABASE__ENCRYPTION_KEY')" in script
         assert synthetic_key not in script
 
+    def test_duckdb_cli_supports_environment_lookup(self) -> None:
+        """The bundled CLI, rather than the Python engine, evaluates ``getenv``."""
+        duckdb_path = shutil.which("duckdb")
+        if duckdb_path is None:
+            pytest.skip("DuckDB CLI is not installed")
+
+        environment = os.environ.copy()
+        environment["MONEYBIN_TEST_DUCKDB_GETENV"] = "synthetic-cli-value"
+        result = subprocess.run(  # noqa: S603  # installed CLI and static test query, never user input
+            [
+                duckdb_path,
+                "-c",
+                "SELECT getenv('MONEYBIN_TEST_DUCKDB_GETENV') AS observed;",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+
+        assert "synthetic-cli-value" in result.stdout
+
     def test_cli_uses_child_key_environment_without_redirecting_streams(
         self, mocker: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -103,6 +129,40 @@ class TestDuckDBCLIInitialization:
         command = observed["command"]
         assert isinstance(command, list)
         assert not Path(cast(str, command[2])).exists()
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [
+            pytest.param(SecretNotFoundError, id="missing-key"),
+            pytest.param(SecretUnavailableError, id="denied-keychain"),
+        ],
+    )
+    def test_cli_removes_init_script_when_child_environment_cannot_load_key(
+        self,
+        mocker: Any,
+        tmp_path: Path,
+        error_type: type[SecretNotFoundError],
+    ) -> None:
+        """A key read failure cannot leave the generated init script behind."""
+        test_db = tmp_path / "test.duckdb"
+        test_db.touch()
+        init_script = tmp_path / "init.sql"
+        init_script.touch()
+        mocker.patch("moneybin.cli.commands.db.shutil.which", return_value="duckdb")
+        mocker.patch(
+            "moneybin.cli.commands.db._create_init_script", return_value=init_script
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment",
+            side_effect=error_type("key lookup failed"),
+        )
+
+        with pytest.raises(typer.Exit):
+            db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]  # unit test covers child-environment failure cleanup
+                test_db, start_msg="", hint_msg=""
+            )
+
+        assert not init_script.exists()
 
 
 class TestShellCommand:
@@ -222,7 +282,7 @@ class TestShellCommand:
         test_db.touch()
         _make_settings_mock(test_db, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db._create_init_script",
+            "moneybin.cli.commands.db._duckdb_cli_environment",
             side_effect=SecretNotFoundError("locked"),
         )
 
@@ -364,7 +424,7 @@ class TestUiCommand:
         test_db.touch()
         _make_settings_mock(test_db, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db._create_init_script",
+            "moneybin.cli.commands.db._duckdb_cli_environment",
             side_effect=SecretNotFoundError("locked"),
         )
 
@@ -538,7 +598,7 @@ class TestQueryCommand:
         test_db.touch()
         _make_settings_mock(test_db, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db._create_init_script",
+            "moneybin.cli.commands.db._duckdb_cli_environment",
             side_effect=SecretNotFoundError("locked"),
         )
 
@@ -565,7 +625,7 @@ class TestQueryCommand:
         test_db.touch()
         _make_settings_mock_for_hint(test_db, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db._create_init_script",
+            "moneybin.cli.commands.db._duckdb_cli_environment",
             side_effect=SecretNotFoundError("locked"),
         )
 
@@ -592,7 +652,7 @@ class TestQueryCommand:
         test_db.touch()
         _make_settings_mock_for_hint(test_db, mocker)
         mocker.patch(
-            "moneybin.cli.commands.db._create_init_script",
+            "moneybin.cli.commands.db._duckdb_cli_environment",
             side_effect=SecretUnavailableError("denied"),
         )
 

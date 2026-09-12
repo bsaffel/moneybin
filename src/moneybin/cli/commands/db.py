@@ -267,17 +267,7 @@ def _run_duckdb_cli(
     from moneybin.database import database_key_error_hint
     from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
 
-    try:
-        init_script = _create_init_script(db_path)
-    except SecretUnavailableError:
-        logger.error(
-            f"❌ OS keychain denied access to the key. "
-            f"{database_key_error_hint(db_path)}"
-        )
-        raise typer.Exit(1) from None
-    except SecretNotFoundError:
-        logger.error(f"❌ Key not found. {database_key_error_hint(db_path)}")
-        raise typer.Exit(1) from None
+    init_script = _create_init_script(db_path)
 
     try:
         try:
