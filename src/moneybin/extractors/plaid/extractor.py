@@ -2,8 +2,8 @@
 
 Sign convention: raw tables preserve Plaid's native convention
 (positive = expense). The -1 * amount flip is done EXCLUSIVELY in
-prep.stg_plaid__transactions. See docs/specs/2026-05-13-plaid-sync-design.md
-Section 5 — flipping anywhere else silently corrupts cross-source
+prep.stg_plaid__transactions. See docs/specs/sync-plaid.md Requirement 4 —
+flipping anywhere else silently corrupts cross-source
 aggregations.
 """
 

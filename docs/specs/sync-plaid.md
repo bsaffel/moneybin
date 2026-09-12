@@ -17,8 +17,8 @@ Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checkin
 
 ## Requirements
 
-1. Client can connect bank accounts via Plaid Link through the server-hosted callback flow (Phase 2 of the interaction model).
-2. Client can trigger a sync job and poll for completion. Incremental sync uses Plaid's cursor-based pagination (server-managed). `--force` resets the cursor for full history re-fetch.
+1. Client can connect bank accounts through moneybin-sync's Plaid Link session API (Phase 2 of the interaction model).
+2. Client can trigger a server-completed sync job. Incremental sync uses Plaid's cursor-based pagination (server-managed). `--force` resets the cursor for full history re-fetch.
 3. Client downloads JSON payload and loads into `raw.plaid_*` DuckDB tables with no data loss and no duplicate rows on re-sync.
 4. Sign convention is preserved faithfully in raw (Plaid: positive = expense). The flip to MoneyBin convention (negative = expense) happens exclusively in staging views.
 5. Plaid's `removed_transactions` are deleted from `raw.plaid_transactions` on each sync.
@@ -32,43 +32,44 @@ Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checkin
 
 ## Plaid Link flow
 
-The connect flow uses a server-hosted callback pattern. The client never communicates with Plaid directly — the server proxies everything.
+The client communicates only with moneybin-sync. It starts a Link session,
+surfaces the returned URL, and reads that session's state; how the server
+integrates with Plaid remains behind the server API.
 
 ```mermaid
 sequenceDiagram
     actor User
     participant CLI as moneybin CLI
     participant Server as moneybin-sync
-    participant Plaid as Plaid API
     participant Browser as User's Browser
 
     User->>CLI: moneybin sync link
-    CLI->>Server: POST /sync/link-token
-    Server->>Plaid: Create Link token
-    Plaid-->>Server: link_token
-    Server-->>CLI: link_token, link_url
+    CLI->>Server: POST /sync/link/initiate
+    Server-->>CLI: session_id, link_url, link_type, expiration
 
     CLI->>Browser: Open link_url
-    Note over Browser,Plaid: User selects bank,<br/>enters credentials,<br/>selects accounts
-
-    Browser->>Plaid: User completes Link
-    Plaid->>Server: Redirect with public_token
-    Server->>Plaid: POST /item/public_token/exchange
-    Plaid-->>Server: access_token, item_id
-    Server->>Server: Encrypt & store access_token
-
-    CLI->>Server: Poll for connection status
-    Server-->>CLI: item_id, institution_name, accounts[]
-
-    CLI->>CLI: Store in app.sync_connections
-    CLI->>User: ✅ Connected Chase (****1234, ****5678)
+    User->>Browser: Complete the Link flow
+    CLI->>Server: GET /sync/link/status?session_id=...
+    Server-->>CLI: status, provider_item_id, institution_name, error, expiration
+    CLI->>User: Linked, pending, or failed
 ```
 
-**Key design decisions:**
+The initiate request sends `provider` (currently `"plaid"`) and may include
+`provider_item_id` for re-authentication or `return_to` for a future web
+surface. The response is a `LinkInitiateResponse` with `session_id`,
+`link_url`, `link_type`, and `expiration`. This client supports
+`link_type="widget_flow"`.
 
-- **Server-hosted callback (Option C from design discussion).** Plaid redirects to a server endpoint after the user completes Link. The client polls the server for confirmation. No local HTTP listener needed on the client side. Works for both CLI and future web clients.
-- **`--no-browser` flag.** For headless/SSH environments, prints the link URL instead of opening a browser. The user visits the URL on any device. The client still polls for completion.
-- **Re-authentication.** When `ITEM_LOGIN_REQUIRED` is reported, the same `moneybin sync link` command initiates a re-auth Link session for the affected institution. The server creates a Link token in update mode using the existing `item_id`.
+`LinkStatusResponse` is the session-status contract: `pending`, `linked`, or
+`failed`; a linked response carries `provider_item_id` and may carry
+`institution_name`, while a failed response carries `error`. Text-mode CLI may
+wait through `SyncClient.poll_link_status()`. MCP and JSON CLI flows are
+event-driven: they return the session immediately, then use a later single-shot
+`sync_status(session_id=...)` / `moneybin sync link-status` call.
+
+For headless environments, `--no-browser` prints `link_url` for the user to
+open on another device. A re-authentication selects the affected connection and
+passes its `provider_item_id` to the same initiate endpoint.
 
 ---
 
@@ -334,9 +335,9 @@ These are defined in `sync-overview.md` and shared across all providers:
 | File | Purpose |
 |---|---|
 | `src/moneybin/connectors/sync_client.py` | `SyncClient` HTTP client |
-| `src/moneybin/cli/commands/sync.py` | CLI commands (login, connect, pull, status, etc.) |
+| `src/moneybin/cli/commands/sync.py` | CLI commands (login, link, link-status, pull, status, etc.) |
 | `src/moneybin/mcp/tools/sync.py` | MCP tools (`sync_pull`, `sync_status`, etc.) |
-| `src/moneybin/services/sync_service.py` | `SyncService` — business logic for pull/connect/status, called by both CLI and MCP |
+| `src/moneybin/services/sync_service.py` | `SyncService` — business logic for pull/link/status, called by both CLI and MCP |
 | `src/moneybin/sql/schema/app_sync_connections.sql` | DDL for `app.sync_connections` |
 
 ### Key decisions

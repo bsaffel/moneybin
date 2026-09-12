@@ -86,21 +86,17 @@ sequenceDiagram
     Note over User,DB: Phase 2: Link
     User->>CLI: moneybin sync link
     CLI->>Server: POST /sync/link/initiate
-    Server-->>CLI: session_id, link_url
+    Server-->>CLI: session_id, link_url, link_type, expiration
     CLI->>User: Open provider UI in browser
     User->>Server: Complete connection in browser
-    Server->>Provider: Exchange token, store access
-    CLI->>Server: Poll GET /sync/link/status
+    CLI->>Server: GET /sync/link/status?session_id=...
     Server-->>CLI: status=linked, provider_item_id, institution_name
-    CLI->>DB: Store in app.sync_connections
 
     Note over User,DB: Phase 3: Pull
     User->>CLI: moneybin sync pull
     CLI->>Server: POST /sync/trigger
     Server->>Provider: Fetch transactions
-    Server-->>CLI: job_id, status
-    CLI->>Server: GET /sync/status (poll)
-    Server-->>CLI: completed, per-institution results
+    Server-->>CLI: job_id, completed/failed, per-institution results
 
     Note over User,DB: Phase 4: Decrypt (v2 — designed, not yet implemented)
     CLI->>Server: GET /sync/data
@@ -125,18 +121,16 @@ sequenceDiagram
 
 ### Phase 2: Link
 
-- Client calls `POST /sync/link/initiate` to start a link session and receive `session_id` + `link_url`.
-- Server opens provider's connection UI in the user's browser (e.g., Plaid Link).
-- After the user completes the connection flow, the provider redirects to a server callback endpoint. The server stores the access token and confirms the connection.
-- Client polls `GET /sync/link/status` until status reaches `linked`, then receives `provider_item_id` and institution metadata.
-- Connection metadata stored locally in `app.sync_connections` for health tracking.
+- Client calls `POST /sync/link/initiate` with `provider` and optional `provider_item_id` / `return_to`, receiving `session_id`, `link_url`, `link_type`, and `expiration`.
+- The client presents `link_url`; the server owns the provider interaction.
+- Client reads `GET /sync/link/status?session_id=...`, which returns `pending`, `linked`, or `failed` plus the session expiration. A linked response carries `provider_item_id` and may carry `institution_name`; a failed response carries `error`.
+- Text-mode CLI may wait for a terminal status. MCP returns the session and later checks it with `sync_status(session_id=...)`; JSON CLI uses `moneybin sync link-status` after the user completes the browser flow.
 
 ### Phase 3: Pull
 
-- Client calls `POST /sync/trigger`, optionally scoped to a single institution via `item_id`.
+- Client calls `POST /sync/trigger`, optionally scoped to a single institution via `provider_item_id`.
 - `--force` flag passes `reset_cursor: true` for full re-fetch of all available history.
-- Client polls `GET /sync/status` until job completes.
-- Per-institution results returned — some may succeed while others fail. The client handles partial success (see [Error handling](#error-handling--recovery)).
+- The endpoint waits for server-side completion and returns per-institution results; some may succeed while others fail. The client handles partial success (see [Error handling](#error-handling--recovery)).
 
 ### Phase 4: Decrypt
 
@@ -169,13 +163,14 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 |---|---|---|
 | `login()` | `POST /auth/device/code`, `POST /auth/device/token` | Device Authorization Flow |
 | `logout()` | Local only | Clear stored credentials |
-| `connect()` | `POST /sync/link-token`, poll for confirmation | Get connection token, wait for completion |
+| `initiate_link()` | `POST /sync/link/initiate` | Start a Link session and return its URL |
+| `get_link_status()` | `GET /sync/link/status` | Read one Link-session status |
+| `poll_link_status()` | `GET /sync/link/status` | Wait for a terminal Link-session status |
 | `disconnect(institution_id)` | `DELETE /institutions/:id` | Remove an institution |
-| `trigger_sync(item_id, force)` | `POST /sync/trigger` | Start sync job |
-| `get_status(job_id)` | `GET /sync/status` | Poll job status |
-| `download_data(job_id)` | `GET /sync/data` | Fetch sync payload |
+| `trigger_sync(provider_item_id, reset_cursor)` | `POST /sync/trigger` | Run a sync job server-side |
+| `get_data(job_id)` | `GET /sync/data` | Fetch sync payload |
+| `ack(job_id)` | `POST /sync/ack` | Confirm durable loading and advance the server cursor |
 | `list_institutions()` | `GET /institutions` | Connected institutions and health |
-| `register_key(public_key)` | `POST /auth/register-key` | Register encryption public key (v2) |
 
 **Auth handling:**
 
@@ -192,7 +187,10 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 
 **Response models** (Pydantic):
 
-All server responses are typed with Pydantic models: `AuthToken`, `LinkTokenResponse`, `SyncJobResponse`, `SyncStatusResponse`, `SyncDataResponse`, `ConnectedInstitution`. Field constraints enforce validation at the system boundary per `.claude/rules/security.md`. Exact field definitions are in the child spec (`sync-plaid.md`) since the response shape may vary slightly per provider.
+All server responses are typed with Pydantic models: `AuthToken`,
+`LinkInitiateResponse`, `LinkStatusResponse`, `SyncTriggerResponse`,
+`SyncDataResponse`, `SyncAckResponse`, and `ConnectedInstitution`. Field
+constraints enforce validation at the system boundary per `.claude/rules/security.md`.
 
 ### Connection health tracking
 
@@ -566,7 +564,7 @@ Tables preserve the provider's native shape. Column comments follow database con
 
 **2. Loader class** — `src/moneybin/loaders/{provider}_loader.py`
 
-Parses provider-shaped JSON from `SyncClient.download_data()` and loads into raw tables via `Database.ingest_dataframe()` or `read_json()`. Handles provider-specific semantics:
+Parses provider-shaped JSON from `SyncClient.get_data()` and loads into raw tables via `Database.ingest_dataframe()` or `read_json()`. Handles provider-specific semantics:
 
 - Sign convention (e.g., Plaid: positive = expense; the loader preserves this — the flip happens in staging)
 - Removed/deleted records (e.g., Plaid's `removed_transactions`)
@@ -690,11 +688,11 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 
 ### Phase 1: Core sync flow (M1G deliverable)
 
-- `SyncClient` with login, logout, connect, disconnect, pull, status
+- `SyncClient` with login, logout, Link-session initiation/status, disconnect, pull
 - `PlaidLoader` with raw table DDL, JSON loading, `removed_transactions`
 - Plaid staging views and core model integration (see `sync-plaid.md`)
 - `app.sync_connections` table and health tracking
-- CLI commands: `login`, `logout`, `connect`, `disconnect`, `pull`, `status`
+- CLI commands: `login`, `logout`, `link`, `link-status`, `disconnect`, `pull`, `status`
 - MCP tools: `sync_pull`, `sync_status`, `sync_link`, `sync_disconnect`
 - MCP prompt: `sync_review`
 - Error handling with actionable guidance
@@ -734,7 +732,7 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 
 | Provider | Child spec | Status | Notes |
 |---|---|---|---|
-| Plaid | [`sync-plaid.md`](sync-plaid.md) | Draft | First provider. Transactions product only (v1). Investments is a future child gated on `investments-data-model.md`; Liabilities is a separate future child (no investments dependency). |
+| Plaid | [`sync-plaid.md`](sync-plaid.md) | implemented | First provider. Transactions product shipped; investments is a separate implemented child. Liabilities remains a separate future child. |
 | SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
@@ -775,7 +773,7 @@ Not designed here. Architectural constraints noted so the current design does no
 
 ## Success criteria
 
-- **Time-to-first-sync.** A user goes from `moneybin sync login` to seeing bank transactions in `core.fct_transactions` in under 5 minutes. The flow is: login (30s) → connect (2 min, mostly bank UI) → pull (30s) → done.
+- **Time-to-first-sync.** A user goes from `moneybin sync login` to seeing bank transactions in `core.fct_transactions` in under 5 minutes. The flow is: login (30s) → link (2 min, mostly bank UI) → pull (30s) → done.
 - **Incremental reliability.** Nightly scheduled syncs complete without intervention for 30+ consecutive days. Failures produce actionable error messages, not silent gaps in data.
 - **Provider-agnostic framework.** Adding a second provider (SimpleFIN or MX) requires only a child spec and the four provider contract artifacts — no framework changes.
 - **Encryption readiness.** When the server implements Phase 5, the client activates E2E encryption with a key generation step and zero changes to the loading pipeline.
@@ -783,7 +781,6 @@ Not designed here. Architectural constraints noted so the current design does no
 
 ## Open questions
 
-- **Connection token flow.** The exact polling mechanism for Phase 2 (connect) depends on the server's implementation of the provider callback. The spec defines the contract (client polls, server confirms) but the endpoint name and response shape are TBD in `api-contract.md`.
 - **Schedule persistence across upgrades.** If MoneyBin is upgraded and the schedule mechanism changes (e.g., cron → systemd timer), should `moneybin sync schedule set` detect and migrate the old schedule?
 - **Multi-provider institution.** If the same bank is connectable through both Plaid and SimpleFIN, how does the client prevent duplicate data? Likely a matching-engine concern (same institution, different `source_type`), but worth noting.
 - **Cross-provider response shape.** Whether the server normalizes per-provider payloads into a canonical client shape (Option A) or passes provider-shaped data through (Option B). Phase 1 baked in Option B at the artifact layer (`raw.plaid_*`, `stg_plaid__*`) but named the HTTP-layer models as if they were Option A (`SyncTransaction`, `SyncDataResponse`). See "Cross-provider response shape" under "Data flow & provider contract" — must be reconciled before provider #2 ships.
