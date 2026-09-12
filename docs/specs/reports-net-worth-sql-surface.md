@@ -310,6 +310,7 @@ effective_date        DATE           -- Grain. The calendar day this rate is app
 published_date        DATE           -- The day the provider priced it (= fct_exchange_rates.rate_date)
 rate                  DECIMAL(18,8)  -- Multiply a from_currency amount by this
 rate_source           VARCHAR        -- override / provider / identity
+rate_vendor           VARCHAR        -- The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override
 days_since_published  INTEGER        -- effective_date - published_date; 0 on a publication day
 ```
 
@@ -403,21 +404,43 @@ Friday's quote is therefore already pricing Saturday today. An overlay matched o
 rate, so the SQL reports would ignore the correction on exactly the days
 carry-forward exists to cover.
 
-Three rules, in this precedence, reproduce `_stored_rate`:
+Four rules, in this precedence, reproduce `_stored_rate`:
 
 1. **An override on the `effective_date` itself wins** — `_stored_rate`'s
    exact-day check. `published_date` becomes that day and
    `days_since_published` is 0: the user priced the day itself.
-2. **Otherwise an override on the row's `published_date` wins** — the same check
-   reached through the carry-forward. A corrected Friday prices the Saturday and
-   Sunday carrying from it, and a corrected quote prices every interior
-   non-publication day carrying from it. `published_date` and
-   `days_since_published` keep the hop they already recorded.
-3. **An override on a pair and date the spine does not cover contributes its own
-   row** — `_stored_rate` answers from the override table whether or not a
-   provider ever priced that day, so a correction is never invisible because the
-   provider was silent. Rows carry forward from it under the same rules as an
-   observation.
+2. **Otherwise, on a Saturday or Sunday, an override on the calendar Friday
+   immediately before it wins** — `_last_publication_day`'s weekend hop, a
+   function of the calendar date asked about rather than of whatever
+   `published_date` the daily spine happens to record for that row.
+   `_stored_rate(Friday)` checks the override table before ever touching the
+   daily spine's own carry, so a Friday override reaches the weekend it hops
+   to even when Friday itself was never a provider publication day — a gap
+   the daily spine carries straight through from the prior observation.
+   `published_date` becomes that Friday and `days_since_published` counts
+   from it (1 for Saturday, 2 for Sunday).
+3. **Otherwise an override on the row's `published_date` wins** — the same
+   exact-day check reached through the ordinary carry-forward. A corrected
+   publication prices every day carrying from it, weekend or interior
+   weekday alike. `published_date` and `days_since_published` keep the hop
+   they already recorded — only the rate is replaced. An override filed
+   directly on an interior non-publication day that is not itself the
+   calendar Friday of a weekend it precedes does **not** gain this cascade —
+   it wins only under rule 1, on its own day. Extending a same-pair,
+   non-publication correction past the single day it was filed under would
+   assume a claim about neighboring days the user never made; Requirement 5
+   governs the ambiguity the same way rule 4 states it for an uncovered
+   override.
+4. **An override on a pair and date the spine does not cover contributes its
+   own row** — `_stored_rate` answers from the override table whether or not
+   a provider ever priced that day, so a correction is never invisible
+   because the provider was silent. Such a row gets the same bounded weekend
+   hop a provider observation would (Friday carries to Saturday/Sunday,
+   nothing further). It does **not** interior-fill between two disconnected
+   uncovered override dates for the same pair; Requirement 5 (never
+   manufacture a rate) is the controlling invariant when that is ambiguous,
+   so an uncovered gap between two standalone overrides stays unpriced
+   rather than guessed.
 
 Every row an override wins reads `rate_source = 'override'`.
 
