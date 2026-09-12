@@ -154,32 +154,32 @@ jobs:
       # pytest-split shards the unit suite across the matrix so wall-clock
       # scales with the number of free standard runners. strategy.job-total is
       # the matrix size, so --splits stays in lockstep with the `group` array.
-      # Each shard writes its own coverage data file; the `coverage` job below
-      # combines them into a single report.
+      # Each suite/shard writes its own coverage data file; the `coverage` job
+      # below combines unit, integration, and E2E execution into one report.
       - name: Test
         env:
-          COVERAGE_FILE: .coverage.${{ matrix.group }}
+          COVERAGE_FILE: .coverage.unit.${{ matrix.group }}
           # sys.monitoring-based coverage (PEP 669) on Python 3.12 — far lower
           # tracing overhead than the default C tracer. Needs coverage >= 7.4.
           COVERAGE_CORE: sysmon
         run: |
           uv run pytest tests/ -m unit -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
-            --cov=src --cov-report= --durations=25
+            --cov=src --cov-report= --cov-fail-under=0 --durations=25
 
       - name: Upload coverage data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
-          name: coverage-data-${{ matrix.group }}
-          path: .coverage.${{ matrix.group }}
+          name: coverage-data-unit-${{ matrix.group }}
+          path: .coverage.unit.${{ matrix.group }}*
           include-hidden-files: true
 
-  # Combine the per-shard coverage data into one report. Runs even when a
-  # shard failed, so partial coverage still lands; waits on every shard.
+  # Combine the per-suite, per-shard coverage data into one report. Runs even
+  # when a shard failed, so partial coverage still lands; waits on every suite.
   coverage:
     name: Coverage report
-    needs: [changes, test-unit]
+    needs: [changes, test-unit, test-integration, test-e2e]
     if: ${{ always() && needs.changes.outputs.code == 'true' && github.event_name != 'schedule' && !inputs.record_durations }}
     runs-on: ubuntu-latest
     steps:
@@ -283,10 +283,23 @@ jobs:
       # dominated by one expensive module (test_demo_service.py,
       # test_stg_plaid_investments.py) can't parallelize out of it.
       - name: Test
+        env:
+          COVERAGE_FILE: .coverage.integration.${{ matrix.group }}
+          # sys.monitoring-based coverage (PEP 669) on Python 3.12 — far lower
+          # tracing overhead than the default C tracer. Needs coverage >= 7.4.
+          COVERAGE_CORE: sysmon
         run: |
           uv run pytest tests/ -m integration -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
-            --durations=25
+            --cov=src --cov-report= --cov-fail-under=0 --durations=25
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: coverage-data-integration-${{ matrix.group }}
+          path: .coverage.integration.${{ matrix.group }}*
+          include-hidden-files: true
 
   test-e2e:
     name: E2E tests (shard ${{ matrix.group }})
@@ -327,12 +340,25 @@ jobs:
       # helping in theory; it also adds runners, and CI + Scenarios + AI review
       # already dispatch 20 concurrent jobs (observed starting without
       # queueing, so the real ceiling is at least that -- it has not been
-      # measured). No coverage here, so no combine job.
+      # measured).
       - name: Test
+        env:
+          COVERAGE_FILE: .coverage.e2e.${{ matrix.group }}
+          # sys.monitoring-based coverage (PEP 669) on Python 3.12 — far lower
+          # tracing overhead than the default C tracer. Needs coverage >= 7.4.
+          COVERAGE_CORE: sysmon
         run: |
           uv run pytest tests/ -m e2e -v -n logical \
             --splits ${{ strategy.job-total }} --group ${{ matrix.group }} \
-            --durations=25
+            --cov=src --cov-report= --cov-fail-under=0 --durations=25
+
+      - name: Upload coverage data
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: coverage-data-e2e-${{ matrix.group }}
+          path: .coverage.e2e.${{ matrix.group }}*
+          include-hidden-files: true
 
   test-privacy-performance:
     name: Privacy performance budgets
