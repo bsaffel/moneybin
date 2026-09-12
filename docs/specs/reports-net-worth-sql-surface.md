@@ -306,7 +306,7 @@ only a spine built from the unresolved provider rows does that.
 ```
 from_currency         VARCHAR        -- Grain. ISO 4217, upper
 to_currency           VARCHAR        -- Grain
-rate_source           VARCHAR        -- override / provider / identity
+rate_source           VARCHAR        -- provider / identity — never override here; only core.fct_exchange_rates_effective adds override
 rate_vendor           VARCHAR        -- The named feed behind a provider row (e.g. 'frankfurter'); NULL when rate_source is identity or override
 rate                  DECIMAL(18,8)  -- Multiply a from_currency amount by this
 days_since_published  INTEGER        -- effective_date - published_date; 0 on a publication day
