@@ -66,10 +66,10 @@ CREATE TABLE IF NOT EXISTS app.account_settings (
     currency_code        VARCHAR,                                  -- ISO-4217 (USD, EUR, ...); NULL falls back to the currency the account's source reported, and stays NULL when no source reported one (see core.dim_accounts below)
     credit_limit         DECIMAL(18, 2),                           -- User-asserted credit limit on credit cards / lines (drives utilization metrics)
     archived             BOOLEAN NOT NULL DEFAULT FALSE,           -- Hides account from default list and from reports.net_worth
-    archived_at          DATE,                                     -- The date the account stopped being part of the position; NULL while active (added by reports-net-worth-sql-surface.md §Prerequisites)
     include_in_net_worth BOOLEAN NOT NULL DEFAULT TRUE,            -- Whether this account contributes to reports.net_worth (independent toggle, not forced by archiving)
     default_cost_basis_method VARCHAR CHECK (default_cost_basis_method IN ('fifo', 'hifo', 'specific', 'average')), -- Per-account cost-basis default (added by investments-data-model.md); NULL falls back to global FIFO
-    updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP -- Last modification time
+    updated_at           TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, -- Last modification time
+    archived_at          DATE                                      -- The date the account stopped being part of the position; NULL while active (added by reports-net-worth-sql-surface.md §Prerequisites). Appended last, not beside `archived`, because DuckDB's ALTER TABLE ADD COLUMN always appends
 );
 ```
 
