@@ -75,11 +75,13 @@ Structural: --official-name, --last-four, --subtype, --holder-category,
 via --clear-FIELD). --default-cost-basis-method must be one of fifo,
 hifo, specific, average — an invalid value is rejected before any write.
 Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
---archive/--unarchive and --include/--exclude are independent flags.
---archive alone already excludes the account from net worth from its
-archive date forward, without touching earlier balances; pass --exclude
-too only to exclude the account at every date, including its pre-archive
-history. At least one field flag required.
+--archive/--unarchive and --include/--exclude are independent flags with
+different jobs. --archive today excludes the account from net worth
+entirely, history included — the archive date is recorded so a future
+release can make that exclusion date-scoped instead of retroactive, but
+no report reads it that way yet. Use --exclude to exclude an account
+from net worth regardless of its archived status, including one that
+stays active and listed. At least one field flag required.
 
 Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
 

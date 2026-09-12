@@ -238,6 +238,57 @@ def test_undo_of_legacy_unarchive_row_derives_archived_at_today_on_rearchive(
     assert row == (True, date.today())
 
 
+def test_undo_of_undo_of_legacy_unarchive_row_leaves_active_account_null(
+    db: Database,
+) -> None:
+    """Redoing a legacy unarchive-undo must not leave a date on an active account.
+
+    Undoing a legacy 'unarchive' row re-archives and stamps today's date
+    (the prior test). Undoing THAT undo (a redo, back to active) must NOT
+    reuse the same derived date for both images: ``locate`` (the state
+    right before the first undo -- ``archived=False``) is not a live
+    transition and has no recoverable real date, so it must normalize to
+    NULL, never today's. Deriving one shared date for both images stamps
+    today's date onto that NULL-while-active image too; when THIS undo's
+    own emitted audit row is later replayed, its ``before_value`` already
+    carries ``archived_at`` (Req 4 complete) and takes the base-class
+    literal-restore path, landing the live row on ``archived=False`` with
+    a non-NULL ``archived_at`` -- violating the column's own documented
+    contract.
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy8", archived=False, archived_at=None)
+
+    # Forward mutation this reverses was an unarchive: True -> False.
+    event = _legacy_undo_event(
+        account_id="acct_legacy8", before_archived=True, after_archived=False
+    )
+    undo_result = repo.undo_event(event, actor="cli")
+    assert undo_result is not None
+    # Sanity: the first undo re-archives and stamps today, as above.
+    mid_row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy8"],
+    ).fetchone()
+    assert mid_row == (True, date.today())
+
+    # Undo the undo (redo): back to active. Must clear archived_at, not
+    # reuse today's date on an archived=False row.
+    redo_result = repo.undo_event(undo_result, actor="cli")
+    assert redo_result is not None
+
+    row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy8"],
+    ).fetchone()
+    assert row == (False, None)
+
+    # The redo's own emitted audit row must also carry NULL, or a further
+    # undo-of-this-redo reproduces the bug via the literal-restore path.
+    assert redo_result.after_value is not None
+    assert redo_result.after_value["archived_at"] is None
+
+
 def test_undo_of_current_capture_leaves_archived_at_override_untouched(
     db: Database,
 ) -> None:

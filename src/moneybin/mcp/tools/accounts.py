@@ -266,11 +266,14 @@ def accounts_set(
     (``include_in_net_worth``, ``is_archived``) are not clearable — pass the
     explicit value.
 
-    ``is_archived`` and ``include_in_net_worth`` are independent — archiving
-    alone already excludes the account from net worth from its
-    ``archived_at`` date forward, without touching earlier balances. Only
-    pass ``include_in_net_worth=False`` alongside ``is_archived`` to exclude
-    the account at every date, including its pre-archive history.
+    ``is_archived`` and ``include_in_net_worth`` are independent flags with
+    different jobs. Archiving today excludes the account from net worth
+    entirely, past balances included — ``archived_at`` is recorded on the
+    transition so a future release can make that exclusion date-scoped
+    instead of retroactive, but no report reads it that way yet. Use
+    ``include_in_net_worth=False`` to exclude an account from net worth
+    regardless of its archived status, including one that stays active and
+    listed.
 
     Soft-validation warnings (for non-canonical ``account_subtype`` or
     ``holder_category`` values) are embedded in ``data['warnings']``.
@@ -1788,9 +1791,11 @@ def register_accounts_tools(mcp: FastMCP) -> None:
         "currency_code, credit_limit. Pass None to leave a field "
         "unchanged; include a text field's name in clear_fields to clear it "
         "(booleans are not clearable). is_archived and include_in_net_worth "
-        "are independent — archiving alone already excludes the account "
-        "from net worth from its archive date forward; pass "
-        "include_in_net_worth=False too only to exclude it at every date. "
+        "are independent: archiving today excludes the account from net "
+        "worth entirely (history included); archived_at is recorded for a "
+        "future date-scoped release, not yet applied. "
+        "include_in_net_worth=False excludes an account regardless of "
+        "archived status. "
         "Writes app.account_settings; revert by calling again with the prior "
         "values (no built-in undo). "
         "Amounts are in the currency named by `summary.display_currency`.",

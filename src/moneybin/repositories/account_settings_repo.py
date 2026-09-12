@@ -157,17 +157,32 @@ class AccountSettingsRepo(BaseRepo):
         actually flips ``archived`` -- comparing ``before`` to ``locate`` (the
         event's captured after-image) is how we tell an archive/unarchive undo
         from a legacy row whose ``archived`` was unchanged (some other field
-        moved); stamping the latter would corrupt a real ``archived_at`` with
-        today's date. When the transition IS an archive/unarchive, deriving
-        from today's date is the same rule ``AccountService.settings_update``
-        already applies to every live FALSE->TRUE call. Mutating both ``before``
-        and ``locate`` in place normalizes both legacy images, because
+        moved); stamping either image would corrupt a real ``archived_at`` with
+        a guessed date.
+
+        The two images need DIFFERENT derivations, not a shared one -- ``before``
+        becomes the row's new live state, so a transition TO ``archived=True``
+        is happening right now and today's date is the same rule
+        ``AccountService.settings_update`` already applies to every live
+        FALSE->TRUE call; a transition to ``archived=False`` clears it, per
+        ``archived_at``'s own contract (NULL while active). ``locate`` is not a
+        live transition at all -- it is the ORIGINAL forward event's captured
+        post-mutation image, from whenever that historical mutation actually
+        happened, so today's date would misdate history rather than recover it.
+        There is no way to recover that image's real date (that is exactly why
+        the key is missing), so it always normalizes to NULL: certain when
+        ``locate.archived`` is False (active implies NULL), and the documented
+        "no guess beats a documented gap" convention V060's own backfill applies
+        when ``locate.archived`` is True with no evidence.
+
+        ``_require_capture`` only checks KEY PRESENCE (`set(required) -
+        set(image)`), never the value, so a present ``None`` satisfies it
+        exactly as well as a present date -- giving both correctness and the
+        no-crash property at once. Mutating both dicts in place matters because
         ``BaseRepo.undo_event`` emits its own audit row as
         ``before=locate, after=before`` (the caller's ``after`` argument *is*
-        this ``locate`` dict, passed by reference) -- stamping only ``before``
-        leaves that emitted row's ``before_value`` (from ``locate``) without
-        ``archived_at`` while its ``after_value`` (from ``before``) carries it,
-        so a later undo-of-that-undo hits ``_require_capture`` and fails with a
+        this ``locate`` dict, passed by reference): leaving either key absent
+        makes a later undo-of-this-undo hit ``_require_capture`` and fail with a
         misleading "not reversible" error. A post-V060 capture always carries
         the key and takes the base-class path unchanged.
         """
@@ -183,9 +198,12 @@ class AccountSettingsRepo(BaseRepo):
             f"SET archived_at = ? WHERE {where}",
             [derived_at, *where_params],
         )
-        archived_at_value = derived_at.isoformat() if derived_at is not None else None
-        before["archived_at"] = archived_at_value
-        locate["archived_at"] = archived_at_value
+        before["archived_at"] = (
+            derived_at.isoformat() if derived_at is not None else None
+        )
+        # locate is a historical snapshot, never "now" -- no real date to
+        # recover, so it always normalizes to NULL rather than guessing.
+        locate["archived_at"] = None
 
     def delete(
         self,
