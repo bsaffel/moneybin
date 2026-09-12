@@ -94,6 +94,15 @@ def effective_template(
         db, from_currency="USD", to_currency="FFF", rate_date="2026-01-08", rate="2.000"
     )
 
+    # Thursday, then the following Monday — no Friday quote, so the gap
+    # Friday carries from Thursday and brackets a real weekend.
+    _insert_provider(
+        db, from_currency="USD", to_currency="GGG", rate_date="2026-01-08", rate="3.000"
+    )
+    _insert_provider(
+        db, from_currency="USD", to_currency="GGG", rate_date="2026-01-12", rate="4.000"
+    )
+
     # GBP->USD: no provider coverage at all, for the uncovered-override case.
 
     with sqlmesh_context(db) as ctx:
@@ -398,3 +407,63 @@ def test_grain_stays_unique_with_overlapping_uncovered_overrides(db: Database) -
     assert row is not None
     total, distinct = row
     assert total == distinct
+
+
+@pytest.mark.slow
+def test_an_override_on_a_gap_friday_carries_into_the_weekend(db: Database) -> None:
+    """A Friday override reaches the weekend even when Friday has no provider quote.
+
+    Bracket: a provider observation Thursday, no Friday quote, a provider
+    observation the following Monday — Friday is an ordinary interior gap day,
+    carrying Thursday's rate forward, exactly like the Tuesday/Wednesday case
+    `test_an_override_on_an_interior_gap_day_does_not_forward_fill` pins. The
+    difference is the weekend hop: `CurrencyService.resolve_rate` maps Saturday
+    and Sunday back to the calendar Friday and checks `_stored_rate` there
+    override-first, regardless of whether Friday itself was ever published.
+    A Friday override is therefore live for the weekend `resolve_rate` already
+    maps to it, not a manufactured rate for a day the user never priced.
+
+    Measured directly against `resolve_rate`, not asserted from reading the
+    SQL alone.
+    """
+    _insert_override(
+        db, from_currency="USD", to_currency="GGG", rate_date="2026-01-09", rate="3.500"
+    )
+
+    rows = db.execute(
+        "SELECT effective_date, published_date, rate, rate_source, days_since_published "
+        "FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'GGG' ORDER BY effective_date"
+    ).fetchall()
+    assert [str(r[0]) for r in rows] == [
+        "2026-01-08",
+        "2026-01-09",
+        "2026-01-10",
+        "2026-01-11",
+        "2026-01-12",
+    ]
+    # Thursday: untouched provider observation.
+    assert rows[0][3] == "provider"
+    # Friday: the direct override (rule 1).
+    assert str(rows[1][1]) == "2026-01-09"
+    assert float(rows[1][2]) == pytest.approx(3.500)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert rows[1][3] == "override"
+    assert rows[1][4] == 0
+    # Saturday and Sunday: the weekend-hop arm (rule 2) reaches the Friday
+    # override even though Friday was never a provider publication day.
+    for row, expected_gap in zip(rows[2:4], (1, 2), strict=True):
+        assert str(row[1]) == "2026-01-09"
+        assert float(row[2]) == pytest.approx(3.500)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+        assert row[3] == "override"
+        assert row[4] == expected_gap
+    # Monday: untouched provider observation.
+    assert rows[4][3] == "provider"
+
+    service = CurrencyService(db, adapter=None)
+    for day, sql_row in zip(
+        (date(2026, 1, 10), date(2026, 1, 11)), rows[2:4], strict=True
+    ):
+        resolved = service.resolve_rate("USD", "GGG", day)
+        assert resolved.source == "override"
+        assert resolved.rate == Decimal(str(sql_row[2]))
+        assert resolved.rate_date == date(2026, 1, 9)
