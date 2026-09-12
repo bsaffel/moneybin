@@ -12,9 +12,7 @@ from typing import Any
 import pytest
 import yaml
 
-from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.seeds import refresh_views
 from moneybin.services._text import normalize_description
@@ -1376,18 +1374,28 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     result = CategorizationService(db).categorize_items(items)
 
     assert result.applied == 25
-    # The categorize_items merchant-resolution read path must be batched.
-    # Verify a single batched description fetch (WHERE transaction_id IN (...))
-    # ran for the whole input, regardless of N. Per-row fetches inside
-    # _auto_rule recording are a separate concern and are out of scope here.
+    # The categorize_items merchant-resolution read path must be batched, and
+    # so must the shared curation-id liveness resolver it now also runs
+    # (issue #538) — both are O(1) queries against a "transaction_id IN (...)"
+    # list, so distinguish them by their distinct table shapes rather than
+    # asserting one combined count. Per-row fetches inside _auto_rule
+    # recording are a separate concern and are out of scope here.
     batched = [
         q
         for q in select_calls
         if "fct_transactions" in q.lower() and "transaction_id in (" in q.lower()
     ]
-    assert len(batched) == 1, (
-        f"Expected exactly 1 batched description fetch, got {len(batched)}:\n"
-        + "\n".join(batched)
+    liveness_queries = [q for q in batched if "manual_transactions" in q.lower()]
+    description_queries = [
+        q for q in batched if "bridge_merchant_entities" in q.lower()
+    ]
+    assert len(liveness_queries) == 1, (
+        f"Expected exactly 1 batched liveness resolve, got {len(liveness_queries)}:\n"
+        + "\n".join(liveness_queries)
+    )
+    assert len(description_queries) == 1, (
+        "Expected exactly 1 batched description fetch, got "
+        f"{len(description_queries)}:\n" + "\n".join(description_queries)
     )
 
 
@@ -1690,8 +1698,8 @@ class TestSetCategoryAudit:
         """A live transaction with no category clears silently, emitting no event.
 
         Uses a transaction that exists: this pins the *absent category* no-op,
-        and an id naming no transaction at all is a separate case that now
-        refuses outright — see ``test_clear_category_refuses_an_unknown_id``.
+        distinct from an id naming no transaction at all — see
+        ``test_clear_category_against_unknown_id_stays_a_noop``.
         """
         svc = CategorizationService(db)
         svc.clear_category("T1", actor="cli")
@@ -1701,17 +1709,20 @@ class TestSetCategoryAudit:
         assert cnt is not None and cnt[0] == 0
 
     @pytest.mark.unit
-    def test_clear_category_refuses_an_unknown_id(self, db: Database) -> None:
-        """Clearing against an id that names no transaction refuses (issue #538).
+    def test_clear_category_against_unknown_id_stays_a_noop(self, db: Database) -> None:
+        """Clearing never refuses for liveness (add-vs-remove asymmetry, issue #538).
 
-        This used to succeed as a silent no-op. The refusal is the deliberate
-        change: a caller who mistypes an id now learns it, instead of being
-        told a clear succeeded against nothing.
+        ``clear_category`` only deletes state, so an id naming no transaction
+        stays the idempotent no-op it always was — refusing here would block
+        orphan cleanup of curation stranded on a dead id (see
+        ``resolve_curation_transaction_id``'s ``required=False`` docstring).
         """
         svc = CategorizationService(db)
-        with pytest.raises(UserError) as excinfo:
-            svc.clear_category("T-missing", actor="cli")
-        assert excinfo.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+        svc.clear_category("T-missing", actor="cli")  # must not raise
+        cnt = db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.clear'"
+        ).fetchone()
+        assert cnt is not None and cnt[0] == 0
 
     @pytest.mark.unit
     def test_set_category_overwrite_captures_before_and_after(
@@ -2972,6 +2983,24 @@ def _insert_plaid_txn(
     )
 
 
+def _seed_gold_transaction(db: Database, transaction_id: str) -> None:
+    """Seed the minimal core.fct_transactions row a categorization write needs.
+
+    The write-time curation seam (issue #538) requires ``transaction_id`` to
+    name a live transaction before ``write_categorizations`` will accept it.
+    ``_insert_plaid_txn`` only seeds the prep-layer PFC-code fixtures the
+    categorizer reads to decide *what* to write — a test whose categorizer
+    call is expected to actually write (``n == 1``, not filtered out by
+    confidence or precedence) also needs this row, mirroring the
+    ``core.fct_transactions`` row that same gold id always has in production.
+    """
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+        "VALUES (?, -10.00, '2026-01-01')",
+        [transaction_id],
+    )
+
+
 def _seed_bridge_mapping(
     db: Database,
     *,
@@ -3038,6 +3067,7 @@ class TestApplyPlaidCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
 
         n = apply_plaid_categories(db)
 
@@ -3081,6 +3111,7 @@ class TestApplyPlaidCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t2")
 
         n = apply_plaid_categories(db)
 
@@ -3111,6 +3142,7 @@ class TestApplyPlaidCategories:
             plaid_category="TRANSPORTATION",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t3")
 
         n = apply_plaid_categories(db)
 
@@ -3227,6 +3259,7 @@ class TestImproveAiCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         _seed_ai_category(db, "t1", category="Shopping")  # priority 7
 
         n = CategorizationService(db).improve_ai_categories()
@@ -3314,6 +3347,7 @@ class TestImproveAiCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         _seed_ai_category(
             db, "t1", category="Shopping", merchant_id="mrc_existing01"
         )  # priority 7, carries a resolved merchant_id
@@ -3395,6 +3429,7 @@ class TestPlaidCategorizerObservability:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
             source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals

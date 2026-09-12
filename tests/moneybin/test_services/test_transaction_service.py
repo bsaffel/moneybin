@@ -176,6 +176,34 @@ class TestAnnotationBatches:
         assert service.list_tags("MISSING") == []
 
     @pytest.mark.unit
+    def test_apply_annotations_clears_existing_orphan_splits(
+        self, transaction_db: Database
+    ) -> None:
+        """``SplitsSet`` with an empty desired list stays permissive on a dead id.
+
+        Mirrors ``test_apply_annotations_clears_existing_orphan_note_and_tags``
+        for splits: the add-vs-remove asymmetry applies uniformly across every
+        curation kind the batch surface carries.
+        """
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_splits
+                (split_id, transaction_id, amount, ord, created_by)
+            VALUES ('orphan_split', 'MISSING', -5.00, 0, 'test')
+            """
+        )
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="MISSING", splits=[])],
+            actor="mcp",
+            operation_id="op_orphan_cleanup_splits",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert service.list_splits("MISSING") == []
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "annotation_request",
         [
@@ -2099,29 +2127,78 @@ class TestCurationTransactionIdResolution:
         assert orphan_count == (0,)
 
     @pytest.mark.unit
-    def test_remove_tags_against_unresolvable_id_raises_user_error(
+    def test_remove_tags_against_unresolvable_id_stays_a_noop(
         self, transaction_db: Database
     ) -> None:
-        """Previously an idempotent no-op (DN2); now refused (issue #538).
+        """A pure removal never refuses for liveness (add-vs-remove asymmetry).
 
-        An unknown id names no row to remove a tag from either way, but
-        silently reporting "nothing removed" hid a caller's typo the same
-        way a superseded id would have hidden a landed-on-a-dead-row write.
+        ``remove_tags`` only deletes state, so it must stay the idempotent
+        no-op (DN2) it always was — refusing here would block the exact
+        orphan cleanup this id shape exists for: curation stranded on an id
+        no healing pass can reach (see ``resolve_curation_transaction_id``'s
+        ``required=False`` docstring).
+        """
+        service = TransactionService(transaction_db)
+        removed = service.remove_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
+        assert removed == []
+
+    @pytest.mark.unit
+    def test_clear_splits_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """A pure removal never refuses for liveness (add-vs-remove asymmetry).
+
+        ``clear_splits`` only deletes state, so an unknown id stays the
+        idempotent no-op (DN2) it always was.
+        """
+        service = TransactionService(transaction_db)
+        service.clear_splits("NEVER_EXISTED", actor="test")  # must not raise
+
+    @pytest.mark.unit
+    def test_set_tags_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """A non-empty ``set_tags`` can add state, so it still refuses.
+
+        Distinguishes ``set_tags`` from ``remove_tags``: the same granular
+        writer resolves strictly when the desired list is non-empty (it can
+        create a row) and permissively when it is empty (a pure clear) — see
+        the sibling clear test below.
         """
         service = TransactionService(transaction_db)
         with pytest.raises(UserError, match="transaction reference") as exc_info:
-            service.remove_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
+            service.set_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
         assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
 
     @pytest.mark.unit
-    def test_clear_splits_against_unresolvable_id_raises_user_error(
+    def test_set_tags_clear_against_unresolvable_id_stays_a_noop(
         self, transaction_db: Database
     ) -> None:
-        """Previously an idempotent no-op (DN2); now refused (issue #538)."""
+        """``set_tags`` with an empty desired list is a pure clear — permissive."""
+        service = TransactionService(transaction_db)
+        result = service.set_tags("NEVER_EXISTED", [], actor="test")
+        assert result == []
+
+    @pytest.mark.unit
+    def test_set_splits_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """A non-empty ``set_splits`` can add state, so it still refuses."""
         service = TransactionService(transaction_db)
         with pytest.raises(UserError, match="transaction reference") as exc_info:
-            service.clear_splits("NEVER_EXISTED", actor="test")
+            service.set_splits(
+                "NEVER_EXISTED", [{"amount": Decimal("-50.00")}], actor="test"
+            )
         assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_set_splits_clear_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """``set_splits`` with an empty desired list is a pure clear — permissive."""
+        service = TransactionService(transaction_db)
+        result = service.set_splits("NEVER_EXISTED", [], actor="test")
+        assert result == []
 
     # -- apply_annotations (transactions_annotate) shares the same seam ------
     #

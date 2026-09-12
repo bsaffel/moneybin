@@ -483,7 +483,10 @@ class TransactionService:
         superseded id passed through the coarse ``transactions_annotate``
         batch bypasses the seam entirely and either lands state on a dead id
         or is hard-refused where the granular path would have resolved it
-        (issue #538).
+        (issue #538). ``TagsSet``/``SplitsSet`` mirror their granular
+        counterparts' add-vs-remove asymmetry: an empty desired list is a
+        pure clear and resolves permissively (``required=False``, orphan
+        cleanup); a non-empty one can add state and resolves strictly.
         """
         if isinstance(request, NoteAdd):
             validate_note_text(request.text)
@@ -515,7 +518,7 @@ class TransactionService:
 
         if isinstance(request, TagsSet):
             transaction_id = resolve_curation_transaction_id(
-                self._db, request.transaction_id
+                self._db, request.transaction_id, required=bool(request.tags)
             )
             mutation = self._prepare_tags_set(transaction_id, request.tags)
             if request.tags or not mutation.to_remove:
@@ -534,9 +537,17 @@ class TransactionService:
 
         if isinstance(request, SplitsSet):
             transaction_id = resolve_curation_transaction_id(
-                self._db, request.transaction_id
+                self._db, request.transaction_id, required=bool(request.splits)
             )
-            transaction_amount = self._annotation_transaction_amount(transaction_id)
+            # expected_total is only meaningful for a non-empty desired
+            # sequence (_prepare_splits_set skips the total check on an empty
+            # one); skipping the amount lookup too keeps a permissive clear
+            # from refusing on a dead id purely to fetch a total it won't use.
+            transaction_amount = (
+                self._annotation_transaction_amount(transaction_id)
+                if request.splits
+                else None
+            )
             mutation = self._prepare_splits_set(
                 transaction_id,
                 request.splits,
@@ -1483,9 +1494,13 @@ class TransactionService:
         Idempotent: removing an absent tag is skipped silently — no row change
         and no audit row (DN2). Returns the list of tags that were actually
         deleted. ``transaction_id`` is resolved through the shared curation
-        seam first (issue #538).
+        seam first (issue #538), permissively (``required=False``): removing
+        tags never creates state, so it must stay a safe no-op on a dead id
+        (orphan cleanup) rather than refuse.
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=False
+        )
         removed: list[str] = []
         self._db.begin()
         try:
@@ -1524,9 +1539,14 @@ class TransactionService:
         all audit events commit (or roll back) together. The MCP-flavored
         counterpart to imperative ``add_tags`` / ``remove_tags``. Returns the
         sorted final tag list. ``transaction_id`` is resolved through the
-        shared curation seam first (issue #538).
+        shared curation seam first (issue #538). An empty ``tags`` list is a
+        pure clear — it can never add state, so it resolves permissively
+        (``required=False``, orphan cleanup); any non-empty desired set can
+        add a tag and must land on a live id, so it resolves strictly.
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=bool(tags)
+        )
         prepared = self._prepare_tags_set(transaction_id, tags)
         self._db.begin()
         try:
@@ -1819,9 +1839,13 @@ class TransactionService:
 
         Per-row capture (DN3) keeps each split individually undoable. No-op (no
         audit event, no SQL) when the parent has no splits. ``transaction_id``
-        is resolved through the shared curation seam first (issue #538).
+        is resolved through the shared curation seam first (issue #538),
+        permissively (``required=False``): clearing never creates state, so it
+        must stay a safe no-op on a dead id (orphan cleanup) rather than refuse.
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=False
+        )
         events = self._splits_repo.clear(transaction_id=transaction_id, actor=actor)
         logger.info(
             f"split.clear transaction_id={transaction_id} "
@@ -1841,9 +1865,14 @@ class TransactionService:
         mutating state so a malformed input never leaves the row set in a
         half-applied state. The clear + adds run in one DuckDB transaction.
         ``transaction_id`` is resolved through the shared curation seam first
-        (issue #538).
+        (issue #538). An empty ``splits`` list is a pure clear — it can never
+        add state, so it resolves permissively (``required=False``, orphan
+        cleanup); any non-empty desired sequence can add a split and must
+        land on a live id, so it resolves strictly.
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=bool(splits)
+        )
         targets: list[_GranularSplitTarget] = []
         for idx, s in enumerate(splits):
             # A malformed split is bad input to a write, so it carries the same

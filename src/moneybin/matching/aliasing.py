@@ -125,7 +125,9 @@ _MAX_ALIAS_RESOLUTION_HOPS = 50
 _LIVENESS_QUERY_CHUNK_SIZE = 5000
 
 
-def resolve_curation_transaction_id(db: Database, transaction_id: str) -> str:
+def resolve_curation_transaction_id(
+    db: Database, transaction_id: str, *, required: bool = True
+) -> str:
     """Resolve a caller-supplied id to the live id curation must attach to.
 
     The single write-time resolution seam shared by every curation writer
@@ -136,9 +138,27 @@ def resolve_curation_transaction_id(db: Database, transaction_id: str) -> str:
     written moments before its ``refresh_run`` materializes it into
     ``core.fct_transactions`` never misreads as unresolvable), walks the
     append-only ``app.transaction_id_aliases`` forwarding chain to the
-    current canonical id. Raises ``UserError`` if neither the id nor
-    anything it forwards to names a live transaction, so a caller can never
-    write curation under an id that lands on a row no view joins.
+    current canonical id.
+
+    ``required=True`` (default) is for a write that CREATES or CHANGES state
+    (add a note, add/set tags, add/set splits, set a category): it raises
+    ``UserError`` if neither the id nor anything it forwards to names a live
+    transaction, so a caller can never write curation under an id that lands
+    on a row no view joins.
+
+    ``required=False`` is for a write that only REMOVES state (remove tags,
+    clear splits, clear a category): it returns the live id when one is
+    found, exactly like the default, but falls through to ``transaction_id``
+    unchanged — never raises — when resolution fails. A removal against a
+    dead id must stay a safe idempotent no-op (DN2) precisely *because*
+    resolution failed: that is what lets orphan cleanup work at all — curation
+    stranded on an id `_heal_stranded_curation` cannot reach (module
+    docstring, "A second pass heals what the first cannot see") still has to
+    be clearable by hand. Refusing it instead would leave the orphan
+    permanently stuck. A caller must decide ``required`` up front from the
+    shape of its own request (e.g. an empty desired-tags list is a clear, not
+    an add) — never from the realized diff, which would need the resolution
+    outcome to compute in the first place.
 
     Deliberately NOT mirrored at read time: see the module docstring's
     "Forward at re-key, never resolve on read" for why one mechanism here
@@ -149,7 +169,10 @@ def resolve_curation_transaction_id(db: Database, transaction_id: str) -> str:
     instead — this single-id path is one ``execute()`` per hop, and calling
     it once per row in a loop turns a bulk write into O(n) query round trips
     (measured ~5-10ms each, dominated by per-call overhead rather than table
-    size — issue #538 perf follow-up).
+    size — issue #538 perf follow-up). Every current bulk caller is a
+    creates-or-changes write (categorization), so the bulk path has no
+    ``required=False`` counterpart yet — add one if a bulk removal caller
+    appears.
 
     Stops rather than follows an edge :func:`_reversed_alias_edges` marks
     stale: `matches undo` revives both halves of a merge but leaves the alias
@@ -182,6 +205,8 @@ def resolve_curation_transaction_id(db: Database, transaction_id: str) -> str:
         if next_id is None:
             break
         current = next_id
+    if not required:
+        return transaction_id  # orphan cleanup: operate on the id as given
     raise UserError(
         "The transaction reference did not match a transaction.",
         code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,

@@ -494,9 +494,15 @@ class MatchApplier:
 
         Routes through the repo (full before-row capture, Req 4). No-op (and no
         audit event) when no row exists. ``transaction_id`` is resolved
-        through the shared curation seam first (issue #538).
+        through the shared curation seam first (issue #538) — permissively
+        (``required=False``): clearing removes state rather than creating it,
+        so it must stay a safe no-op on an id that names no live transaction
+        (orphan cleanup) instead of refusing, per the seam's add-vs-remove
+        asymmetry (see :func:`resolve_curation_transaction_id`).
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=False
+        )
         self._tx_categories.clear(transaction_id, actor=actor)
 
     # -- Merchant management --
