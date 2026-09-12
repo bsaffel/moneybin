@@ -1169,6 +1169,41 @@ def test_categorize_items_rejects_two_ids_resolving_to_the_same_live_transaction
     ).fetchone() == (0,)
 
 
+def test_categorize_items_verbatim_duplicate_keeps_priority_guard_behavior(
+    real_db: Database,
+) -> None:
+    """A literal duplicate transaction_id is NOT a resolved-id collision.
+
+    Distinct from the aliased-duplicate case above: no alias is involved here,
+    both items name the SAME live id verbatim (e.g. an LLM correcting itself
+    within one batch). Both carry the same source priority (``categorized_by
+    ="ai"``), and ``write_categorization``'s guard permits an equal-priority
+    write to overwrite (its own docstring: "succeeds only if its source
+    priority is <= the existing row's") — so both apply, the second silently
+    winning, exactly as before the resolved-id-collision guard existed. That
+    guard must not key on raw occurrence count, or this shape regresses into
+    a hard rejection that drops both categorizations.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-live", category="Food & Drink"),
+        CategorizationItem(transaction_id="txn-live", category="Shopping"),
+    ])
+
+    assert result.applied == 2
+    assert result.errors == 0
+    assert result.error_details == []
+    row = real_db.execute(
+        "SELECT category FROM app.transaction_categories WHERE transaction_id = 'txn-live'"
+    ).fetchone()
+    assert row == ("Shopping",), "the second same-priority write overwrites the first"
+
+
 def test_categorize_items_against_superseded_id_still_resolves_merchant_and_exemplar(
     real_db: Database,
 ) -> None:

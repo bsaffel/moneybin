@@ -36,7 +36,6 @@ poisons future matching or auto-rule training.
 from __future__ import annotations
 
 import logging
-from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
@@ -279,16 +278,22 @@ class CategorizationOrchestrator:
         # still couldn't resolve it) is reported as a per-item error in
         # Phase 4 rather than aborting the batch.
         resolved_txn_ids = resolve_curation_transaction_ids(self._db, txn_ids)
-        # How many items resolve to each live transaction — a batch built
-        # from a stale preview can carry both a superseded id and its
+        # Which DISTINCT raw ids resolve to each live transaction — a batch
+        # built from a stale preview can carry both a superseded id and its
         # canonical id (or two different superseded ids that forward to one
-        # live row). Checked per-item in Phase 4 below, mirroring
-        # transaction_service._reject_composed_annotations's overlap guard.
-        resolved_id_counts = Counter(
-            resolved_txn_ids[item.transaction_id]
-            for item in items
-            if item.transaction_id in resolved_txn_ids
-        )
+        # live row). Keyed by distinct source id, not raw occurrence count: a
+        # literal duplicate transaction_id submitted twice (e.g. an LLM
+        # correcting itself within one batch) is not this collision — that
+        # shape is already handled by write_categorization's source-priority
+        # guard (first applies, second is skipped as lower_priority_source)
+        # and must keep working exactly as before. Checked per-item in Phase 4
+        # below, mirroring transaction_service._reject_composed_annotations's
+        # overlap guard.
+        resolved_id_sources: dict[str, set[str]] = {}
+        for item in items:
+            resolved = resolved_txn_ids.get(item.transaction_id)
+            if resolved is not None:
+                resolved_id_sources.setdefault(resolved, set()).add(item.transaction_id)
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (
@@ -395,13 +400,17 @@ class CategorizationOrchestrator:
                 })
                 continue
             resolved_txn_id = resolved_txn_ids[txn_id]
-            if resolved_id_counts[resolved_txn_id] > 1:
-                # Two or more items resolve to the same live transaction.
+            if len(resolved_id_sources.get(resolved_txn_id, ())) > 1:
+                # Two or more DIFFERENT raw ids resolve to the same live
+                # transaction (e.g. a superseded id and its canonical id).
                 # Applying them independently would let same-priority writes
                 # race (the second silently wins) and double-run merchant
                 # resolution, auto-rule recording, and exemplar accumulation
                 # for what is really one transaction — reject every
-                # colliding item rather than let iteration order decide.
+                # colliding item rather than let iteration order decide. A
+                # literal duplicate transaction_id is NOT this case (see the
+                # resolved_id_sources comment above) and falls through to
+                # write_categorization's existing source-priority guard.
                 errors += 1
                 error_details.append({
                     "transaction_id": txn_id,
