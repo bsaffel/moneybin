@@ -82,10 +82,14 @@ format-neutral prepared snapshot. The snapshot contains:
 - the ordered data tables and typed columns;
 - the profile, UTC creation timestamp, export kind, and format version;
 - the selected redaction mode and output column classes;
-- row counts and per-table checksums; and
+- row counts and per-table checksums;
+- the build that produced it — package version and source revision, the same
+  pair `system_status.overview.build` reports; and
 - a generated data dictionary.
 
-For a report, the snapshot additionally carries its provenance receipt: report
+Both export subjects carry that build stamp — it is every artifact's only
+record of which code wrote it once the file leaves this machine. For a
+report, the snapshot additionally carries its provenance receipt: report
 identifier, resolved parameters, SQL, lineage, output classes, freshness,
 graduation eligibility, and classification-drift state. This is the same
 information exposed by the report verification surface, rendered as artifact
@@ -442,8 +446,19 @@ the active profile.
 The on-disk `manifest.json` and its equivalent workbook/Sheets metadata include
 a versioned artifact schema, export ID, subject, creation time, destination
 kind, redaction mode, table names and schemas, row counts, checksums, and data
-dictionary reference. Report manifests add report identifier, resolved
-parameters, query/provenance receipt, class map, and freshness information.
+dictionary reference.
+
+Every manifest carries a `provenance` block, populated for both subject kinds.
+Its `build` field names the version and source revision of the process that
+wrote the artifact — `{"version": "0.1.0", "revision": "a1b2c3d4…"}` — the same
+pair `system_status.overview.build` reports, derived from the one shared
+`moneybin.build_info` module so a manifest and a running server never disagree
+about which code produced them. Either key is `null` when unresolvable: an
+installed wheel carries no source revision, and a distribution installed
+outside a released version carries no package version. A bundle manifest's
+`provenance` holds only `build`, with `report_id` and `receipt` present as
+`null`. Report manifests add report identifier, resolved parameters,
+query/provenance receipt, class map, and freshness information.
 Parameters receive the same selected redaction policy as result columns; their
 classes travel with the manifest so a verifier can tell what was withheld.
 
