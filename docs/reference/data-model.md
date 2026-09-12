@@ -149,6 +149,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
 | `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle, not forced by archiving. |
+| `archived_at` | DATE | The date the account stopped being part of the position. NULL while active. |
 
 Logical grain key: `account_id`.
 

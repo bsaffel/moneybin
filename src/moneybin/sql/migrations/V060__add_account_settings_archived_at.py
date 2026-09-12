@@ -41,6 +41,17 @@ re-archival case the broadened action match exists for — undoing an unarchive
 row emits a FALSE->TRUE row *after* that unarchive's own ``occurred_at``, so it
 still qualifies as the latest unsuperseded archive evidence.
 
+A TRUE->FALSE (unarchive) row is recognized the same way when it is
+DELETION-shaped: undoing a pre-V060 account's first-ever settings write (that
+write's own ``before_value`` was SQL ``NULL``) deletes the row
+(``BaseRepo.undo_event``'s ``before is None`` branch), and the undo it emits
+carries ``after_value`` as SQL ``NULL`` -- not a JSON object with
+``archived: false``. Absence of a row *is* the documented ``archived=FALSE``
+default on this end of a transition exactly as it is on the other, so this
+also ends an archived streak. Missing it would let a stale pre-undo archive
+date win over an intervening deleted-then-un-audited-re-archived period, the
+same class of bug the previous paragraph's check closes.
+
 ``include_in_net_worth`` is left exactly as stored for every account this
 migration touches — never restored, even when
 ``before_value.include_in_net_worth`` reads ``'true'`` (the retired cascade's
@@ -113,8 +124,10 @@ def migrate(conn: object) -> None:
                         AS to_true,
                     json_extract_string(before_value, '$.archived') = 'true'
                         AS from_true,
-                    json_extract_string(after_value, '$.archived') = 'false'
-                        AS to_false
+                    (
+                        after_value IS NULL
+                        OR json_extract_string(after_value, '$.archived') = 'false'
+                    ) AS to_false
                 FROM app.audit_log
                 WHERE target_schema = 'app'
                   AND target_table = 'account_settings'

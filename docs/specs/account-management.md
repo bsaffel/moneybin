@@ -114,6 +114,7 @@ New columns (added to the final SELECT):
 | `credit_limit` | `s.credit_limit` | Pass-through |
 | `archived` | `COALESCE(s.archived, FALSE)` | Default FALSE for accounts with no settings row |
 | `include_in_net_worth` | `COALESCE(s.include_in_net_worth, TRUE)` | Default TRUE |
+| `archived_at` | `s.archived_at` | The date the account stopped being part of the position. NULL while active |
 
 Consumers (CLI, MCP, `agg_net_worth`) read from `core.dim_accounts` and get the resolved view automatically. **No consumer should join `app.account_settings` directly.** This is codified in `.claude/rules/database.md`.
 

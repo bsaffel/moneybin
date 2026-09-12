@@ -45,6 +45,10 @@ _UNDO_REARCHIVED = "acct-undorearch1"  # re-archived via undo -> undo's date win
 _STALE_AFTER_UNARCHIVE = "acct-staleafterunarch1"  # archive superseded by an
 # audited unarchive, then re-archived with no further audit evidence -> NULL,
 # not the superseded archive's date
+_STALE_AFTER_UNDO_DELETE = "acct-staleafterundo1"  # first-write archive, undone
+# (a deletion-shaped unarchive with after_value NULL, not a JSON false), then
+# re-archived with no further audit evidence -> NULL, not the undone archive's
+# date
 
 
 def _audit_row_sql(action: str = "account_settings.set") -> str:
@@ -84,6 +88,7 @@ def pre_v060_db(db: Database) -> Database:
             (_RE_ARCHIVED, "Re-archived", True, False),
             (_UNDO_REARCHIVED, "Undo Re-archived", True, True),
             (_STALE_AFTER_UNARCHIVE, "Stale After Unarchive", True, True),
+            (_STALE_AFTER_UNDO_DELETE, "Stale After Undo Delete", True, True),
         ],
     )
 
@@ -226,6 +231,38 @@ def pre_v060_db(db: Database) -> Database:
             "op-staleafterunarch1b",
         ],
     )
+
+    # _STALE_AFTER_UNDO_DELETE: archiving was this account's first-ever
+    # settings write on 2026-01-01 (before_value NULL, per _FIRST_WRITE
+    # above). Undoing that write on 2026-02-01 deletes the row -- a
+    # DELETION-shaped unarchive whose emitted after_value is SQL NULL, not a
+    # JSON `{"archived": false}` object. The account is currently archived
+    # again with NO further audit evidence at all (a direct write or
+    # restore). The migration must recognize the NULL after_value as ending
+    # the archived streak and leave archived_at NULL, not date the account
+    # back to the superseded 2026-01-01 first-write archive.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-staleafterundo1a",
+            "2026-01-01 09:00:00",
+            _STALE_AFTER_UNDO_DELETE,
+            None,
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-staleafterundo1a",
+        ],
+    )
+    db.execute(
+        _audit_row_sql("account_settings.set.undo"),
+        [
+            "aud-staleafterundo1b",
+            "2026-02-01 09:00:00",
+            _STALE_AFTER_UNDO_DELETE,
+            '{"archived": true, "include_in_net_worth": true}',
+            None,
+            "op-staleafterundo1b",
+        ],
+    )
     return db
 
 
@@ -329,6 +366,26 @@ def test_v060_ignores_archive_evidence_superseded_by_a_later_unarchive(
     """
     run_migration(pre_v060_db, migrate)
     archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_UNARCHIVE)
+    assert archived_at is None
+    assert include is True
+
+
+def test_v060_ignores_archive_evidence_superseded_by_a_deleted_row(
+    pre_v060_db: Database,
+) -> None:
+    """A NULL after_value (undo-of-first-write) ends an archived streak too.
+
+    Undoing a pre-V060 account's first-ever settings write deletes the row --
+    BaseRepo.undo_event emits that reversal with after_value SQL NULL, never
+    a JSON ``{"archived": false}`` object, because there was no prior row to
+    restore to. Absence of a row is the documented archived=FALSE default on
+    either end of a transition, so this must be recognized as an unarchive
+    exactly like an explicit JSON false, and supersede the first-write
+    archive it undoes -- leaving archived_at NULL for the un-audited
+    re-archive that follows, not the superseded first-write date.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_UNDO_DELETE)
     assert archived_at is None
     assert include is True
 
