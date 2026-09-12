@@ -137,16 +137,71 @@ def test_fifo_and_hifo_ignore_input_order_when_transaction_identities_and_dates_
     ledger=_covered_ledger(),
     method=st.sampled_from(("fifo", "hifo", "specific", "average")),
 )
-def test_realized_gain_is_proceeds_minus_basis_to_the_cent(
+def test_realized_gain_proceeds_reconcile_to_each_sale_and_persist_as_cents(
     ledger: tuple[list[LedgerEvent], Decimal], method: str
 ) -> None:
-    """Each persisted gain reconciles its independently persisted monetary terms."""
+    """Each sale distributes its actual cash proceeds and persists cents."""
     events, _acquired_quantity = ledger
     _lots, gains = _run(events, method)
 
+    sale_proceeds = {
+        event.investment_transaction_id: abs(event.amount or D("0"))
+        for event in events
+        if event.type == "sell"
+    }
+    for disposal_txn_id, proceeds in sale_proceeds.items():
+        realized_for_sale = [
+            gain for gain in gains if gain.disposal_txn_id == disposal_txn_id
+        ]
+        assert sum((gain.proceeds for gain in realized_for_sale), D("0")) == proceeds
+
     for gain in gains:
+        assert gain.proceeds == gain.proceeds.quantize(D("0.01"))
+        assert gain.cost_basis == gain.cost_basis.quantize(D("0.01"))
         assert gain.gain_loss == gain.proceeds - gain.cost_basis
         assert gain.gain_loss == gain.gain_loss.quantize(D("0.01"))
+
+
+def test_a_one_cent_sale_across_three_equal_lots_assigns_the_rounding_residual() -> (
+    None
+):
+    """The final FIFO slice retains the penny the first two equal shares lose."""
+    events = [
+        LedgerEvent(
+            investment_transaction_id=f"buy-{index}",
+            account_id="account",
+            security_id="security",
+            trade_date=_BASE_DATE + timedelta(days=index),
+            original_acquisition_date=None,
+            type="buy",
+            quantity=D("1"),
+            price=None,
+            amount=D("-1.00"),
+            fees=None,
+            currency_code="USD",
+        )
+        for index in range(3)
+    ]
+    events.append(
+        LedgerEvent(
+            investment_transaction_id="sell",
+            account_id="account",
+            security_id="security",
+            trade_date=_BASE_DATE + timedelta(days=4),
+            original_acquisition_date=None,
+            type="sell",
+            quantity=D("-3"),
+            price=None,
+            amount=D("0.01"),
+            fees=None,
+            currency_code="USD",
+        )
+    )
+
+    _lots, gains = _run(events, "fifo")
+
+    assert [gain.proceeds for gain in gains] == [D("0.00"), D("0.00"), D("0.01")]
+    assert sum((gain.proceeds for gain in gains), D("0")) == D("0.01")
 
 
 def _lot_snapshot(lots: list[Lot]) -> list[tuple[object, ...]]:
