@@ -2120,7 +2120,7 @@ class MatchApplier:
         first (issue #538) — same seam as :meth:`write_categorization`, so a
         superseded id can never land a category row on a dead id. Resolved as
         one bulk call via :func:`resolve_curation_transaction_ids` rather than
-        one ``execute()` per row: this method's whole purpose is batching, so
+        one ``execute()`` per row: this method's whole purpose is batching, so
         a per-row liveness check here would turn a bulk write into O(n) query
         round trips (issue #538 perf follow-up — see
         :func:`resolve_curation_transaction_id`'s docstring for the measured
