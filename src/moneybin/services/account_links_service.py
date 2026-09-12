@@ -67,6 +67,8 @@ class AccountLinkAcceptImpact:
     link_ids: tuple[str, ...]
     decision_ids: tuple[str, ...]
     lot_selection_disposal_ids: tuple[str, ...] = ()
+    lot_selections_before: tuple[tuple[str, str, str], ...] = ()
+    lot_selections_after: tuple[tuple[str, str, str], ...] = ()
 
 
 def _resolve_display_name(db: Database, account_id: str) -> str:
@@ -434,6 +436,17 @@ class AccountLinksService:
         decision_ids = tuple(
             sorted([decision_id, *(str(sid) for (sid,) in sibling_rows)])
         )
+        selections_repo = LotSelectionsRepo(self._db)
+        selections_before = tuple(
+            (disposal, lot, str(quantity))
+            for disposal in sorted(selection_plan)
+            for lot, quantity in selections_repo.list_for_disposal(disposal)
+        )
+        selections_after = tuple(
+            (disposal, lot, str(quantity))
+            for disposal, selections in sorted(selection_plan.items())
+            for lot, quantity in sorted(selections)
+        )
         return AccountLinkAcceptImpact(
             provisional_account_id=provisional_id,
             candidate_account_id=str(decision["candidate_account_id"]),
@@ -442,19 +455,14 @@ class AccountLinksService:
                 "account_links": len(link_ids),
                 "account_link_decisions": len(decision_ids),
                 **(
-                    {
-                        "lot_selections": sum(
-                            len(LotSelectionsRepo(self._db).list_for_disposal(disposal))
-                            for disposal in selection_plan
-                        )
-                    }
-                    if selection_plan
-                    else {}
+                    {"lot_selections": len(selections_before)} if selection_plan else {}
                 ),
             },
             link_ids=link_ids,
             decision_ids=decision_ids,
             lot_selection_disposal_ids=tuple(sorted(selection_plan)),
+            lot_selections_before=selections_before,
+            lot_selections_after=selections_after,
         )
 
     # ------------------------------------------------------------------

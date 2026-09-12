@@ -387,6 +387,8 @@ class _ApprovedMerge:
     sentence: dict[str, int]
     links: tuple[str, ...]
     decisions: tuple[str, ...]
+    lot_selections_before: tuple[tuple[str, str, str], ...] = ()
+    lot_selections_after: tuple[tuple[str, str, str], ...] = ()
 
 
 def _merge_preview(
@@ -413,6 +415,8 @@ def _merge_preview(
         sentence=plan.blast_radius,
         links=impact.link_ids,
         decisions=impact.decision_ids,
+        lot_selections_before=impact.lot_selections_before,
+        lot_selections_after=impact.lot_selections_after,
     )
     return approved, identity_confirm_message(
         plan.blast_radius, surface="cli", merges=[facts], kinds=["account_link"]
@@ -449,6 +453,8 @@ def _drift_check(
             current != approved.sentence
             or impact.link_ids != approved.links
             or impact.decision_ids != approved.decisions
+            or impact.lot_selections_before != approved.lot_selections_before
+            or impact.lot_selections_after != approved.lot_selections_after
         ):
             raise UserError(
                 "This merge changed while the confirmation was open, so nothing "
