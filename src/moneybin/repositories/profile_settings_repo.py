@@ -19,7 +19,6 @@ import duckdb
 from moneybin.repositories.base import BaseRepo
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.audit_service import AuditEvent
-from moneybin.services.currency_service import canonical_currency
 from moneybin.tables import PROFILE_SETTINGS
 
 _PROFILE_SETTINGS_COLUMNS = (
@@ -164,6 +163,8 @@ class ProfileSettingsRepo(BaseRepo):
 
 def _normalize_currency_targets(currency_codes: Sequence[str]) -> tuple[str, ...]:
     """Canonicalize each ISO code while retaining its first declared order."""
+    from moneybin.services.currency_service import canonical_currency
+
     targets: list[str] = []
     for value in currency_codes:
         currency = canonical_currency(value)
