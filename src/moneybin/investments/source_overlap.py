@@ -5,6 +5,7 @@ from moneybin.investments.identity import manual_identity_sql
 from moneybin.tables import (
     ACCOUNT_LINKS,
     PLAID_INVESTMENT_HOLDINGS,
+    PLAID_INVESTMENT_TRANSACTION_RECEIPTS,
     PLAID_INVESTMENT_TRANSACTIONS,
 )
 
@@ -13,9 +14,17 @@ def investment_source_overlap(db: Database) -> list[str]:
     """Accounts with manual history and Plaid transaction or holdings evidence."""
     rows = db.execute(
         f"""
-        WITH manual_identity AS ({manual_identity_sql()}), plaid_evidence AS (
+        WITH manual_identity AS ({manual_identity_sql()}), current_receipts AS (
+            SELECT * FROM {PLAID_INVESTMENT_TRANSACTION_RECEIPTS.full_name}
+            QUALIFY ROW_NUMBER() OVER (
+                PARTITION BY investment_transaction_id, source_origin
+                ORDER BY extracted_at DESC, ingestion_sequence DESC
+            ) = 1
+        ), plaid_evidence AS (
             SELECT account_id, source_origin
             FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name}
+            JOIN current_receipts
+                USING (investment_transaction_id, source_origin, observation_version)
             UNION
             SELECT account_id, source_origin
             FROM {PLAID_INVESTMENT_HOLDINGS.full_name}

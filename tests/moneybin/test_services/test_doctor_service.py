@@ -1478,6 +1478,12 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
         ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
+    db.execute("""
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        ) VALUES ('p1', 'item1', 'sync_fixture', 'plaid_fixture', '2026-01-01')
+    """)
     db.execute(
         """
         INSERT INTO app.account_links (
