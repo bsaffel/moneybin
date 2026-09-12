@@ -49,6 +49,7 @@ _DIRECT_DB_BANNER = (
     "   For agent-mediated access with privacy enforcement, use:\n"
     '     moneybin sql query "<your SQL>"'
 )
+_CLI_ENCRYPTION_KEY_ENV_VAR = "MONEYBIN_DATABASE__ENCRYPTION_KEY"
 
 
 @contextmanager
@@ -120,11 +121,13 @@ def _create_init_script(db_path: Path) -> Path:
     Returns:
         Path to the temporary init script.
     """
-    from moneybin.database import build_attach_sql
-    from moneybin.secrets import SecretStore
+    from moneybin.database import escape_sql_literal
 
-    store = SecretStore()
-    encryption_key = store.get_key("DATABASE__ENCRYPTION_KEY")
+    safe_path = escape_sql_literal(str(db_path))
+    attach_sql = (
+        f"ATTACH '{safe_path}' AS \"moneybin\" "
+        f"(TYPE DUCKDB, ENCRYPTION_KEY getenv('{_CLI_ENCRYPTION_KEY_ENV_VAR}'))"
+    )
 
     # Write temp script with restrictive permissions
     fd, script_path = tempfile.mkstemp(suffix=".sql", prefix="moneybin_init_")
@@ -135,7 +138,7 @@ def _create_init_script(db_path: Path) -> Path:
             # Subsequent runs are no-ops.
             f.write("INSTALL httpfs;\n")
             f.write("LOAD httpfs;\n")
-            f.write(f"{build_attach_sql(db_path, encryption_key)};\n")
+            f.write(f"{attach_sql};\n")
             f.write("USE moneybin;\n")
         if sys.platform != "win32":
             os.chmod(script_path, 0o600)
@@ -144,6 +147,17 @@ def _create_init_script(db_path: Path) -> Path:
         raise
 
     return Path(script_path)
+
+
+def _duckdb_cli_environment() -> dict[str, str]:
+    """Build the DuckDB CLI environment with its encryption key scoped to the child."""
+    from moneybin.secrets import SecretStore
+
+    child_environment = os.environ.copy()
+    child_environment[_CLI_ENCRYPTION_KEY_ENV_VAR] = SecretStore().get_key(
+        "DATABASE__ENCRYPTION_KEY"
+    )
+    return child_environment
 
 
 @app.command("init")
@@ -253,19 +267,21 @@ def _run_duckdb_cli(
     from moneybin.database import database_key_error_hint
     from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
 
-    try:
-        init_script = _create_init_script(db_path)
-    except SecretUnavailableError:
-        logger.error(
-            f"❌ OS keychain denied access to the key. "
-            f"{database_key_error_hint(db_path)}"
-        )
-        raise typer.Exit(1) from None
-    except SecretNotFoundError:
-        logger.error(f"❌ Key not found. {database_key_error_hint(db_path)}")
-        raise typer.Exit(1) from None
+    init_script = _create_init_script(db_path)
 
     try:
+        try:
+            child_environment = _duckdb_cli_environment()
+        except SecretUnavailableError:
+            logger.error(
+                f"❌ OS keychain denied access to the key. "
+                f"{database_key_error_hint(db_path)}"
+            )
+            raise typer.Exit(1) from None
+        except SecretNotFoundError:
+            logger.error(f"❌ Key not found. {database_key_error_hint(db_path)}")
+            raise typer.Exit(1) from None
+
         if start_msg:
             logger.info(start_msg)
         if hint_msg:
@@ -273,7 +289,9 @@ def _run_duckdb_cli(
         cmd = [duckdb_path, "-init", str(init_script)]
         if extra_args:
             cmd.extend(extra_args)
-        subprocess.run(cmd, check=True)  # noqa: S603  # cmd built from static args and validated flags
+        subprocess.run(  # noqa: S603  # cmd built from static args and validated flags
+            cmd, check=True, env=child_environment
+        )
     except subprocess.CalledProcessError as e:
         logger.error(f"❌ {error_noun} failed: {e}")
         raise typer.Exit(1) from e
