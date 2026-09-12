@@ -2626,18 +2626,30 @@ class DoctorService:
         ]
         return self._duplicate_account_pairs
 
-    def _query_standalone_decided_pairs(
+    def _query_distinctness_decided_pairs(
         self, account_ids: Collection[str]
     ) -> set[tuple[str, str]]:
-        """Normalized ``(LEAST, GREATEST)`` pairs a ``--standalone`` decision cleared.
+        """Normalized ``(LEAST, GREATEST)`` pairs the user has declared genuinely distinct.
 
         Consulted only by ``_run_currency_integrity``'s overlap gate, never by
         ``_query_duplicate_account_pairs`` itself: ``duplicate_account_overlap``'s
         own message tells the user ``--standalone`` keeps that check a warning
         forever, so filtering the shared query would silently break its
-        documented contract for a check that never asked for relief. A
-        standalone decision is `status='rejected'` with `reversed_at IS NULL` —
-        see ``AccountLinksService.set_decision``'s standalone branch.
+        documented contract for a check that never asked for relief.
+
+        A bare ``status='rejected'`` row is NOT enough to prove distinctness:
+        ``AccountLinksService.set``'s merge (``--into``) branch, after accepting
+        one decision, auto-rejects every OTHER pending decision touching the
+        merged-away provisional — including ones where that provisional was the
+        *candidate* of some other pending proposal. That auto-reject is a
+        staleness claim ("this proposal now points at a dead account id"), not a
+        distinctness claim ("the user looked at these two and said they differ")
+        — the user never reviewed that sibling pair at all. Only the standalone
+        branch (``target_account_id=None``) rejects because the user actually
+        declared the pair distinct. This query tells the two apart: an account
+        counts as "merged away" only via the ``provisional_account_id`` column of
+        an accepted decision — the survivor sits in ``candidate_account_id`` of
+        that same row and must keep any relief it separately earned.
 
         One query for every candidate pair, not one per pair.
         """
@@ -2647,13 +2659,21 @@ class DoctorService:
         placeholders = ", ".join("?" for _ in ids)
         rows = self._db.execute(
             f"""
-            SELECT LEAST(provisional_account_id, candidate_account_id) AS account_a,
-                   GREATEST(provisional_account_id, candidate_account_id) AS account_b
-            FROM {ACCOUNT_LINK_DECISIONS.full_name}
-            WHERE status = 'rejected'
-              AND reversed_at IS NULL
-              AND provisional_account_id IN ({placeholders})
-              AND candidate_account_id IN ({placeholders})
+            WITH merged_away AS (
+                SELECT DISTINCT provisional_account_id AS account_id
+                FROM {ACCOUNT_LINK_DECISIONS.full_name}
+                WHERE status = 'accepted'
+                  AND reversed_at IS NULL
+            )
+            SELECT LEAST(d.provisional_account_id, d.candidate_account_id) AS account_a,
+                   GREATEST(d.provisional_account_id, d.candidate_account_id) AS account_b
+            FROM {ACCOUNT_LINK_DECISIONS.full_name} AS d
+            WHERE d.status = 'rejected'
+              AND d.reversed_at IS NULL
+              AND d.provisional_account_id IN ({placeholders})
+              AND d.candidate_account_id IN ({placeholders})
+              AND d.provisional_account_id NOT IN (SELECT account_id FROM merged_away)
+              AND d.candidate_account_id NOT IN (SELECT account_id FROM merged_away)
             """,  # TableRef constant, parameterized values
             [*ids, *ids],
         ).fetchall()
@@ -3126,8 +3146,11 @@ class DoctorService:
           identity resolution ahead of the currency fix instead. A pair the
           user already declared genuinely distinct via ``accounts links set
           --standalone`` is excluded from that gate — see
-          ``_query_standalone_decided_pairs`` — so the currency advice is not
-          withheld forever for accounts that really are two different ones.
+          ``_query_distinctness_decided_pairs``, which also excludes a
+          rejection that is merely a merge's stale-sibling auto-reject rather
+          than an actual distinctness declaration — so the currency advice is
+          not withheld forever for accounts that really are two different
+          ones.
         - **warn** — two or more known currencies and nothing unknown. Legal,
           but every cross-currency total is withheld until conversion ships
           (M1K.2), which is worth saying out loud rather than leaving the user
@@ -3295,15 +3318,15 @@ class DoctorService:
                     # override, so honor it here rather than re-detecting the
                     # same "overlap" on every later run.
                     if overlap_pairs:
-                        standalone_pairs = self._query_standalone_decided_pairs(
+                        distinctness_pairs = self._query_distinctness_decided_pairs(
                             {a for a, _, _ in overlap_pairs}
                             | {b for _, b, _ in overlap_pairs}
                         )
-                        if standalone_pairs:
+                        if distinctness_pairs:
                             overlap_pairs = [
                                 (a, b, ratio)
                                 for a, b, ratio in overlap_pairs
-                                if (a, b) not in standalone_pairs
+                                if (a, b) not in distinctness_pairs
                             ]
                             overlapping_unknown_accounts = sorted({
                                 account_id

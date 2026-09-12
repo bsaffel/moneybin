@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from prometheus_client import REGISTRY
+from pytest_mock import MockerFixture
 
 from moneybin.config import get_settings
 from moneybin.database import SQLMESH_ROOT, Database
@@ -21,7 +22,11 @@ from moneybin.metrics.registry import (
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
+from moneybin.orchestration.refresh import RefreshResult
 from moneybin.repositories import concrete_repo_classes
+from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
+from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -3471,6 +3476,167 @@ def test_currency_integrity_standalone_decision_partial_relief(
     assert "DUP_F:DUP_E" in detail, detail
     assert "DUP_B:DUP_A" not in detail, detail
     assert "1 of those" in detail, detail
+
+
+def _mock_rematch_refresh(mocker: MockerFixture) -> MagicMock:
+    """Stand in for the post-merge re-match ``AccountLinksService.set`` triggers.
+
+    Mirrors the ``rematch`` fixture in ``test_account_links_service.py`` — a
+    real merge accept always re-runs match+transform, which these tests have
+    no need to reach for real; they only need the merge's own writes
+    (repoint, accept, sibling auto-reject) to land.
+    """
+    return mocker.patch(
+        "moneybin.orchestration.refresh.refresh",
+        return_value=RefreshResult(applied=True, duration_seconds=0.0),
+    )
+
+
+def _insert_source_native_link(
+    db: Database, *, link_id: str, account_id: str, ref_value: str
+) -> None:
+    """One accepted ``source_native`` link — required by ``set``'s merge path.
+
+    ``AccountLinksService.set`` refuses to accept a merge whose provisional
+    has no accepted ``source_native`` mapping to re-point (the staging JOIN
+    key), so the merge scenarios below must seed one.
+    """
+    AccountLinksRepo(db).insert(
+        link_id=link_id,
+        account_id=account_id,
+        ref_kind="source_native",
+        ref_value=ref_value,
+        source_type="csv",
+        source_origin="bank_a",
+        decided_by="auto",
+        actor="system",
+        status="accepted",
+    )
+
+
+def _insert_pending_decision(
+    db: Database,
+    *,
+    decision_id: str,
+    provisional_account_id: str,
+    candidate_account_id: str,
+) -> None:
+    """One ``pending`` ``app.account_link_decisions`` row for ``set`` to act on."""
+    AccountLinkDecisionsRepo(db).insert(
+        decision_id=decision_id,
+        provisional_account_id=provisional_account_id,
+        candidate_account_id=candidate_account_id,
+        confidence_score=0.9,
+        match_signals={"signal": "institution_last4", "value": "***"},
+        decided_by="auto",
+        actor="system",
+        status="pending",
+    )
+
+
+@pytest.mark.unit
+def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """A pair rejected only as a merge's sibling auto-reject must NOT get relief.
+
+    DUP_A is merged into DUP_C through the real ``AccountLinksService.set``
+    accept path. That path's own auto-reject rejects the OTHER pending
+    decision on DUP_A — here, DUP_A/DUP_B — as a side effect of DUP_A dying,
+    not because a user ever reviewed DUP_A vs. DUP_B and called them distinct.
+    The overlap gate must keep withholding the currency advice for DUP_B
+    exactly as if no decision existed at all.
+    """
+    _mock_rematch_refresh(mocker)
+    _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
+    _insert_overlap_account(doctor_db, "DUP_C", institution_slug="wells")
+    _insert_source_native_link(
+        doctor_db, link_id="link_dup_a", account_id="DUP_A", ref_value="native-ref-a"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_C",
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_sibling",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_merge", target_account_id="DUP_C"
+    )
+    # The merge's own auto-reject, not a hand-inserted row, produced this:
+    assert doctor_db.execute(
+        "SELECT status FROM app.account_link_decisions WHERE decision_id = ?",
+        ["dec_sibling"],
+    ).fetchone() == ("rejected",)
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "resolve account identity FIRST" in detail, detail
+    assert "DUP_B:DUP_A" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_merge_survivor_keeps_its_own_standalone_relief(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """The target of an accepted merge keeps relief it separately earned.
+
+    DUP_A merges into DUP_C (DUP_C is the accepted decision's *candidate*,
+    never its *provisional*), so DUP_C is not "merged away" and must not lose
+    the standalone relief it separately holds against DUP_D. Excluding on mere
+    membership in an accepted decision — rather than on the
+    ``provisional_account_id`` orientation specifically — would wrongly revoke
+    a survivor's own relief.
+    """
+    _mock_rematch_refresh(mocker)
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_C", institution_slug="wells")
+    _insert_overlap_account(doctor_db, "DUP_D", institution_slug="wells")
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_amount_ladder(doctor_db, "DUP_C", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_D", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_D'"
+    )  # test input, not user data
+    _insert_source_native_link(
+        doctor_db, link_id="link_dup_a", account_id="DUP_A", ref_value="native-ref-a"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_C",
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_standalone",
+        provisional_account_id="DUP_D",
+        candidate_account_id="DUP_C",
+    )
+
+    svc = AccountLinksService(doctor_db, actor="cli")
+    svc.set("dec_merge", target_account_id="DUP_C")
+    svc.set("dec_standalone", target_account_id=None)
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "Their amounts are segmented out of every total until you assign" in (
+        detail
+    ), detail
+    assert "resolve account identity FIRST" not in detail, detail
 
 
 @pytest.mark.unit
