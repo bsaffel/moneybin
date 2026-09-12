@@ -40,6 +40,7 @@ The signed amount lives on `core.fct_transactions.amount`: **negative = expense,
 | `reports.merchant_activity.total_spend` | **Positive** (absolute outflow). |
 | `reports.merchant_activity.total_outflow` | **Negative** (preserved). |
 | `reports.large_transactions.amount` | Signed (preserved from source). |
+| `reports.realized_fx.gain_loss` | Signed; positive is a gain. |
 | `core.uncategorized_queue.amount` | Signed (preserved from source). |
 | `reports.net_worth.total_liabilities` | **Negative** (preserved). |
 
@@ -51,7 +52,7 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
 
-`moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, and reports price into it by default; `--display-currency` overrides it per call. Conversion is presentation-only — nothing writes a converted amount, and every `core.*` column keeps its original. Three reports convert: `core:large_transactions`, `core:balance_drift`, and `core:networth`, each of whose rows carries one amount and one date to price it on. Every other report aggregates per `currency_code`, so pricing a row would leave several rows sharing one grain key; those stay segmented and say why in `summary.degraded_reason`. One row that cannot be priced segments the whole result rather than converting part of it, and `summary.display_currency` then names the currency the rows are already in.
+`moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, and reports price into it by default; `--display-currency` overrides it per call. Conversion is presentation-only — nothing writes a converted amount, and every `core.*` column keeps its original. Three reports convert: `core:large_transactions`, `core:balance_drift`, and `core:networth`, each of whose rows carries one amount and one date to price it on. Five reports aggregate per `currency_code`, so pricing a row would leave several rows sharing one grain key; those stay segmented and say why in `summary.degraded_reason`. `core:realized_fx` is deliberately mixed-unit instead: `disposed_amount` remains in `currency_code`, while proceeds, basis, fees, and gain/loss remain in `home_currency`, so display conversion does not re-price the audited row. One row that cannot be priced segments a converting report's whole result rather than converting part of it, and `summary.display_currency` then names the currency the rows are already in.
 
 ### Pending and posted
 
@@ -471,6 +472,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | Which transactions are unusually large? | `reports.large_transactions` | Modified z-scores against account and category baselines + `is_top_100`. |
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; query it directly; `moneybin system doctor` does not read it. |
+| What gain or loss did a currency conversion realize? | `reports.realized_fx` | One row per consumed Currency lot; unmatched inventory remains visible as an incomplete placeholder. |
 
 What's not categorized yet is answered by `core.uncategorized_queue` (above) rather than a `reports.*` view — it's service-internal, reached via `moneybin transactions categorize pending` / MCP `reviews(kind="categorization", status="pending")`, not a standalone report.
 
@@ -587,6 +589,30 @@ Per-`(account, assertion_date)` reconciliation deltas: asserted vs computed bala
 | `drift_abs` | DECIMAL(18,2) | For default sort. |
 | `drift_pct` | DECIMAL | `drift / asserted_balance`; NULL when asserted is zero. |
 | `drift` | DECIMAL(18,2) | `asserted_balance − computed_balance`. |
+
+### `reports.realized_fx`
+
+Realized foreign-exchange accounting at the disposal and consumed-Currency-lot
+grain. A disposal consuming multiple lots produces one row per lot. Left joins
+retain incomplete rows even when their lot or conversion lineage is missing.
+
+| Column | Type | Description |
+|---|---|---|
+| `realized_fx_gain_id`, `conversion_id`, `currency_lot_id`, `account_id` | VARCHAR | Grain and join keys for the realized row. |
+| `transfer_pair_id`, `from_transaction_id`, `to_transaction_id` | VARCHAR | Accepted disposal-conversion lineage. |
+| `from_source_transaction_id`, `to_source_transaction_id` | VARCHAR | Native references supplying the disposal legs. |
+| `source_conversion_id`, `source_investment_transaction_id`, `source_transfer_id` | VARCHAR | Acquisition and intervening-transfer lineage for the consumed lot. |
+| `account_name` | VARCHAR | Resolved account display name. |
+| `currency_code`, `home_currency` | VARCHAR | Disposed Currency and the Home currency used for accounting amounts. |
+| `from_currency`, `to_currency`, `from_amount`, `to_amount` | VARCHAR / DECIMAL(18,2) | Actual disposal-conversion legs and positive magnitudes. |
+| `source_shape`, `acquisition_type`, `cost_basis_method` | VARCHAR | Conversion shape, lot origin, and basis method. |
+| `valuation_source_type`, `executed_rate`, `valuation_rate`, `valuation_rate_date` | VARCHAR / DECIMAL(18,8) / DATE | Actual or stored valuation provenance. |
+| `from_source_type`, `from_source_origin`, `to_source_type`, `to_source_origin` | VARCHAR | Source lineage for each conversion leg. |
+| `coverage_status`, `coverage_reason` | VARCHAR | `complete` or `incomplete`, plus the closed reason when incomplete. |
+| `acquisition_date`, `disposal_date`, `updated_at` | DATE / TIMESTAMP | Lot holding period and latest contributing input. |
+| `disposed_amount` | DECIMAL(18,2) | Positive magnitude in `currency_code`. |
+| `proceeds`, `cost_basis`, `fee_amount` | DECIMAL(18,2) | Positive magnitudes in `home_currency`. |
+| `gain_loss` | DECIMAL(18,2) | Home-currency proceeds less basis; positive is a gain. |
 
 ## Common joins
 

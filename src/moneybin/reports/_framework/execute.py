@@ -342,13 +342,15 @@ def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecut
     )
 
 
-def _resolve_display_currency(records: list[dict[str, Any]]) -> str | None:
+def _resolve_display_currency(
+    records: list[dict[str, Any]], currency_column: str
+) -> str | None:
     """The one currency every report row is denominated in, else None.
 
     Thin projection over the shared envelope rule so reports and the balance
     reads answer ``display_currency`` identically.
     """
-    return resolve_display_currency(record.get("currency_code") for record in records)
+    return resolve_display_currency(record.get(currency_column) for record in records)
 
 
 class _CatalogSpec(Protocol):
@@ -463,11 +465,10 @@ def build_catalog_execution(
     # of ReportSpec. The cast keeps classify_columns' existing public signature
     # stable while both kinds use its fail-closed undeclared-column behavior.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
-    # A report whose rows carry currency_code is authoritative about its own
-    # denomination, including when the answer is "no single one" — defaulting to
-    # a currency there would relabel a segmented result as one currency. Reports
-    # with no currency_code column say nothing either way and keep the unknown
-    # default.
+    # A report that declares one currency field is authoritative about its own
+    # denomination, including when the answer is "no single one". A mixed-unit
+    # report deliberately declares no single field, even when one of its amount
+    # columns happens to use the conventional `currency_code` name.
     # Resolved over every fetched row, not the truncated page: a mixed-currency
     # result whose first `max_rows` happen to share one currency would otherwise
     # advertise it confidently while the other currency's rows sit past the cap.
@@ -479,7 +480,21 @@ def build_catalog_execution(
     # about rows past the fetch boundary. Withholding it whenever a result
     # truncates would cost every large single-currency report a correct label
     # and buy no safety, since the narrower claim was never wrong.
-    declares_currency = "currency_code" in columns
+    declared_currency_columns = {
+        name
+        for name, data_class in spec.classes.items()
+        if data_class is DataClass.CURRENCY and name in columns
+    }
+    currency_column = spec.semantics.currency
+    if (
+        currency_column is None
+        and "currency_code" in columns
+        and declared_currency_columns <= {"currency_code"}
+    ):
+        # Preserve the conventional fallback for extension and saved reports
+        # that predate financial semantics. Multiple declared Currency fields
+        # make that inference unsafe: no one of them can label every amount.
+        currency_column = "currency_code"
     return CatalogReportExecution(
         on_converted=spec.on_converted,
         report_id=spec.report_id,
@@ -498,10 +513,12 @@ def build_catalog_execution(
         period=period,
         semantics=spec.semantics,
         provenance=spec.semantics.provenance,
-        # `None` is also the field default, so a report that declares no
-        # currency column lands on the unknown default either way.
+        # `None` is also the field default, so a report that declares no single
+        # currency lands on the unknown default either way.
         display_currency=(
-            _resolve_display_currency(records) if declares_currency else None
+            _resolve_display_currency(records, currency_column)
+            if currency_column is not None and currency_column in columns
+            else None
         ),
     )
 

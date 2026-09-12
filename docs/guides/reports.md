@@ -1,7 +1,12 @@
 <!-- Last reviewed: 2026-09-04 -->
 # Reports
 
-Eight built-in reports answer the standing questions — what am I worth, where does the money go, what recurs, what is unusual — from the canonical tables, and you can save your own SQL beside them. One catalog serves every surface: `moneybin reports …` on the CLI, the `reports` MCP tool, and `moneybin export report`. Same report ids, same parameters, same masking.
+Nine built-in reports answer the standing questions — what am I worth, where
+does the money go, what recurs, what is unusual, and what did I gain or lose
+converting currency — from the canonical tables, and you can save your own SQL
+beside them. One catalog serves every surface: `moneybin reports …` on the CLI,
+the `reports` MCP tool, and `moneybin export report`. Same report ids, same
+parameters, same masking.
 
 Every transcript below is real output from the family demo persona, trimmed only by whole lines:
 
@@ -11,7 +16,7 @@ uv run moneybin demo --persona family
 
 That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactions, 2473 categorized).` — three calendar years ending on the last complete one, two bank accounts and two credit cards, seed 42. The seed fixes the figures within one calendar year: the window ends on the last complete year and `demo` has no option to pin it, so a rerun after January 1 shifts every date-bound number a year forward while the shapes hold.
 
-## The eight built-in reports
+## The nine built-in reports
 
 | Command | Report id | Answers |
 |---|---|---|
@@ -23,6 +28,7 @@ That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactio
 | [`reports merchants`](../reference/cli/reports.md#moneybin-reports-merchants) | `core:merchants` | Who gets paid, how much, how often, how recently? |
 | [`reports large-transactions`](../reference/cli/reports.md#moneybin-reports-large-transactions) | `core:large_transactions` | What is large, and what is large *for this account or category*? |
 | [`reports balance-drift`](../reference/cli/reports.md#moneybin-reports-balance-drift) | `core:balance_drift` | Where does a balance I asserted disagree with the transactions? |
+| [`reports realized-fx`](../reference/cli/reports.md#moneybin-reports-realized-fx) | `core:realized_fx` | What gain or loss did a deliberate currency conversion realize? |
 
 Each command's reference page lists every flag with its type and default. The flow reports exclude transfers between your own accounts and archived accounts.
 
@@ -264,18 +270,41 @@ Using profile: demo
 
 Empty on the demo, because drift needs an assertion: a balance you typed from a statement, recorded with `accounts balance assert`. Each assertion becomes one row comparing the asserted figure to the balance the transactions imply on that date, bucketed `clean`, `warning`, `drift`, `no-data`, or `currency-mismatch`. It is the report that tells you an import is missing rows.
 
+### Realized FX
+
+```console
+$ uv run moneybin reports realized-fx --currency EUR --coverage complete
+```
+
+Each complete row is one consumed Currency lot from a deliberate conversion, so
+one disposal can produce several rows with different acquisition dates and bases.
+An unmatched-inventory placeholder has no `currency_lot_id` and remains visible
+as an incomplete row instead of disappearing from the total.
+The default table shows `currency_code`, `home_currency`, `coverage_status`,
+`disposal_date`, and `gain_loss`. Add `--wide` for `disposed_amount` plus the
+conversion, lot, account, source, rate, and transfer lineage. Filter with
+`--from-date`, `--to-date`, `--currency`, and
+`--coverage complete|incomplete|all`; incomplete rows stay visible by default
+and carry a closed `coverage_reason` in the wide output.
+
+The row is deliberately mixed-unit. `disposed_amount` is in `currency_code`;
+`proceeds`, `cost_basis`, `fee_amount`, and `gain_loss` are in `home_currency`.
+`--display-currency` does not re-price these historical accounting amounts. The
+same report is available to an agent as
+`reports(report_id='core:realized_fx')`.
+
 ## Reading the output
 
-- **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on the six framework commands and on `reports run`; `networth` and `networth-history` have a fixed layout of their own and no `--wide`. JSON always carries all of them.
+- **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on the seven framework commands and on `reports run`; `networth` and `networth-history` have a fixed layout of their own and no `--wide`. JSON always carries all of them.
 - **Signs.** `spending`, `merchants`, and `recurring` report outflow as positive absolute amounts. `cashflow`, `large-transactions`, and every transaction listing are signed: negative is money out.
-- **Currency.** Every row carries a `currency_code`, and a built-in never blends two known currencies into one figure; a saved report inherits whatever its own SQL does. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` followed by `moneybin refresh` or `moneybin transform apply` is the fix, because the account table is rebuilt rather than read live; set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` says the cap cut the result — a report has no page after the first, so raise the limit to see the rest. See [One display currency](#one-display-currency).
+- **Currency.** Every ordinary built-in row carries a `currency_code`, and a built-in never blends two known currencies into one figure; `realized_fx` additionally names `home_currency` because its row is deliberately mixed-unit. A saved report inherits whatever its own SQL does. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` followed by `moneybin refresh` or `moneybin transform apply` is the fix, because the account table is rebuilt rather than read live; set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` says the cap cut the result — a report has no page after the first, so raise the limit to see the rest. See [One display currency](#one-display-currency).
 - **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move — with one exception: a report that masked one of its columns adds a `Run moneybin reports explain <id>` hint, which names the CLI command by design. The parameter a tool-call hint names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
 - **Freshness.** Every built-in reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the canonical tables only after `moneybin refresh` or `moneybin transform apply`. `balance-drift` has one live side: an `accounts balance assert` shows up on its next run, while the computed balance it is compared against comes from the last rebuild. A saved report is as fresh as what it reads: over `raw.*` or the `prep.*` views it sees an import at once, over `core.*` or `reports.*` it waits for that same transform.
 - **Rows, not aggregates.** When the question is "show me the transactions", `moneybin transactions list` filters by `--account`, `--from`/`--to`, `--category`, `--amount-min`/`--amount-max`, and `--description`, and `moneybin sql query` takes a `SELECT`, `WITH`, `DESCRIBE`, or `SHOW` over the `core`, `app`, `reports`, `raw`, and `prep` schemas.
 
 ## Any report by id: list, run, explain
 
-`reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the eight above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
+`reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the nine above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
 
 `reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `networth`'s headline block or `spending`'s chosen comparison column, so the dedicated command is the better read when one exists:
 
@@ -467,7 +496,7 @@ user_report.delete report_id=user:r6ebf7dcd4ba6 outcome=removed
 
 ## One display currency
 
-`--display-currency EUR` — `display_currency` on the MCP tool — prices a report into one currency at read time. Omit the flag and the target is the profile's home currency (`profile set home_currency EUR`): a profile that has set one gets the three converting reports named below priced into it whenever the rates are on disk, and falls back quietly when they are not. A profile with no home currency, which is how every profile starts, reads each row in its own currency, and so does any report that cannot convert: the five that aggregate per currency always, and the three converting ones whenever a rate is missing. Nothing converted is ever stored — the original amount and currency stay in every table — and because `home_currency` takes an ISO code and has no unset, the unconverted read on a home-currency profile is `moneybin sql query` over the view: `reports.net_worth`, `reports.large_transactions`, or `reports.balance_drift`. Rates come from `moneybin refresh`, which caches the rates your own rows imply into the home currency; a target with no stored rates falls back, and the report says so instead of guessing:
+`--display-currency EUR` — `display_currency` on the MCP tool — prices a report into one currency at read time. Omit the flag and the target is the profile's home currency (`profile set home_currency EUR`): a profile that has set one gets the three converting reports named below priced into it whenever the rates are on disk, and falls back quietly when they are not. A profile with no home currency, which is how every profile starts, reads each row in its own currency, and so does any report that cannot convert: the five that aggregate per currency always, the mixed-unit realized-FX report always, and the three converting ones whenever a rate is missing. Nothing converted is ever stored — the original amount and currency stay in every table — and because `home_currency` takes an ISO code and has no unset, the unconverted read on a home-currency profile is `moneybin sql query` over the view: `reports.net_worth`, `reports.large_transactions`, or `reports.balance_drift`. Rates come from `moneybin refresh`, which caches the rates your own rows imply into the home currency; a target with no stored rates falls back, and the report says so instead of guessing:
 
 ```console
 $ uv run moneybin reports networth --display-currency EUR
@@ -492,7 +521,7 @@ Accounts:    4
 
 Between the table and the hints the command prints the reason, trimmed from the transcript above: `⚠️  no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`. On this profile that advice does not get you there: `refresh` gathers rates only into a home currency, and only for the currencies your rows hold, so the demo, with no home currency and USD rows alone, never fetches USD to EUR. Either make EUR the home currency (`profile set home_currency EUR`, then `moneybin refresh`) or record the pair yourself with `moneybin fx set`.
 
-Three reports convert, because each of their rows is one event on one date: `large-transactions` at the transaction date, `balance-drift` at the assertion date, `networth` at the balance date. The other five aggregate with the currency in their grouping key, so a row is already a per-currency subtotal and stays one. A profile that only ever reads in its own currency never needs any of this; [Features](../features.md#reading-a-report-in-one-currency) has the full rule set, including which anomaly columns a converted read blanks and why.
+Three reports convert, because each of their rows is one event on one date: `large-transactions` at the transaction date, `balance-drift` at the assertion date, `networth` at the balance date. Five aggregate with the currency in their grouping key, so a row is already a per-currency subtotal and stays one. `realized-fx` stays mixed-unit by design: `disposed_amount` retains `currency_code` while `proceeds`, `cost_basis`, `fee_amount`, and `gain_loss` retain `home_currency`. A profile that only ever reads in its own currency never needs any of this; [Features](../features.md#reading-a-report-in-one-currency) has the full rule set, including which anomaly columns a converted read blanks and why.
 
 ## From an AI client
 

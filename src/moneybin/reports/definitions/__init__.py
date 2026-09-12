@@ -13,6 +13,7 @@ from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
 from moneybin.reports.definitions.merchant_activity import merchant_activity
+from moneybin.reports.definitions.realized_fx import realized_fx
 from moneybin.reports.definitions.recurring_subscriptions import recurring_subscriptions
 from moneybin.reports.definitions.spending_trend import spending_trend
 
@@ -23,6 +24,7 @@ ALL_REPORTS: list[Runner] = [
     merchant_activity,
     large_transactions,
     balance_drift,
+    realized_fx,
 ]
 
 __all__ = ["ALL_REPORTS"]

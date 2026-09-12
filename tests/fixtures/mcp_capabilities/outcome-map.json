@@ -73,6 +73,7 @@
       "reports merchants",
       "reports large-transactions",
       "reports balance-drift",
+      "reports realized-fx",
       "reports run"
     ],
     "service_methods": [

@@ -162,6 +162,7 @@ _HELP_COMMANDS: list[list[str]] = [
     ["reports", "merchants"],
     ["reports", "large-transactions"],
     ["reports", "balance-drift"],
+    ["reports", "realized-fx"],
     ["sql"],
     ["sql", "query"],
     ["export"],

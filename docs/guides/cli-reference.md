@@ -420,12 +420,13 @@ only change the number.
 ## Reports
 
 Cross-domain analytical views. All commands support `--output json` and return
-the standard envelope. The eight built-in reports — `networth`,
+the standard envelope. The nine built-in reports — `networth`,
 `networth-history`, `cashflow`, `spending`, `recurring`, `merchants`,
-`large-transactions`, `balance-drift` — each have their own command with the
-filters that fit their grain (`--from-month`/`--to-month` on `cashflow` and
+`large-transactions`, `balance-drift`, `realized-fx` — each have their own
+command with the filters that fit their grain (`--from-month`/`--to-month` on `cashflow` and
 `spending`, `--from`/`--to` on `networth-history`, `--since` on
-`balance-drift`, `--as-of` on snapshots, `--account` and `--category` where
+`balance-drift`, `--from-date`/`--to-date` on `realized-fx`, `--as-of` on snapshots,
+`--account` and `--category` where
 they apply);
 [`features.md`](../features.md#reports) says what each one shows, and the
 [reports guide](reports.md) shows each one's output. Commands:

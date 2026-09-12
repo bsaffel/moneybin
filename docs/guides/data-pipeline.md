@@ -169,6 +169,7 @@ One view per CLI/MCP report, with one exception: `reports.net_worth` also backs 
 | `reports.large_transactions` | `moneybin reports large-transactions` / `reports(report_id='core:large_transactions')` |
 | `reports.merchant_activity` | `moneybin reports merchants` / `reports(report_id='core:merchants')` |
 | `reports.balance_drift` | `moneybin reports balance-drift` / `reports(report_id='core:balance_drift')` |
+| `reports.realized_fx` | `moneybin reports realized-fx` / `reports(report_id='core:realized_fx')` |
 
 ### `meta.*` and `seeds.*`
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Generator
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -33,6 +33,205 @@ def _install_report(db: Database, name: str) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(  # test-selected shipped model name
         f"CREATE OR REPLACE VIEW reports.{name} AS {_model_body(name)}"
+    )
+
+
+def _install_realized_fx_sources(model_db: Database) -> None:
+    model_db.execute("""
+        CREATE OR REPLACE TABLE core.fct_realized_fx_gains (
+            realized_fx_gain_id VARCHAR,
+            account_id VARCHAR,
+            conversion_id VARCHAR,
+            currency_lot_id VARCHAR,
+            currency_code VARCHAR,
+            home_currency VARCHAR,
+            cost_basis_method VARCHAR,
+            valuation_source_type VARCHAR,
+            coverage_status VARCHAR,
+            coverage_reason VARCHAR,
+            disposed_amount DECIMAL(18, 2),
+            proceeds DECIMAL(18, 2),
+            cost_basis DECIMAL(18, 2),
+            gain_loss DECIMAL(18, 2),
+            fee_amount DECIMAL(18, 2),
+            valuation_rate DECIMAL(18, 8),
+            acquisition_date DATE,
+            disposal_date DATE,
+            valuation_rate_date DATE,
+            updated_at TIMESTAMP
+        )
+    """)
+    model_db.execute("""
+        INSERT INTO core.fct_realized_fx_gains VALUES
+            ('gain-a', 'acct', 'dispose', 'lot-a', 'EUR', 'USD', 'fifo',
+             'actual', 'complete', NULL, 30.00, 36.00, 30.00, 6.00, 0.00,
+             1.20000000, '2026-01-02', '2026-03-04', '2026-03-04',
+             '2026-03-04 12:00:00'),
+            ('gain-b', 'acct', 'dispose', 'lot-b', 'EUR', 'USD', 'fifo',
+             'actual', 'complete', NULL, 15.00, 18.00, 16.50, 1.50, 0.00,
+             1.20000000, '2026-02-03', '2026-03-04', '2026-03-04',
+             '2026-03-04 12:00:00')
+    """)
+    model_db.execute("""
+        CREATE OR REPLACE TABLE core.fct_currency_lots (
+            currency_lot_id VARCHAR,
+            account_id VARCHAR,
+            source_conversion_id VARCHAR,
+            source_investment_transaction_id VARCHAR,
+            source_transfer_id VARCHAR,
+            currency_code VARCHAR,
+            acquisition_type VARCHAR,
+            cost_basis_method VARCHAR,
+            home_currency VARCHAR,
+            coverage_status VARCHAR,
+            coverage_reason VARCHAR,
+            original_quantity DECIMAL(18, 2),
+            remaining_quantity DECIMAL(18, 2),
+            cost_basis_total DECIMAL(18, 2),
+            cost_basis_remaining DECIMAL(18, 2),
+            basis_incomplete BOOLEAN,
+            acquisition_date DATE,
+            updated_at TIMESTAMP
+        )
+    """)
+    model_db.execute("""
+        INSERT INTO core.fct_currency_lots VALUES
+            ('lot-a', 'acct', 'acquire-a', NULL, NULL, 'EUR', 'conversion',
+             'fifo', 'USD', 'complete', NULL, 30.00, 0.00, 30.00, 0.00,
+             FALSE, '2026-01-02', '2026-03-04 12:00:00'),
+            ('lot-b', 'acct', 'acquire-b', NULL, 'transfer-b', 'EUR', 'transfer',
+             'fifo', 'USD', 'complete', NULL, 15.00, 0.00, 16.50, 0.00,
+             FALSE, '2026-02-03', '2026-03-04 12:00:00')
+    """)
+    model_db.execute("""
+        CREATE OR REPLACE TABLE core.bridge_currency_conversions (
+            conversion_id VARCHAR,
+            transfer_pair_id VARCHAR,
+            from_transaction_id VARCHAR,
+            to_transaction_id VARCHAR,
+            from_account_id VARCHAR,
+            to_account_id VARCHAR,
+            from_source_transaction_id VARCHAR,
+            to_source_transaction_id VARCHAR,
+            source_shape VARCHAR,
+            from_currency VARCHAR,
+            to_currency VARCHAR,
+            home_currency VARCHAR,
+            valuation_source_type VARCHAR,
+            from_source_type VARCHAR,
+            from_source_origin VARCHAR,
+            to_source_type VARCHAR,
+            to_source_origin VARCHAR,
+            coverage_status VARCHAR,
+            coverage_reason VARCHAR,
+            from_amount DECIMAL(18, 2),
+            to_amount DECIMAL(18, 2),
+            executed_rate DECIMAL(18, 8),
+            home_value DECIMAL(18, 2),
+            valuation_rate DECIMAL(18, 8),
+            from_date DATE,
+            to_date DATE,
+            valuation_rate_date DATE,
+            updated_at TIMESTAMP
+        )
+    """)
+    model_db.execute("""
+        INSERT INTO core.bridge_currency_conversions VALUES
+            ('dispose', 'transfer-dispose', 'txn-from', 'txn-to', 'acct',
+             'acct-home', 'source-from', 'source-to', 'linked_two_row', 'EUR',
+             'USD', 'USD', 'actual', 'manual', 'statement-a', 'manual',
+             'statement-a', 'complete', NULL, 45.00, 54.00, 1.20000000,
+             54.00, 1.20000000, '2026-03-04', '2026-03-04', '2026-03-04',
+             '2026-03-04 12:00:00')
+    """)
+    model_db.execute("""
+        CREATE OR REPLACE TABLE core.dim_accounts (
+            account_id VARCHAR,
+            display_name VARCHAR
+        )
+    """)
+    model_db.execute("INSERT INTO core.dim_accounts VALUES ('acct', 'Travel Wallet')")
+
+
+def test_realized_fx_preserves_one_row_per_consumed_lot(
+    model_db: Database,
+) -> None:
+    """A multi-lot disposal retains each lot's basis and acquisition lineage."""
+    _install_realized_fx_sources(model_db)
+    model_path = _REPORT_MODELS / "realized_fx.sql"
+    assert model_path.is_file(), "realized FX report model is missing"
+    _install_report(model_db, "realized_fx")
+
+    rows = model_db.execute("""
+        SELECT conversion_id, currency_lot_id, source_conversion_id,
+               source_transfer_id, account_name, currency_code, home_currency,
+               disposed_amount, proceeds, cost_basis, gain_loss
+        FROM reports.realized_fx
+        ORDER BY currency_lot_id
+    """).fetchall()
+
+    assert rows == [
+        (
+            "dispose",
+            "lot-a",
+            "acquire-a",
+            None,
+            "Travel Wallet",
+            "EUR",
+            "USD",
+            Decimal("30.00"),
+            Decimal("36.00"),
+            Decimal("30.00"),
+            Decimal("6.00"),
+        ),
+        (
+            "dispose",
+            "lot-b",
+            "acquire-b",
+            "transfer-b",
+            "Travel Wallet",
+            "EUR",
+            "USD",
+            Decimal("15.00"),
+            Decimal("18.00"),
+            Decimal("16.50"),
+            Decimal("1.50"),
+        ),
+    ]
+
+
+def test_realized_fx_keeps_incomplete_rows_without_joined_lineage(
+    model_db: Database,
+) -> None:
+    """An incomplete gain remains visible when its lot lineage is unavailable."""
+    _install_realized_fx_sources(model_db)
+    model_db.execute("""
+        INSERT INTO core.fct_realized_fx_gains VALUES
+            ('gain-incomplete', 'acct', 'missing-conversion', NULL, 'EUR', 'USD',
+             'fifo', 'actual', 'incomplete', 'missing_acquisition_basis', 5.00,
+             6.00, NULL, NULL, 0.00, 1.20000000, NULL, '2026-03-05',
+             '2026-03-05', '2026-03-05 12:00:00')
+    """)
+    _install_report(model_db, "realized_fx")
+
+    row = model_db.execute("""
+        SELECT realized_fx_gain_id, conversion_id, currency_lot_id,
+               coverage_status, coverage_reason, acquisition_date, cost_basis,
+               gain_loss, updated_at
+        FROM reports.realized_fx
+        WHERE realized_fx_gain_id = 'gain-incomplete'
+    """).fetchone()
+
+    assert row == (
+        "gain-incomplete",
+        "missing-conversion",
+        None,
+        "incomplete",
+        "missing_acquisition_basis",
+        None,
+        None,
+        None,
+        datetime(2026, 3, 5, 12),
     )
 
 

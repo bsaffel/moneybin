@@ -56,6 +56,7 @@ DRIFT_STATUSES: tuple[str, ...] = (
     "currency-mismatch",
     "all",
 )
+REALIZED_FX_COVERAGE: tuple[str, ...] = ("complete", "incomplete", "all")
 
 
 def default_window(months: int = 12) -> tuple[str, str]:

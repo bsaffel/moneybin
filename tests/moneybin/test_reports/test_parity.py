@@ -56,6 +56,7 @@ _EXPECTED_CLI = {
     "merchants",
     "large-transactions",
     "balance-drift",
+    "realized-fx",
 }
 _EXPECTED_CATALOG_CLI = {
     "core:balance_drift": "balance-drift",
@@ -65,6 +66,7 @@ _EXPECTED_CATALOG_CLI = {
     "core:networth": "networth",
     "core:networth_history": "networth-history",
     "core:recurring": "recurring",
+    "core:realized_fx": "realized-fx",
     "core:spending": "spending",
 }
 #: R5's tier-spanning catalog/runner plus the CLI-only lifecycle verbs. These

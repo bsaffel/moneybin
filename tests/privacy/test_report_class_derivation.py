@@ -34,6 +34,7 @@ def test_derives_every_deployed_reports_view() -> None:
         "merchant_activity",
         "net_worth",
         "recurring_subscriptions",
+        "realized_fx",
         "spending_trend",
     }
 

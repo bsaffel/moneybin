@@ -26,6 +26,7 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports merchants`](#moneybin-reports-merchants) | Per-merchant lifetime activity totals (spend, count, first/last seen). |
 | [`moneybin reports large-transactions`](#moneybin-reports-large-transactions) | Top transactions by absolute amount with per-account/category z-scores. |
 | [`moneybin reports balance-drift`](#moneybin-reports-balance-drift) | Balance reconciliation drift: asserted vs computed, one row per assertion. |
+| [`moneybin reports realized-fx`](#moneybin-reports-realized-fx) | Realized FX gain/loss by disposal and lot allocation. |
 
 ## moneybin reports list
 
@@ -60,7 +61,7 @@ Usage: `moneybin reports run [OPTIONS] HANDLE`
 |---|---|---|---|
 | `--param` | text, repeatable |  | Parameter value as key=value; repeat for multiple values. Values are coerced to the report's declared type. |
 | `--limit` | int |  | Maximum rows to return. Default: 1,000,000. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -210,7 +211,7 @@ Usage: `moneybin reports networth [OPTIONS]`
 |---|---|---|---|
 | `--as-of` | text |  | ISO date (YYYY-MM-DD); shows networth on or before |
 | `--account` | text, repeatable |  | Filter per-account breakdown to specific account_id(s); repeatable |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 
@@ -227,7 +228,7 @@ Usage: `moneybin reports networth-history [OPTIONS]`
 | `--from` | text |  | Required. ISO date (YYYY-MM-DD) |
 | `--to` | text |  | Required. ISO date (YYYY-MM-DD) |
 | `--interval` | text | `monthly` | daily \| weekly \| monthly |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 
@@ -247,7 +248,7 @@ Usage: `moneybin reports spending [OPTIONS]`
 | `--to-month` | text |  | Upper bound (inclusive) as 'YYYY-MM'. |
 | `--category` | text |  | Filter to a specific category text. None returns all. |
 | `--compare` | text | `yoy` | yoy \| mom \| trailing — selects which comparison the text table shows by default. The view returns all three columns regardless, so JSON, MCP, and --wide are unaffected. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -267,7 +268,7 @@ Usage: `moneybin reports cashflow [OPTIONS]`
 | `--from-month` | text |  | Lower bound (inclusive) as 'YYYY-MM' (also accepts 'YYYY-MM-DD' and ignores the day). |
 | `--to-month` | text |  | Upper bound (inclusive) as 'YYYY-MM'. |
 | `--by` | text | `account-and-category` | account \| category \| account-and-category — how to group. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -289,7 +290,7 @@ Usage: `moneybin reports recurring [OPTIONS]`
 | `--min-confidence` | float | `0.5` | 0.0-1.0; filter to candidates >= threshold. |
 | `--status` | text | `active` | active \| inactive \| all. |
 | `--cadence` | text |  | weekly \| biweekly \| monthly \| quarterly \| yearly \| irregular (None returns all). |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -310,7 +311,7 @@ Usage: `moneybin reports merchants [OPTIONS]`
 |---|---|---|---|
 | `--top` | int | `25` | Limit rows **within each currency** (>= 1). A spend-sorted ranking across currencies compares unlike units, so one high-denomination currency could take every slot. A single-currency profile gets the same N rows it always did. On MCP the result is additionally capped at the session max_rows; the CLI is uncapped. |
 | `--sort` | text | `spend` | spend \| count \| recent. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -333,7 +334,7 @@ Usage: `moneybin reports large-transactions [OPTIONS]`
 |---|---|---|---|
 | `--top` | int | `25` | Top N by ABS(amount) **within each currency** (>= 1). Ranking across currencies would compare unlike units, so one high-denomination currency could crowd every other currency out of the result entirely. A single-currency profile gets the same N rows it always did. On MCP the result is additionally capped at the session max_rows; the CLI is uncapped. |
 | `--anomaly` | text | `none` | account \| category \| none — filter to z>2.5 in the named scope. Applied in SQL against the original-currency scores, so it selects the same rows whether or not a display currency is requested — but a converted read returns those scores as null. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
@@ -355,7 +356,28 @@ Usage: `moneybin reports balance-drift [OPTIONS]`
 | `--account` | text |  | Filter to an account; accepts account_id or case-insensitive display_name. Ambiguous display_name matches raise; None for all. |
 | `--status` | text | `all` | drift \| warning \| clean \| no-data \| currency-mismatch \| all. Selects on the bucket in each row's own currency. A display- converted read re-buckets what it returns, so combining this with a display currency can return a row whose displayed status differs from the one asked for — the filter runs in SQL, before any rate is known. Filter on `all` and read the returned status when converting. |
 | `--since` | text |  | ISO date; only assertions on or after. |
-| `--display-currency` | text |  | ISO-4217 code to price every amount in (e.g. EUR). Each row converts at its own date. Amounts stay in their original currency — and the result says so — when any row has no rate. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports realized-fx
+
+Realized FX gain/loss by disposal and lot allocation.
+
+Disposed amount is in ``currency_code``; proceeds, cost basis, fees, and gain/loss are in ``home_currency``. The report deliberately retains both units; display conversion does not re-price historical realized accounting. An unmatched-inventory placeholder has no ``currency_lot_id`` and stays visible as incomplete.
+
+Usage: `moneybin reports realized-fx [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Earliest disposal date to include, as YYYY-MM-DD. |
+| `--to-date` | text |  | Latest disposal date to include, as YYYY-MM-DD. |
+| `--currency` | text |  | ISO 4217 disposed Currency; case and surrounding spaces ignored. |
+| `--coverage` | text | `all` | complete \| incomplete \| all. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates into your home currency only, so any other target falls back until its own rates are stored. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
