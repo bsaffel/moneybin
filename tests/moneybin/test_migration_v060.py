@@ -28,20 +28,21 @@ SELECT column_name, data_type, is_nullable
 
 
 def test_v060_adds_an_empty_default_target_collection(db: Database) -> None:
-    """Existing profiles gain an empty target list, preserving refresh cost."""
+    """The runner preserves a legacy home currency and backfills its targets."""
+    db.execute("INSERT INTO app.profile_settings (home_currency) VALUES ('USD')")
     db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
+    migration = Migration.from_file(_MIGRATION_PATH)
 
-    run_migration(db, migrate)
+    MigrationRunner(db, migrations_dir=_MIGRATION_PATH.parent).apply_one(migration)
 
     data_type, nullable = column_info(
         db, "app", "profile_settings", "display_currency_targets"
     )
     assert data_type == "VARCHAR[]"
     assert nullable is False
-    db.execute("INSERT INTO app.profile_settings (home_currency) VALUES ('USD')")
     assert db.execute(
-        "SELECT display_currency_targets FROM app.profile_settings"
-    ).fetchone() == ([],)
+        "SELECT home_currency, display_currency_targets FROM app.profile_settings"
+    ).fetchone() == ("USD", [])
 
 
 def test_v060_runs_through_the_migration_runner_transaction(db: Database) -> None:
