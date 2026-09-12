@@ -487,41 +487,63 @@ parse `from_date`/`to_date`, and if both are given and `from_date >
 to_date`, raise the same `UserError`/`REPORT_PARAMETER_INVALID_RANGE` —
 before computing `effective_from`/`effective_to` or issuing any query.
 
-The runner computes `effective_to` as `to_date` when supplied, else
-`CURRENT_DATE`, and `effective_from` as `from_date` when supplied, else
-`effective_to`. When the runner's own filtered query (below) returns zero
-rows and the count of eligible candidates — `include_in_net_worth AND
-(archived_at IS NULL OR archived_at >= effective_from)`, over-stating
-rather than under-stating exactly as the per-row predicate would if it had
-a date to correlate against — is greater than zero, the runner appends one
-synthesized row dated `balance_date = effective_to`, every measure NULL,
-`account_count = 0`, `unanchored_account_count` set to that count. Dating
-it at `effective_to` keeps it inside `[effective_from, effective_to]`, so
-it survives the runner's own range filter with no separate sentinel needed.
-An out-of-range query against a profile with *no* eligible candidate still
-correctly returns zero rows, exactly like any other `@report` — the count
-is zero, so neither the view's arm nor the runner's fallback fires.
+**A one-sided range stays open on the side that wasn't given — it does not
+collapse to a single day.** `cash_flow.py`'s own precedent, already cited
+above for the parameter-binding shape, is explicit about this:
+`if from_month: ... AND year_month >= ?` and `if to_month: ... AND
+year_month <= ?` are two independent, separately-conditional clauses
+(`cash_flow.py:176-181`) — supplying only `to_month` leaves the lower bound
+un-appended entirely, not defaulted to `to_month` itself. `effective_from`
+must follow the same shape: `from_date` when supplied, else **unbounded**
+— never `effective_to`. Defaulting the missing lower bound to the upper
+bound is the bug this fixes: it collapsed "net worth through March" into
+"net worth on March 31st alone," and if no balance row happens to land on
+that exact day, the runner would misread a normal profile's real,
+differently-dated history as an empty result and could synthesize a
+fabricated incompleteness row in its place — the same silent-wrong-answer
+class the inverted-range fix above exists to prevent, from the opposite
+direction. `effective_to` keeps its existing rule: `to_date` when supplied,
+else `CURRENT_DATE`.
 
-**The runner's ordinary filter is otherwise the range every `@report`
-already applies, with "no range" meaning the latest row, not today.**
-`NetworthService.current()` — the service this spec retires — already
-resolves "now" as `WITH latest AS (SELECT MAX(balance_date) FROM
-reports.net_worth ...) ... INNER JOIN latest`
-(`src/moneybin/services/networth_service.py:54-62`), because
+The runner's ordinary filter mirrors `cash_flow.py`'s conditional-append
+shape rather than a fixed `BETWEEN`, because `BETWEEN` needs both sides:
+`from_date` given appends `AND balance_date >= ?`; `to_date` given appends
+`AND balance_date <= ?`; both given is the conjunction of the two (the
+`BETWEEN` shape falls out of that, not the other way around); neither given
+resolves to `WHERE balance_date = (SELECT MAX(balance_date) FROM
+reports.net_worth)` — the same "latest row" default `NetworthService.current()`
+already runs (`WITH latest AS (SELECT MAX(balance_date) FROM
+reports.net_worth ...) ... INNER JOIN latest`,
+`src/moneybin/services/networth_service.py:54-62`), because
 `core.fct_balances_daily`'s spine ends at the newest observation across
 *all* accounts (`fct_balances_daily.py:186`, `global_last_date =
 obs["balance_date"].max()`), not at `CURRENT_DATE` — the ordinary case for a
 statement-backed account is that its freshest observation is a few days
-old, not today. `reports.net_worth`'s runner keeps that exact resolution:
-`from_date`/`to_date` given filters `WHERE balance_date BETWEEN ? AND ?`,
-same as any ranged `@report`; neither given resolves to `WHERE balance_date
-= (SELECT MAX(balance_date) FROM reports.net_worth)`, the same query
-`NetworthService.current()` already runs. For a wholly-unanchored profile
-this now resolves to the view's own `CURRENT_DATE` arm — the only row in
-the view — composing with zero extra logic: `MAX(balance_date)` finds it,
-the equality filter keeps it, and the runner's fallback below never even
-evaluates its condition, because the filtered result it would check is
-already non-empty.
+old, not today. For a wholly-unanchored profile this "no range" default
+resolves to the view's own `CURRENT_DATE` arm — the only row in the view —
+composing with zero extra logic: `MAX(balance_date)` finds it, the equality
+filter keeps it, and the fallback below never even evaluates its condition,
+because the filtered result it would check is already non-empty.
+
+When the runner's own filtered query returns zero rows and the count of
+eligible candidates — `include_in_net_worth AND (archived_at IS NULL OR
+effective_from IS NULL OR archived_at >= effective_from)`, over-stating
+rather than under-stating exactly as the per-row predicate would if it had
+a date to correlate against — is greater than zero, the runner appends one
+synthesized row dated `balance_date = effective_to`, every measure NULL,
+`account_count = 0`, `unanchored_account_count` set to that count. The
+added `effective_from IS NULL` arm is what an unbounded lower edge means
+for this predicate: with no starting boundary to compare against, every
+archival date — however old — falls "within" a range that has always
+included it, so the account-not-date over-statement already established
+for a bounded range extends unchanged to an unbounded one, not a second
+rule. Dating the row at `effective_to` keeps it inside
+`[effective_from, effective_to]` (or, when `effective_from` is `NULL`,
+inside `(-∞, effective_to]`), so it survives the runner's own range filter
+with no separate sentinel needed. An out-of-range query against a profile
+with *no* eligible candidate still correctly returns zero rows, exactly
+like any other `@report` — the count is zero, so neither the view's arm
+nor the runner's fallback fires.
 
 **Which layer owns which case, stated once.** The view owns every row that
 can be dated without knowing the request: every real balance-driven row
@@ -1046,12 +1068,15 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and three acceptance tests for
+tests named in §Testing Strategy, and four acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V0NN into the
-ambiguous state warns; it warns no longer once `accounts set --include` or
-`--exclude` writes the `confirms_include_in_net_worth` marker (whichever
-value is passed, including the idempotent `--exclude` that leaves
-`include_in_net_worth` unchanged); and, as a negative, an unrelated
+ambiguous state warns; the same account after `unarchive()` — `archived`
+back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
+per that method's own contract — still warns, pinning that the check is not
+scoped to `archived = TRUE`; the warning clears once `accounts set
+--include` or `--exclude` writes the `confirms_include_in_net_worth` marker
+(whichever value is passed, including the idempotent `--exclude` that
+leaves `include_in_net_worth` unchanged); and, as a negative, an unrelated
 `accounts set` write on the same account — a rename or a currency change,
 `include_in_net_worth` untouched — leaves it warning, pinning that a
 generic settings write is not what clears it.
@@ -1311,6 +1336,12 @@ AGENTS.md's AX bias both point at.
   populated or synthesized, on a profile that has an eligible unanchored
   candidate: that combination is exactly the one an inverted range could
   otherwise turn into a silently plausible wrong answer.
+- **`to_date` alone stays open below.** A persona with real balance history
+  starting well before the requested `to_date`, queried with `to_date` only,
+  returns every row on or before it — not a single row on `to_date` itself.
+  Pick a `to_date` that lands on a day with no balance observation of its
+  own, so the assertion fails under the collapsed-to-a-single-day rule and
+  passes only under the open-below one.
 - **The naming rule has a guard.** For every runner in `ALL_REPORTS`, the name
   half of `spec.report_id` equals `spec.view.name`. Requirement 13 is a
   convention until a test enforces it, and the six mismatches this spec removes
@@ -1383,7 +1414,7 @@ guard through that arm alone.
 
 The `international` persona already supplies the shapes needed: several
 currencies, one of them unpriced. Two additions for Requirement 9 and
-multi-currency, and five for `M2B.3`:
+multi-currency, and seven for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -1458,10 +1489,20 @@ approved as a footnote rather than reviewed on its own terms.
   not the backfill's, and it closes with a named mechanism rather than a
   restated intention: a new `system doctor` invariant,
   `account_archive_intent_ambiguous` (`warn` severity, alongside
-  `net_worth_stale_balance`), flags every account where `archived = TRUE AND
-  include_in_net_worth = FALSE` and no `app.audit_log` row for it carries a
+  `net_worth_stale_balance`), flags every account where
+  `include_in_net_worth = FALSE` and no `app.audit_log` row for it carries a
   dedicated decision marker — never merely "some later settings write
-  exists." `AccountSettingsRepo.set` writes one `account_settings.set` audit
+  exists," and never scoped to `archived = TRUE`. `AccountService.unarchive()`
+  sets `archived = FALSE` and, by contract, does **not** restore
+  `include_in_net_worth` (`account_service.py:667-671`: "does NOT restore
+  include_in_net_worth (per spec)"; `settings_update`'s own docstring:
+  "callers re-enable inclusion explicitly when intended"). A reopened
+  account therefore keeps a cascade-written `FALSE` while no longer being
+  `archived` at all — scoping the check to `archived = TRUE` would lose
+  exactly that account the moment it comes back into use, which is the
+  louder failure: a dormant excluded account surprises nobody, but a live
+  account silently missing from every net-worth total is the failure this
+  guard exists to catch. `AccountSettingsRepo.set` writes one `account_settings.set` audit
   row for every field touched, alike, so a later row alone cannot separate a
   genuine confirmation from an unrelated rename or currency edit; and
   because that row is a full-row snapshot, an idempotent `--exclude` (the
