@@ -3196,6 +3196,53 @@ def test_currency_integrity_overlap_message_names_the_pair_and_fallback(
 
 
 @pytest.mark.unit
+def test_currency_integrity_overlap_message_names_a_fallback_for_every_pair(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile with more than one duplicate-account pair, not just the first.
+
+    ``overlap_pairs[0]`` alone would leave a second pair's fallback command
+    unpublished, so a user resolving that pair whose bare sweep also raises
+    no proposal would have no ready-made command to reach for.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    _insert_overlap_account(doctor_db, "DUP_E", institution_slug="wells")
+    _insert_overlap_account(doctor_db, "DUP_F", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "DUP_E", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_F", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL "
+        "WHERE account_id IN ('DUP_B', 'DUP_F')"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "DUP_A:DUP_B" in detail, detail
+    assert "DUP_E:DUP_F" in detail, detail
+    assert "moneybin accounts links run DUP_A DUP_B" in detail, detail
+    assert "moneybin accounts links run DUP_E DUP_F" in detail, detail
+    # Scoped to the two new two-id fallback commands, matching the sibling
+    # single-pair test above — the message's other, pre-existing
+    # `<decision_id> --into <account_id>` placeholder text is illustrative
+    # prose, not a literal invocation, and is out of scope here.
+    assert_published_commands_resolve("`moneybin accounts links run DUP_A DUP_B`")
+    assert_published_commands_resolve("`moneybin accounts links run DUP_E DUP_F`")
+
+
+@pytest.mark.unit
 def test_currency_integrity_fails_closed_when_overlap_probe_errors(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

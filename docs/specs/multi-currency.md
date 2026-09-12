@@ -369,11 +369,13 @@ Numbered, testable. Tagged by phase.
    unknown currency is the only thing holding a duplicate account's rows out
    of every total, and assigning it a currency would admit them (GH #410). If
    the account mirrors an existing one at the same institution, the detail
-   names the specific overlapping pair and sequences account-identity
-   resolution (`accounts links run` / `accounts links set`) ahead of the
-   currency fix, including the two-id `accounts links run <account_id>
-   <candidate_account_id>` fallback for when the automatic sweep raises no
-   proposal for that pair. If the overlap check itself cannot run, the detail
+   names every overlapping pair (capped at 5, with the remainder counted
+   rather than silently dropped) and sequences account-identity resolution
+   (`accounts links run` / `accounts links set`) ahead of the currency fix,
+   including a concrete two-id `accounts links run <account_id>
+   <candidate_account_id>` fallback command for each shown pair, for when the
+   automatic sweep raises no proposal on it. If the overlap check itself
+   cannot run, the detail
    withholds the currency-assignment advice entirely rather than risk
    admitting an unconfirmed duplicate. Only when no overlap is found or
    suspected does the detail go straight to `accounts set --currency`. The

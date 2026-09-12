@@ -3249,11 +3249,23 @@ class DoctorService:
                     ],
                 )
             if overlapping_unknown_accounts:
+                # Capped like transform_model_presence's missing[:5] above: an
+                # unbounded pair count must not make this message unbounded.
+                shown_pairs = overlap_pairs[:5]
                 pair_descriptions = ", ".join(
                     f"{a}:{b} ({round(ratio * 100)}% overlap)"
-                    for a, b, ratio in overlap_pairs
+                    for a, b, ratio in shown_pairs
                 )
-                first_a, first_b, _ = overlap_pairs[0]
+                fallback_commands = "; ".join(
+                    f"`moneybin accounts links run {a} {b}`" for a, b, _ in shown_pairs
+                )
+                overflow = len(overlap_pairs) - len(shown_pairs)
+                overflow_note = (
+                    f", plus {overflow} more pair(s) not shown — resolve "
+                    "these first and re-run to see the rest"
+                    if overflow
+                    else ""
+                )
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3261,23 +3273,23 @@ class DoctorService:
                         f"{', '.join(parts)} have an unknown currency, and "
                         f"{len(overlapping_unknown_accounts)} of those "
                         "account(s) mirror an existing account's transactions "
-                        f"at the same institution ({pair_descriptions}) — "
-                        "most likely one account imported twice. The unknown "
-                        "currency is the only thing holding those duplicate "
-                        "rows out of every total, so resolve account "
-                        "identity FIRST: run `moneybin accounts links run`, "
-                        "then decide with `moneybin accounts links set "
-                        "<decision_id> --into <account_id>` (or "
-                        "`--standalone` if they are genuinely distinct). "
-                        "Identity resolution matches on institution+last-four "
-                        "and name similarity, not the transaction overlap "
-                        "this check measures, so this pair may raise no "
-                        "proposal at all — if so, name it yourself with "
-                        f"`moneybin accounts links run {first_a} {first_b}`, "
-                        "which queues the same reviewable proposal from the "
-                        "ids above. Only then assign a currency with "
-                        "`moneybin accounts set <account> --currency "
-                        "<ISO 4217>` and re-run `moneybin transform`."
+                        f"at the same institution ({pair_descriptions}"
+                        f"{overflow_note}) — most likely one account imported "
+                        "twice. The unknown currency is the only thing "
+                        "holding those duplicate rows out of every total, so "
+                        "resolve account identity FIRST: run `moneybin "
+                        "accounts links run`, then decide with `moneybin "
+                        "accounts links set <decision_id> --into "
+                        "<account_id>` (or `--standalone` if they are "
+                        "genuinely distinct). Identity resolution matches on "
+                        "institution+last-four and name similarity, not the "
+                        "transaction overlap this check measures, so any "
+                        "pair may raise no proposal at all — if so, name it "
+                        f"yourself: {fallback_commands}, each queuing the "
+                        "same reviewable proposal from its own ids. Only "
+                        "then assign a currency with `moneybin accounts set "
+                        "<account> --currency <ISO 4217>` and re-run "
+                        "`moneybin transform`."
                     ),
                     affected_ids=[
                         *(f"account:{account_id}" for account_id in unknown_accounts),
