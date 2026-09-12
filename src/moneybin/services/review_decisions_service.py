@@ -825,6 +825,8 @@ class ReviewDecisionsService:
                 source_id = impact.provisional_security_id
                 target_id = impact.candidate_security_id
                 selection_disposal_ids = impact.lot_selection_disposal_ids
+        material_accept = changed and request.decision == "accept"
+        material_merge = material_accept and not binds_a_feed_key
         decisions = _query_json_rows(
             self._db,
             f"""
@@ -835,14 +837,27 @@ class ReviewDecisionsService:
             """,  # TableRef constant + parameterized values
             [decision["source_type"], decision["ref_kind"], decision["ref_value"]],
         )
-        links = _query_json_rows(
-            self._db,
-            f"""
-            SELECT * FROM {SECURITY_LINKS.full_name}
-            WHERE security_id = ? AND status = 'accepted'
-            ORDER BY link_id
-            """,  # TableRef constant + parameterized value
-            [source_id],
+        links = (
+            _query_json_rows(
+                self._db,
+                f"""
+                SELECT * FROM {SECURITY_LINKS.full_name}
+                WHERE source_type = ? AND ref_kind = ? AND ref_value = ?
+                  AND status = 'accepted'
+                ORDER BY link_id
+                """,  # TableRef constant + parameterized reference
+                [decision["source_type"], decision["ref_kind"], decision["ref_value"]],
+            )
+            if binds_a_feed_key
+            else _query_json_rows(
+                self._db,
+                f"""
+                SELECT * FROM {SECURITY_LINKS.full_name}
+                WHERE security_id = ? AND status = 'accepted'
+                ORDER BY link_id
+                """,  # TableRef constant + parameterized value
+                [source_id],
+            )
         )
         securities = _query_json_rows(
             self._db,
@@ -855,18 +870,22 @@ class ReviewDecisionsService:
         )
         from moneybin.investments.identity import manual_identity_sql
 
-        manual = _query_json_rows(
-            self._db,
-            f"""
-            SELECT t.*, i.account_id AS effective_account_id,
-                   i.security_id AS effective_security_id,
-                   i.account_identity_generation, i.security_identity_generation
-            FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
-            JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
-            WHERE i.security_id = ?
-            ORDER BY t.source_transaction_id
-            """,  # TableRef constant + parameterized value
-            [source_id],
+        manual = (
+            _query_json_rows(
+                self._db,
+                f"""
+                SELECT t.*, i.account_id AS effective_account_id,
+                       i.security_id AS effective_security_id,
+                       i.account_identity_generation, i.security_identity_generation
+                FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS t
+                JOIN ({manual_identity_sql()}) AS i USING (source_transaction_id)
+                WHERE i.security_id = ?
+                ORDER BY t.source_transaction_id
+                """,  # TableRef constant + parameterized value
+                [source_id],
+            )
+            if material_merge
+            else []
         )
         selections = [
             row
@@ -881,7 +900,6 @@ class ReviewDecisionsService:
                 [disposal_id],
             )
         ]
-        material_accept = changed and request.decision == "accept"
         # A bind creates one link and re-points nothing, so it moves no event, no
         # lot, and no mark: EVERY re-pointing category below gates on this flag,
         # not just the last one. Claiming the candidate's ledger for a bind is
@@ -901,7 +919,6 @@ class ReviewDecisionsService:
         # `securities` deliberately stays on material_accept: a bind does affect
         # one security — it becomes priceable — and reporting a wholly empty
         # blast radius for a write would understate it.
-        material_merge = material_accept and not binds_a_feed_key
         marks = (
             _query_json_rows(
                 self._db,
