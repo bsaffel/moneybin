@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, get_args
 
-from moneybin.privacy.taxonomy import DataClass
+from moneybin.privacy.taxonomy import MONEY_CLASSES, DataClass
 from moneybin.tables import TableRef
 
 # A runner takes an open Database plus keyword-only params and returns the
@@ -40,6 +40,20 @@ _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 #: CLI: importing `convert` from one pulls `CurrencyService`, and polars behind
 #: it, into every cold start (`test_cli_main_import_does_not_load_heavy_deps`).
 ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
+
+#: KNOWN GAP, deliberately open until the net-worth ladder needs it. A column
+#: declaring `currency_basis="home"` gives its row a second source currency, so
+#: the attribution problem above returns for that half: `applied_rates` holds
+#: both rates and this column names only the row's own. It is not closed the
+#: same way, because a home currency is report-level metadata — one value per
+#: call, resolved once by `ReportCatalog.execute` — and stamping a per-row
+#: column with a constant would publish the wrong shape to avoid a second
+#: lookup. Nothing reaches this today: no shipped report declares a home-basis
+#: column. The first one that does is `reports.net_worth`
+#: (`account_balance_home`, `net_worth_home` — reports-net-worth-sql-surface.md
+#: Requirement 10), and that is where the envelope has to start publishing the
+#: home currency alongside the rates, rather than leaving a caller to infer
+#: which rate priced which basis.
 
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and
@@ -173,10 +187,30 @@ A rise in spending and a rise in income are both ``+``; only the declaration
 says which of them is good news.
 """
 
+type CurrencyBasis = Literal["home"]
+"""Names the currency a money column is already denominated in, when that is
+not the row's own currency — today, only the profile's home currency.
+
+``convert_records`` (``reports/_framework/convert.py``) otherwise has no way
+to tell such a column apart from an ordinary row-currency amount: it prices
+every declared money column using the rate resolved for
+``ReportSemantics.currency``'s value on that row, which silently reprices a
+column a SQLMesh model already converted (`docs/specs/reports-net-worth-sql-
+surface.md`'s ``account_balance_home``, ``net_worth_home``). Declaring
+``currency_basis="home"`` tells ``convert_records`` to price the column FROM
+the profile's home currency instead of from the row's own — an identity rate
+when the target already is the home currency (Requirement 9's default, so the
+column is left numerically unchanged at zero extra cost), and a real
+conversion when the caller asked for a different currency. Every money column
+on a converted row ends up in the same currency either way, which is what
+keeps a comparable row from becoming two figures under one label.
+"""
+
 # Read off the aliases above rather than restated, so the runtime gate in
 # `OutputColumn.__post_init__` cannot drift from the type a contributor sees.
 _MONEY_KINDS: tuple[str, ...] = get_args(MoneyKind.__value__)
 _POLARITIES: tuple[str, ...] = get_args(Polarity.__value__)
+_CURRENCY_BASES: tuple[str, ...] = get_args(CurrencyBasis.__value__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,6 +224,15 @@ class OutputColumn:
     """How to render this column's amounts; ``None`` means it is not money."""
     polarity: Polarity | None = None
     """Required when ``money_kind`` is ``"delta"``; refused on the other kinds."""
+    currency_basis: CurrencyBasis | None = None
+    """``None`` (default) — this amount is in the row's own currency, the one
+    ``ReportSemantics.currency`` names, and ``convert_records`` prices it from
+    that column like every column declared before this field existed.
+    ``"home"`` — a SQLMesh model already converted this amount to the profile's
+    home currency; ``convert_records`` prices it FROM that currency rather than
+    from the row's own, so it still lands in whatever currency the read was
+    converted to. See :data:`CurrencyBasis`.
+    """
 
     def __post_init__(self) -> None:
         """Reject an unrenderable declaration where it is written, not where it is read.
@@ -214,7 +257,14 @@ class OutputColumn:
         dropping it tells an author their column is polarized when the rendered
         output will not be. ``Money`` is left alone: it is not part of the
         extension surface, and every in-repo construction of one is a literal
-        pyright already checks.
+        pyright already checks. An unrecognized ``currency_basis`` would fail
+        the same silent way — ``convert_records`` reads only the one value it
+        recognizes and treats anything else as the row-currency default — so it
+        is rejected here rather than left to price a column wrong with no
+        error anywhere. A basis on a column whose ``data_class`` holds no money
+        fails the same way and is refused for the same reason: ``convert_records``
+        prices only the classes in ``MONEY_CLASSES``, so the declaration would
+        be a silent no-op rather than an error the author could see.
         """
         if self.money_kind is not None and self.money_kind not in _MONEY_KINDS:
             raise ValueError(
@@ -230,10 +280,26 @@ class OutputColumn:
             raise ValueError(
                 f"money column {self.name!r} is a delta and must declare its polarity"
             )
+        if (
+            self.currency_basis is not None
+            and self.currency_basis not in _CURRENCY_BASES
+        ):
+            raise ValueError(
+                f"money column {self.name!r} declares an unknown currency_basis "
+                f"{self.currency_basis!r}; expected one of "
+                f"{', '.join(_CURRENCY_BASES)}"
+            )
         if self.money_kind != "delta" and self.polarity is not None:
             raise ValueError(
                 f"money column {self.name!r} is not a delta, so its polarity "
                 f"{self.polarity!r} would be ignored rather than applied"
+            )
+        if self.currency_basis is not None and self.data_class not in MONEY_CLASSES:
+            raise ValueError(
+                f"column {self.name!r} declares currency_basis "
+                f"{self.currency_basis!r} but its data_class "
+                f"{self.data_class.value!r} is not one that holds money, so "
+                f"nothing would ever price it from that basis"
             )
 
 

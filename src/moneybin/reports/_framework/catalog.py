@@ -464,6 +464,7 @@ class ReportCatalog:
                 execution,
                 to_currency=target,
                 service=build_cache_only_currency_service(db),
+                home_currency=home_currency,
             )
             # A requested currency's fallback is explained and a default's is
             # silent (see above); either way the caveat `execute_raw` attached

@@ -118,6 +118,178 @@ def test_converts_a_money_column_at_the_rows_own_date(saved_db: Database) -> Non
     assert outcome.records[0]["amount"] == Decimal("109.00")
 
 
+#: One `OutputColumn` naming `amount_home` as already priced in the home
+#: currency — the shape `reports.net_worth_accounts`'s `account_balance_home`
+#: declares (`reports-net-worth-sql-surface.md`).
+_HOME_BASIS_COLUMNS = (
+    OutputColumn(
+        "amount_home",
+        "Already converted to the home currency by SQL.",
+        DataClass.BALANCE,
+        currency_basis="home",
+    ),
+)
+
+
+def test_a_home_converted_column_is_priced_exactly_once(saved_db: Database) -> None:
+    """The net-worth ladder defect, at the common target: the home currency.
+
+    SQL's own home-currency conversion must not be repriced by the row's own
+    rate a second time. `reports.net_worth_accounts` computes
+    `account_balance_home` in SQL as `account_balance * rate(row_currency ->
+    home_currency)`. Before `OutputColumn.currency_basis` existed,
+    `convert_records` had no way to tell that column apart from an ordinary
+    row-currency amount, so it applied the same EUR->USD rate to it again.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=Decimal("109.00"))],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        home_currency="USD",
+    )
+
+    assert outcome.degraded_reason is None
+    # 100.00 EUR at 1.09 = 109.00 USD: the row-basis column converts once.
+    assert outcome.records[0]["amount"] == Decimal("109.00")
+    # Already 109.00 USD — must not be re-priced by the same 1.09 rate. The
+    # home->USD rate resolved is a free identity (home == target), so nothing
+    # was actually priced a second time.
+    assert outcome.records[0]["amount_home"] == Decimal("109.00")
+
+
+def test_a_home_basis_column_prices_into_a_third_currency(saved_db: Database) -> None:
+    """The declared-basis semantics: every column lands in the SAME currency.
+
+    Requested display currency is GBP, neither the row's own EUR nor the
+    profile's home USD. `amount` prices EUR->GBP from the row's own currency;
+    `amount_home` — already 109.00 USD, per the SQL model's own conversion —
+    must price USD->GBP from the DECLARED home currency, not be left in USD
+    (a blended result multi-currency.md forbids) and not be repriced as though
+    it still held EUR (the double-conversion this field exists to prevent).
+    """
+    _seed_rate(saved_db, "EUR", "GBP", date(2026, 3, 5), Decimal("0.85"))
+    _seed_rate(saved_db, "USD", "GBP", date(2026, 3, 5), Decimal("0.79"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=Decimal("109.00"))],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="GBP",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        home_currency="USD",
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "GBP"
+    # 100.00 EUR at 0.85 = 85.00 GBP.
+    assert outcome.records[0]["amount"] == Decimal("85.00")
+    # 109.00 USD at 0.79 = 86.11 GBP — priced from home, not from EUR again.
+    assert outcome.records[0]["amount_home"] == Decimal("86.11")
+    # Both columns end up denominated the same way — a comparable row, not one
+    # column in GBP and another still describing a USD or EUR amount.
+    assert outcome.records[0]["currency_code"] == "GBP"
+
+
+def test_a_home_basis_column_without_a_home_currency_segments(
+    saved_db: Database,
+) -> None:
+    """A report declaring a home-basis column needs the home currency supplied.
+
+    `convert_records` has no row-level source for it the way `currency_column`
+    is one for the row's own amounts — it is report-level metadata the caller
+    must pass. Missing it degrades like any other unpriceable case; it must
+    never guess.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=Decimal("109.00"))],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+    )
+
+    assert outcome.display_currency is None
+    assert outcome.degraded_reason is not None
+    assert outcome.records[0]["amount"] == Decimal("100.00")
+    assert outcome.records[0]["amount_home"] == Decimal("109.00")
+
+
+def test_a_malformed_home_currency_segments_rather_than_guessing(
+    saved_db: Database,
+) -> None:
+    """The profile's home currency is not user input, but the same rule applies.
+
+    Never echoed either: a malformed profile setting is not this call's own
+    request, but the value never rides the reason regardless of source.
+    """
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=Decimal("109.00"))],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        home_currency="Dollars",
+    )
+
+    assert outcome.degraded_reason is not None
+    assert "Dollars" not in outcome.degraded_reason
+
+
+def test_an_all_null_home_basis_projection_converts_without_a_home_currency(
+    saved_db: Database,
+) -> None:
+    """A declared home-basis column is not evidence any row needs its rate.
+
+    ``account_balance_home`` is documented nullable
+    (``reports-net-worth-sql-surface.md``) — a profile with no home currency
+    set is exactly the state that produces an all-null projection. The
+    per-row gate further down already skips resolving a rate for a null
+    home-basis cell (``test_a_null_home_basis_value_does_not_demand_a_home_
+    rate``); this is the same relief applied to the declaration-level
+    requirement above it, so a result where every home-basis cell happens to
+    be null still converts its row-basis amounts instead of degrading over a
+    home currency no row actually needs.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=None)],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        # No home_currency: the profile has none set, which is the documented
+        # nullable state — not a caller omission.
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "USD"
+    assert outcome.records[0]["amount"] == Decimal("109.00")
+    assert outcome.records[0]["amount_home"] is None
+
+
 def test_converted_rows_report_the_display_currency_not_the_original(
     saved_db: Database,
 ) -> None:
@@ -1643,3 +1815,93 @@ def test_a_row_naming_no_original_currency_keeps_every_rate(
     capped = truncate_execution(converted)
 
     assert {rate.from_currency for rate in capped.applied_rates} == {"EUR", "GBP"}
+
+
+def test_the_cap_drops_a_home_rate_that_priced_only_a_discarded_row(
+    saved_db: Database,
+) -> None:
+    """A home-basis report has no weaker claim to the sentinel cut than any other.
+
+    Conversion runs before the deferred cap, so it prices the ``limit + 1``
+    sentinel row's home-basis column too. Declaring a home-basis column must not
+    turn provenance narrowing off wholesale — that republishes the discarded
+    row's ``requested_date`` under the home currency, which is the same
+    disclosure ``test_the_cap_drops_the_rate_that_priced_only_a_discarded_row``
+    prevents for the row-basis case.
+    """
+    for on, eur, gbp in (
+        (date(2026, 3, 5), Decimal("1.09"), Decimal("1.27")),
+        (date(2026, 3, 6), Decimal("1.10"), Decimal("1.28")),
+    ):
+        _seed_rate(saved_db, "EUR", "USD", on, eur)
+        _seed_rate(saved_db, "GBP", "USD", on, gbp)
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+    execution = _execution(
+        records=[
+            _row(amount_home=Decimal("127.00")),
+            _row(
+                txn_date=date(2026, 3, 6),
+                amount_home=Decimal("128.00"),
+            ),
+        ],
+        columns=[*classes],
+        column_types=["DATE", "VARCHAR", "DECIMAL(18,2)", "BIGINT", "DECIMAL(18,2)"],
+        output_classes=classes,
+        output_columns=_HOME_BASIS_COLUMNS,
+        total_count=2,
+        pending_limit=1,
+    )
+
+    converted = convert_execution(
+        execution, to_currency="USD", service=service, home_currency="GBP"
+    )
+    assert {
+        (rate.from_currency, rate.requested_date) for rate in converted.applied_rates
+    } == {
+        ("EUR", date(2026, 3, 5)),
+        ("EUR", date(2026, 3, 6)),
+        ("GBP", date(2026, 3, 5)),
+        ("GBP", date(2026, 3, 6)),
+    }
+
+    capped = truncate_execution(converted)
+
+    # Only the surviving row's date survives — on both bases, not just the
+    # row's own.
+    assert {
+        (rate.from_currency, rate.requested_date) for rate in capped.applied_rates
+    } == {("EUR", date(2026, 3, 5)), ("GBP", date(2026, 3, 5))}
+
+
+def test_a_null_home_basis_value_does_not_demand_a_home_rate(
+    saved_db: Database,
+) -> None:
+    """A rate that would never be applied must not degrade the whole read.
+
+    ``convert_records`` fails shut when a rate it needs is missing, which is
+    right for a value it is about to price. A row whose home-basis column is
+    null is not such a value: resolving the home rate for it anyway makes one
+    absent quote segment a result where every figure present could convert.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    # Deliberately no GBP->USD rate on this date: the home basis is declared,
+    # but no row carries a value for it.
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=None)],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        home_currency="GBP",
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "USD"
+    assert outcome.records[0]["amount"] == Decimal("109.00")
+    assert outcome.records[0]["amount_home"] is None
+    assert {rate.from_currency for rate in outcome.applied_rates} == {"EUR"}
