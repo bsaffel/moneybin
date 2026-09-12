@@ -196,7 +196,12 @@ this spec's to close.
     an account the user has excluded or archived does not count toward
     `unanchored_account_count` and does not NULL a total it was never part of.
     This is not a second eligibility rule beside Requirement 9's — it is the
-    same one, applied to a source Requirement 9 did not yet have to join.
+    same one, applied to a source Requirement 9 did not yet have to join, and
+    at the same granularity: for every ordinary balance-driven row this is
+    evaluated at *that row's own* `balance_date`, exactly like every other
+    Requirement 9 check. Only the one row with no `balance_date` of its own —
+    the synthesized row below — needs a stand-in, and that stand-in is the
+    only place a requested range enters this guard at all.
 
     **A profile with no balance-spine row at all still gets exactly one.**
     `core.fct_balances_daily` returns zero rows, not a NULL-valued one, when
@@ -216,23 +221,24 @@ this spec's to close.
     worse answer than an honest absence of rows. **The eligible unanchored
     count is what gates the synthesized row, not spine emptiness by itself.**
 
-    **That row's eligibility has to be evaluated against the requested
-    range, not always against today — surviving the date filter is not
-    enough on its own.** This requirement already counts an unanchored
-    account across the whole requested range (above), so a caller asking
-    about last quarter, on a profile that was unanchored and still live
-    then but has since been archived, has to see the same NULL total and
-    count a caller asking about that quarter *at the time* would have seen.
-    Requirement 9's eligibility predicate compares a row's own `balance_date`
-    against `archived_at`; the synthesized row has no `balance_date` of its
-    own, and evaluating its eligibility at `CURRENT_DATE` regardless of what
-    range was asked for silently drops an account that was live and
-    unanchored throughout the requested range but is not live today — the
-    report reads as complete for a range it actually understated, which is
-    the exact failure class this requirement exists to prevent, recurring
-    one layer downstream of where Defect 6 first showed it. See §Data Model
-    for how eligibility is evaluated against the requested range instead of
-    today, and how the row is dated without changing the spine.
+    **The one row with no `balance_date` of its own has to borrow the
+    requested range instead — surviving the date filter is not enough on its
+    own.** This is the synthesized row from a profile with no balance-spine
+    row at all (above), and only that row: every ordinary row already
+    carries its own `balance_date` to evaluate `archived_at` against, per
+    the eligibility rule just stated. This requirement already counts an
+    unanchored account across the whole requested range (below), so a
+    caller asking about last quarter, on a profile that was unanchored and
+    still live then but has since been archived, has to see the same NULL
+    total and count a caller asking about that quarter *at the time* would
+    have seen. Evaluating the synthesized row's eligibility at `CURRENT_DATE`
+    regardless of what range was asked for would silently drop an account
+    that was live and unanchored throughout the requested range but is not
+    live today — the report would read as complete for a range it actually
+    understated, which is the exact failure class this requirement exists to
+    prevent. See §Data Model for how that one row's eligibility is evaluated
+    against the requested range instead of today, and how it is dated
+    without changing the spine.
 
     **Scoped to the account, not to the date, and deliberately so.**
     `core.dim_holdings` is a current snapshot with no date dimension, and the
@@ -246,9 +252,11 @@ this spec's to close.
     direction Requirement 7 already chose; the date-precise form waits for C.3,
     and is the same guard with a finer input rather than a second pattern
     beside it. That is a different axis from *which* range the guard is
-    evaluated against: the holdings signal itself carries no date, but the
-    archival cutoff it is joined with still has to respect the requested
-    `from_date`/`to_date` rather than always today — see §Data Model.
+    evaluated against for the one row that has no date of its own to
+    correlate with: the holdings signal itself carries no date, but the
+    synthesized row's archival cutoff still has to respect the requested
+    `from_date`/`to_date` rather than always today — see §Data Model. Every
+    ordinary row needs no such stand-in; it already has its own date.
 
     **Beta-gating, and its own work item — `M2B.3`.** It does not ride along
     with the rungs or the rate spine, because the number a first-time user sees
@@ -280,22 +288,27 @@ all three read. It must not be a TABLE: `include_in_net_worth`, `archived`, and
 materialized rows makes a later un-archive silently wrong. The same constraint
 binds M2P.3 — see §Key Decision 6.
 
-`M2B.3` adds a new `core.*` relation and a runner-side computation — neither
-folded into `reports.net_worth`'s `kind VIEW` query, which stays exactly the
-balance-driven three-rung read above and touches nothing but
-`core.*`/`app.*`.
+`M2B.3` adds a new `core.*` relation, and extends `reports.net_worth`'s own
+`kind VIEW` query with it directly. The count and its NULL gate are a
+property of the row, computed on the SQL surface every rung already is, not
+hidden behind a runner a direct SQL reader never sees. Only the one case a
+view genuinely cannot express on its own — synthesizing a row for a profile
+with no balance-spine row at all — still needs the runner, and even that
+reads no `prep.*` and touches no spine.
 
-**Why the guard cannot live in the view.** `report_class_derivation.py`
-parses every `src/moneybin/sqlmesh/models/reports/*.sql` file and calls
-`assert_acyclic` (`src/moneybin/privacy/report_materialization.py:106-128`)
-against it: a `reports.*` model may read only `core.*`/`app.*`, because
-`CLASSIFICATION` is the independently-authored ground truth CI derives
-against, and a schema outside that set — `prep.*` included — has none to
-derive from, so a read of it fails the build rather than resolving to a
-floor. `prep.stg_plaid__investment_holdings` is such a schema, so
-`reports.net_worth`'s model file cannot read it directly, scoped or not. The
-fix is not to work around that check; it is to put the read where the check
-already permits it.
+**Why the candidate set cannot be read from `prep.*` directly, in the view or
+anywhere else in `reports.*`.** `report_class_derivation.py` parses every
+`src/moneybin/sqlmesh/models/reports/*.sql` file and calls `assert_acyclic`
+(`src/moneybin/privacy/report_materialization.py:106-128`) against it: a
+`reports.*` model may read only `core.*`/`app.*`, because `CLASSIFICATION` is
+the independently-authored ground truth CI derives against, and a schema
+outside that set — `prep.*` included — has none to derive from, so a read of
+it fails the build rather than resolving to a floor. `prep.stg_plaid__investment_holdings`
+is such a schema, so `reports.net_worth`'s model file cannot read it
+directly, scoped or not, whether that read sits in the view's own query or
+in a per-row correlated subquery. The fix is not to work around that check;
+it is to put the read behind one new relation the check already permits, and
+have the view read *that*.
 
 **`core.dim_holdings_broker_reported`** — a new `kind VIEW` in `core`,
 sitting beside `dim_holdings.sql` in `src/moneybin/sqlmesh/models/core/`,
@@ -309,7 +322,7 @@ liquidated item's newest pull — which writes zero holdings rows — leave its
 last non-empty snapshot's rows in place, permanently flagging a
 correctly-empty account as unanchored and NULLing the profile total forever.
 Scoping to the newest snapshot receipt reads that pull as no candidate rows
-instead, exactly as `dim_holdings.sql`'s own comment on `provider_reported`
+instead, exactly as `dim_holdings.sql`'s own `newest_snapshot` comment
 requires. This is the established pattern, not a new one: `dim_holdings.sql`
 already reads `prep.stg_plaid__investment_holdings_snapshots` this way over
 the sibling holdings table; the new relation is the same receipt-scoped read
@@ -320,21 +333,19 @@ consumer that `dim_holdings.sql`'s own `positions`-driven shape cannot serve
 matching `("core", "dim_holdings")`'s own — so the read has ground truth to
 derive against instead of needing an exception.
 
-**Evidence of holding value has three sources.** `core.dim_holdings` sums
-open lots, so it emits no row at all for a broker-reported position with no
-matching lot (an unbound security, a declined bootstrap, or a holdings
-snapshot that landed before its transactions); `core.dim_holdings_broker_reported`
-is exactly the source `dim_holdings.sql`'s own comment names for that
-direction; and `core.fct_transactions` — already `core.*`, so it needs no
-relation of its own — supplies the non-investment case Requirement 14's
-qualifier adds: any account with at least one recorded transaction,
-regardless of source or amount. An account is a guard candidate if it
-appears in *any* of the three and has no row in `core.fct_balances` at all.
-The currencies and accounts rungs do not read any of them — the guard drives
-a profile total NULL, and only `reports.net_worth` publishes one. See
-`unanchored_account_count` below, and Requirement 14 for the join's
-account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3) is
-deliberately not one of these sources.
+**Evidence of holding value has three sources, and `reports.net_worth`'s
+`kind VIEW` reads all three directly — no runner involved.**
+`core.dim_holdings` sums open lots, so it emits no row at all for a
+broker-reported position with no matching lot (an unbound security, a
+declined bootstrap, or a holdings snapshot that landed before its
+transactions); `core.dim_holdings_broker_reported` is exactly the source
+`dim_holdings.sql`'s own comment names for that direction; and
+`core.fct_transactions` — already `core.*`, so it needs no relation of its
+own — supplies the non-investment case Requirement 14's qualifier adds: any
+account with at least one recorded transaction, regardless of source or
+amount. All three are `core.*`, so the view joining them keeps
+`assert_acyclic` satisfied on its own terms, not through a runner workaround
+of the check.
 
 **What the transaction-activity arm catches, and what it still misses.**
 `core.fct_transactions` carries `transaction_date`, but the guard reads it
@@ -352,59 +363,103 @@ reintroduce the false-positive risk Requirement 14's qualifier exists to
 avoid. That account stays silently absent, exactly as it does today — the
 residual gap Requirement 14 states rather than absorbs.
 
+**The count and the NULL gate are per row, computed by the view, at that
+row's own `balance_date` — the same shape Requirement 9's eligibility
+predicate already uses.** For every balance-driven row `reports.net_worth`
+emits, `unanchored_account_count` is the number of candidate accounts (the
+three sources above) that have no row in `core.fct_balances` at all and pass
+`include_in_net_worth AND (archived_at IS NULL OR balance_date <=
+archived_at)` — correlated to that row's own `balance_date`, exactly as
+Requirement 9 already evaluates eligibility for the balance-backed measures
+on the same row. `total_assets`, `total_liabilities`, and `net_worth` NULL
+when that count is greater than zero — the same NULL gate
+`unpriced_currency_count` already drives. Because the count travels with the
+row instead of living in a runner, a caller reading `reports.net_worth`
+through `sql_query`, `moneybin sql query`, or DuckDB directly — no runner
+involved at all — sees the same NULLed total and the same count any other
+caller does: `SELECT * FROM reports.net_worth ORDER BY balance_date DESC
+LIMIT 12` (§CLI Interface) is correct on this dimension with no
+special-casing, because the guard is a property of the row, not of how it
+was fetched. This is what resolves the SQL-surface gap directly: a mixed
+anchored/unanchored profile no longer depends on the runner to expose either
+the incompleteness or the NULL.
+
 **`core.fct_balances_daily` is unchanged, deliberately.** Its early return on
 an empty profile (`if obs.empty: yield from (); return`) stays exactly as
-shipped — this requirement does not make the spine read either holdings
-relation or synthesize a row itself. That model is general-purpose and
+shipped — this requirement does not make the spine read any of the three
+sources above or synthesize a row itself. That model is general-purpose and
 holdings-agnostic, read by all three rungs and by consumers outside this spec
 that have no concept of an unanchored account; coupling it to this guard
 would leak a scaffold row to every one of them, not only to
 `reports.net_worth`.
 
-**The guard's count and its synthesized row are computed by the report's
-runner, not by the view.** Every `@report` wraps its `kind VIEW` in
-Python-built SQL that supplies parameters the view itself cannot see —
-`src/moneybin/reports/definitions/cash_flow.py:176-179` already does this
-for `core:cashflow`'s `from_month`/`to_month`. `reports.net_worth`'s runner
-follows the same shape: it holds `from_date`/`to_date` as bound parameters
-and uses them for two things a `kind VIEW`, evaluated with no per-query
-parameters, cannot do.
+**Only one case still needs the runner, and it is the one case a view
+genuinely cannot express: a profile with no balance-spine row at all.** When
+`core.fct_balances` is empty for the whole profile, `reports.net_worth`
+emits no row for any date, so there is no row for the per-row count above to
+attach to — the gap Requirement 14 names ("a profile with no balance-spine
+row at all still gets exactly one"). *Whether* to synthesize does not depend
+on `from_date`/`to_date` at all: it is a global fact about the profile,
+independent of any requested range. What genuinely needs the range is *how*
+the synthesized row is dated and evaluated, because — unlike every other row
+— it has no `balance_date` of its own to correlate against. This is the one
+remaining place `reports.net_worth`'s runner does work the view cannot: it
+holds `from_date`/`to_date` as bound parameters, the way
+`src/moneybin/reports/definitions/cash_flow.py:172-181` already holds
+`from_month`/`to_month` for `core:cashflow` — there a `WHERE 1=1`
+conditionally extended with `>=`/`<=` comparisons on a derived string
+column, here a `BETWEEN` on a date column; the predicate shapes differ, the
+architectural move (a Python-built predicate over bound parameters the view
+itself cannot see) is the same.
 
-First, dating the row. The runner computes `effective_to` as `to_date` when
-supplied, else `CURRENT_DATE`, and `effective_from` as `from_date` when
-supplied, else `effective_to` — collapsing to a single day for the ordinary
-"what am I worth right now" call, which leaves that case's behavior exactly
-as before. When published, the synthesized row is dated `balance_date =
-effective_to`, which is always inside `[effective_from, effective_to]`, so
-it survives the runner's own `balance_date BETWEEN ? AND ?` filter — the
-same filter every balance-driven row passes through, with no separate
-sentinel or `OR`-branch needed for this one.
+The runner computes `effective_to` as `to_date` when supplied, else
+`CURRENT_DATE`, and `effective_from` as `from_date` when supplied, else
+`effective_to` — collapsing to a single day for the ordinary "what am I
+worth right now" call. When `core.fct_balances` is empty for the whole
+profile and the count of eligible candidates — `include_in_net_worth AND
+(archived_at IS NULL OR archived_at >= effective_from)`, over-stating rather
+than under-stating exactly as the per-row predicate above would if it had a
+date to correlate against — is greater than zero, the runner appends one
+synthesized row dated `balance_date = effective_to`, every measure NULL,
+`account_count = 0`, `unanchored_account_count` set to that count. Dating it
+at `effective_to` keeps it inside `[effective_from, effective_to]`, so it
+survives the runner's own range filter with no separate sentinel needed —
+and unlike the earlier design, this `effective_from`/`effective_to`
+computation now fires only for this one global-emptiness case, never for an
+ordinary balance-driven row.
 
-Second, evaluating eligibility against that range rather than against
-today. Requirement 9's predicate compares a row's own `balance_date` against
-`archived_at`; the synthesized row has no such date, so the runner asks the
-range's version of the same question instead — *was this account still live
-for at least one day of the requested range* — `include_in_net_worth AND
-(archived_at IS NULL OR archived_at >= effective_from)`. An account archived
-before `effective_from` was never live during the range and is excluded; one
-archived on or after it was live for at least the days before that cutoff
-and is included, even though the days after its archival are not
-individually distinguished — the same account-not-date over-statement
-Requirement 14 already accepts for the holdings signal, extended to the
-archival cutoff for consistency rather than introduced as a second rule. For
-the ordinary unranged call, `effective_from = effective_to = CURRENT_DATE`,
-which reduces to `archived_at IS NULL OR archived_at >= CURRENT_DATE` — the
-same "not yet archived as of today" test the guard always ran.
+**The runner's ordinary filter is otherwise the range every `@report`
+already applies, with "no range" meaning the latest row, not today.**
+`NetworthService.current()` — the service this spec retires — already
+resolves "now" as `WITH latest AS (SELECT MAX(balance_date) FROM
+reports.net_worth ...) ... INNER JOIN latest`
+(`src/moneybin/services/networth_service.py:53-62`), because
+`core.fct_balances_daily`'s spine ends at the newest observation across
+*all* accounts (`fct_balances_daily.py:186`, `global_last_date =
+obs["balance_date"].max()`), not at `CURRENT_DATE` — the ordinary case for a
+statement-backed account is that its freshest observation is a few days
+old, not today. `reports.net_worth`'s runner keeps that exact resolution:
+`from_date`/`to_date` given filters `WHERE balance_date BETWEEN ? AND ?`,
+same as any ranged `@report`; neither given resolves to `WHERE balance_date
+= (SELECT MAX(balance_date) FROM reports.net_worth)`, the same query
+`NetworthService.current()` already runs, so an ordinary "what am I worth"
+call keeps returning the latest available row instead of an empty result
+because today itself has no balance data. The two runner responsibilities
+are independent: this filter picks which real rows come back, and only when
+it comes back empty does the runner check whether `core.fct_balances` is
+globally empty and, if so, run the `effective_from`/`effective_to`
+computation above — the ordinary path never touches it.
 
-The runner counts the eligible accounts from the union of `core.dim_holdings`,
-`core.dim_holdings_broker_reported`, and `core.fct_transactions` (distinct
-`account_id`), filtered through `core.dim_accounts` with that range-evaluated
-eligibility predicate and left-joined against `core.fct_balances` to keep
-only accounts with no balance row at all. When the balance-driven output
-from `reports.net_worth` (filtered to `[from_date, to_date]`, like every
-rung) is empty and that count is greater than zero, the runner appends the
-one synthesized row — every measure NULL, `account_count = 0`,
-`unanchored_account_count` set to the count — to the result it returns.
+**What a direct SQL reader still cannot get from the bare view.** The one
+corner case above — a profile with no balance-spine row at all — still
+returns nothing to a plain `SELECT * FROM reports.net_worth`, because the
+view has no per-query parameter to date a synthesized row with and no real
+row to attach one to. Every other case — including every mixed
+anchored/unanchored profile, which is the shape a direct SQL reader
+actually hits in practice — is correct with no runner at all. Stated
+plainly rather than absorbed: the split is clean except for this one
+global-emptiness case, which is inherent to what a `kind VIEW` with no
+per-query parameters can express, not a gap in this design.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -498,18 +553,20 @@ silently returns the priced subset. This rung does the aggregation once, and
 fails closed.
 
 `unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
-Requirement 14 delivers the guard as its own work item precisely so the release
-gate on this row outlives M2B.2 closing. The report's runner counts it from
-the union of `core.dim_holdings`, `core.dim_holdings_broker_reported`, and
-`core.fct_transactions` (§Data Model above) — sources none of the three
-rungs' own `kind VIEW` models reads together — against `core.fct_balances`,
-filtered through the range-evaluated eligibility predicate described there,
-to count an eligible account carrying evidence of holding value with no
-balance row at all, and drives `net_worth` NULL the same way
-`unpriced_currency_count` already does. Requirement 14 states why the join
-needs no per-date `balance_date` predicate of its own and why
-`core.fct_holdings_daily` (Pillar C.3) is deliberately not one of these
-sources.
+Requirement 14 delivers the guard as its own work item precisely so the
+release gate on this row outlives M2B.2 closing. The view itself counts it,
+per row, from the union of `core.dim_holdings`, `core.dim_holdings_broker_reported`,
+and `core.fct_transactions` (§Data Model above) — sources none of the other
+two rungs reads — correlated against `core.fct_balances` and `core.dim_accounts`
+at that row's own `balance_date`, to count an eligible account carrying
+evidence of holding value with no balance row at all, and drives `net_worth`
+NULL the same way `unpriced_currency_count` already does. Only the
+report's runner, and only for a profile with no balance-spine row at all,
+computes this column outside the view — §Data Model states why that one
+case cannot be expressed without a requested range to anchor a row to.
+Requirement 14 states why the join needs no per-date `balance_date`
+predicate beyond the row's own and why `core.fct_holdings_daily` (Pillar
+C.3) is deliberately not one of these sources.
 
 ### Rate models
 
@@ -739,9 +796,10 @@ NULL-total behavior.
 `net_worth_stale_balance` reads each eligible account's own latest
 observation from `reports.net_worth_accounts` — never a `balance_date` the
 check assumes to be today's. `core.fct_balances_daily`'s spine ends at the
-newest observation across *all* accounts, not at `CURRENT_DATE` (that model's
-own docstring states this), so a profile where every account has gone stale
-together has no row dated today at all; filtering to `balance_date =
+newest observation across *all* accounts — the model's own docstring calls
+this "the global last date," deliberately not each account's own — which is
+not necessarily `CURRENT_DATE`, so a profile where every account has gone
+stale together has no row dated today at all; filtering to `balance_date =
 CURRENT_DATE` would find nothing and pass silently in precisely the case this
 check exists to catch. **"Eligible" here means the account's current state,
 not the date-scoped predicate Requirement 9 applies inside
@@ -903,9 +961,11 @@ tests named in §Testing Strategy.
   gains the converted measures, the rate provenance columns, and
   `carried_forward_count`; both switch the eligibility filter to the
   date-scoped form. **`M2B.3`** later adds the `unanchored_account_count`
-  column to this file's declared shape, in its own change — the guard's own
-  join and count live in the runner (`net_worth.py`) and a new `core.*`
-  model, not in this `kind VIEW`'s query; see §Data Model.
+  column and its NULL gate to this file's own query, in its own change —
+  joining the new `core.*` model (below) and `core.fct_transactions`,
+  correlated per row against each row's own `balance_date`. Only the
+  global-emptiness synthesized row lives in the runner (`net_worth.py`)
+  instead; see §Data Model.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -939,8 +999,11 @@ tests named in §Testing Strategy.
   classified `core.*` relation the guard reads instead of `prep.*` directly;
   see §Data Model.
 - `src/moneybin/privacy/taxonomy.py` — its `CLASSIFICATION` entry.
-- `src/moneybin/reports/definitions/net_worth.py` — the guard's count and
-  synthesized row, evaluated against the runner's own `from_date`/`to_date`.
+- `src/moneybin/reports/definitions/net_worth.py` — the ordinary range
+  filter (or `MAX(balance_date)` when unranged), plus the one
+  global-emptiness synthesized row evaluated against the runner's own
+  `from_date`/`to_date`. The guard's per-row count and NULL gate live in
+  `net_worth.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
   invariant.
@@ -1175,7 +1238,8 @@ candidate set back to every balance-less account.
 ## Synthetic Data Requirements
 
 The `international` persona already supplies the shapes needed: several
-currencies, one of them unpriced. Three additions:
+currencies, one of them unpriced. Two additions for Requirement 9 and
+multi-currency, and five for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
