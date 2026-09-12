@@ -97,13 +97,19 @@ def profile_set(
             )
         settings = service.get_settings()
     operation_id = current_operation_id()
+    actions = ["Use profile() to see the profile's current settings"]
+    if display_currency_targets is not None and settings.display_currency_targets:
+        actions.insert(
+            0,
+            'Run refresh_run(steps=["rates"]) to fetch rates for the display targets',
+        )
     return build_envelope(
         data=ProfileSetPayload(
             home_currency=settings.home_currency,
             display_currency_targets=settings.display_currency_targets,
             operation_id=operation_id,
         ),
-        actions=["Use profile() to see the profile's current settings"],
+        actions=actions,
         recovery_actions=[
             RecoveryAction(
                 tool="system_audit_undo",

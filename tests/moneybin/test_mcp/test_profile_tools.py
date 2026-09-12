@@ -88,7 +88,23 @@ async def test_profile_set_round_trips_normalized_display_currency_targets(
 
     assert write_env.error is None
     assert write_env.data.display_currency_targets == ("EUR", "GBP")
+    assert write_env.actions == [
+        'Run refresh_run(steps=["rates"]) to fetch rates for the display targets',
+        "Use profile() to see the profile's current settings",
+    ]
     assert (await profile()).data.display_currency_targets == ("EUR", "GBP")
+
+
+async def test_profile_set_empty_display_targets_does_not_offer_rate_refresh(
+    mcp_db: object,
+) -> None:
+    """Clearing targets restores the no-extra-rate-work default."""
+    await profile_set(display_currency_targets=["EUR"])
+
+    env = await profile_set(display_currency_targets=[])
+
+    assert env.data.display_currency_targets == ()
+    assert env.actions == ["Use profile() to see the profile's current settings"]
 
 
 async def test_profile_set_home_currency_preserves_declared_display_targets(
@@ -107,6 +123,7 @@ async def test_profile_set_home_currency_preserves_declared_display_targets(
     assert env.error is None
     assert env.data.home_currency == "USD"
     assert env.data.display_currency_targets == ("EUR",)
+    assert env.actions == ["Use profile() to see the profile's current settings"]
 
 
 async def test_profile_set_rejects_a_malformed_currency(mcp_db: object) -> None:
