@@ -299,10 +299,13 @@ binds M2P.3 — see §Key Decision 6.
 `M2B.3` adds a new `core.*` relation, and extends `reports.net_worth`'s own
 `kind VIEW` query with it directly. The count and its NULL gate are a
 property of the row, computed on the SQL surface every rung already is, not
-hidden behind a runner a direct SQL reader never sees. Only the one case a
-view genuinely cannot express on its own — synthesizing a row for a
-requested range with no balance-spine rows in it at all — still needs the
-runner, and even that reads no `prep.*` and touches no spine.
+hidden behind a runner a direct SQL reader never sees — and that includes
+the wholly-unanchored profile: the view synthesizes its own `CURRENT_DATE`
+row when the balance-driven output is empty but an eligible candidate
+exists, so "what am I worth right now" needs no runner even in that case.
+Only a specific *historical range* with no balance-spine rows in it —
+something a view with no per-query parameters genuinely cannot date — still
+needs the runner, and even that reads no `prep.*` and touches no spine.
 
 **Why the candidate set cannot be read from `prep.*` directly, in the view or
 anywhere else in `reports.*`.** `report_class_derivation.py` parses every
@@ -410,40 +413,39 @@ that have no concept of an unanchored account; coupling it to this guard
 would leak a scaffold row to every one of them, not only to
 `reports.net_worth`.
 
-**Only one case still needs the runner, and it is the one case a view
-genuinely cannot express: a requested range with no balance-spine rows in
-it.** The view attaches a correct count to every row it emits, but it emits
-nothing for a date with no balance observation at all — so whenever the
-runner's own filtered query (below) comes back empty, there is no row for
-the per-row count to attach to. That happens for two reasons, and the
-guard has to cover both: a profile with no balance data ever (the gap
-Requirement 14 names — "a profile with no balance-spine row at all still
-gets exactly one"), and a profile *with* balance data whose requested range
-simply falls outside it. The second is not hypothetical:
+**The view carries a second `UNION ALL` arm for the wholly-unanchored
+profile — no runner needed for that case either.** A view with no
+per-query parameters cannot represent "the range the caller asked for," but
+it can represent "today," the same way `CURRENT_DATE` already does inside
+its per-row predicates. `reports.net_worth`'s query therefore gains one
+more unconditional arm, evaluated fresh on every read like the rest of the
+view: when the balance-driven output (the same three-rung read every other
+arm shares) is empty and the eligible-candidate count — the four sources,
+joined to `core.dim_accounts`, evaluated at `CURRENT_DATE` exactly as the
+per-row predicate evaluates each real row at its own `balance_date` — is
+greater than zero, this arm emits exactly one row: `balance_date =
+CURRENT_DATE`, every measure NULL, `account_count = 0`,
+`unanchored_account_count` set to that count. A bare `SELECT * FROM
+reports.net_worth` on a profile whose only accounts are eligible and
+unanchored now returns that one row with no runner, no `sql_query`
+wrapper, and no bound parameters — which is the "now" answer a direct SQL
+reader actually wants, and exactly what AGENTS.md's `sql_query`/`moneybin
+sql query` inspection path reads.
+
+**That still leaves one case a view cannot express: a specific historical
+range with no balance-spine rows in it.** The view's own arm is always
+dated `CURRENT_DATE`; a caller who explicitly asks for a range that
+excludes today gets nothing from the bare view for a profile whose only
+data is that one arm's row — the same gap as before, just narrower now
+that "today" is covered. This is not hypothetical:
 `fct_balances_daily.py`'s per-account spine runs from that account's own
 first observation through the global last one
 (`fct_balances_daily.py:186-197`) and no further, so a historical query for
 a range that predates every account's first balance observation returns
-zero real rows exactly like a wholly-empty profile does — even when an
-eligible unanchored account was live throughout that range. Gating
-synthesis on "`core.fct_balances` is empty for the whole profile" catches
-only the first reason: the second gets the ordinary filtered query back
-empty, correctly finds `core.fct_balances` is *not* globally empty, and
-skips synthesis — landing back on the exact silent-absence failure
-Requirement 14 exists to close, recurring for range queries instead of only
-the never-had-any-balance case.
-
-The fix matches the diagnosis: trigger synthesis on *the runner's own
-filtered result being empty*, not on a separate global-emptiness check. A
-profile with no balance data ever is simply the case where every possible
-range's filtered result happens to be empty, so this one condition
-subsumes it rather than sitting beside it as a second check. *Whether* to
-synthesize is therefore answered entirely by the ordinary filter's own
-result; *how* the synthesized row is dated and evaluated is the one thing
-that still needs `from_date`/`to_date`, because — unlike every real row —
-it has no `balance_date` of its own to correlate against. This is the one
-remaining place `reports.net_worth`'s runner does work the view cannot: it
-holds `from_date`/`to_date` as bound parameters, the way
+zero real rows and excludes the view's `CURRENT_DATE` arm too, even when an
+eligible unanchored account was live throughout that range. This is the one
+remaining place `reports.net_worth`'s runner does work the view genuinely
+cannot: it holds `from_date`/`to_date` as bound parameters, the way
 `src/moneybin/reports/definitions/cash_flow.py:172-181` already holds
 `from_month`/`to_month` for `core:cashflow` — there a `WHERE 1=1`
 conditionally extended with `>=`/`<=` comparisons on a derived string
@@ -451,21 +453,54 @@ column, here a `BETWEEN` on a date column; the predicate shapes differ, the
 architectural move (a Python-built predicate over bound parameters the view
 itself cannot see) is the same.
 
+The runner triggers this fallback on *its own filtered result being
+empty* — not a separate global-emptiness check, and not a check for
+"which arm produced which row," since the runner reads the view's output
+the same way any caller does. This single condition already subsumes the
+wholly-empty-profile case: for that profile, the view's own `CURRENT_DATE`
+arm means the ordinary filter is *not* empty for any range that includes
+today, so the runner's fallback correctly never fires there — see below for
+why the two never collide. The fallback fires only when it is still needed:
+a range that excludes both real data and the view's own `CURRENT_DATE` row.
+
+**Before computing `effective_from`/`effective_to` or issuing any query,
+the runner validates the range — an inverted one is rejected, not silently
+reinterpreted.** `service_reports.py`'s
+`_validate_networth_history_parameters` — the validation this spec retires
+along with the rest of `service_reports.py` — already rejects `from_date >
+to_date` with `UserError(code=error_codes.REPORT_PARAMETER_INVALID_RANGE)`
+before running any query. Without that check preserved, an inverted range
+would flow straight into the `effective_from`/`effective_to` computation
+below, which does not itself validate order: `effective_to` would resolve
+to `to_date` and `effective_from` to `from_date`, with `effective_from >
+effective_to`. The ordinary `BETWEEN` filter over an inverted pair matches
+no real row (DuckDB's `BETWEEN` is `low AND high`, never reordered), so it
+correctly returns nothing — but the empty-result fallback would then read
+that as "no data in this range," and an eligible unanchored candidate would
+make it synthesize a row dated `effective_to`, a date that lies *before*
+`effective_from`. That row is well-formed and NULL exactly like any other
+synthesized row — nothing in its shape marks it as answering a nonsensical
+request — which is a silently plausible wrong answer standing in for the
+input the retired service rejected outright, the worse failure of the two.
+`reports.net_worth`'s runner therefore runs the identical check —
+parse `from_date`/`to_date`, and if both are given and `from_date >
+to_date`, raise the same `UserError`/`REPORT_PARAMETER_INVALID_RANGE` —
+before computing `effective_from`/`effective_to` or issuing any query.
+
 The runner computes `effective_to` as `to_date` when supplied, else
 `CURRENT_DATE`, and `effective_from` as `from_date` when supplied, else
-`effective_to` — collapsing to a single day for the ordinary "what am I
-worth right now" call. When the runner's own filtered query (below) returns
-zero rows and the count of eligible candidates — `include_in_net_worth AND
-(archived_at IS NULL OR archived_at >= effective_from)`, over-stating rather
-than under-stating exactly as the per-row predicate above would if it had a
-date to correlate against — is greater than zero, the runner appends one
+`effective_to`. When the runner's own filtered query (below) returns zero
+rows and the count of eligible candidates — `include_in_net_worth AND
+(archived_at IS NULL OR archived_at >= effective_from)`, over-stating
+rather than under-stating exactly as the per-row predicate would if it had
+a date to correlate against — is greater than zero, the runner appends one
 synthesized row dated `balance_date = effective_to`, every measure NULL,
-`account_count = 0`, `unanchored_account_count` set to that count. Dating it
-at `effective_to` keeps it inside `[effective_from, effective_to]`, so it
-survives the runner's own range filter with no separate sentinel needed. An
-out-of-range query against a profile with *no* eligible candidate still
+`account_count = 0`, `unanchored_account_count` set to that count. Dating
+it at `effective_to` keeps it inside `[effective_from, effective_to]`, so
+it survives the runner's own range filter with no separate sentinel needed.
+An out-of-range query against a profile with *no* eligible candidate still
 correctly returns zero rows, exactly like any other `@report` — the count
-is zero, so the guard does not fire.
+is zero, so neither the view's arm nor the runner's fallback fires.
 
 **The runner's ordinary filter is otherwise the range every `@report`
 already applies, with "no range" meaning the latest row, not today.**
@@ -481,34 +516,40 @@ old, not today. `reports.net_worth`'s runner keeps that exact resolution:
 `from_date`/`to_date` given filters `WHERE balance_date BETWEEN ? AND ?`,
 same as any ranged `@report`; neither given resolves to `WHERE balance_date
 = (SELECT MAX(balance_date) FROM reports.net_worth)`, the same query
-`NetworthService.current()` already runs. This query's result is exactly
-what the synthesis check above reads: an ordinary "what am I worth" call on
-a normal profile keeps returning the latest available row, and only a
-genuinely empty result — globally, or for a historical range outside all
-recorded data — reaches the synthesis check at all.
+`NetworthService.current()` already runs. For a wholly-unanchored profile
+this now resolves to the view's own `CURRENT_DATE` arm — the only row in
+the view — composing with zero extra logic: `MAX(balance_date)` finds it,
+the equality filter keeps it, and the runner's fallback below never even
+evaluates its condition, because the filtered result it would check is
+already non-empty.
 
 **Which layer owns which case, stated once.** The view owns every row that
-exists: its per-row count and NULL gate are correct for any real
-balance-driven row, in any requested range, with no runner involvement.
-The runner owns exactly one thing beyond applying the ordinary range
-filter: deciding what to do when that filter's own result is empty — check
-for an eligible candidate, and if one exists, synthesize the one row the
-view had no real row to attach a count to. Neither layer duplicates the
-other's job, and the boundary between them is the filtered result's own
-emptiness, not a separate global check.
+can be dated without knowing the request: every real balance-driven row
+(per-row count and NULL gate, correct in any requested range), plus the one
+`CURRENT_DATE` row for a profile with no balance data at all but an
+eligible candidate. No runner involvement in either. The runner owns
+exactly one thing beyond applying the ordinary range filter: deciding what
+to do when that filter's own result is empty despite the view's best
+effort — check for a range-eligible candidate, and if one exists,
+synthesize the one row the view had no way to date for a range it never
+saw. The two never both fire for the same query: the view's arm answers
+"now," the runner's fallback answers "a specific range with nothing in it,"
+and a query is either unranged (the view's arm can satisfy it) or ranged
+(the runner's ordinary filter runs, and only misses when the view's arm
+falls outside that specific range).
 
-**What a direct SQL reader still cannot get from the bare view.** The one
-case above — a requested range with no balance-spine rows in it, whether
-because the whole profile has none or because this particular range falls
-outside the data it has — still returns nothing to a plain `SELECT * FROM
-reports.net_worth ... WHERE balance_date BETWEEN ? AND ?`, because the view
-has no per-query parameter to date a synthesized row with and no real row
-to attach one to. Every other case — including every mixed
-anchored/unanchored profile within its own data, which is the shape a
-direct SQL reader actually hits in practice — is correct with no runner at
-all. Stated plainly rather than absorbed: the split is clean except for
-this one empty-result case, which is inherent to what a `kind VIEW` with no
-per-query parameters can express, not a gap in this design.
+**What a direct SQL reader still cannot get from the bare view.** Only an
+explicit historical range that excludes both real data and today, on a
+profile with an eligible unanchored candidate, returns nothing to a plain
+`SELECT * FROM reports.net_worth ... WHERE balance_date BETWEEN ? AND ?` —
+because dating that one row correctly requires knowing the range, which
+only the runner sees. Every other case — the ordinary "what am I worth"
+read with no range at all, including a wholly-unanchored profile, and every
+mixed anchored/unanchored profile within its own data — is correct from
+the bare view with no runner involved. Stated plainly rather than absorbed:
+the split is clean except for this one narrow case, which is inherent to
+what a `kind VIEW` with no per-query parameters can express, not a gap in
+this design.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -610,11 +651,13 @@ above) — sources none of the other two rungs reads — correlated against
 `core.fct_balances` and `core.dim_accounts`
 at that row's own `balance_date`, to count an eligible account carrying
 evidence of holding value with no balance row at all, and drives `net_worth`
-NULL the same way `unpriced_currency_count` already does. Only the
-report's runner, and only when the requested range has no balance-spine
-rows in it at all, computes this column outside the view — §Data Model
-states why that one case cannot be expressed without a requested range to
-anchor a row to.
+NULL the same way `unpriced_currency_count` already does. The view also
+carries its own unconditional `CURRENT_DATE`-dated row for a profile with
+no balance data at all but an eligible candidate, so a bare read gets the
+right "now" answer with no runner. Only the report's runner, and only for
+a specific historical range with no balance-spine rows in it, computes
+this column outside the view — §Data Model states why that one case
+cannot be expressed without knowing the requested range.
 Requirement 14 states why the join needs no per-date `balance_date`
 predicate beyond the row's own and why `core.fct_holdings_daily` (Pillar
 C.3) is deliberately not one of these sources.
@@ -1003,10 +1046,15 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and an acceptance test for
+tests named in §Testing Strategy, and three acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V0NN into the
-ambiguous state warns, and warns no longer once `accounts set` writes either
-flag explicitly for it.
+ambiguous state warns; it warns no longer once `accounts set --include` or
+`--exclude` writes the `confirms_include_in_net_worth` marker (whichever
+value is passed, including the idempotent `--exclude` that leaves
+`include_in_net_worth` unchanged); and, as a negative, an unrelated
+`accounts set` write on the same account — a rename or a currency change,
+`include_in_net_worth` untouched — leaves it warning, pinning that a
+generic settings write is not what clears it.
 
 ### Files to Modify
 
@@ -1018,8 +1066,10 @@ flag explicitly for it.
   column and its NULL gate to this file's own query, in its own change —
   joining the new `core.*` model (below), `core.fct_transactions`, and
   `core.fct_investment_transactions`, correlated per row against each row's
-  own `balance_date`. Only the empty-range synthesized row lives in the
-  runner (`net_worth.py`) instead; see §Data Model.
+  own `balance_date`, plus a second `UNION ALL` arm dated `CURRENT_DATE` for
+  a profile with no balance-driven output at all but an eligible candidate.
+  Only a historical range with no balance-spine rows in it still needs the
+  runner (`net_worth.py`); see §Data Model.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -1031,7 +1081,16 @@ flag explicitly for it.
 - `src/moneybin/services/doctor_service.py` — the
   `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
   severity, flagging an account the V0NN backfill left ambiguous with no
-  later settings write to resolve it.
+  audit row carrying the `confirms_include_in_net_worth` marker.
+- `src/moneybin/repositories/account_settings_repo.py` — `set()` gains a
+  `context: dict[str, Any] | None = None` parameter, forwarded to the
+  existing `_emit_audit(context=...)` (`repositories/base.py:145`) it
+  already accepts but this repo never passes.
+- `src/moneybin/services/account_service.py` — `settings_update()` passes
+  `context={"confirms_include_in_net_worth": True}` when its own
+  `include_in_net_worth: bool | None` parameter is not `None` — the one
+  point that already knows the caller touched the flag, before that
+  distinction disappears into a full-row snapshot.
 - `docs/specs/moneybin-doctor.md` — that invariant's table entry, separate
   from `net_worth_stale_balance`'s (`M2B.3`, its own change).
 - `src/moneybin/reports/_framework/convert.py` — `convert_records` prices every
@@ -1059,10 +1118,12 @@ flag explicitly for it.
   classified `core.*` relation the guard reads instead of `prep.*` directly;
   see §Data Model.
 - `src/moneybin/privacy/taxonomy.py` — its `CLASSIFICATION` entry.
-- `src/moneybin/reports/definitions/net_worth.py` — the ordinary range
-  filter (or `MAX(balance_date)` when unranged), plus the one
-  global-emptiness synthesized row evaluated against the runner's own
-  `from_date`/`to_date`. The guard's per-row count and NULL gate live in
+- `src/moneybin/reports/definitions/net_worth.py` — the inverted-range
+  validation carried over from `service_reports.py`'s retired
+  `_validate_networth_history_parameters`, the ordinary range filter (or
+  `MAX(balance_date)` when unranged), and the range-scoped synthesized row
+  for a historical range with no balance-spine rows in it. The guard's
+  per-row count, NULL gate, and `CURRENT_DATE` `UNION ALL` arm live in
   `net_worth.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
@@ -1243,6 +1304,13 @@ AGENTS.md's AX bias both point at.
   directly — writing them directly is what makes this test pass while the
   cascade is still in place and the behavior is still broken.
 - **Grain integrity.** Each rung's declared grain is unique.
+- **Inverted range is rejected, not reinterpreted.** `core:net_worth` with
+  `from_date > to_date` raises `UserError`/`REPORT_PARAMETER_INVALID_RANGE`
+  before issuing any query — the same error the retired
+  `_validate_networth_history_parameters` raised. Assert no row comes back,
+  populated or synthesized, on a profile that has an eligible unanchored
+  candidate: that combination is exactly the one an inverted range could
+  otherwise turn into a silently plausible wrong answer.
 - **The naming rule has a guard.** For every runner in `ALL_REPORTS`, the name
   half of `spec.report_id` equals `spec.view.name`. Requirement 13 is a
   convention until a test enforces it, and the six mismatches this spec removes
@@ -1265,11 +1333,13 @@ observation — a tabular-import-with-no-balance-column shape — asserted to
 drive the same NULL-plus-count result through the transaction-activity arm
 of the qualifier, never through the holdings arm. The third: a persona
 whose accounts are *all* unanchored, so `core.fct_balances_daily` has no row
-for the profile at all — asserted to drive `reports.net_worth` to the
-synthesized row (Requirement 14): exactly one row, dated at the query's own
-`to_date` (`CURRENT_DATE` for an unranged call), `net_worth` NULL,
-unanchored-account count equal to the number of qualifying accounts — never
-to zero rows. The fourth: the same wholly-unanchored persona with one of its
+for the profile at all — asserted twice, first against the bare view
+(`SELECT * FROM reports.net_worth` with no runner involved, pinning that
+the view's own `CURRENT_DATE` arm needs no `sql_query` wrapper) and again
+through the runner's unranged default, both producing exactly one row dated
+`CURRENT_DATE`, `net_worth` NULL, unanchored-account count equal to the
+number of qualifying accounts — never zero rows from either path. The
+fourth: the same wholly-unanchored persona with one of its
 accounts archived after the fact, queried over a historical range that
 predates the archival — asserted to still publish the synthesized row for
 that range, because the account was live and unanchored throughout it, even
@@ -1389,17 +1459,29 @@ approved as a footnote rather than reviewed on its own terms.
   restated intention: a new `system doctor` invariant,
   `account_archive_intent_ambiguous` (`warn` severity, alongside
   `net_worth_stale_balance`), flags every account where `archived = TRUE AND
-  include_in_net_worth = FALSE` and no `app.audit_log` row for that
-  account's settings postdates V0NN's own backfill timestamp for it — the
-  signal that nothing has confirmed the exclusion since the cascade wrote
-  it. The existing `moneybin accounts set <id> --include`/`--exclude` write
-  path is the resolution: either flag writes a fresh, dated
-  `app.audit_log` row (`AccountSettingsRepo.set`'s own audit pairing,
-  Invariant 10) that clears the check on the next `system doctor` run — no
-  new schema, write path, or CLI/MCP surface needed beyond the existing
-  account-settings write. Rationale and the redundancy that makes the
-  cascade removable: §`app.account_settings`; the check's file and
-  acceptance test: §Implementation Plan.
+  include_in_net_worth = FALSE` and no `app.audit_log` row for it carries a
+  dedicated decision marker — never merely "some later settings write
+  exists." `AccountSettingsRepo.set` writes one `account_settings.set` audit
+  row for every field touched, alike, so a later row alone cannot separate a
+  genuine confirmation from an unrelated rename or currency edit; and
+  because that row is a full-row snapshot, an idempotent `--exclude` (the
+  flag re-asserting the same `FALSE` the cascade already wrote) is
+  indistinguishable from an edit that merely leaves the flag untouched at
+  its cascade-written value. Inferring intent from either would be the
+  cascade's own mistake a third time, on the check built to stop it.
+  `AccountService.settings_update` already knows the difference the audit
+  row cannot carry on its own: `include_in_net_worth` arrives as `bool |
+  None`, and `None` means "the caller never touched this flag" — exactly
+  the caller-intent signal a snapshot diff can't reconstruct after the
+  fact. When it is not `None`, the write's audit event carries
+  `context_json: {"confirms_include_in_net_worth": true}`; when it is
+  `None`, no marker is written, regardless of what the flag's stored value
+  ends up being. The check's `NOT EXISTS` therefore looks for that marker,
+  not for a timestamp — any account with a marked row is settled, whenever
+  it was written, and a rename or an omitted flag never produces one.
+  Rationale and the redundancy that makes the cascade removable:
+  §`app.account_settings`; the check's file and acceptance test:
+  §Implementation Plan.
 - **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
   spec, which is the sequencing this section describes working as intended. The
   guard its neighbouring docstring implied — a test that fails when a wire field
