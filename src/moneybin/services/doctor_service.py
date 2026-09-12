@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
 
@@ -195,6 +196,34 @@ def _is_live_fingerprint(raw: str | None) -> bool:
     if not isinstance(headers, list) or not all(isinstance(h, str) for h in headers):
         return False
     return serialize_fingerprint(fp) == raw
+
+
+def _orient_overlap_pair(
+    a: str, b: str, unknown_currency_ids: Collection[str]
+) -> tuple[str, str]:
+    """Return ``(absorbed, survivor)`` — the unknown-currency id named first.
+
+    ``AccountLinksService.propose_pair(account_id, candidate_account_id)``
+    absorbs whichever of the two holds an accepted ``source_native`` link,
+    checking ``account_id`` (the first CLI positional) before
+    ``candidate_account_id``. Naming the unknown-currency id first therefore
+    absorbs the likely duplicate into the established, correctly-configured
+    account in the common case — the reverse of what ``_query_duplicate_
+    account_pairs``' alphabetical ``(LEAST, GREATEST)`` ordering would name.
+
+    Does NOT guarantee the direction: if the unknown-currency account holds no
+    accepted ``source_native`` link, ``propose_pair`` falls through to absorb
+    the OTHER id instead, regardless of the order named here. This orientation
+    only improves the common case; the CLI merge preview is still where the
+    user confirms which account actually gets absorbed.
+
+    When both ids are unknown-currency, either order absorbs an account with
+    no currency to protect either way, so the incoming ``(a, b)`` order is
+    kept as-is for determinism rather than for correctness.
+    """
+    if b in unknown_currency_ids and a not in unknown_currency_ids:
+        return b, a
+    return a, b
 
 
 @dataclass(frozen=True)
@@ -3251,13 +3280,22 @@ class DoctorService:
             if overlapping_unknown_accounts:
                 # Capped like transform_model_presence's missing[:5] above: an
                 # unbounded pair count must not make this message unbounded.
-                shown_pairs = overlap_pairs[:5]
+                # Oriented unknown-currency-first (see _orient_overlap_pair)
+                # so the fallback command below absorbs the likely duplicate
+                # into the established account in the common case, rather
+                # than the query's alphabetical (LEAST, GREATEST) order,
+                # which has no relationship to which side is trustworthy.
+                shown_pairs = [
+                    (*_orient_overlap_pair(a, b, overlapping_unknown_accounts), ratio)
+                    for a, b, ratio in overlap_pairs[:5]
+                ]
                 pair_descriptions = ", ".join(
-                    f"{a}:{b} ({round(ratio * 100)}% overlap)"
-                    for a, b, ratio in shown_pairs
+                    f"{absorbed}:{survivor} ({round(ratio * 100)}% overlap)"
+                    for absorbed, survivor, ratio in shown_pairs
                 )
                 fallback_commands = "; ".join(
-                    f"`moneybin accounts links run {a} {b}`" for a, b, _ in shown_pairs
+                    f"`moneybin accounts links run {absorbed} {survivor}`"
+                    for absorbed, survivor, _ in shown_pairs
                 )
                 overflow = len(overlap_pairs) - len(shown_pairs)
                 overflow_note = (
@@ -3273,23 +3311,30 @@ class DoctorService:
                         f"{', '.join(parts)} have an unknown currency, and "
                         f"{len(overlapping_unknown_accounts)} of those "
                         "account(s) mirror an existing account's transactions "
-                        f"at the same institution ({pair_descriptions}"
-                        f"{overflow_note}) — most likely one account imported "
-                        "twice. The unknown currency is the only thing "
-                        "holding those duplicate rows out of every total, so "
-                        "resolve account identity FIRST: run `moneybin "
-                        "accounts links run`, then decide with `moneybin "
-                        "accounts links set <decision_id> --into "
+                        "at the same institution, each pair shown as "
+                        f"unknown-currency-account:known-currency-account "
+                        f"({pair_descriptions}{overflow_note}) — most likely "
+                        "one account imported twice. The unknown currency is "
+                        "the only thing holding those duplicate rows out of "
+                        "every total, so resolve account identity FIRST: run "
+                        "`moneybin accounts links run`, then decide with "
+                        "`moneybin accounts links set <decision_id> --into "
                         "<account_id>` (or `--standalone` if they are "
                         "genuinely distinct). Identity resolution matches on "
                         "institution+last-four and name similarity, not the "
                         "transaction overlap this check measures, so any "
                         "pair may raise no proposal at all — if so, name it "
-                        f"yourself: {fallback_commands}, each queuing the "
-                        "same reviewable proposal from its own ids. Only "
-                        "then assign a currency with `moneybin accounts set "
-                        "<account> --currency <ISO 4217>` and re-run "
-                        "`moneybin transform`."
+                        "yourself in the same unknown-first order so the "
+                        "duplicate is what gets absorbed, not the account "
+                        f"already carrying a currency: {fallback_commands}, "
+                        "each queuing the same reviewable proposal from its "
+                        "own ids. The order named here is a best-effort hint, "
+                        "not a guarantee — the merge preview shown by "
+                        "`accounts links set` names the actual absorbed and "
+                        "surviving accounts, and that is what to check before "
+                        "confirming. Only then assign a currency with "
+                        "`moneybin accounts set <account> --currency "
+                        "<ISO 4217>` and re-run `moneybin transform`."
                     ),
                     affected_ids=[
                         *(f"account:{account_id}" for account_id in unknown_accounts),

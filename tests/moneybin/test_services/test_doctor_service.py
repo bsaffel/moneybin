@@ -25,6 +25,7 @@ from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
     InvariantResult,
+    _orient_overlap_pair,  # pyright: ignore[reportPrivateUsage]  # pure ordering helper, pinned directly
 )
 from moneybin.services.transform_service import TransformService
 from tests.moneybin.db_helpers import create_core_tables
@@ -3124,6 +3125,33 @@ def _overlap_result(db: Database, monkeypatch: pytest.MonkeyPatch) -> InvariantR
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("a", "b", "unknown_ids", "expected"),
+    [
+        # Only b is unknown-currency: swap so the unknown id is named first.
+        ("DUP_A", "DUP_B", {"DUP_B"}, ("DUP_B", "DUP_A")),
+        # Only a is unknown-currency: already unknown-first, no swap needed.
+        ("DUP_A", "DUP_B", {"DUP_A"}, ("DUP_A", "DUP_B")),
+        # Both unknown-currency: no correct answer to protect, so the
+        # incoming order is kept as-is rather than reordered arbitrarily.
+        ("DUP_A", "DUP_B", {"DUP_A", "DUP_B"}, ("DUP_A", "DUP_B")),
+    ],
+)
+def test_orient_overlap_pair(
+    a: str, b: str, unknown_ids: set[str], expected: tuple[str, str]
+) -> None:
+    """Pins the pure ordering rule ``_run_currency_integrity`` builds on.
+
+    ``propose_pair(account_id, candidate_account_id)`` absorbs ``account_id``
+    (the first CLI positional) whenever it holds an accepted ``source_native``
+    link. The published fallback command must name the unknown-currency
+    account first so that absorption, when it fires, retires the likely
+    duplicate rather than the established account.
+    """
+    assert _orient_overlap_pair(a, b, unknown_ids) == expected
+
+
+@pytest.mark.unit
 def test_currency_integrity_warns_about_overlap_before_recommending_assignment(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3167,6 +3195,15 @@ def test_currency_integrity_overlap_message_names_the_pair_and_fallback(
     sweep raises no proposal. The currency_integrity message reuses the same
     detection and must carry that same shape — specific ids plus the
     actionable fallback — not a bare, id-less pointer.
+
+    DUP_A sorts alphabetically before DUP_B, so the raw query orders the pair
+    ``(DUP_A, DUP_B)`` — but DUP_B is the unknown-currency account, and
+    ``propose_pair`` absorbs whichever id is named FIRST when it holds an
+    accepted ``source_native`` link. Naming DUP_A first would propose
+    absorbing the established, known-currency account into its own unverified
+    duplicate. Asserting the DUP_B-first order here means this test fails if
+    ``_orient_overlap_pair`` is removed and the raw alphabetical order leaks
+    through instead.
     """
     from tests.cli_command_helpers import assert_published_commands_resolve
 
@@ -3186,13 +3223,13 @@ def test_currency_integrity_overlap_message_names_the_pair_and_fallback(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "DUP_A:DUP_B" in detail, detail
-    assert "moneybin accounts links run DUP_A DUP_B" in detail, detail
+    assert "DUP_B:DUP_A" in detail, detail
+    assert "moneybin accounts links run DUP_B DUP_A" in detail, detail
     # Scoped to the new two-id fallback command this test adds — the
     # message's other, pre-existing `<decision_id> --into <account_id>`
     # placeholder text is illustrative prose, not a literal invocation, and
     # is out of scope here.
-    assert_published_commands_resolve("`moneybin accounts links run DUP_A DUP_B`")
+    assert_published_commands_resolve("`moneybin accounts links run DUP_B DUP_A`")
 
 
 @pytest.mark.unit
@@ -3204,6 +3241,13 @@ def test_currency_integrity_overlap_message_names_a_fallback_for_every_pair(
     ``overlap_pairs[0]`` alone would leave a second pair's fallback command
     unpublished, so a user resolving that pair whose bare sweep also raises
     no proposal would have no ready-made command to reach for.
+
+    Both pairs are built with the known-currency id sorting alphabetically
+    first (DUP_A before DUP_B, DUP_E before DUP_F) — the raw query's
+    ``(LEAST, GREATEST)`` order would therefore name each known-currency
+    account FIRST, which ``propose_pair`` would absorb into its own
+    unverified duplicate. Asserting the unknown-currency id first for both
+    pairs means this test fails if ``_orient_overlap_pair`` is removed.
     """
     from tests.cli_command_helpers import assert_published_commands_resolve
 
@@ -3230,16 +3274,16 @@ def test_currency_integrity_overlap_message_names_a_fallback_for_every_pair(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "DUP_A:DUP_B" in detail, detail
-    assert "DUP_E:DUP_F" in detail, detail
-    assert "moneybin accounts links run DUP_A DUP_B" in detail, detail
-    assert "moneybin accounts links run DUP_E DUP_F" in detail, detail
+    assert "DUP_B:DUP_A" in detail, detail
+    assert "DUP_F:DUP_E" in detail, detail
+    assert "moneybin accounts links run DUP_B DUP_A" in detail, detail
+    assert "moneybin accounts links run DUP_F DUP_E" in detail, detail
     # Scoped to the two new two-id fallback commands, matching the sibling
     # single-pair test above — the message's other, pre-existing
     # `<decision_id> --into <account_id>` placeholder text is illustrative
     # prose, not a literal invocation, and is out of scope here.
-    assert_published_commands_resolve("`moneybin accounts links run DUP_A DUP_B`")
-    assert_published_commands_resolve("`moneybin accounts links run DUP_E DUP_F`")
+    assert_published_commands_resolve("`moneybin accounts links run DUP_B DUP_A`")
+    assert_published_commands_resolve("`moneybin accounts links run DUP_F DUP_E`")
 
 
 @pytest.mark.unit

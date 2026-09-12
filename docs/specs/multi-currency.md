@@ -374,8 +374,15 @@ Numbered, testable. Tagged by phase.
    (`accounts links run` / `accounts links set`) ahead of the currency fix,
    including a concrete two-id `accounts links run <account_id>
    <candidate_account_id>` fallback command for each shown pair, for when the
-   automatic sweep raises no proposal on it. If the overlap check itself
-   cannot run, the detail
+   automatic sweep raises no proposal on it. Each fallback names the
+   unknown-currency id first (`_orient_overlap_pair`) so `propose_pair`'s
+   accepted-`source_native`-link check absorbs the likely duplicate into the
+   established account in the common case, rather than the query's
+   alphabetical pair order, which carries no such relationship; this is a
+   best-effort hint, not a guarantee, since `propose_pair` still decides the
+   real direction, so the detail also points at the `accounts links set`
+   merge preview as the actual confirmation surface. If the overlap check
+   itself cannot run, the detail
    withholds the currency-assignment advice entirely rather than risk
    admitting an unconfirmed duplicate. Only when no overlap is found or
    suspected does the detail go straight to `accounts set --currency`. The
