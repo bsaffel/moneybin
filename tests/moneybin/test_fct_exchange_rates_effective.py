@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
-from moneybin.services.currency_service import CurrencyService
+from moneybin.services.currency_service import CurrencyService, RateUnavailableError
 
 pytestmark = pytest.mark.integration
 
@@ -288,6 +288,36 @@ def test_parity_with_resolve_rate_on_a_weekend_date(db: Database) -> None:
     ).fetchone()
     assert row is not None
     assert Decimal(str(row[0])) == resolved.rate
+
+
+@pytest.mark.slow
+def test_an_interior_weekday_gap_diverges_from_resolve_rate(db: Database) -> None:
+    """The spine answers an interior gap; `resolve_rate` does not — by design.
+
+    §Testing Strategy names this divergence explicitly: an interior weekday
+    gap is deliberately NOT a parity case. The daily spine densifies Tuesday
+    from the bracketing Monday observation, but `resolve_rate`'s two lookups
+    (exact day, then `_last_publication_day`) both miss a weekday nobody has
+    fetched — the weekday-holiday gap `currency_service.py:197-205` documents
+    as open — so it falls through to a live fetch. With no adapter configured
+    that fetch is impossible and it raises. Pinning the mismatch here means a
+    later widening of `resolve_rate`'s lookup to close the gap shows up as a
+    changed assertion instead of reading as an accidental regression to fix.
+    """
+    row = db.execute(
+        "SELECT rate, rate_source, published_date, days_since_published "
+        "FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'FFF' AND effective_date = '2026-01-06'"
+    ).fetchone()
+    assert row is not None
+    assert float(row[0]) == pytest.approx(1.000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert row[1] == "provider"
+    assert str(row[2]) == "2026-01-05"
+    assert row[3] == 1
+
+    service = CurrencyService(db, adapter=None)
+    with pytest.raises(RateUnavailableError):
+        service.resolve_rate("USD", "FFF", date(2026, 1, 6))
 
 
 @pytest.mark.slow

@@ -71,6 +71,11 @@ WITH provider AS (
     'provider' AS rate_source_value
   FROM provider
 )
+/* rate is the final tiebreak in the QUALIFY below, matching core.fct_security_prices:
+   prep.stg_exchange_rates upper-cases from_currency/to_currency, so two raw rows
+   differing only by case collide on this grain. Nothing writes such a pair today, but
+   leaving the pick unresolved past provider_name would make a future collision's winner
+   depend on scan order rather than the row's own values. */
 SELECT
   from_currency, /* ISO 4217, upper (grain) */
   to_currency, /* ISO 4217, upper (grain) */
@@ -83,5 +88,5 @@ FROM candidates
 QUALIFY
   ROW_NUMBER() OVER (
     PARTITION BY from_currency, to_currency, rate_date
-    ORDER BY source_rank, updated_at DESC, provider_name
+    ORDER BY source_rank, updated_at DESC, provider_name, rate
   ) = 1

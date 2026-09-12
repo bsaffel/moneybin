@@ -78,6 +78,12 @@ MODEL (
 );
 
 WITH provider_obs AS (
+  /* rate is the final tiebreak, matching core.fct_security_prices and
+     core.fct_exchange_rates: prep.stg_exchange_rates upper-cases from_currency/
+     to_currency, so two raw rows differing only by case collide on this grain.
+     Nothing writes such a pair today, but leaving the pick unresolved past
+     source_type would make a future collision's winner depend on scan order
+     rather than the row's own values. */
   SELECT
     from_currency,
     to_currency,
@@ -89,7 +95,7 @@ WITH provider_obs AS (
   QUALIFY
     ROW_NUMBER() OVER (
       PARTITION BY from_currency, to_currency, rate_date
-      ORDER BY loaded_at DESC, source_type
+      ORDER BY loaded_at DESC, source_type, rate
     ) = 1
 ), pair_bounds AS (
   SELECT
