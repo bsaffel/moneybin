@@ -1809,10 +1809,12 @@ class TestBatchCategorizationWrites:
         ])
 
         assert written == set()
-        # 5, not 4: the shared curation-id liveness resolver (issue #538) now
-        # runs one extra bulk query ahead of the precedence-guarded writes —
-        # still O(1) for the whole batch, not one per row.
-        assert database_calls == 5
+        # 6, not 4: the shared curation-id liveness resolver (issue #538) now
+        # runs two extra bulk queries ahead of the precedence-guarded writes —
+        # a catalog probe confirming the fact view exists (issue #593) plus
+        # the liveness query itself — still O(1) for the whole batch, not one
+        # per row.
+        assert database_calls == 6
 
 
 def test_taxonomy_target_batch_rolls_back_late_failure(

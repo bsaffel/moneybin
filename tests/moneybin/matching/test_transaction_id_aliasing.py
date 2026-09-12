@@ -28,6 +28,10 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import (
+    resolve_curation_transaction_id,
+    resolve_curation_transaction_ids,
+)
 from moneybin.matching.persistence import get_match_decision
 from moneybin.metrics.registry import TRANSACTION_CURATION_FORWARDED_TOTAL
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
@@ -1296,3 +1300,43 @@ class TestARepointBlocksUndoOfTheEditItMoved:
         assert detail.undo_blocked_by == [repoint_op]
         assert detail.can_undo is False
         assert _curation_ids(matched_db)["transaction_splits"] == [new_id]
+
+
+class TestResolutionBeforeTheFactViewExists:
+    """A first load precedes the transform that builds ``core.fct_transactions``.
+
+    The catalog lacks the liveness oracle entirely at that point (issue #593),
+    not merely a row within it — the same absence :func:`_heal_stranded_curation`
+    already tolerates. Resolution must pass every id through unchanged rather
+    than raising ``CatalogException`` or ``TRANSACTION_REFERENCE_NOT_FOUND``.
+    """
+
+    @pytest.mark.unit
+    def test_single_id_required_true_passes_through_unchanged(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+
+        assert resolve_curation_transaction_id(db, "plaid_abc123") == "plaid_abc123"
+
+    @pytest.mark.unit
+    def test_single_id_required_false_passes_through_unchanged(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+
+        assert (
+            resolve_curation_transaction_id(db, "plaid_abc123", required=False)
+            == "plaid_abc123"
+        )
+
+    @pytest.mark.unit
+    def test_bulk_resolution_returns_an_identity_map_for_every_id(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        ids = ["plaid_abc123", "csv_def456", "ofx_ghi789"]
+
+        assert resolve_curation_transaction_ids(db, ids) == dict(
+            zip(ids, ids, strict=True)
+        )

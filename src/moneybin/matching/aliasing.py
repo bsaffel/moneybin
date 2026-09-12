@@ -185,7 +185,20 @@ def resolve_curation_transaction_id(
     once per call (lazily, on the first non-live hop) rather than per hop —
     it cannot change mid-resolution, and the query behind it (an audit-log
     scan plus an ``UndoService`` lookup) is far heavier than a liveness check.
+
+    Absence of the liveness oracle is absence of evidence, not evidence the id
+    is dead: a first load precedes the transform that builds
+    ``core.fct_transactions``, exactly the case :func:`_heal_stranded_curation`
+    already guards with the same :func:`_relations_exist` probe. Passing the
+    id through here (regardless of ``required``) keeps a pre-transform
+    curation write from being refused for a view that simply doesn't exist
+    yet.
     """
+    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+        logger.debug(
+            f"Curation resolution skipped: liveness oracle absent for {transaction_id}"
+        )
+        return transaction_id
     current = transaction_id
     seen: set[str] = set()
     reversed_edges: frozenset[str] | None = None
@@ -233,10 +246,21 @@ def resolve_curation_transaction_ids(
     caller that instead wants an unresolvable id in the *input* to hard-fail
     the whole batch — mirroring the single-id path's raise — checks for a
     missing key itself and raises the same ``UserError``.
+
+    One probe, not one per id: when the liveness oracle itself is absent
+    (pre-transform DB — see :func:`resolve_curation_transaction_id`), every
+    input id resolves to itself without ever reaching the per-id fallback
+    loop below, so a first-load batch write costs one catalog lookup rather
+    than one per row.
     """
     ids = list(dict.fromkeys(transaction_ids))  # de-dup, preserve order
     if not ids:
         return {}
+    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+        logger.debug(
+            f"Curation resolution skipped: liveness oracle absent for {len(ids)} ids"
+        )
+        return dict(zip(ids, ids, strict=True))
     live = _live_transaction_ids(db, ids)
     resolved: dict[str, str] = {tid: tid for tid in ids if tid in live}
     for tid in ids:
