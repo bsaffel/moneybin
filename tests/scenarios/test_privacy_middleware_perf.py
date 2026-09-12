@@ -237,7 +237,7 @@ def test_privacy_middleware_within_budget() -> None:
             patch.object(report_execute, "redact_records", redactor),
             patch.object(mcp_decorator, "write_privacy_event", audit_writer),
         ):
-            return asyncio.run(reports(report_id="core:spending", limit=1000))
+            return asyncio.run(reports(report_id="core:spending_trend", limit=1000))
 
     def _spending_raw() -> ResponseEnvelope[object]:
         return _spending_call(_identity_report_redaction, _skip_privacy_audit)
@@ -367,7 +367,7 @@ def test_privacy_middleware_within_budget() -> None:
     spending_protected = _spending_protected()
     assert spending_raw.error is None
     assert spending_protected.error is None
-    # core:spending contains no currently transformed classes, so its data is
+    # core:spending_trend contains no currently transformed classes, so its data is
     # equal after terminal redaction. The separate raw/protected callbacks still
     # retain the comparison when future report transforms begin changing rows.
     assert spending_protected.data == spending_raw.data
