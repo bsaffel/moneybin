@@ -39,7 +39,7 @@ from moneybin.exports.sheets import (
     _table_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
     _validate_values,  # pyright: ignore[reportPrivateUsage]  # white-box validation test
 )
-from moneybin.exports.snapshot import PreparedExport, ReportExportProvenance
+from moneybin.exports.snapshot import ExportProvenance, PreparedExport
 from moneybin.exports.workbook_roles import workbook_role_lease
 from moneybin.repositories.export_destinations_repo import (
     ExportDestinationSpreadsheetConflictError,
@@ -322,7 +322,8 @@ def test_publish_chunks_large_manifest_and_dictionary_receipts(db: Database) -> 
     """Receipt JSON round-trips when it exceeds a Sheets cell's safe capacity."""
     snapshot = replace(
         make_snapshot(report=True),
-        provenance=ReportExportProvenance(
+        provenance=ExportProvenance(
+            build={"version": "0.0.0", "revision": "test"},
             report_id="test:activity",
             receipt={"lineage": ["reports.activity"], "sql": "x" * 60_000},
         ),

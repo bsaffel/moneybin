@@ -29,11 +29,11 @@ from moneybin.exports.renderers import (
     render_xlsx,
 )
 from moneybin.exports.snapshot import (
+    ExportProvenance,
     ExportSubject,
     PreparedColumn,
     PreparedExport,
     PreparedTable,
-    ReportExportProvenance,
     build_data_dictionary,
     prepared_table_checksum,
 )
@@ -80,7 +80,8 @@ def make_snapshot(*, report: bool = False) -> PreparedExport:
         tables=tables,
         data_dictionary=build_data_dictionary(tables),
         provenance=(
-            ReportExportProvenance(
+            ExportProvenance(
+                build={"version": "0.0.0", "revision": "test"},
                 report_id="test:activity",
                 receipt={"lineage": ["reports.activity"], "sql": None},
             )
@@ -472,7 +473,8 @@ def test_xlsx_preserves_empty_strings_distinct_from_null(tmp_path: Path) -> None
 def test_xlsx_splits_large_receipt_json_across_metadata_cells(tmp_path: Path) -> None:
     snapshot = replace(
         make_snapshot(report=True),
-        provenance=ReportExportProvenance(
+        provenance=ExportProvenance(
+            build={"version": "0.0.0", "revision": "test"},
             report_id="test:activity",
             receipt={"lineage": ["reports.activity"], "sql": "x" * 40_000},
         ),

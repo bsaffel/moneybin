@@ -15,6 +15,7 @@ from pydantic import JsonValue
 from pytest_mock import MockerFixture
 
 import moneybin.reports._framework.catalog as report_catalog
+from moneybin.build_info import get_build_info
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.exports.renderers import render_parquet
@@ -169,7 +170,12 @@ def test_prepare_report_executes_once_and_preserves_the_report_receipt(
         "amount": Decimal("-30.00"),
     }
 
+    build = get_build_info()
     assert snapshot.provenance is not None
+    assert snapshot.provenance.build == {
+        "version": build.version,
+        "revision": build.revision,
+    }
     assert snapshot.provenance.report_id == "test:export"
     assert snapshot.provenance.receipt == {
         "report_id": "test:export",
@@ -285,6 +291,7 @@ def test_prepare_report_carries_a_degraded_reports_drift_into_the_receipt(
     )
 
     assert snapshot.provenance is not None
+    assert snapshot.provenance.receipt is not None
     assert snapshot.provenance.receipt["degraded"] is True
     assert snapshot.provenance.receipt["degraded_reason"] == reason
     # The artifact, not just the in-memory receipt: the manifest is what ships.
@@ -318,6 +325,7 @@ def test_prepare_report_carries_a_pending_duplicate_caveat_into_the_receipt(
     )
 
     assert snapshot.provenance is not None
+    assert snapshot.provenance.receipt is not None
     assert snapshot.provenance.receipt["degraded"] is True
     reason = str(snapshot.provenance.receipt["degraded_reason"])
     assert reason.startswith(f"{DEGRADED_PENDING_DEDUP}: 1 ")
@@ -443,6 +451,7 @@ def test_a_redacted_user_report_export_withholds_the_saved_query(
     )
 
     assert redacted.provenance is not None
+    assert redacted.provenance.receipt is not None
     assert redacted.provenance.receipt["sql"] is None
     assert redacted.manifest["provenance"]["receipt"]["sql"] is None  # type: ignore[index]
     assert "021000021" not in json.dumps(redacted.manifest)
@@ -456,6 +465,7 @@ def test_a_redacted_user_report_export_withholds_the_saved_query(
 
     # The author's own statement, published only where the values are too.
     assert unredacted.provenance is not None
+    assert unredacted.provenance.receipt is not None
     assert "021000021" in str(unredacted.provenance.receipt["sql"])
 
 
@@ -511,6 +521,7 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_column_alias(
     assert "021000021" not in json.dumps(redacted.manifest)
     assert "021000021" not in json.dumps(redacted.data_dictionary)
     assert redacted.provenance is not None
+    assert redacted.provenance.receipt is not None
     assert set(redacted.provenance.receipt["output_classes"]) == {  # type: ignore[arg-type]
         "redacted_column_1",
         "redacted_column_2",
@@ -597,6 +608,7 @@ def test_a_redacted_user_report_export_withholds_a_sensitive_parameter_name(
     }
     assert redacted.subject.as_manifest()["parameters"] == expected
     assert redacted.provenance is not None
+    assert redacted.provenance.receipt is not None
     assert redacted.provenance.receipt["parameters"] == expected
     assert redacted.provenance.receipt["parameter_classes"] == {
         "redacted_parameter_1": DataClass.ROUTING_NUMBER.value,
@@ -776,6 +788,7 @@ def test_a_redacted_user_report_export_withholds_a_drifted_column_alias(
     )
 
     assert redacted.provenance is not None
+    assert redacted.provenance.receipt is not None
     assert redacted.provenance.receipt["degraded"] is True
     assert (
         redacted.provenance.receipt["degraded_reason"] == DEGRADED_STALE_CLASSIFICATION
@@ -792,6 +805,7 @@ def test_a_redacted_user_report_export_withholds_a_drifted_column_alias(
     # Same rule as the header: an unredacted export publishes the value itself,
     # so naming the column that carries it costs nothing.
     assert unredacted.provenance is not None
+    assert unredacted.provenance.receipt is not None
     reason = unredacted.provenance.receipt["degraded_reason"]
     assert isinstance(reason, str)
     assert reason.startswith(DEGRADED_STALE_CLASSIFICATION)
