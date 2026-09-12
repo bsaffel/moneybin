@@ -1,7 +1,7 @@
 # Feature: Net Worth on the SQL Surface
 
 ## Status
-ready
+in-progress
 
 ## Goal
 
@@ -69,9 +69,9 @@ this spec's to close.
 | 1 | A margin account's net worth was overstated by the size of its loan. The sync server sends `margin_loan_amount`, `SyncBalance` did not declare it, and Pydantic's default `extra='ignore'` discarded it silently. | `src/moneybin/connectors/sync_models.py:232` now declares the field; it reaches the spine through `prep/stg_plaid__balances.sql` and `core/fct_balances.sql`, on migration `V058`. | **Already closed**, by #565, before this spec. Kept in the table because the ladder's correctness depends on the balance it reads, and a reader checking that dependency should find it answered rather than absent. |
 | 2 | Archiving an account rewrites net-worth history. `archived` is a plain BOOLEAN with no date, and the filter applies to every `balance_date`, so closing an account in 2026 retroactively removes it from 2022. | `src/moneybin/sql/schema/app_account_settings.sql:13`, `src/moneybin/sqlmesh/models/reports/net_worth.sql:21` | **Closed here** — Requirement 9, behind the prerequisite that requirement names. |
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
-| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The doctor check is out of scope. |
+| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
-| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Not this spec.** Pillar D / a doctor check. |
+| 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, delivered as work item `M2B.3` rather than as part of the work already in flight here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
 
 ## Requirements
 
@@ -129,6 +129,22 @@ this spec's to close.
    spec's to build** — retiring the archive cascade in `AccountService`, without
    which `archived_at` preserves nothing. See §`app.account_settings` and
    §Prerequisites.
+
+    **Inherited from the prerequisite: a set of accounts this requirement has
+    to decide.** `V060` backfills `archived_at` but deliberately leaves
+    `include_in_net_worth` exactly as stored, including where the retired
+    cascade is what forced it to `FALSE`. It cannot do otherwise: the cascade
+    ran ahead of `_resolve()`, so an account the user only archived and one the
+    user archived *and* explicitly excluded — a pair both the CLI and
+    `accounts_set` accept in a single call — leave byte-identical audit images,
+    and `AccountSettingsRepo.set` records row snapshots rather than caller
+    kwargs. Nothing moves while the blanket `NOT archived` filter stands,
+    because those accounts are excluded by it regardless. The moment this
+    requirement replaces that filter with the date-scoped one, they stop being
+    excluded by `archived` and start being excluded by a flag some of their
+    owners never set. Deciding them — most likely by surfacing them for review
+    rather than inferring intent a second time — is part of this requirement,
+    not a leftover of the migration.
 10. **The net-worth reports become SQL-backed.** They become `@report` runners
     over the new views, and `ServiceReportSpec` and its executor branch are
     deleted. This is `.claude/rules/reports.md` §"A new report is SQL-backed"
@@ -145,6 +161,33 @@ this spec's to close.
     derives the Typer command from it by swapping underscores for hyphens
     (`src/moneybin/reports/_framework/contract.py:408-410`). Applies to every
     report, not only these three — see §Report allocation.
+14. **An unanchored account is visible, never a silent zero.** An account
+    holding priced value that carries **no balance observation at all** —
+    Defect 6's case — must not contribute zero in silence. It behaves the way
+    an unpriced currency already does under Requirement 7: the profile total is
+    NULL, with an unanchored-account count beside it, and the `system doctor`
+    balance-staleness check Defect 4 defers lands with it — see
+    §"`moneybin system doctor`: balance staleness" for its full specification.
+
+    **Scoped to the account, not to the date, and deliberately so.**
+    `core.dim_holdings` is a current snapshot with no date dimension, and the
+    dated position spine that would answer "did this account hold priced value
+    on that past date" is `core.fct_holdings_daily` (Pillar C.3), which
+    §Out of Scope excludes. The question this guard can answer from the
+    relations it reaches is "can this account be anchored at all", not "was it
+    anchored on this date". An account acquired partway through a requested
+    range is therefore counted unanchored across the whole range. That
+    over-states incompleteness rather than under-stating it, which is the
+    direction Requirement 7 already chose; the date-precise form waits for C.3,
+    and is the same guard with a finer input rather than a second pattern
+    beside it.
+
+    **Beta-gating, and its own work item — `M2B.3`.** It does not ride along
+    with the rungs or the rate spine, because the number a first-time user sees
+    has to be either right or visibly incomplete before anything is built on
+    top of it, and because M2B.2 closing must not retire a release gate that
+    outlives it. Full Pillar D net-worth integration stays post-release; this
+    requirement only keeps its absence honest.
 
 ## Data Model
 
@@ -168,6 +211,14 @@ all three read. It must not be a TABLE: `include_in_net_worth`, `archived`, and
 `archived_at` are user-reversible, and baking a reversible filter into
 materialized rows makes a later un-archive silently wrong. The same constraint
 binds M2P.3 — see §Key Decision 6.
+
+`M2B.3` adds a fourth source, read by `reports.net_worth` alone: `core.dim_holdings`,
+left-joined against `core.fct_balances` to find an account carrying priced value
+with no balance row of any kind. The currencies and accounts rungs do not read
+it — the guard drives a profile total NULL, and only `reports.net_worth`
+publishes one. See `unanchored_account_count` below, and Requirement 14 for the
+join's account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3)
+is deliberately not this source.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -243,9 +294,10 @@ account_count            INTEGER
 carried_forward_count    INTEGER
 currency_count           INTEGER        -- Distinct currencies held on this date
 unpriced_currency_count  INTEGER        -- How many of them had no rate; 0 means complete
-total_assets             DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
-total_liabilities        DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
-net_worth                DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
+unanchored_account_count INTEGER        -- M2B.3 (Requirement 14). Accounts holding priced value with no balance row; 0 means none
+total_assets             DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
+total_liabilities        DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
+net_worth                DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
 ```
 
 No suffixes: every measure here is in `home_currency_code` by construction, and
@@ -258,6 +310,15 @@ This rung is the reason the other two are not enough. A caller who sums
 answer when one currency is unpriced, because SQL's `SUM()` skips NULL and
 silently returns the priced subset. This rung does the aggregation once, and
 fails closed.
+
+`unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
+Requirement 14 delivers the guard as its own work item precisely so the release
+gate on this row outlives M2B.2 closing. It joins `core.dim_holdings` — a source
+none of the three rungs otherwise reads — against `core.fct_balances` to count
+an account carrying priced value with no balance row at all, and drives
+`net_worth` NULL the same way `unpriced_currency_count` already does.
+Requirement 14 states why the join needs no `balance_date` predicate and why
+`core.fct_holdings_daily` (Pillar C.3) is deliberately not this source.
 
 ### Rate models
 
@@ -473,6 +534,40 @@ Nothing about that reconstruction decays while it waits: `app.audit_log` is
 append-only, with no prune, retention, or delete path, so each archive write
 keeps its full prior row state indefinitely.
 
+### `moneybin system doctor`: balance staleness — `M2B.3`
+
+Requirement 14 defers this check to the same work item as the unanchored-account
+guard rather than stating its shape there. This is that shape, specified at the
+same level of detail as Requirement 5's rate-window bound and Requirement 7's
+NULL-total behavior.
+
+`net_worth_stale_balance` reads `reports.net_worth_accounts` at today's
+`balance_date` only — the daily spine carries a row for every past date too,
+and re-warning about a carry-forward that was already stale last month adds
+nothing. A row qualifies when its account already passed the eligibility
+filter (`include_in_net_worth AND NOT archived`, so a deliberately excluded or
+closed account never produces a warning nobody can act on) and the row is
+carried forward rather than observed (`is_observed = FALSE`) for longer than
+`DoctorSettings.balance_staleness_threshold_days` (default 30 — long enough to
+absorb an ordinary monthly statement cycle without firing on routine use,
+short enough to still catch an account nobody has refreshed in over a month).
+
+Severity is `warn`, not `fail`. The balance the check flags is still present
+and still contributes to the total; only Requirement 14's own guard — an
+account with **no** balance row at all — drives the total to NULL.
+`DoctorReport.failing` counts only `fail` toward `moneybin system doctor`'s
+release-gating exit code (`doctor_service.py:228`, read at
+`cli/commands/system/doctor.py:68`), so a stale-but-present
+balance can surface without turning a release artifact red. That is the same
+trade the shipped `investment_stale_prices` check already makes for a
+carried-forward security close, and for the same reason: an aging number is a
+prompt to refresh it, not proof it is wrong.
+
+Implemented as one more invariant in `DoctorService` (`doctor_service.py`)
+alongside `investment_stale_prices`, with `balance_staleness_threshold_days`
+added to `DoctorSettings` (`src/moneybin/config.py`) and the check's row and
+threshold documented in `docs/specs/moneybin-doctor.md`'s invariant table.
+
 ## Report allocation
 
 ### One name per report
@@ -594,7 +689,8 @@ tests named in §Testing Strategy.
   rung. Its current per-currency body moves to `net_worth_currencies.sql` and
   gains the converted measures, the rate provenance columns, and
   `carried_forward_count`; both switch the eligibility filter to the
-  date-scoped form.
+  date-scoped form. **`M2B.3`** later adds the `core.dim_holdings` join and the
+  `unanchored_account_count` column to this same file, in its own change.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -622,6 +718,12 @@ tests named in §Testing Strategy.
   in this deletion too. (Enforcement item 3's `_SNAPSHOT_COLUMN_TYPES`
   tripwire already retired separately, when the snapshot path was keyed by
   name — issue #511.)
+
+**`M2B.3`** — not this pass, its own change:
+- `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
+- `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
+  invariant.
+- `docs/specs/moneybin-doctor.md` — the invariant table entry.
 
 ### Files to Delete
 
@@ -809,6 +911,11 @@ including the multi-currency persona, which already contains an account in a
 currency outside the rate provider's published set — so the unpriced path is
 reachable from a shipped fixture rather than a hand-built one.
 
+`M2B.3` adds one scenario beside it, shaped like the unpriced-currency case
+it follows: a persona account holding priced securities and carrying no
+balance observation, asserted to drive `net_worth` to NULL with an
+unanchored-account count of exactly one — never to a smaller populated total.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -824,15 +931,20 @@ reachable from a shipped fixture rather than a hand-built one.
 ## Synthetic Data Requirements
 
 The `international` persona already supplies the shapes needed: several
-currencies, one of them unpriced. Two additions:
+currencies, one of them unpriced. Three additions:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
 - A rate-observation gap of more than one non-publication day inside a pair's
   window, so `days_since_published` takes a value greater than 1.
 
-Ground truth needs expected net worth per day in the home currency, plus the
-expected NULL dates for the unpriced currency.
+- For `M2B.3`: a persona account holding priced securities with no balance
+  observation of any kind, so the unanchored guard is exercised against a
+  shipped fixture rather than a hand-built one.
+
+Ground truth needs expected net worth per day in the home currency, the
+expected NULL dates for the unpriced currency, and — for `M2B.3` — the expected
+unanchored-account count.
 
 ## Dependencies
 
@@ -881,7 +993,8 @@ approved as a footnote rather than reviewed on its own terms.
   When it lands, an investment account's value becomes a *component* of its
   balance row rather than a second addend, which is the structural form of the
   invariant M2B.1 records: the provider's reported balance already is the total
-  position value.
+  position value. Excluding C.3 is also what narrows Requirement 14's guard to
+  the account rather than the date — see that requirement for the consequence.
 - **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
@@ -893,8 +1006,5 @@ approved as a footnote rather than reviewed on its own terms.
 - **Named account subsets** — a filter layered over the ladder, not a grain.
 - **Per-lot cost basis** — the grain below account × security, belonging to the
   investments ledger.
-- **A `system doctor` check for balance staleness** (Defect 4's other half).
-  This spec makes staleness queryable; turning it into an invariant with a
-  threshold is a doctor change.
 - **Balance forecasting** — unchanged from M2B.1.
 - **Arbitrary display-currency conversion in SQL** — Key Decision 7.
