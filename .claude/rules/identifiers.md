@@ -98,8 +98,8 @@ outside. Three rules follow:
   a key carrying fewer than five digits unchanged — `'1234'` and `'ACCT-XY9Z'`
   both render verbatim, and `import_cmd.py:812` writes that refusal to
   `logger.error`. Passing through the masker is not what makes a key safe.
-- **That shortfall has exactly two accepted surfaces, and this is the list.**
-  The refusal message above is one. The other is the authored account label:
+- **That shortfall has exactly three accepted surfaces, and this is the list.**
+  The refusal message above is one. The second is the authored account label:
   `usable_source_label` asks only that a label hold a letter, so a value the
   masker declined to touch — `'ACCT-XY9Z'`, `'AB1234C'` — becomes the account's
   `display_name` in `core.dim_accounts` and reaches every report and MCP
@@ -109,8 +109,27 @@ outside. Three rules follow:
   precisely what MoneyBin already prints beside every account as `****1234`.
   Refusing identifier-shaped labels was the alternative, and it takes
   `CD-2024` and the rest of the real names that rung exists to surface with it.
-  Two entries, no third: another surface is a decision to take deliberately, on
-  its own arithmetic, not a precedent to read off these two.
+
+  The third is `currency_integrity`'s duplicate-overlap remediation
+  (`doctor_service.py::_run_currency_integrity`), which masks the `account_id`
+  of each overlapping pair in its `detail` text and in the
+  `accounts links run <a> <b>` fallback it publishes. Taken on the same
+  arithmetic, not read off the two above: `core.dim_accounts.account_id` is
+  `COALESCE(links.account_id, a.account_id)`, so an *unresolved* account
+  surfaces its source-native key there — and that check's entire subject is the
+  account whose identity was never resolved, making unresolved the expected case
+  rather than the edge one. Publishing it raw put a possible `<ACCTID>` in CLI
+  stdout and the MCP response. Masking bounds what survives to four digits plus
+  non-digit characters, which is what MoneyBin already prints beside every
+  account as `****1234`. The cost is that a masked id cannot be pasted back into
+  the published command, so the message names `moneybin accounts list` as where
+  to read the full id locally; unmasking to keep the command convenient was the
+  alternative and it trades the leak back. `duplicate_account_overlap`'s own
+  message still publishes the same ids unmasked — a pre-existing gap, not a
+  sanctioned fourth entry.
+
+  Three entries, no fourth: another surface is a decision to take deliberately,
+  on its own arithmetic, not a precedent to read off these three.
 - **Never narrow the mask by arguing a particular key is synthetic.** "This
   channel derives its key from the filename, so it is not PII" is true of the
   value and wrong about the field: the same column carries a real `<ACCTID>`

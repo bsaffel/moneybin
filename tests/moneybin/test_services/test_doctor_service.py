@@ -3790,6 +3790,54 @@ def test_currency_integrity_overlap_label_is_accurate_when_both_are_unknown(
 
 
 @pytest.mark.unit
+def test_currency_integrity_masks_an_account_number_shaped_id(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolved account's source-native key must not reach the detail raw.
+
+    ``core.dim_accounts.account_id`` is ``COALESCE(links.account_id,
+    a.account_id)``, so an account with no resolver link surfaces its
+    source-native key — a real ``<ACCTID>`` on OFX — and this check's whole
+    subject is the account whose identity was never resolved. The detail and
+    the ``accounts links run`` fallback both reach CLI stdout and the MCP
+    response with no downstream masking, so they mask here the same way
+    ``_run_dim_accounts_reserved_display_name`` does. A canonical id carries no
+    five-digit run and must survive unmangled, or the published command stops
+    naming the account it means.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "987654321098", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_CANON", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "987654321098", rows=rows)
+    _insert_amount_ladder(
+        doctor_db,
+        "DUP_CANON",
+        rows=rows,
+        day_offset=settings.matching.date_window_days,
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL "
+        "WHERE account_id = '987654321098'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "987654321098" not in detail, detail
+    assert "****1098" in detail, detail
+    # The canonical-shaped id has no five-digit run, so it must pass through
+    # intact — masking it would make the published command unusable for the
+    # common case rather than only the leaking one.
+    assert "DUP_CANON" in detail, detail
+    assert "`moneybin accounts links run ****1098 DUP_CANON`" in detail, detail
+    # A masked id cannot be pasted back, so the message has to say where the
+    # real one is.
+    assert "moneybin accounts list" in detail, detail
+
+
+@pytest.mark.unit
 def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:

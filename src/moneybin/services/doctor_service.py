@@ -2527,8 +2527,12 @@ class DoctorService:
 
         Shared with ``_run_currency_integrity``, which asks whether an
         unknown-currency account is one side of a pair here before telling the
-        user to assign it a currency. Raises on core-layer unavailability;
-        callers translate that into their own ``skipped`` status.
+        user to assign it a currency. Raises on core-layer unavailability, and
+        the two callers translate that differently:
+        ``_run_duplicate_account_overlap`` reports ``skipped``, while
+        ``_run_currency_integrity`` fails closed with a "could not run" ``fail``
+        — it cannot report a clean currency verdict it was unable to check the
+        overlap gate for.
 
         Memoized per instance because both callers run in one ``run_all`` pass
         and this self-joins the fact view — the pruning CTE below exists to keep
@@ -3485,7 +3489,9 @@ class DoctorService:
                     # would be a dead end for it.
                     shown = transform_ready_pairs[:5]
                     pair_descriptions = ", ".join(
-                        f"{a}:{b} ({round(ratio * 100)}% overlap)"
+                        f"{mask_embedded_account_number(a)}:"
+                        f"{mask_embedded_account_number(b)} "
+                        f"({round(ratio * 100)}% overlap)"
                         for a, b, ratio in shown
                     )
                     overflow = len(transform_ready_pairs) - len(shown)
@@ -3537,13 +3543,38 @@ class DoctorService:
                     (*_orient_overlap_pair(a, b, overlapping_unknown_accounts), ratio)
                     for a, b, ratio in review_pairs[:5]
                 ]
+                # Masked for the same reason _run_dim_accounts_reserved_display_name
+                # masks: `core.dim_accounts.account_id` is
+                # COALESCE(links.account_id, a.account_id), so an account with no
+                # resolver link surfaces its source-native key — a real OFX
+                # <ACCTID> on that channel — and this check's whole subject is the
+                # account whose identity was never resolved, so unresolved is the
+                # expected case here, not the edge one. The detail reaches CLI
+                # stdout and the MCP response, neither of which masks it downstream.
                 pair_descriptions = ", ".join(
-                    f"{absorbed}:{survivor} ({round(ratio * 100)}% overlap)"
+                    f"{mask_embedded_account_number(absorbed)}:"
+                    f"{mask_embedded_account_number(survivor)} "
+                    f"({round(ratio * 100)}% overlap)"
                     for absorbed, survivor, ratio in shown_pairs
                 )
                 fallback_commands = "; ".join(
-                    f"`moneybin accounts links run {absorbed} {survivor}`"
+                    "`moneybin accounts links run "
+                    f"{mask_embedded_account_number(absorbed)} "
+                    f"{mask_embedded_account_number(survivor)}`"
                     for absorbed, survivor, _ in shown_pairs
+                )
+                # A masked id cannot be pasted back, so say where the real one
+                # is rather than unmasking to keep the command convenient.
+                masked_note = (
+                    " An id shown as `****NNNN` is masked because it is the "
+                    "account's source-native key; run `moneybin accounts list` "
+                    "to read the full id from your own database."
+                    if any(
+                        mask_embedded_account_number(account_id) != account_id
+                        for absorbed, survivor, _ in shown_pairs
+                        for account_id in (absorbed, survivor)
+                    )
+                    else ""
                 )
                 overflow = len(review_pairs) - len(shown_pairs)
                 overflow_note = (
@@ -3603,7 +3634,7 @@ class DoctorService:
                         "confirming. Only then assign a currency with "
                         "`moneybin accounts set <account> --currency "
                         f"<ISO 4217>` and re-run `moneybin transform`."
-                        f"{transform_note}"
+                        f"{transform_note}{masked_note}"
                     ),
                     affected_ids=[
                         *(f"account:{account_id}" for account_id in unknown_accounts),
