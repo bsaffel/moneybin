@@ -1,4 +1,4 @@
-"""core:cashflow / `reports cashflow` — monthly inflow/outflow/net rollup."""
+"""core:cash_flow / `reports cash-flow` — monthly inflow/outflow/net rollup."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from moneybin.tables import REPORTS_CASH_FLOW
 
 
 @report(
-    report_id="core:cashflow",
-    name="cashflow",
+    report_id="core:cash_flow",
+    name="cash_flow",
     view=REPORTS_CASH_FLOW,
     classes={
         "year_month": DataClass.TXN_DATE,
@@ -129,15 +129,15 @@ def cash_flow(
         by: account | category | account-and-category — how to group.
 
     Examples:
-        reports(report_id="core:cashflow", parameters={"by": "category", "from_month": "2024-01"})
-        reports(report_id="core:cashflow", parameters={"by": "account"})
+        reports(report_id="core:cash_flow", parameters={"by": "category", "from_month": "2024-01"})
+        reports(report_id="core:cash_flow", parameters={"by": "account"})
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
     from_month, to_month, period, hint = resolve_window(
         from_month,
         to_month,
-        report_id="core:cashflow",
+        report_id="core:cash_flow",
     )
 
     # Assembled in Rule B order — grain key, label, dimensions, then the date —
@@ -196,9 +196,9 @@ def cash_flow(
     """  # noqa: S608  # select_cols allowlist
 
     actions = [
-        "Rerun reports(report_id='core:cashflow', "
+        "Rerun reports(report_id='core:cash_flow', "
         "parameters={'by': 'category'}) to regroup by category",
-        "Run reports(report_id='core:spending') for outflow-only MoM and YoY trends",
+        "Run reports(report_id='core:spending_trend') for outflow-only MoM and YoY trends",
     ]
     if hint:
         actions.insert(0, hint)

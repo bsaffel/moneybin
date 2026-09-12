@@ -203,7 +203,7 @@ Numbered, testable. Tagged by phase.
    groups by `currency_code`; `reports.balance_drift` projects it without regrouping
    (asserted and computed balances are the same account's, so the comparison is
    single-currency by construction). Two consumers re-aggregate the segmented views
-   and had to segment too: the `core:cashflow` runner (`currency_code` is in
+   and had to segment too: the `core:cash_flow` runner (`currency_code` is in
    `select_cols`/`group_cols` unconditionally, for every `by` value) and
    `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled

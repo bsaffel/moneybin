@@ -16,7 +16,7 @@ what the MCP surface returns; this one governs what the CLI's text branch prints
 Give the CLI one way to render each kind of result, so every command looks like it
 was written by the same hand and every line printed is worth reading. Today three
 commands returning rows use three different idioms, four commands print internal
-function or MCP tool names at the user, and `reports spending` is illegible at
+function or MCP tool names at the user, and `reports spending-trend` is illegible at
 default terminal width.
 
 ## Background
@@ -27,7 +27,7 @@ produced twelve reproducible defects, referenced throughout this spec as F1–F1
 and each named at the requirement that closes it. Five of them are worth stating
 up front, because they set the scope:
 
-- **F1** — `reports spending` renders eleven columns into an 80-column terminal.
+- **F1** — `reports spending-trend` renders eleven columns into an 80-column terminal.
   Every header and nearly every value is elided; not one figure is legible.
 - **F2** — `accounts list`, `transactions list`, and `reports networth` are all
   read-projections returning rows, and each renders in a different idiom.
@@ -206,7 +206,7 @@ Numbered, each independently testable.
    is simply absent from the result. Naming a field one mode does not return is
    the mechanism, not a violation.
 
-   **`spending`'s `compare` is the case a tuple cannot express.** Its
+   **`spending-trend`'s `compare` is the case a tuple cannot express.** Its
    projection is fixed — the view returns all three comparisons regardless
    (`spending_trend.py:171-174`) — so the parameter changes which columns are
    *relevant* rather than which exist. `mom` wants `mom_pct`, `yoy` wants
@@ -279,7 +279,7 @@ Numbered, each independently testable.
     Silent truncation is prohibited. This line is part of the result, not
     chatter: it emits to **stdout** immediately after the table, and `-q` never
     suppresses it. Both properties are load-bearing — routing it to stderr would
-    let `moneybin reports spending > report.txt` capture a truncated table with
+    let `moneybin reports spending-trend > report.txt` capture a truncated table with
     no indication it was truncated, and suppressing it under `-q` would do the
     same for `--quiet`. Either alone reintroduces the silent truncation this
     requirement forbids.
@@ -291,14 +291,14 @@ Numbered, each independently testable.
 
     **Non-money numerics are not covered, and it shows.** This requirement and
     the money kinds below reach only columns that declare a `money_kind`;
-    everything else reaches the table through `str()`. `reports spending`
+    everything else reaches the table through `str()`. `reports spending-trend`
     therefore prints its ratio columns at full binary-float precision — cells
     running to eighteen fractional digits (`0.009336226303145232`,
     `0.024842005788199163`) — in a report whose money columns are now
     formatted to two places.
 
     **The visible cost is a table with two minus signs in it.** One row of
-    `reports spending` renders `mom_delta` as `−8.04` (U+2212, requirement 12)
+    `reports spending-trend` renders `mom_delta` as `−8.04` (U+2212, requirement 12)
     and `mom_pct` as `-0.018468747846461304` (hyphen-minus) side by side,
     because only the first column reaches `format_money`. Two glyphs one cell
     apart is exactly the difference a reader is entitled to read as meaning.

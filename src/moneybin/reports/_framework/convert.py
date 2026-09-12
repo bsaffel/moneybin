@@ -179,9 +179,9 @@ def convert_records(
     date_column = semantics.fx_date
     if currency_column is None or date_column is None:
         # A report that cannot be priced states why in its own `fx_basis`, and
-        # the obstacle differs per report: `core:cashflow` has one date at its
+        # the obstacle differs per report: `core:cash_flow` has one date at its
         # grain and still cannot convert, because `currency_code` sits in its
-        # GROUP BY; `core:merchants` spans a range of dates instead of one.
+        # GROUP BY; `core:merchant_activity` spans a range of dates instead of one.
         # Deriving a reason from whichever declaration is missing would give one
         # report's obstacle for another's. A report that declares no basis
         # either — every user-created one, per `dynamic.py` — gets the generic

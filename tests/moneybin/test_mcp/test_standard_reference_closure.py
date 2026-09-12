@@ -287,7 +287,7 @@ def test_curation_prompts_use_admitted_system_audit_arguments() -> None:
 def test_sync_review_prompt_uses_an_executable_reports_call() -> None:
     text = prompts.sync_review()
 
-    assert "reports(report_id='core:spending')" in text
+    assert "reports(report_id='core:spending_trend')" in text
     assert "parameters={" not in text
 
 
@@ -320,16 +320,16 @@ async def test_report_catalog_examples_use_executable_standard_calls() -> None:
 def test_report_result_actions_use_executable_standard_calls() -> None:
     parameters: dict[str, dict[str, JsonValue]] = {
         "core:balance_drift": {},
-        "core:cashflow": {},
+        "core:cash_flow": {},
         "core:large_transactions": {},
-        "core:merchants": {},
+        "core:merchant_activity": {},
         "core:networth": {},
         "core:networth_history": {
             "from_date": "2026-01-01",
             "to_date": "2026-07-01",
         },
-        "core:recurring": {},
-        "core:spending": {},
+        "core:recurring_subscriptions": {},
+        "core:spending_trend": {},
     }
     unresolved: dict[str, list[str]] = {}
     catalog = get_report_catalog()

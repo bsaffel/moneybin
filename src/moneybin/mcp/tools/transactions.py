@@ -189,7 +189,7 @@ def transactions_get(
         next_cursor=result.next_cursor,
         actions=[
             "Use transactions with the next_cursor value to fetch the next page",
-            "Use reports(report_id='core:spending') for category breakdowns",
+            "Use reports(report_id='core:spending_trend') for category breakdowns",
             "Use transactions_categorize_commit to categorize uncategorized transactions",
         ],
     )
@@ -324,7 +324,7 @@ def _transaction_actions(
 ) -> list[str]:
     """Return operational hints with a complete continuation call."""
     actions = [
-        "Use reports(report_id='core:spending') for category breakdowns",
+        "Use reports(report_id='core:spending_trend') for category breakdowns",
         "Use transactions_categorize_commit to categorize uncategorized transactions",
     ]
     if next_cursor is not None:

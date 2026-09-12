@@ -267,7 +267,7 @@ def _runner_assertions(db: Database) -> list[AssertionResult]:
     drives each command against one-row stub views. Neither runs a runner's
     own SQL over the real views, so a runner shape the planner rewrites into
     something DuckDB cannot execute over the recursive match-group CTE — the
-    `ROW_NUMBER() ... <= ?` top-N that broke `core:merchants` and
+    `ROW_NUMBER() ... <= ?` top-N that broke `core:merchant_activity` and
     `core:large_transactions` — reached main with every gate green.
     """
     from moneybin.reports._framework.catalog import get_report_catalog, report_tier

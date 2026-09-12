@@ -306,7 +306,7 @@ enumerate the *exposed* set.
   row. Two remedies, both changing the `reports` response envelope for most of
   the catalog — a public contract, so a one-way door: **(A)** fold effective
   parameter classes into `tier`/`classes_returned`, at the cost of
-  `core:spending` reporting `medium` on every windowed call; **(B)** stop echoing
+  `core:spending_trend` reporting `medium` on every windowed call; **(B)** stop echoing
   above-LOW parameter values, which has a coherence argument A lacks —
   `_redact_and_freeze_parameter` already reduces a MEDIUM+ *dict* parameter to
   `{entry_count, redacted}` while leaving scalars passthrough, and `reports

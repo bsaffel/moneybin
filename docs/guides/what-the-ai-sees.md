@@ -64,7 +64,7 @@ envelope contains once it reaches the model.
 | Tool kind | Goes to the provider | Always masked first | Recorded locally |
 |---|---|---|---|
 | Transaction reads (`transactions`) | Descriptions, merchant names, amounts, dates, notes, tags, categories | Account/routing numbers | Per-call event |
-| Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
+| Report views (`reports(report_id="core:networth")`, `reports(report_id="core:spending_trend")`, …) | Balances, totals, amounts, merchant names, dates | Account/routing numbers | Per-call event |
 | Ad-hoc SQL (`sql_query`) | Whatever your `SELECT` returns from `core`/`app`/`reports`/`raw`/`prep` (amounts, descriptions, merchants, dates, locations, untouched importer output) | Account/routing numbers — by column class in `core`/`app`/`reports`, by value shape in `raw`/`prep` | Per-call event |
 | Categorization assist (`transactions_categorize_assist`) | Scrubbed description (**merchant kept**, amount as a sign) + structural fields incl. `check_number` | Amount value, date, account ID, locations, embedded PII | Per-call event |
 | Mutations (categorize, note, tag, split, …) | The values you're writing + confirmation | Account/routing numbers | Per-call event **+ audit row** (app-state mutations are undoable; `import_revert` is not — see below) |

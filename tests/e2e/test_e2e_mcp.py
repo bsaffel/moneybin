@@ -204,10 +204,10 @@ class TestReportsTool:
         _, tool_names = mcp_server_tools
 
         removed = {
-            "reports_spending",
-            "reports_cashflow",
-            "reports_recurring",
-            "reports_merchants",
+            "reports_spending_trend",
+            "reports_cash_flow",
+            "reports_recurring_subscriptions",
+            "reports_merchant_activity",
             "reports_large_transactions",
             "reports_balance_drift",
         }

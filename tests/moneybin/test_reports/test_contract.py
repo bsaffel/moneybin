@@ -358,9 +358,9 @@ def test_build_spec_rejects_display_currency_reserved_param() -> None:
 
 
 def test_report_spec_requires_namespaced_id_and_metric_semantics() -> None:
-    spec = _build_spec(report_id="core:spending")
+    spec = _build_spec(report_id="core:spending_trend")
 
-    assert spec.report_id == "core:spending"
+    assert spec.report_id == "core:spending_trend"
     assert spec.semantics.kind == "count"
 
 

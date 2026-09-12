@@ -172,8 +172,8 @@ def reports_run(
             # Resolved here rather than inside the renderer: the catalog needs
             # an open database to build a user-tier spec, and this is the only
             # scope that has one. `run` reaches built-ins too, so without it a
-            # report would render its amounts one way through `reports spending`
-            # and another through `reports run spending`.
+            # report would render its amounts one way through `reports spending-trend`
+            # and another through `reports run spending-trend`.
             spec = catalog.resolve(handle)
             money = money_columns(spec)
             result = catalog.execute(

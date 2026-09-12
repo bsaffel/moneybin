@@ -1,4 +1,4 @@
-"""core:merchants / `reports merchants` — per-merchant lifetime totals."""
+"""core:merchant_activity / `reports merchant-activity` — per-merchant lifetime totals."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
 
 
 @report(
-    report_id="core:merchants",
-    name="merchants",
+    report_id="core:merchant_activity",
+    name="merchant_activity",
     view=REPORTS_MERCHANT_ACTIVITY,
     classes={
         "merchant_id": DataClass.RECORD_ID,
@@ -158,7 +158,7 @@ def merchant_activity(
         sort: spend | count | recent.
 
     Examples:
-        reports(report_id="core:merchants", parameters={"top": 10, "sort": "count"})
+        reports(report_id="core:merchant_activity", parameters={"top": 10, "sort": "count"})
     """
     if sort not in MERCHANTS_SORTS:
         raise ValueError(f"Unknown sort: {sort}")

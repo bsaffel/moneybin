@@ -313,11 +313,19 @@ def test_run_coerces_a_parameter_to_its_declared_type_before_executing() -> None
     ):
         result = runner.invoke(
             app,
-            ["reports", "run", "core:merchants", "--param", "top=5", "--limit", "3"],
+            [
+                "reports",
+                "run",
+                "core:merchant_activity",
+                "--param",
+                "top=5",
+                "--limit",
+                "3",
+            ],
         )
 
     assert result.exit_code == 0, result.output
-    assert parse.call_args.args[1:] == ("core:merchants", ["top=5"])
+    assert parse.call_args.args[1:] == ("core:merchant_activity", ["top=5"])
     assert catalog.execute.call_args.kwargs["parameters"] == {"top": 5}
     assert catalog.execute.call_args.kwargs["limit"] == 3
 
@@ -343,7 +351,9 @@ def test_run_rejects_a_limit_below_one() -> None:
     ``truncated: true`` against a ``total_count`` of 1 — an empty result claiming
     to have been cut short, from the surface with no schema to refuse it.
     """
-    result = runner.invoke(app, ["reports", "run", "core:merchants", "--limit", "0"])
+    result = runner.invoke(
+        app, ["reports", "run", "core:merchant_activity", "--limit", "0"]
+    )
 
     assert result.exit_code == 2
     assert "at least 1" in result.output
@@ -1543,7 +1553,7 @@ def test_explain_json_envelope_reports_a_saved_report_as_medium() -> None:
         _patch_explain(_explanation(tier="builtin")),
     ):
         built_in = runner.invoke(
-            app, ["reports", "explain", "core:spending", "--output", "json"]
+            app, ["reports", "explain", "core:spending_trend", "--output", "json"]
         )
 
     assert json.loads(saved.output)["summary"]["sensitivity"] == "medium"

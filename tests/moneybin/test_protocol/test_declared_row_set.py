@@ -48,7 +48,7 @@ from moneybin.protocol.row_set import (
 def _report_result(row_count: int) -> ReportResultPayload:
     """A report result carrying ``row_count`` rows beside its column metadata."""
     return ReportResultPayload(
-        report_id="core:spending",
+        report_id="core:spending_trend",
         parameters={},
         columns=[
             ReportOutputColumn(name="amount", data_class="txn_amount"),

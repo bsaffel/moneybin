@@ -931,7 +931,7 @@ def test_a_converted_read_keeps_the_column_naming_what_it_was() -> None:
     intersection would drop it — while conversion has relabelled every amount
     into the target currency. The table would then state what each row is worth
     and lose what it was. The only other disclosure, `echo_applied_rates`, goes
-    to stderr, which `moneybin reports cashflow … > out.txt` does not capture.
+    to stderr, which `moneybin reports cash-flow … > out.txt` does not capture.
     """
     visible = visible_columns(
         _wide_spec(("year_month", "net")),

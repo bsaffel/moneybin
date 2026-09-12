@@ -728,7 +728,7 @@ Returns:
     }
   ],
   "readers": [
-    {"pid": 47312, "command": "moneybin reports spending"}
+    {"pid": 47312, "command": "moneybin reports spending-trend"}
   ]
 }
 ```

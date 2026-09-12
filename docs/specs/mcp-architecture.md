@@ -312,7 +312,7 @@ Every tool returns a consistent envelope:
   },
   "data": [ ... ],
   "actions": [
-    "Use reports(report_id=\"core:spending\") for a category breakdown",
+    "Use reports(report_id=\"core:spending_trend\") for a category breakdown",
     "Use transactions(start=..., end=...) for row-level transactions in this window"
   ]
 }
@@ -608,8 +608,8 @@ several service stages that remain separate CLI operator commands.
 ```python
 # Shared registered report
 SPENDING = ReportSpec(
-    report_id="core:spending",
-    runner=spending,
+    report_id="core:spending_trend",
+    runner=spending_trend,
     parameter_schema=...,
 )
 
@@ -637,12 +637,12 @@ def reports(
 
 
 # CLI: one ergonomic command for this report
-@reports_app.command("spending")
+@reports_app.command("spending-trend")
 def reports_command(from_month: str | None = None) -> None:
     with get_database(read_only=True) as db:
         result = get_report_catalog().execute(
             db,
-            report_id="core:spending",
+            report_id="core:spending_trend",
             parameters={"from_month": from_month},
             limit=get_max_rows(),
         )
@@ -672,8 +672,8 @@ identity stage controls. Both forms reach the same service outcomes.
 ### What symmetry does NOT mean
 
 - **Not identical UX.** The CLI uses tables, progress bars, and icons. MCP returns structured data. Same data, different presentation.
-- **Not identical invocation.** `moneybin reports spending --from-month
-  2025-01` versus `reports(report_id="core:spending",
+- **Not identical invocation.** `moneybin reports spending-trend --from-month
+  2025-01` versus `reports(report_id="core:spending_trend",
   parameters={"from_month": "2025-01"})`.
 - **Not identical granularity.** CLI subgroups make surgical operator commands
   cheap to discover. MCP spends a permanent context and selection budget per

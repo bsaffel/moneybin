@@ -423,7 +423,7 @@ class TestDBReadOnlyCommands:
         result = run_cli("reports", "list", "--output", "json", env=e2e_profile)
         result.assert_success()
         entries = json.loads(result.stdout)["data"]
-        assert "core:spending" in {entry["report_id"] for entry in entries}
+        assert "core:spending_trend" in {entry["report_id"] for entry in entries}
         assert {entry["tier"] for entry in entries} == {"builtin"}
 
     def test_reports_networth_help(self) -> None:
