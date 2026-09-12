@@ -8,6 +8,7 @@ downstream operates on DataFrames regardless of source format.
 import datetime
 import logging
 import re
+import zipfile
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -693,14 +694,28 @@ def _read_excel(
                 path, sheet_used, source_bytes=source_bytes
             )
             skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
-        except InvalidFileException:
+        except (InvalidFileException, zipfile.BadZipFile):
             # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
             # legacy binary .xls. This sampling call is new: pre-PR,
             # supplying --sheet skipped openpyxl entirely and let
             # calamine/fastexcel (which does read legacy .xls) handle the
-            # file alone. Fall back to that pre-detection default (row 0 is
+            # file alone. Both exceptions mean the same thing (openpyxl
+            # cannot open this container at all, so the sampler has no
+            # opinion and the real reader below should get its chance) but
+            # openpyxl raises one or the other depending on *how* it's
+            # asked to open the file, not on anything about the caller:
+            # given a path it runs its own extension check first and raises
+            # InvalidFileException; given bytes (BytesIO, e.g. the MCP
+            # confirm-after-preview replay path) it skips straight to
+            # `ZipFile(...)`, which raises BadZipFile for a non-zip
+            # (OLE2/legacy-.xls) container. Don't "simplify" this back to
+            # one exception — the two entry shapes genuinely fail
+            # differently. Fall back to the pre-detection default (row 0 is
             # the header) rather than refuse a file the actual read can
-            # still parse.
+            # still parse. Side effect: a genuinely corrupt .xlsx now also
+            # falls through to the real read instead of failing here first —
+            # the right outcome, since the error then comes from the
+            # component that actually has to parse the file.
             skip_rows = 0
     elif has_header is not None:
         resolved_has_header = has_header

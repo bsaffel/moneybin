@@ -740,6 +740,50 @@ class TestExcelReader:
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
         assert result.df["Date"].to_list() == ["2026-01-01"]
 
+    def test_bytes_path_openpyxl_bad_zip_falls_back_instead_of_raising(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The MCP replay path (source_bytes, no filesystem path) fails differently.
+
+        Given a path, openpyxl runs its own extension check first and raises
+        InvalidFileException for a legacy .xls (the case the test above
+        covers). Given bytes (BytesIO — the shape import_service.py's
+        reviewed_plan replay passes: ``read_file(..., source_bytes=...)``
+        with no path openpyxl ever inspects), openpyxl never sees a
+        filename, skips straight to ``ZipFile(...)``, and a legacy .xls
+        (an OLE2 compound file, not a zip) fails there instead with
+        zipfile.BadZipFile — a second, distinct exception type the sampler's
+        except clause must also catch, or an agent replaying a legacy .xls
+        through MCP still hits an uncaught exception even though the CLI
+        path-based case is fixed.
+
+        Drives the sampler with the real leading bytes of an OLE2 compound
+        file (legacy .xls's actual container format) so openpyxl raises
+        BadZipFile on its own, not because a mock says so. Only the
+        downstream pl.read_excel is mocked -- standing in for calamine
+        actually parsing a well-formed legacy .xls stream, which this
+        fabricated 8-byte header alone is not enough to be -- so the
+        assertions stay clean while the failure mode under test is real.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        stub_df = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["42.5"],
+            "Description": ["Coffee"],
+        })
+        mocker.patch("polars.read_excel", return_value=stub_df)
+
+        result = read_file(
+            tmp_path / "legacy_replay.xls",
+            FormatInfo(file_type="excel"),
+            sheet="Sheet1",
+            source_bytes=ole2_magic_bytes,
+        )
+        assert result.skip_rows == 0
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+
 
 class TestParquetReader:
     """Tests for Parquet file reading."""
