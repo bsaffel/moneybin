@@ -143,8 +143,17 @@ def rates_pricing(
     resolved to price a home-basis column matches nothing there and would be
     pruned even though it priced a surviving row. ``home_currency`` supplies
     that key, added for a row that actually carries a home-basis value. Without
-    it — a caller that declares such a column but passes no home currency —
-    there is no way to tell that rate from a stale one, so nothing is narrowed.
+    it — a caller whose surviving rows actually hold one — there is no way to
+    tell that rate from a stale one, so nothing is narrowed.
+
+    Whether a home key is needed is read off the surviving ``rows`` themselves,
+    the same test ``convert_records``' ``needs_home`` applies: a home-basis
+    column being *declared* is not evidence any row holds a value in it, and
+    ``account_balance_home`` is documented nullable
+    (``reports-net-worth-sql-surface.md``). A report whose home-basis column is
+    null on every surviving row converted without ever resolving a home rate,
+    so nothing here needs one either — narrowing must not bail out over a
+    currency nothing actually needed.
 
     Narrowing still applies in the home-basis case, deliberately: the sentinel
     row is exactly what this function exists to cut, and a report with a
@@ -153,8 +162,11 @@ def rates_pricing(
     if not rates or date_column is None:
         return rates
     home_basis = _home_basis_columns(columns)
+    needs_home = home_basis and any(
+        row.get(name) is not None for row in rows for name in home_basis
+    )
     home = canonical_currency(home_currency) if home_currency else None
-    if home_basis and (home is None or not _is_currency_code(home)):
+    if needs_home and (home is None or not _is_currency_code(home)):
         return rates
     priced: set[tuple[str, date]] = set()
     for row in rows:

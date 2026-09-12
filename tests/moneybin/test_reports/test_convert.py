@@ -1874,6 +1874,53 @@ def test_the_cap_drops_a_home_rate_that_priced_only_a_discarded_row(
     } == {("EUR", date(2026, 3, 5)), ("GBP", date(2026, 3, 5))}
 
 
+def test_the_cap_narrows_when_a_home_basis_column_is_declared_but_unused(
+    saved_db: Database,
+) -> None:
+    """A declared home-basis column must not disable narrowing by itself.
+
+    ``rates_pricing``'s bail-out used to key off whether the report *declares*
+    a home-basis column rather than whether any surviving row actually holds
+    one. ``convert_records`` already converts an all-null home-basis
+    projection with no home currency at all
+    (``test_an_all_null_home_basis_projection_converts_without_a_home_
+    currency``) — no home rate is ever resolved for it. Truncation narrowing
+    must reach the same conclusion instead of publishing every rate
+    unfiltered, including one that priced only the discarded sentinel row's
+    ``requested_date``.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    _seed_rate(saved_db, "GBP", "USD", date(2026, 3, 6), Decimal("1.27"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+    execution = _execution(
+        records=[
+            _row(amount_home=None),
+            _row(
+                currency_code="GBP",
+                txn_date=date(2026, 3, 6),
+                amount_home=None,
+            ),
+        ],
+        columns=[*classes],
+        column_types=["DATE", "VARCHAR", "DECIMAL(18,2)", "BIGINT", "DECIMAL(18,2)"],
+        output_classes=classes,
+        output_columns=_HOME_BASIS_COLUMNS,
+        total_count=2,
+        pending_limit=1,
+        # No home currency: the profile has none set, and no row needs one.
+    )
+
+    converted = convert_execution(execution, to_currency="USD", service=service)
+    assert converted.degraded_reason is None
+    assert {rate.from_currency for rate in converted.applied_rates} == {"EUR", "GBP"}
+
+    capped = truncate_execution(converted)
+
+    assert [rate.from_currency for rate in capped.applied_rates] == ["EUR"]
+    assert [rate.requested_date for rate in capped.applied_rates] == [date(2026, 3, 5)]
+
+
 def test_a_null_home_basis_value_does_not_demand_a_home_rate(
     saved_db: Database,
 ) -> None:
