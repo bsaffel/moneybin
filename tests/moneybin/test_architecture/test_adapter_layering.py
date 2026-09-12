@@ -38,16 +38,25 @@ from pathlib import Path
 
 import pytest
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+from tests.moneybin.test_architecture._import_graph import (
+    SRC,
+    package_of,
+    resolved_module,
+)
+
 ADAPTER_ROOTS = (
-    REPO_ROOT / "src" / "moneybin" / "mcp" / "tools",
-    REPO_ROOT / "src" / "moneybin" / "cli" / "commands",
+    SRC / "mcp" / "tools",
+    SRC / "cli" / "commands",
 )
 GUARDED_PACKAGES = (
     "moneybin.loaders",
     "moneybin.extractors",
     "moneybin.matching",
 )
+
+# Third element for a statement that binds a guarded *module* rather than a name
+# out of one (`import moneybin.extractors.x`, `from moneybin import extractors`).
+MODULE_IMPORT = "<module>"
 
 # Allowlist entries are (adapter_relpath, imported_module, imported_name) triples.
 # `adapter_relpath` is relative to src/moneybin/ for stability across moves.
@@ -265,22 +274,56 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
 })
 
 
-def _collect_imports(
-    path: Path,
-) -> list[tuple[str, str, str]]:
-    """Return (adapter_relpath, imported_module, imported_name) triples for a file."""
+def _is_guarded(module: str) -> bool:
+    """Whether a fully-qualified module path sits inside a guarded package."""
+    return any(module.startswith(pkg) for pkg in GUARDED_PACKAGES)
+
+
+def _format_violation(relpath: str, module: str, name: str) -> str:
+    """Render one triple back as the statement that produced it."""
+    if name == MODULE_IMPORT:
+        return f"  - {relpath}: import {module}"
+    return f"  - {relpath}: from {module} import {name}"
+
+
+def _collect_imports(path: Path, src_root: Path = SRC) -> list[tuple[str, str, str]]:
+    """Return (adapter_relpath, imported_module, imported_name) triples for a file.
+
+    The guard has to recognize every statement form that reaches a guarded
+    package, not just `from <absolute> import Y`. A bare
+    `import moneybin.extractors.x` is an `ast.Import` node; `from moneybin import
+    extractors` is an `ast.ImportFrom` whose own module is unguarded; and a
+    relative `from ...extractors.x import Y` keeps its package hops in
+    `node.level`. Matching on `ast.ImportFrom.module` alone lets all three
+    import the same symbols with the guard silent.
+
+    `_import_graph.resolved_module` owns the level arithmetic, shared with the
+    other layering guards in this package — a second copy of it resolves one
+    level off and reports nothing, which is the silent green these guards exist
+    to prevent. This function owns only the guarded-package comparison.
+    """
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(path))
-    relpath = path.relative_to(REPO_ROOT / "src" / "moneybin").as_posix()
+    relpath = path.relative_to(src_root).as_posix()
+    # `package_of` is pure path arithmetic, so rejoining the relpath under the
+    # real source root also resolves an adversarial fixture living elsewhere.
+    package = package_of(SRC / relpath)
 
     triples: list[tuple[str, str, str]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.module is None:
-            continue
-        if not any(node.module.startswith(pkg) for pkg in GUARDED_PACKAGES):
-            continue
-        for alias in node.names:
-            triples.append((relpath, node.module, alias.name))
+        if isinstance(node, ast.ImportFrom):
+            module = resolved_module(node, package)
+            for alias in node.names:
+                if _is_guarded(module):
+                    triples.append((relpath, module, alias.name))
+                elif _is_guarded(f"{module}.{alias.name}"):
+                    triples.append((relpath, f"{module}.{alias.name}", MODULE_IMPORT))
+        elif isinstance(node, ast.Import):
+            triples.extend(
+                (relpath, alias.name, MODULE_IMPORT)
+                for alias in node.names
+                if _is_guarded(alias.name)
+            )
     return triples
 
 
@@ -307,7 +350,7 @@ def test_adapters_dont_bypass_service_layer() -> None:
     violations = [t for t in found if t not in ADAPTER_LAYERING_ALLOWLIST]
     if violations:
         formatted = "\n".join(
-            f"  - {rel}: from {mod} import {name}" for rel, mod, name in violations
+            _format_violation(rel, mod, name) for rel, mod, name in violations
         )
         pytest.fail(
             "Adapter modules must not import from loaders/extractors/matching "
@@ -327,9 +370,114 @@ def test_allowlist_has_no_dead_entries() -> None:
     stale = [entry for entry in ADAPTER_LAYERING_ALLOWLIST if entry not in found]
     if stale:
         formatted = "\n".join(
-            f"  - {rel}: from {mod} import {name}" for rel, mod, name in stale
+            _format_violation(rel, mod, name) for rel, mod, name in stale
         )
         pytest.fail(
             "ADAPTER_LAYERING_ALLOWLIST contains entries with no matching "
             f"import in the tree — remove them.\n\nStale entries:\n{formatted}"
         )
+
+
+@pytest.mark.parametrize(
+    ("statement", "expected"),
+    [
+        (
+            "from moneybin.extractors.ofx import OFXExtractor",
+            ("evasion.py", "moneybin.extractors.ofx", "OFXExtractor"),
+        ),
+        (
+            "import moneybin.extractors.ofx",
+            ("evasion.py", "moneybin.extractors.ofx", MODULE_IMPORT),
+        ),
+        (
+            "import moneybin.extractors.ofx as ofx",
+            ("evasion.py", "moneybin.extractors.ofx", MODULE_IMPORT),
+        ),
+        (
+            "from moneybin import matching",
+            ("evasion.py", "moneybin.matching", MODULE_IMPORT),
+        ),
+    ],
+)
+def test_collect_imports_catches_every_statement_form(
+    tmp_path: Path, statement: str, expected: tuple[str, str, str]
+) -> None:
+    """Each statement form that reaches a guarded package must register as a violation.
+
+    Adversarial fixtures, not redundant coverage: the collector originally
+    matched `ast.ImportFrom` only, so `import moneybin.extractors.x` reached the
+    same symbols while both layering guards stayed green.
+    """
+    module = tmp_path / "evasion.py"
+    module.write_text(f"{statement}\n", encoding="utf-8")
+
+    assert _collect_imports(module, src_root=tmp_path) == [expected]
+
+
+def test_collect_imports_ignores_unguarded_statements(tmp_path: Path) -> None:
+    """A neighbouring package that merely shares the `moneybin` prefix is not a hit."""
+    module = tmp_path / "innocent.py"
+    module.write_text(
+        "import moneybin.tables\nfrom moneybin import error_codes\n", encoding="utf-8"
+    )
+
+    assert _collect_imports(module, src_root=tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("relpath", "statement", "expected"),
+    [
+        # Two dots from `moneybin/cli/commands/import_cmd.py` stop at
+        # `moneybin.cli`; three walk up to `moneybin` and reach extractors/.
+        (
+            "cli/commands/import_cmd.py",
+            "from ...extractors.tabular.formats import merge_formats",
+            (
+                "cli/commands/import_cmd.py",
+                "moneybin.extractors.tabular.formats",
+                "merge_formats",
+            ),
+        ),
+        (
+            "mcp/tools/import_tools.py",
+            "from ...matching import engine",
+            ("mcp/tools/import_tools.py", "moneybin.matching", "engine"),
+        ),
+    ],
+)
+def test_collect_imports_resolves_relative_statements(
+    tmp_path: Path, relpath: str, statement: str, expected: tuple[str, str, str]
+) -> None:
+    """A relative import that crosses packages must resolve before the guard check.
+
+    The dots live in `ast.ImportFrom.level`, not in `node.module`, so an
+    unresolved check reads `from ...extractors.x import Y` as the unguarded
+    string `extractors.x` while Python imports `moneybin.extractors.x`.
+    """
+    module = tmp_path / relpath
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(f"{statement}\n", encoding="utf-8")
+
+    assert _collect_imports(module, src_root=tmp_path) == [expected]
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "from . import sibling",
+        "from .helpers import render",
+        "from ..commands import other",
+        # More dots than the package is deep: Python rejects this itself, so
+        # there is nothing for the guard to classify.
+        "from ..... import anything",
+    ],
+)
+def test_collect_imports_ignores_relative_statements_inside_the_layer(
+    tmp_path: Path, statement: str
+) -> None:
+    """A relative import that stays inside the surface layer is not a violation."""
+    module = tmp_path / "cli" / "commands" / "innocent.py"
+    module.parent.mkdir(parents=True, exist_ok=True)
+    module.write_text(f"{statement}\n", encoding="utf-8")
+
+    assert _collect_imports(module, src_root=tmp_path) == []
