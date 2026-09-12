@@ -1,5 +1,6 @@
 """Tests for the tabular import service layer."""
 
+import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -717,6 +718,47 @@ class TestTabularConfirmationFlow:
         ws.append(["2026-07-01", -4.50, "Coffee"])
         ws.append(["2026-07-02", 100.00, "Salary"])
         xlsx = tmp_path / "headerless.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_headered_xlsx_with_native_date_cells_imports_completely(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A headered, spreadsheet-native XLSX must import end to end.
+
+        Reviewer-flagged gap on the header-detection PR: this reader forces
+        `infer_schema_length=0` (all-string columns), so `pl.read_excel`
+        renders a native Excel date cell as an ISO datetime string
+        ("2026-01-01 00:00:00") rather than a plain date. Every
+        `_DATE_FORMATS` entry (date_detection.py) is date-only, so before the
+        fix `detect_date_format` returned `(None, "low")` for the date
+        column and the import was refused with reason="unreadable_date" —
+        even on a normally-headered file, not just the headerless shape a
+        prior fix addressed. `_excel_cell_text` already normalized this for
+        the header-classification sample; the real values `pl.read_excel`
+        returns needed the same treatment
+        (`_normalize_excel_date_columns`).
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_headered.xlsx"
         wb.save(xlsx)
 
         result = ImportService(db).import_file(

@@ -13,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 
 import polars as pl
+import polars.selectors as cs
 
 from moneybin.extractors.tabular.date_detection import (
     detect_date_format,
@@ -545,6 +546,35 @@ def _excel_sample_rows(
         wb.close()
 
 
+# Same shape `_excel_cell_text` normalizes for the classification sample —
+# fastexcel renders a native Excel date/datetime cell as this exact ISO
+# datetime string (`"%Y-%m-%d %H:%M:%S"`) once `pl.read_excel` reads the
+# column as Utf8. Anchored so it only ever matches that full-string shape;
+# genuine non-date text never happens to be a complete timestamp and passes
+# through untouched.
+_EXCEL_DATETIME_TEXT_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}$")
+
+
+def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Collapse a native-date/datetime cell's rendered text to its date.
+
+    ``_excel_cell_text`` closes this gap for the header-classification
+    sample, which reads cells directly via openpyxl and sees the original
+    ``datetime`` object. The real data ``pl.read_excel`` returns never goes
+    through that path — fastexcel stringifies a native date/datetime cell as
+    ``"2026-01-01 00:00:00"`` on its own, and every ``_DATE_FORMATS`` entry
+    (date_detection.py) is date-only, so without this a spreadsheet-native
+    date column never reaches ``detect_date_format`` as a recognized date and
+    a correctly-headered file is refused as having none. Applies to every
+    string column since the match is exact-shape anchored, not column-name
+    based — cheaper than inspecting each column for date-likeness first, and
+    just as safe.
+    """
+    return df.with_columns(
+        cs.string().str.replace(_EXCEL_DATETIME_TEXT_RE.pattern, "${1}")
+    )
+
+
 def _excel_cell_text(value: object) -> str:
     """Render one sampled cell as the text the header classifier expects.
 
@@ -619,6 +649,7 @@ def _read_excel(
         path: File path.
         info: Format detection result (unused for Excel, kept for API consistency).
         skip_rows: Explicit header-row index (overrides auto-detection).
+            With has_header=False, this is the start-of-data row index instead.
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
         source_bytes: Already materialized workbook object to parse.
         has_header: Persisted header decision; None runs detection.
@@ -676,6 +707,9 @@ def _read_excel(
         infer_schema_length=0,
         read_options=read_options,
     )
+    # Normalize the values actually loaded, not just the classification
+    # sample — see _normalize_excel_date_columns.
+    df = _normalize_excel_date_columns(df)
 
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT
     # skip_rows path only (mirrors _read_text). Auto-detection
