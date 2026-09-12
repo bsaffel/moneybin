@@ -158,6 +158,10 @@ def categorize_commit(
 ) -> None:
     """Commit externally-decided categorizations from a JSON array.
 
+    Each item has transaction_id and category, with optional subcategory and
+    canonical_merchant_name. A canonical merchant name teaches the exact-match
+    merchant exemplar set while preserving the AI-source categorization.
+
     Read from a file:
 
       moneybin transactions categorize commit --input cats.json

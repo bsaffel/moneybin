@@ -69,7 +69,7 @@ All commands live under `moneybin transactions categorize ...`. Every read comma
 | `assist` | Returns uncategorized transactions as PII-scrubbed JSON for an LLM to annotate. Does not write. |
 | `export-uncategorized` | Same PII-scrubbed shape, written to a file or stdout. Convenience wrapper for pipeline use. |
 | `pending` | Lists uncategorized transactions (excludes transfer pairs and archived accounts). `--sort {date,impact}`, `--min-amount`, `--account`. |
-| `commit` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Commits a JSON array of `{transaction_id, category, subcategory}` items. Accepts `--input <path>` or `-` for stdin. |
+| `commit` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Commits a JSON array of `{transaction_id, category, subcategory?, canonical_merchant_name?}` items. Accepts `--input <path>` or `-` for stdin. |
 | `commit-from-file` | ⚠️ Writes `categorized_by='ai'` ([see Hazard](#the-model)). Same as `commit` but takes the path as a positional argument; tolerant of export-shape extras like `description_scrubbed`. |
 | `run` | Re-runs the deterministic cascade (rules and merchants) over uncategorized rows. `--methods rules,merchants` controls the order. No LLM involvement. |
 | `improve-ai` | Re-looks-up every `categorized_by='ai'` row against the Plaid category bridge and upgrades it to `provider_native` where the bridge match is at MEDIUM confidence or higher. Never touches `user` or `rule`/`auto_rule` rows. |
@@ -93,7 +93,7 @@ MCP uses the bounded standard surface rather than one tool for every CLI subcomm
 | Tool | Purpose |
 |---|---|
 | `transactions_categorize_assist` | Return PII-scrubbed candidates for a human or model to propose. |
-| `transactions_categorize_commit` | Commit reviewed categorizations. It accepts `canonical_merchant_name` per item (the CLI strips this field). |
+| `transactions_categorize_commit` | Commit reviewed categorizations, including an optional `canonical_merchant_name` per item. |
 | `transactions_categorize_rules` | Inspect the current or historical categorization-rule projection. |
 | `transactions_categorize_rules_set` | Set the complete reviewed rule target state. |
 | `transactions_categorize_run` | `operation="categorize"` (default) runs the deterministic engines (`methods=["rules","merchants"]`). `operation="improve_ai"` runs the `improve-ai` upgrade pass instead (forbids `methods`). |
@@ -188,9 +188,9 @@ A top-level JSON array. Each item:
 | `transaction_id` | string (1–64) | yes | Must exist in `core.fct_transactions`. Unknown IDs surface as per-row errors; the batch continues. |
 | `category` | string (1–100) | yes | Must match a row in `core.dim_categories` (active). Misspellings get "did you mean" suggestions. |
 | `subcategory` | string (1–100) | no | Must pair validly with `category` in the taxonomy if present. |
-| `canonical_merchant_name` | string (1–200) | no | **MCP only.** The CLI `commit` and `commit-from-file` strip this key at the boundary; only `transactions_categorize_commit` (MCP) routes it through to the exemplar accumulator. |
+| `canonical_merchant_name` | string (1–200) | no | Accepted by `commit`, `commit-from-file`, and `transactions_categorize_commit`. It merges the row's exact match text into the canonical merchant's exemplar set. |
 
-Export rows from `export-uncategorized` carry additional keys (`description_scrubbed`, `memo_scrubbed`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
+Export rows from `export-uncategorized` carry additional keys (`description_scrubbed`, `memo_scrubbed`, `transaction_type`, `is_transfer`, etc.) for the LLM to read. The CLI `commit-from-file` silently drops keys outside `{transaction_id, category, subcategory, canonical_merchant_name}` at the boundary, so you can pipe the export → annotated payload back through unchanged.
 
 ### `rules.json` (input to `rules create --from-file`)
 
@@ -349,7 +349,7 @@ Two independent guards run on the write/accept path itself — refused before th
 
 ## Merchant exemplars and the snowball
 
-When the MCP `transactions_categorize_commit` tool processes a row with `canonical_merchant_name='Google YouTube'`, MoneyBin creates a merchant in `app.user_merchants` with that name and stores the row's exact normalized `match_text` as a `oneOf` exemplar. Subsequent rows whose `match_text` equals one of that merchant's exemplars match immediately — set membership, no pattern needed. (The CLI `commit` and `commit-from-file` strip `canonical_merchant_name` at the boundary today, so this auto-merchant path is MCP-only. Future work tracked as a follow-up.)
+When `commit`, `commit-from-file`, or MCP `transactions_categorize_commit` processes a row with `canonical_merchant_name='Google YouTube'`, MoneyBin creates a merchant in `app.user_merchants` with that name and stores the row's exact normalized `match_text` as a `oneOf` exemplar. Subsequent rows whose `match_text` equals one of that merchant's exemplars match immediately — set membership, no pattern needed.
 
 The snowball is the cumulative effect: each session creates merchants and accumulates exemplars; the post-commit deterministic cascade applies them to remaining uncategorized rows in the same batch; the next import gets categorized at refresh time before you ever see it. By the third or fourth import, the LLM is meaningfully less involved.
 
@@ -407,7 +407,6 @@ There is no `categorize revert` command today. To investigate or undo a batch:
 
 - **ML-based categorization.** The `ml` source already occupies its position in the precedence ladder — between `migration` and `provider_native` — and the `transactions categorize ml {status,train,apply}` commands are registered, but they're stubs today, hidden from `--help`: invoking any of them returns a not-implemented notice.
 - **Bulk-import-as-user CLI.** See [Migrating curated categories](#migrating-curated-categories). The service method exists; the CLI/MCP entry point doesn't.
-- **CLI parity for `canonical_merchant_name`.** The CLI `commit` and `commit-from-file` strip the key today; only the MCP `transactions_categorize_commit` tool routes it through to the exemplar accumulator.
 - **Merchant exemplar inspection / pruning.** No MCP route currently lists or removes exemplars or hard-deletes merchants. `taxonomy(view="merchants")` exposes catalog state; any future mutation remains unnamed until admission.
 - **Audit-based revert.** No `categorize revert` or `commit-from-file --undo`; bulk paths are also audit-silent, so an "undo last batch" tool would need both audit coverage and a revert primitive.
 - **Category-rename cascades** beyond the FK-resolved view path. Renaming a category surfaces immediately on read because `core.dim_categories` resolves through the FK, but the text snapshots on writer tables aren't rewritten yet.

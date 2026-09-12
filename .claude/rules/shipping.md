@@ -1,6 +1,6 @@
 ---
 description: "Post-implementation checklist: CHANGELOG, roadmap, features, README updates, pre-push /code-review pass"
-paths: ["CHANGELOG.md", "README.md", "docs/roadmap.md", "docs/features.md", "docs/specs/INDEX.md"]
+paths: ["CHANGELOG.md", "changelog.d/**", "README.md", "docs/roadmap.md", "docs/features.md", "docs/specs/INDEX.md"]
 ---
 
 # Shipping & Public Documentation
@@ -11,9 +11,11 @@ An `implemented` spec stays where it is. `docs/specs/archived/` is only for spec
 
 After marking a spec as `implemented` (in both the spec file and `INDEX.md`), update public-facing documentation in this order:
 
-### 1. CHANGELOG.md (user-visible changes)
+### 1. Changelog fragment (user-visible changes)
 
-If the change is user-visible, add a bullet to `CHANGELOG.md`'s `Unreleased` section under the appropriate category:
+If the change is user-visible, add a unique fragment as described in
+[`changelog.d/README.md`](../../changelog.d/README.md). Feature PRs leave
+`CHANGELOG.md` to release preparation. Choose the appropriate category:
 
 - **Added** — new features, new commands, new tools, new import formats
 - **Changed** — behavior changes users will notice (default flag changes, schema changes, breaking changes)
@@ -22,7 +24,7 @@ If the change is user-visible, add a bullet to `CHANGELOG.md`'s `Unreleased` sec
 - **Fixed** — bug fixes (only those that affect user behavior)
 - **Security** — security-relevant fixes
 
-Cite PR numbers. Keep entries to one or two sentences each.
+Cite PR numbers when known. Keep entries to one or two sentences each.
 
 **What does NOT need a CHANGELOG entry:**
 
@@ -33,7 +35,9 @@ Cite PR numbers. Keep entries to one or two sentences each.
 - ADR additions (the ADR itself is the durable artifact)
 - Private knowledge or internal coordination changes
 
-When in doubt: if a user reading the changelog would benefit from knowing about it, add an entry. If it's purely internal, skip it.
+When in doubt: if a user reading the changelog would benefit from knowing about
+it, add a fragment. For internal-only work, explain the exemption in the PR
+description and apply `skip-changelog` for review.
 
 ### 2. docs/roadmap.md (milestone status)
 
@@ -102,7 +106,10 @@ free.
 
 When all sub-milestones in a tier close (e.g., M2A + M2B + M2C + M2D + M2E all ship → M2 closes; M3A through M3E all close → launch):
 
-1. Move the `Unreleased` block in `CHANGELOG.md` into a new dated section: `## [M2A] — YYYY-MM-DD`. Reset `Unreleased` to a placeholder like `(no changes since M2A)`.
+1. If preparing a versioned release, assemble fragments using
+   [`changelog.d/README.md`](../../changelog.d/README.md), including its
+   first-release legacy reconciliation. Milestone-only updates leave fragments
+   for release preparation.
 2. Update `docs/roadmap.md` milestone status row.
 3. Update README status callout.
 4. Tag the commit (`git tag M2A` or similar) for cross-reference.

@@ -336,8 +336,8 @@ Any PR that adds, renames, or removes a tool (MCP) or command (CLI) MUST update 
 Reviewers verify both updates AND that the capability's user-language description matches what the surface actually does.
 
 - Reviewers grep for `@mcp_tool` diffs and Typer command registrations and verify each touches both specs.
-- Removed tools/commands require both spec updates AND a CHANGELOG.md `Removed` entry under `Unreleased`.
-- Renamed tools/commands require updating every reference in the surface-specific spec, updating the relevant row in the capabilities map, plus tests, plus a `Changed` entry in the CHANGELOG.
+- Removed tools/commands require both spec updates AND a `removed` changelog fragment per `changelog.d/README.md`.
+- Renamed tools/commands require updating every reference in the surface-specific spec, updating the relevant row in the capabilities map, plus tests, plus a `changed` changelog fragment.
 - Exempting a surface (e.g., CLI-only by secret-material policy) requires citing the category by number from "When CLI-only is justified" above; the citation must match the exemption-category index in the capabilities map.
 
 ## Description requirements

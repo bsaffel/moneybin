@@ -1,140 +1,525 @@
-# External models: tables created by Python loaders or the app layer,
-# not managed by SQLMesh.
-# These must exist in the database before running `sqlmesh plan`.
-# Run `moneybin schema init` or import data to create them.
-
+# Raw/app declarations are guarded by tests/moneybin/test_external_models.py.
+- name: '"moneybin"."app"."account_links"'
+  columns:
+    link_id: TEXT
+    account_id: TEXT
+    ref_kind: TEXT
+    ref_value: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    status: TEXT
+    decided_by: TEXT
+    decided_at: TIMESTAMPNTZ
+    reversed_at: TIMESTAMPNTZ
+    reversed_by: TEXT
+- name: '"moneybin"."app"."account_settings"'
+  columns:
+    account_id: TEXT
+    display_name: TEXT
+    official_name: TEXT
+    last_four: TEXT
+    account_subtype: TEXT
+    holder_category: TEXT
+    currency_code: TEXT
+    credit_limit: DECIMAL(18, 2)
+    archived: BOOLEAN
+    include_in_net_worth: BOOLEAN
+    default_cost_basis_method: TEXT
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."balance_assertions"'
+  columns:
+    account_id: TEXT
+    assertion_date: DATE
+    balance: DECIMAL(18, 2)
+    notes: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."category_overrides"'
+  columns:
+    category_id: TEXT
+    is_active: BOOLEAN
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."category_source_map"'
+  columns:
+    source_type: TEXT
+    source_category_code: TEXT
+    code_level: TEXT
+    category_id: TEXT
+    source_taxonomy_version: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."match_decisions"'
+  columns:
+    match_id: TEXT
+    source_transaction_id_a: TEXT
+    source_type_a: TEXT
+    source_origin_a: TEXT
+    source_transaction_id_b: TEXT
+    source_type_b: TEXT
+    source_origin_b: TEXT
+    account_id: TEXT
+    confidence_score: DECIMAL(5, 4)
+    match_signals: JSON
+    match_type: TEXT
+    match_tier: TEXT
+    account_id_b: TEXT
+    match_status: TEXT
+    match_reason: TEXT
+    decided_by: TEXT
+    decided_at: TIMESTAMPNTZ
+    reversed_at: TIMESTAMPNTZ
+    reversed_by: TEXT
+- name: '"moneybin"."app"."securities"'
+  columns:
+    security_id: TEXT
+    name: TEXT
+    security_type: TEXT
+    ticker: TEXT
+    exchange: TEXT
+    cusip: TEXT
+    isin: TEXT
+    figi: TEXT
+    coingecko_id: TEXT
+    is_cash_equivalent: BOOLEAN
+    cost_basis_method: TEXT
+    currency_code: TEXT
+    created_by: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."security_links"'
+  columns:
+    link_id: TEXT
+    security_id: TEXT
+    ref_kind: TEXT
+    ref_value: TEXT
+    source_type: TEXT
+    status: TEXT
+    decided_by: TEXT
+    decided_at: TIMESTAMPNTZ
+    reversed_at: TIMESTAMPNTZ
+    reversed_by: TEXT
+- name: '"moneybin"."app"."security_price_overrides"'
+  columns:
+    security_id: TEXT
+    price_date: DATE
+    quote_currency: TEXT
+    close: DECIMAL(28, 10)
+    note: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."seed_source_priority"'
+  columns:
+    source_type: TEXT
+    priority: INT
+- name: '"moneybin"."app"."transaction_categories"'
+  columns:
+    transaction_id: TEXT
+    category: TEXT
+    subcategory: TEXT
+    category_id: TEXT
+    categorized_at: TIMESTAMPNTZ
+    categorized_by: TEXT
+    merchant_id: TEXT
+    confidence: DECIMAL(3, 2)
+    rule_id: TEXT
+    source_type: TEXT
+- name: '"moneybin"."app"."transaction_notes"'
+  columns:
+    note_id: TEXT
+    transaction_id: TEXT
+    text: TEXT
+    author: TEXT
+    created_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."transaction_splits"'
+  columns:
+    split_id: TEXT
+    transaction_id: TEXT
+    amount: DECIMAL(18, 2)
+    category: TEXT
+    subcategory: TEXT
+    category_id: TEXT
+    note: TEXT
+    ord: INT
+    created_at: TIMESTAMPNTZ
+    created_by: TEXT
+- name: '"moneybin"."app"."transaction_tags"'
+  columns:
+    transaction_id: TEXT
+    tag: TEXT
+    applied_at: TIMESTAMPNTZ
+    applied_by: TEXT
+- name: '"moneybin"."app"."user_categories"'
+  columns:
+    category_id: TEXT
+    category: TEXT
+    subcategory: TEXT
+    description: TEXT
+    class: TEXT
+    is_active: BOOLEAN
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."user_merchants"'
+  columns:
+    merchant_id: TEXT
+    raw_pattern: TEXT
+    match_type: TEXT
+    canonical_name: TEXT
+    category: TEXT
+    subcategory: TEXT
+    category_id: TEXT
+    created_by: TEXT
+    exemplars: ARRAY<TEXT>
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."exchange_rates"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    rate_date: DATE
+    rate: DECIMAL(18, 8)
+    source_type: TEXT
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."manual_investment_transactions"'
+  columns:
+    source_transaction_id: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    import_id: TEXT
+    account_id: TEXT
+    security_id: TEXT
+    security_ref: TEXT
+    type: TEXT
+    subtype: TEXT
+    event_group_id: TEXT
+    trade_date: DATE
+    settlement_date: DATE
+    original_acquisition_date: DATE
+    quantity: DECIMAL(28, 10)
+    price: DECIMAL(28, 10)
+    amount: DECIMAL(18, 2)
+    fees: DECIMAL(18, 2)
+    currency_code: TEXT
+    description: TEXT
+    created_at: TIMESTAMPNTZ
+    created_by: TEXT
+    investment_transaction_id: TEXT
+- name: '"moneybin"."raw"."manual_transactions"'
+  columns:
+    source_transaction_id: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    import_id: TEXT
+    account_id: TEXT
+    transaction_date: DATE
+    amount: DECIMAL(18, 2)
+    description: TEXT
+    merchant_name: TEXT
+    memo: TEXT
+    category: TEXT
+    subcategory: TEXT
+    payment_channel: TEXT
+    transaction_type: TEXT
+    check_number: TEXT
+    currency_code: TEXT
+    created_at: TIMESTAMPNTZ
+    created_by: TEXT
+    transaction_id: TEXT
+    to_amount: DECIMAL(18, 2)
+    to_currency: TEXT
 - name: '"moneybin"."raw"."ofx_accounts"'
   columns:
-    account_id: VARCHAR
-    routing_number: VARCHAR
-    account_type: VARCHAR
-    institution_org: VARCHAR
-    institution_fid: VARCHAR
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
-- name: '"moneybin"."raw"."ofx_transactions"'
-  columns:
-    transaction_id: VARCHAR
-    account_id: VARCHAR
-    transaction_type: VARCHAR
-    date_posted: TIMESTAMP
-    amount: DECIMAL(18, 2)
-    payee: VARCHAR
-    memo: VARCHAR
-    check_number: VARCHAR
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
+    account_id: TEXT
+    routing_number: TEXT
+    account_type: TEXT
+    institution_org: TEXT
+    institution_fid: TEXT
+    source_file: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    import_id: TEXT
+    source_type: TEXT
+    source_origin: TEXT
 - name: '"moneybin"."raw"."ofx_balances"'
   columns:
-    account_id: VARCHAR
-    statement_start_date: TIMESTAMP
-    statement_end_date: TIMESTAMP
+    account_id: TEXT
+    statement_start_date: TIMESTAMPNTZ
+    statement_end_date: TIMESTAMPNTZ
     ledger_balance: DECIMAL(18, 2)
-    ledger_balance_date: TIMESTAMP
+    ledger_balance_date: TIMESTAMPNTZ
     available_balance: DECIMAL(18, 2)
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
+    source_file: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    import_id: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    currency_code: TEXT
 - name: '"moneybin"."raw"."ofx_institutions"'
   columns:
-    organization: VARCHAR
-    fid: VARCHAR
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
-- name: '"moneybin"."raw"."csv_accounts"'
+    organization: TEXT
+    fid: TEXT
+    source_file: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    import_id: TEXT
+    source_type: TEXT
+- name: '"moneybin"."raw"."ofx_transactions"'
   columns:
-    account_id: VARCHAR
-    account_type: VARCHAR
-    institution_name: VARCHAR
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
-- name: '"moneybin"."raw"."csv_transactions"'
+    source_transaction_id: TEXT
+    account_id: TEXT
+    transaction_type: TEXT
+    date_posted: TIMESTAMPNTZ
+    amount: DECIMAL(18, 2)
+    payee: TEXT
+    memo: TEXT
+    check_number: TEXT
+    source_file: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    import_id: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    currency_code: TEXT
+    fitid_repaired: BOOLEAN
+    to_amount: DECIMAL(18, 2)
+    to_currency: TEXT
+- name: '"moneybin"."raw"."plaid_accounts"'
   columns:
-    transaction_id: VARCHAR
-    account_id: VARCHAR
+    account_id: TEXT
+    persistent_account_id: TEXT
+    account_type: TEXT
+    account_subtype: TEXT
+    institution_name: TEXT
+    name: TEXT
+    official_name: TEXT
+    mask: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_balances"'
+  columns:
+    account_id: TEXT
+    balance_date: DATE
+    current_balance: DECIMAL(18, 2)
+    available_balance: DECIMAL(18, 2)
+    balance_limit: DECIMAL(18, 2)
+    margin_loan_amount: DECIMAL(18, 2)
+    iso_currency_code: TEXT
+    unofficial_currency_code: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    last_updated_datetime: TIMESTAMPNTZ
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_investment_holding_lots"'
+  columns:
+    account_id: TEXT
+    security_id: TEXT
+    lot_index: INT
+    institution_lot_id: TEXT
+    original_purchase_datetime: TIMESTAMPNTZ
+    quantity: DECIMAL(28, 10)
+    purchase_price: DECIMAL(28, 10)
+    cost_basis: DECIMAL(18, 2)
+    current_value: DECIMAL(18, 2)
+    position_type: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_investment_holdings"'
+  columns:
+    account_id: TEXT
+    security_id: TEXT
+    holdings_date: DATE
+    institution_price: DECIMAL(28, 10)
+    institution_price_as_of: DATE
+    institution_value: DECIMAL(18, 2)
+    cost_basis: DECIMAL(18, 2)
+    quantity: DECIMAL(28, 10)
+    iso_currency_code: TEXT
+    unofficial_currency_code: TEXT
+    vested_quantity: DECIMAL(28, 10)
+    vested_value: DECIMAL(18, 2)
+    transactions_window_start: DATE
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_investment_holdings_snapshots"'
+  columns:
+    source_origin: TEXT
+    source_file: TEXT
+    holdings_date: DATE
+    holdings_count: INT
+    transactions_window_start: DATE
+    source_type: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_investment_transactions"'
+  columns:
+    investment_transaction_id: TEXT
+    account_id: TEXT
+    security_id: TEXT
+    transaction_date: DATE
+    transaction_datetime: TIMESTAMPNTZ
+    transaction_name: TEXT
+    quantity: DECIMAL(28, 10)
+    amount: DECIMAL(18, 2)
+    price: DECIMAL(28, 10)
+    fees: DECIMAL(18, 2)
+    iso_currency_code: TEXT
+    unofficial_currency_code: TEXT
+    investment_transaction_type: TEXT
+    investment_transaction_subtype: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_securities"'
+  columns:
+    security_id: TEXT
+    institution_security_id: TEXT
+    institution_id: TEXT
+    ticker_symbol: TEXT
+    market_identifier_code: TEXT
+    security_name: TEXT
+    security_type: TEXT
+    close_price: DECIMAL(28, 10)
+    close_price_as_of: DATE
+    iso_currency_code: TEXT
+    unofficial_currency_code: TEXT
+    cusip: TEXT
+    isin: TEXT
+    is_cash_equivalent: BOOLEAN
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."plaid_transactions"'
+  columns:
+    transaction_id: TEXT
+    account_id: TEXT
+    transaction_date: DATE
+    amount: DECIMAL(18, 2)
+    description: TEXT
+    merchant_name: TEXT
+    category: TEXT
+    original_description: TEXT
+    iso_currency_code: TEXT
+    authorized_date: DATE
+    pending_transaction_id: TEXT
+    payment_channel: TEXT
+    check_number: TEXT
+    merchant_entity_id: TEXT
+    location_address: TEXT
+    location_city: TEXT
+    location_region: TEXT
+    location_postal_code: TEXT
+    location_country: TEXT
+    location_latitude: DOUBLE
+    location_longitude: DOUBLE
+    category_detailed: TEXT
+    category_confidence: TEXT
+    pending: BOOLEAN
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    to_amount: DECIMAL(18, 2)
+    to_currency: TEXT
+- name: '"moneybin"."raw"."security_prices"'
+  columns:
+    provider_security_key: TEXT
+    price_date: DATE
+    quote_currency: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    close: DECIMAL(28, 10)
+    price_basis: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."tabular_accounts"'
+  columns:
+    account_id: TEXT
+    account_name: TEXT
+    account_label: TEXT
+    account_number: TEXT
+    account_number_masked: TEXT
+    account_type: TEXT
+    institution_name: TEXT
+    currency: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    import_id: TEXT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+- name: '"moneybin"."raw"."tabular_transactions"'
+  columns:
+    transaction_id: TEXT
+    account_id: TEXT
     transaction_date: DATE
     post_date: DATE
     amount: DECIMAL(18, 2)
-    description: VARCHAR
-    memo: VARCHAR
-    category: VARCHAR
-    subcategory: VARCHAR
-    transaction_type: VARCHAR
-    transaction_status: VARCHAR
-    check_number: VARCHAR
-    reference_number: VARCHAR
+    original_amount: TEXT
+    original_date_str: TEXT
+    description: TEXT
+    memo: TEXT
+    category: TEXT
+    subcategory: TEXT
+    transaction_type: TEXT
+    status: TEXT
+    check_number: TEXT
+    source_transaction_id: TEXT
+    reference_number: TEXT
     balance: DECIMAL(18, 2)
-    member_name: VARCHAR
-    source_file: VARCHAR
-    extracted_at: TIMESTAMP
-    loaded_at: TIMESTAMP
-
-# App layer: tables managed by MCP tools and CLI, not by SQLMesh.
-# Referenced by core views for category enrichment.
-
-- name: '"moneybin"."app"."transaction_categories"'
-  columns:
-    transaction_id: VARCHAR
-    category: VARCHAR
-    subcategory: VARCHAR
-    categorized_at: TIMESTAMP
-    categorized_by: VARCHAR
-    merchant_id: VARCHAR
-    confidence: DECIMAL(3, 2)
-    rule_id: VARCHAR
-
-- name: '"moneybin"."app"."merchants"'
-  columns:
-    merchant_id: VARCHAR
-    raw_pattern: VARCHAR
-    match_type: VARCHAR
-    canonical_name: VARCHAR
-    category: VARCHAR
-    subcategory: VARCHAR
-    created_by: VARCHAR
-    created_at: TIMESTAMP
-    updated_at: TIMESTAMP
-
-# SQLMesh internal state — snapshot metadata and per-execution intervals. Both
-# are wrapped by meta.model_freshness to expose a stable public contract for
-# model-level freshness.
-
+    currency: TEXT
+    member_name: TEXT
+    source_file: TEXT
+    source_type: TEXT
+    source_origin: TEXT
+    import_id: TEXT
+    row_number: INT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
+    deleted_from_source_at: TIMESTAMPNTZ
+    to_amount: DECIMAL(18, 2)
+    to_currency: TEXT
 - name: '"moneybin"."sqlmesh"."_intervals"'
   columns:
-    id: VARCHAR
+    id: TEXT
     created_ts: BIGINT
-    name: VARCHAR
-    identifier: VARCHAR
-    version: VARCHAR
-    dev_version: VARCHAR
+    name: TEXT
+    identifier: TEXT
+    version: TEXT
     start_ts: BIGINT
     end_ts: BIGINT
     is_dev: BOOLEAN
     is_removed: BOOLEAN
     is_compacted: BOOLEAN
     is_pending_restatement: BOOLEAN
+    dev_version: TEXT
     last_altered_ts: BIGINT
-
 - name: '"moneybin"."sqlmesh"."_snapshots"'
   columns:
-    name: VARCHAR
-    identifier: VARCHAR
-    version: VARCHAR
-    dev_version: VARCHAR
-    snapshot: BLOB
-    kind_name: VARCHAR
+    name: TEXT
+    identifier: TEXT
+    version: TEXT
+    snapshot: TEXT
+    kind_name: TEXT
     updated_ts: BIGINT
     unpaused_ts: BIGINT
     ttl_ms: BIGINT
     unrestorable: BOOLEAN
     forward_only: BOOLEAN
-    fingerprint: BLOB
+    dev_version: TEXT
+    fingerprint: TEXT

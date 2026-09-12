@@ -94,7 +94,7 @@ a stamp.
 ### From-scratch reconciliation
 
 - Trigger: explicit user request — `everything`, `from-scratch`, `clean update`, or a named list of docs paired with framing language ("clean update," "from scratch," "as if writing fresh").
-- Behavior: read current code state (CLI surface, MCP tools, schema, CHANGELOG `Unreleased`); treat the existing doc as **reference only** — structural inspiration, voice, length budget, anti-pattern list — but write what the doc should say from current truth. Don't be bound by the existing wording when current state contradicts it.
+- Behavior: read current code state (CLI surface, MCP tools, schema, pending `changelog.d` fragments and legacy CHANGELOG `Unreleased`); treat the existing doc as **reference only** — structural inspiration, voice, length budget, anti-pattern list — but write what the doc should say from current truth. Don't be bound by the existing wording when current state contradicts it.
 - Use when: a milestone closes; many features have shipped since the doc was last touched; the doc's "Last reviewed" stamp predates a tide of merged PRs; the user explicitly asks for a clean pass.
 - Heavier: a full from-scratch sweep across the doc surface is a multi-wave, multi-hour exercise. **Confirm scope with the user before launching** and prefer wave-by-wave execution with checkpoint review between waves.
 
@@ -115,7 +115,7 @@ For "not yet for you" cases, point honestly to alternatives (`docs/audience.md` 
 | File | Primary persona | Tone | Length budget |
 |---|---|---|---|
 | `README.md` | Power-user migrant + AI-native dev | Storefront — what is it, why care, how to start | ~160–180 lines (measured 158–171 across 2026-05 → 2026-09; the earlier "220–260" figure was never measured) |
-| `CHANGELOG.md` | All users | Factual, one bullet per user-visible change, cite PR | One section per release / Unreleased |
+| `changelog.d/` → `CHANGELOG.md` at release | All users | Factual, one fragment per user-visible change, cite PR | See `changelog.d/README.md` |
 | `CONTRIBUTING.md` | Self-hoster, OSS contributor | Concrete steps to land a change | As short as possible |
 | `docs/architecture.md` | AI-native dev, technical migrant | Guarantees → diagram → contract → negative space | One page |
 | `docs/audience.md` | Anyone evaluating | Honest "this is and isn't for you" | Tight |
@@ -144,7 +144,7 @@ subagent verbatim. They keep accidentally regrowing:
 
   **Exceptions — milestone codes ARE allowed and expected in:**
   - `docs/roadmap.md` (its structure IS milestones)
-  - `CHANGELOG.md` (sections are tagged by milestone)
+  - `changelog.d/` (pending changes) and `CHANGELOG.md` (preserved history)
   - `docs/specs/`, `docs/decisions/` (internal — out of scope anyway)
 
   When used in the exception files, the canonical milestone set is **whatever `docs/roadmap.md`'s milestone-overview table lists** — that table is the single source of truth (per `.claude/rules/shipping.md`), so this rule can't go stale as milestones are added. As of this writing that's `M0`, `M1`, `M2A`–`M2E`, `M3A`–`M3E`, plus `Post-launch`; treat the live roadmap table as authoritative if it has moved on. Don't introduce a code that isn't in the roadmap table, and don't strip one that is — if a doc and the roadmap disagree, the roadmap wins.
@@ -166,7 +166,7 @@ Resolve scope in this order; first match wins:
 
 Print a one-line scope summary before doing anything:
 
-> Scope: 4 source files changed (1 new MCP tool, 1 new CLI command); evaluating 3 docs: README.md, docs/guides/cli.md, CHANGELOG.md.
+> Scope: 4 source files changed (1 new MCP tool, 1 new CLI command); evaluating README.md, docs/guides/cli.md, and changelog.d fragments.
 
 ## Process
 
@@ -175,11 +175,11 @@ Print a one-line scope summary before doing anything:
 For each in-scope code change, identify what a *user* (not a developer)
 would notice. Common mappings:
 
-- New CLI command → README "What works today" reference + relevant guide + CHANGELOG `Added`
-- New MCP tool → MCP guide + features.md + CHANGELOG `Added`
-- New import format → import guide + features.md + CHANGELOG `Added`
-- Behavior change in existing command → relevant guide + CHANGELOG `Changed`
-- Bug fix users will notice → CHANGELOG `Fixed`
+- New CLI command → README "What works today" reference + relevant guide + `added` fragment
+- New MCP tool → MCP guide + features.md + `added` fragment
+- New import format → import guide + features.md + `added` fragment
+- Behavior change in existing command → relevant guide + `changed` fragment
+- Bug fix users will notice → `fixed` fragment
 - Internal refactor with no user-visible effect → no doc change; do not invent one
 
 If a change has no user-visible effect, say so in the report and move on.
@@ -218,7 +218,7 @@ the failure modes the author subagent can't see from inside its own pass:
 unfamiliar jargon, missing context, jobs-to-be-done that aren't answered,
 information present that the persona doesn't care about.
 
-**Skip for:** `CHANGELOG.md` (mechanical), trivial diff-only edits in
+**Skip for:** changelog fragments and release assembly (mechanical), trivial diff-only edits in
 incremental mode (one bullet added, no narrative change).
 
 For each touched doc, pick 2–3 personas from `docs/audience.md` weighted
@@ -279,7 +279,7 @@ revisions, leave the stamp from step 3.
 
 Per `.claude/rules/shipping.md`:
 
-- **CHANGELOG entry** under `Unreleased` in the correct category (Added / Changed / Deprecated / Removed / Fixed / Security). Cite the PR. Skip if the change is internal-only (refactors, CI tweaks, style, test-only PRs, ADR additions, private knowledge changes).
+- **Changelog fragment** following `changelog.d/README.md`; release preparation assembles `CHANGELOG.md`. Follow the documented exemption for internal-only changes.
 - **`docs/roadmap.md`** — move the feature row from 📐 designed / 🗓️ planned to ✅ shipped. Update milestone status if a sub-milestone just closed.
 - **`docs/features.md`** — add or update the entry if it's a user-facing capability.
 - **`README.md`** status callout — update only if a milestone closed or a previously-promised feature now exists. Do not re-add an in-README roadmap matrix.

@@ -168,7 +168,7 @@ Usage: `moneybin transactions categorize export-uncategorized [OPTIONS]`
 Commit LLM-generated categorizations from a JSON file to transactions.
 
 Reads a JSON array where each object has transaction_id, category, and
-(optionally) subcategory.
+optional subcategory and canonical_merchant_name.
 
 Designed for the export → LLM → commit workflow:
 
@@ -230,6 +230,10 @@ Usage: `moneybin transactions categorize pending [OPTIONS]`
 ## moneybin transactions categorize commit
 
 Commit externally-decided categorizations from a JSON array.
+
+Each item has transaction_id and category, with optional subcategory and
+canonical_merchant_name. A canonical merchant name teaches the exact-match
+merchant exemplar set while preserving the AI-source categorization.
 
 Read from a file:
 

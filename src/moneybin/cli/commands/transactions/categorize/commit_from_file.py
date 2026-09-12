@@ -18,7 +18,12 @@ logger = logging.getLogger(__name__)
 # Keys the CategorizationItem model accepts (extra="forbid"). Used to strip
 # export-shape extras (description_scrubbed, source_type) from rows fed to
 # commit-from-file.
-_ALLOWED_ITEM_KEYS = {"transaction_id", "category", "subcategory"}
+_ALLOWED_ITEM_KEYS = {
+    "transaction_id",
+    "category",
+    "subcategory",
+    "canonical_merchant_name",
+}
 
 
 def categorize_commit_from_file(
@@ -31,7 +36,7 @@ def categorize_commit_from_file(
     r"""Commit LLM-generated categorizations from a JSON file to transactions.
 
     Reads a JSON array where each object has transaction_id, category, and
-    (optionally) subcategory.
+    optional subcategory and canonical_merchant_name.
 
     Designed for the export → LLM → commit workflow:
 
@@ -78,8 +83,8 @@ def categorize_commit_from_file(
     # Map export-shape rows into CategorizationItem-shape rows. The export
     # command emits {transaction_id, description_scrubbed, source_type} for the
     # LLM to annotate with category/subcategory; the service model is
-    # {transaction_id, category, subcategory} with extra="forbid", so we must
-    # strip the export-only keys before validation.
+    # {transaction_id, category, subcategory, canonical_merchant_name} with
+    # extra="forbid", so we must strip export-only keys before validation.
     normalized: object = raw
     if isinstance(raw, list):
         remapped: list[object] = []
@@ -117,6 +122,8 @@ def categorize_commit_from_file(
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
         )
+        if result.merchants_created:
+            logger.info(f"   Created {result.merchants_created} merchant mappings")
         for err in result.error_details:
             logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
 

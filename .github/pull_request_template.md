@@ -5,4 +5,6 @@
 
 ## Test plan
 
+<!-- Add a changelog.d fragment for user-visible changes. For internal-only work, explain why here and apply skip-changelog. Only release-preparation PRs assemble CHANGELOG.md; see changelog.d/README.md. -->
+
 <!-- State meaningful checks, results, tested revision, and remaining gaps. Distinguish local checks, pending CI, and live observations. Describe verification data by shape, never by real holdings or identifiers. Add sections only when they help review this change. -->

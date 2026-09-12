@@ -212,16 +212,17 @@ re-summons a review on demand.
 If the change is user-visible, update the docs surface per
 [`.claude/rules/shipping.md`](.claude/rules/shipping.md):
 
-- Add a line to `CHANGELOG.md` under `Unreleased`. New MCP tools and new CLI
-  commands go under `Added`; renames and behavior changes go under `Changed`.
+- Add a unique [changelog fragment](changelog.d/README.md). New MCP tools and
+  CLI commands use `added`; renames and behavior changes use `changed`.
+  `CHANGELOG.md` is assembled during release preparation.
 - Move the spec to `implemented` in both the spec file and
   [`docs/specs/INDEX.md`](docs/specs/INDEX.md).
 - Update [`docs/roadmap.md`](docs/roadmap.md) and
   [`docs/features.md`](docs/features.md) if the capability surface changed.
 - Add or update a guide under `docs/guides/` for new user-facing features.
 
-Internal refactors, CI tweaks, and code-style changes don't need a CHANGELOG
-entry.
+Internal refactors, CI tweaks, and code-style changes may use the documented
+`skip-changelog` exemption with a reason in the PR description.
 
 ## Specs and roadmap
 
