@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, replace
 from typing import Any, Literal, cast
@@ -198,6 +199,37 @@ def _is_live_fingerprint(raw: str | None) -> bool:
     return serialize_fingerprint(fp) == raw
 
 
+#: What an account id may contain and still be embedded in a backtick-quoted
+#: command or a JSON id. Everything else — a backtick, a quote, whitespace, a
+#: shell metacharacter, a control character — is replaced before publishing.
+_PUBLISHABLE_ACCOUNT_ID_CHARS = re.compile(r"[^A-Za-z0-9_.:@+*-]")
+
+
+def _publishable_account_id(account_id: str) -> str:
+    """An account id safe to put in the detail text, a command, or affected_ids.
+
+    Two separate problems, one helper, because both are properties of the same
+    untrusted value and splitting them invites fixing one surface only:
+
+    1. **Disclosure.** An unresolved account's ``account_id`` is its
+       source-native key (a real OFX ``<ACCTID>``), so digit runs are masked
+       by ``mask_embedded_account_number``.
+    2. **Injection.** That key is imported-file content, and it is interpolated
+       into a backtick-quoted ``moneybin accounts links run`` suggestion that
+       reaches CLI stdout and the MCP response verbatim. A backtick would close
+       the code span (the Markdown-injection case ``security.md`` names), and a
+       shell metacharacter would change what a pasted command does. Masking
+       digits does nothing about either, so anything outside
+       :data:`_PUBLISHABLE_ACCOUNT_ID_CHARS` becomes ``_``.
+
+    ``_`` rather than a more visible marker because it is inert in both a shell
+    word and a Markdown span; a ``?`` would glob.
+    """
+    return _PUBLISHABLE_ACCOUNT_ID_CHARS.sub(
+        "_", mask_embedded_account_number(account_id)
+    )
+
+
 def _masked_account_affected_ids(account_ids: Iterable[str]) -> list[str]:
     """``account:<id>`` entries with an account-number-shaped id masked.
 
@@ -220,8 +252,7 @@ def _masked_account_affected_ids(account_ids: Iterable[str]) -> list[str]:
     unmasked ``<ACCTID>`` on the MCP surface is not recoverable once sent.
     """
     return [
-        f"account:{mask_embedded_account_number(account_id)}"
-        for account_id in account_ids
+        f"account:{_publishable_account_id(account_id)}" for account_id in account_ids
     ]
 
 
@@ -3516,8 +3547,8 @@ class DoctorService:
                     # would be a dead end for it.
                     shown = transform_ready_pairs[:5]
                     pair_descriptions = ", ".join(
-                        f"{mask_embedded_account_number(a)}:"
-                        f"{mask_embedded_account_number(b)} "
+                        f"{_publishable_account_id(a)}:"
+                        f"{_publishable_account_id(b)} "
                         f"({round(ratio * 100)}% overlap)"
                         for a, b, ratio in shown
                     )
@@ -3576,15 +3607,15 @@ class DoctorService:
                 # expected case here, not the edge one. The detail reaches CLI
                 # stdout and the MCP response, neither of which masks it downstream.
                 pair_descriptions = ", ".join(
-                    f"{mask_embedded_account_number(absorbed)}:"
-                    f"{mask_embedded_account_number(survivor)} "
+                    f"{_publishable_account_id(absorbed)}:"
+                    f"{_publishable_account_id(survivor)} "
                     f"({round(ratio * 100)}% overlap)"
                     for absorbed, survivor, ratio in shown_pairs
                 )
                 fallback_commands = "; ".join(
                     "`moneybin accounts links run "
-                    f"{mask_embedded_account_number(absorbed)} "
-                    f"{mask_embedded_account_number(survivor)}`"
+                    f"{_publishable_account_id(absorbed)} "
+                    f"{_publishable_account_id(survivor)}`"
                     for absorbed, survivor, _ in shown_pairs
                 )
                 # A masked id cannot be pasted back, so say where the real one
@@ -3594,7 +3625,7 @@ class DoctorService:
                     "account's source-native key; run `moneybin accounts list` "
                     "to read the full id from your own database."
                     if any(
-                        mask_embedded_account_number(account_id) != account_id
+                        _publishable_account_id(account_id) != account_id
                         for absorbed, survivor, _ in shown_pairs
                         for account_id in (absorbed, survivor)
                     )
@@ -3647,9 +3678,11 @@ class DoctorService:
                         "institution+last-four and name similarity, not the "
                         "transaction overlap this check measures, so any "
                         "pair may raise no proposal at all — if so, name it "
-                        "yourself in the same unknown-first order so the "
-                        "duplicate is what gets absorbed, not the account "
-                        f"already carrying a currency: {fallback_commands}, "
+                        "yourself, unknown-currency id first. That absorbs the "
+                        "duplicate rather than the account already carrying a "
+                        "currency whenever both hold an accepted source-native "
+                        "link, and reverses when only the established one does, "
+                        f"so read the preview either way: {fallback_commands}, "
                         "each queuing the same reviewable proposal from its "
                         "own ids. The order named here is a best-effort hint, "
                         "not a guarantee — the merge preview shown by "

@@ -3854,6 +3854,109 @@ def test_currency_integrity_masks_an_account_number_shaped_id(
 
 
 @pytest.mark.unit
+def test_currency_integrity_neutralizes_injection_chars_in_a_published_id(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-native key is imported-file content, so it can carry markup.
+
+    An unresolved ``account_id`` is whatever the file said, and the detail
+    embeds it inside a backtick-quoted ``moneybin accounts links run``
+    suggestion that reaches CLI stdout and the MCP response verbatim. A
+    backtick would close the code span (``security.md``'s Markdown-injection
+    case) and a shell metacharacter would change what a pasted command does.
+    Digit masking alone does nothing about either, since neither character is
+    a digit.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    hostile = "AB`C;D"
+    _insert_overlap_account(doctor_db, hostile, institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_SAFE", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, hostile, rows=rows)
+    _insert_amount_ladder(
+        doctor_db,
+        "DUP_SAFE",
+        rows=rows,
+        day_offset=settings.matching.date_window_days,
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+        [hostile],
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert hostile not in detail, detail
+    assert "AB_C_D" in detail, detail
+    assert "`moneybin accounts links run AB_C_D DUP_SAFE`" in detail, detail
+    assert result.affected_ids is not None
+    assert "account:AB_C_D" in result.affected_ids, result.affected_ids
+
+
+@pytest.mark.unit
+def test_currency_integrity_mixed_branches_enumerate_the_same_accounts(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """One run can hold a transform-ready pair AND an unresolved pair at once.
+
+    Every other fixture routes all of a run's overlap pairs to one branch, so
+    nothing pinned the arithmetic the code's own comment calls out: the opening
+    clause counts ``overlapping_unknown_accounts`` *before* the merged-away
+    split, while ``pair_descriptions`` enumerates only ``review_pairs`` and
+    ``transform_note`` only counts the rest. If those disagree the message
+    contradicts itself.
+
+    MIX_U merges into MIX_A (accepted, awaiting transform) at one institution;
+    MIX_V still mirrors MIX_W with no decision at all at another. Different
+    institutions keep the two pairs from cross-pairing, since the overlap query
+    groups by institution.
+    """
+    _mock_rematch_refresh(mocker)
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    window = settings.matching.date_window_days
+    _insert_overlap_account(doctor_db, "MIX_U", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "MIX_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "MIX_V", institution_slug="wells")
+    _insert_overlap_account(doctor_db, "MIX_W", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "MIX_U", rows=rows)
+    _insert_amount_ladder(doctor_db, "MIX_A", rows=rows, day_offset=window)
+    _insert_amount_ladder(doctor_db, "MIX_V", rows=rows)
+    _insert_amount_ladder(doctor_db, "MIX_W", rows=rows, day_offset=window)
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL "
+        "WHERE account_id IN ('MIX_U', 'MIX_V')"
+    )  # test input, not user data
+    _insert_source_native_link(
+        doctor_db, link_id="link_mix_u", account_id="MIX_U", ref_value="native-ref-mix"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_mix",
+        provisional_account_id="MIX_U",
+        candidate_account_id="MIX_A",
+    )
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_mix", target_account_id="MIX_A"
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    # The unresolved pair is the one that gets an actionable links-run command.
+    assert "MIX_V" in detail, detail
+    assert "`moneybin accounts links run MIX_V MIX_W`" in detail, detail
+    # The merged-away pair is routed to transform advice, never to links run.
+    assert "moneybin transform" in detail, detail
+    assert "accounts links run MIX_U" not in detail, detail
+    # Both branches populated on one result — the case nothing else covered.
+    assert "Separately, 1 pair(s)" in detail, detail
+
+
+@pytest.mark.unit
 def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:
