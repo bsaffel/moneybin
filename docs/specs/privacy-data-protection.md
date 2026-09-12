@@ -62,12 +62,13 @@ raises the bar slightly (attacker must keylog the passphrase or extract from key
 but auto-key mode offers no additional protection here. This is documented, not
 engineered around.
 
-**DuckDB CLI shell history:** The `db shell` and `db ui` commands pass the encryption
-key via a `-init` temp script. DuckDB only records lines typed interactively in
-`~/.duckdb/history` — commands executed from `-init` files are not written to history.
-The init script itself is deleted as soon as the subprocess exits (via `unlink` in a
-`finally` block). The encryption key is therefore not persisted to disk beyond the
-duration of the shell session.
+**DuckDB CLI shell history:** The `db shell`, `db ui`, and `db query` commands build a
+key-free `-init` temp script. The script reads the encryption key with DuckDB CLI's
+`getenv` function; MoneyBin supplies that value only in the child process environment.
+DuckDB only records lines typed interactively in `~/.duckdb/history` — commands
+executed from `-init` files are not written to history. The init script itself is
+deleted in a `finally` block, including when preparing the child environment fails.
+MoneyBin does not write the encryption key into the init script or command arguments.
 
 ## Requirements
 
