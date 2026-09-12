@@ -325,12 +325,13 @@ def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[s
     ``core.fct_transactions``) has no edge to exclude, so that legitimate
     case is untouched.
 
-    Deliberately not added to the ``_relations_exist`` probe below:
-    ``app.transaction_id_aliases`` is created at DB init (a plain
-    ``app.*`` schema table, unlike the transform-produced fact view and
-    manual-transactions table), so it exists whenever this query runs at
-    all — the probe only needs to guard the two relations that a first load
-    genuinely precedes.
+    Deliberately not added to the ``_relations_exist`` probe below: the
+    probe already requires ``raw.manual_transactions``, which the same
+    init-time DDL pass creates alongside ``app.transaction_id_aliases``
+    (both listed in ``schema.py``'s ``_NON_PROVIDER_SCHEMA_FILES``). A DB
+    that clears the probe has therefore already had init run, so the alias
+    table exists too — the only relation a first load genuinely precedes is
+    the transform-built ``core.fct_transactions``.
     """
     ids = list(transaction_ids)
     if not ids:
