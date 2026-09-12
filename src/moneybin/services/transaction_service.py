@@ -521,7 +521,12 @@ class TransactionService:
                 self._db, request.transaction_id, required=bool(request.tags)
             )
             mutation = self._prepare_tags_set(transaction_id, request.tags)
-            if request.tags or not mutation.to_remove:
+            # Mirrors the SplitsSet branch below: skip the amount lookup
+            # entirely on a pure clear (request.tags empty) so a permissive
+            # resolution against a fully-dead id stays the idempotent no-op
+            # it always was, rather than refusing here for a lookup whose
+            # result nothing below uses.
+            if request.tags:
                 self._annotation_transaction_amount(transaction_id)
             return _PreparedAnnotation(
                 request=request,
@@ -595,7 +600,10 @@ class TransactionService:
             elif isinstance(request, (NoteEdit, NoteDelete)):
                 key = ("note", request.note_id)
             else:
-                key = (request.kind, request.transaction_id)
+                # The resolved id, not the caller's raw request.transaction_id:
+                # two requests naming different raw/superseded ids that both
+                # resolve to the same live transaction must collide here too.
+                key = (request.kind, item.target_ids[0])
             if key is not None and key in seen:
                 raise UserError(
                     "Annotation requests overlap the same target state.",

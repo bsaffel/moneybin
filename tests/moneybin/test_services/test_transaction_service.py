@@ -2263,3 +2263,62 @@ class TestCurationTransactionIdResolution:
             NoteAdd(kind="note_add", transaction_id="T1_OLD", text="x")
         ])
         assert plan.items[0].target_ids == ("T1",)
+
+    @pytest.mark.unit
+    def test_apply_annotations_tags_set_permissive_clear_skips_amount_lookup(
+        self, transaction_db: Database
+    ) -> None:
+        """TagsSet(tags=[]) on a fully-dead id with nothing to remove stays a no-op.
+
+        Even paired in a batch with another item that does change state.
+        Before this fix, ``_prepare_annotation``'s ``TagsSet`` branch called
+        ``_annotation_transaction_amount`` whenever ``request.tags`` OR
+        nothing was left to remove — so a fully-dead id with no existing
+        tags (both empty) still hit the amount lookup and raised
+        ``transaction_reference_not_found``, aborting the whole batch
+        including the unrelated ``NoteAdd``. Mirrors the ``SplitsSet``
+        branch, which already skips the lookup entirely when
+        ``request.splits`` is empty.
+        """
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
+                TagsSet(kind="tags_set", transaction_id="NEVER_EXISTED", tags=[]),
+            ],
+            actor="mcp",
+            operation_id="op_dead_tags_clear_noop",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, False]
+        assert service.list_notes("T1")[0].text == "trip"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_splits_set_collision_across_alias(
+        self, superseded_db: Database
+    ) -> None:
+        """Two SplitsSet clears resolving to one live transaction must collide.
+
+        Different raw ids must collide, not silently apply in sequence.
+        ``SplitsSet`` has no secondary resolved-id check like ``TagsSet``'s
+        ``_PreparedTagsSet`` branch, so it depends entirely on
+        ``_reject_composed_annotations`` keying its overlap check on the
+        RESOLVED id rather than the caller's raw ``transaction_id`` — 'T1_OLD'
+        and 'T1' name the same live transaction via the alias.
+        """
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), actor="test")
+
+        with pytest.raises(UserError) as exc:
+            service.apply_annotations(
+                [
+                    SplitsSet(kind="splits_set", transaction_id="T1_OLD", splits=[]),
+                    SplitsSet(kind="splits_set", transaction_id="T1", splits=[]),
+                ],
+                actor="mcp",
+                operation_id="op_splits_alias_collision",
+            )
+
+        assert exc.value.code == "mutation_invalid_input"
+        assert len(service.list_splits("T1")) == 1
