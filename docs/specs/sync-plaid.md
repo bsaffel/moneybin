@@ -82,22 +82,21 @@ Three tables in the `raw` schema, preserving Plaid's native data shape. Column c
 #### `raw.plaid_accounts`
 
 ```sql
-/* Bank accounts connected via Plaid Link; one record per account per sync payload */
+/* Bank accounts connected via Plaid; one record per account per institution */
 CREATE TABLE IF NOT EXISTS raw.plaid_accounts (
-    account_id VARCHAR NOT NULL,       -- Plaid account_id; stable identifier across syncs
-    account_type VARCHAR,              -- Plaid account type: depository, credit, loan, investment, other
-    account_subtype VARCHAR,           -- Plaid account subtype: checking, savings, credit card, mortgage, etc.
-    institution_name VARCHAR,          -- Human-readable institution name from Plaid
-    official_name VARCHAR,             -- Official account name from the institution
-    mask VARCHAR,                      -- Last 4 digits of the account number
-    source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
-    source_type VARCHAR NOT NULL       -- Always 'plaid' for this table
-        DEFAULT 'plaid',
-    source_origin VARCHAR,             -- Plaid item_id; scopes dedup to the institution connection
-    extracted_at TIMESTAMP             -- When the server fetched this data from Plaid (from metadata.synced_at)
-        DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                -- When this record was inserted into the local database
-        DEFAULT CURRENT_TIMESTAMP,
+    account_id VARCHAR NOT NULL,        -- Plaid account_id; reissued when the item is relinked
+    persistent_account_id VARCHAR,      -- Cross-relink identity ref; NULL when the institution does not supply one
+    account_type VARCHAR,               -- depository, credit, loan, investment, other
+    account_subtype VARCHAR,            -- checking, savings, credit card, etc.
+    institution_name VARCHAR,           -- Human-readable name from Plaid
+    name VARCHAR,                       -- Institution-reported account name; distinguishes sibling accounts
+    official_name VARCHAR,              -- Official account name from the institution
+    mask VARCHAR,                       -- Last 4 digits of the account number
+    source_file VARCHAR NOT NULL,       -- Logical identifier: sync_{job_id}
+    source_type VARCHAR NOT NULL DEFAULT 'plaid',
+    source_origin VARCHAR NOT NULL,     -- provider_item_id; scopes dedup to the institution connection
+    extracted_at TIMESTAMP,             -- From metadata.synced_at
+    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account_id, source_origin)
 );
 ```
@@ -380,20 +379,22 @@ affected-row count; already-absent ids therefore do not inflate the result.
 ## Plaid-specific error codes
 
 The server surfaces Plaid error codes in `GET /sync/data` at
-`metadata.institutions`. The client maps these per-institution results to
-actionable guidance:
+`metadata.institutions`. `moneybin sync pull` reports those raw per-institution
+codes and does not retry them. `moneybin sync status` reads `GET /institutions`
+and maps its known connection-health codes to actionable guidance:
 
-| Plaid error code | Meaning | Client message |
+| Plaid error code | Meaning | `sync status` guidance |
 |---|---|---|
 | `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication (password changed, MFA expired) | "{institution} needs re-authentication — run `moneybin sync link` to update your credentials." |
 | `ITEM_NOT_FOUND` | Access token revoked or item deleted | "{institution} connection was revoked. Run `moneybin sync link` to reconnect." |
 | `INSTITUTION_NOT_RESPONDING` | Bank's systems are temporarily unavailable | "{institution} is temporarily unavailable. Try again later." |
 | `INSTITUTION_DOWN` | Bank's systems are down for maintenance | "{institution} is down for maintenance. Try again later." |
-| `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` | Data changed during cursor pagination | "Data changed during sync for {institution}. Re-running automatically..." (client retries once) |
-| `RATE_LIMIT_EXCEEDED` | Too many API calls | "Rate limit reached. Sync will resume automatically." (client backs off and retries) |
+| `TRANSACTIONS_SYNC_MUTATION_DURING_PAGINATION` | Data changed during cursor pagination | Pull reports the raw error code; no client retry is implemented. |
+| `RATE_LIMIT_EXCEEDED` | Too many API calls | "Rate limit reached. Sync will resume on the next scheduled run." |
 | `PRODUCTS_NOT_READY` | Plaid hasn't finished initial data pull | "{institution} is still processing initial data. Try again in a few minutes." |
 
-Unknown error codes are logged with the raw error message and displayed with generic guidance: "Unexpected error from {institution} — check `moneybin sync status` for details."
+Unknown codes remain raw in pull results. For an error-state connection with an
+unknown code, `sync status` supplies generic re-authentication guidance.
 
 ---
 
