@@ -161,13 +161,34 @@ this spec's to close.
     derives the Typer command from it by swapping underscores for hyphens
     (`src/moneybin/reports/_framework/contract.py:408-410`). Applies to every
     report, not only these three — see §Report allocation.
-14. **An unanchored account is visible, never a silent zero.** An account
-    holding priced value that carries **no balance observation at all** —
-    Defect 6's case — must not contribute zero in silence. It behaves the way
-    an unpriced currency already does under Requirement 7: the profile total is
-    NULL, with an unanchored-account count beside it, and it carries the
-    `system doctor` balance-staleness check that Defect 4 deferred — see
-    §"`moneybin system doctor`: balance staleness" for its full specification.
+14. **An unanchored account is visible, never a silent zero.** An eligible
+    account carrying **evidence of holding value** but **no balance
+    observation at all** must not contribute zero in silence. `core.fct_balances`
+    silently drops every one of these: priced holdings with no matching
+    balance row (Defect 6's case), a tabular import with no balance column,
+    a Plaid account whose `current_balance` or `account_type` never
+    resolved, and a manual account with recorded postings and no balance
+    assertion. It behaves the way an unpriced currency already does under
+    Requirement 7: the profile total is NULL, with an unanchored-account
+    count beside it, and it carries the `system doctor` balance-staleness
+    check that Defect 4 deferred — see §"`moneybin system doctor`: balance
+    staleness" for its full specification.
+
+    **The qualifier, and why one is needed.** "No balance observation" alone
+    is not sufficient to flag an account. An account with no balance, no
+    holdings, and no transaction of any kind is not demonstrably holding
+    anything — it may be a freshly linked or newly created account nothing
+    has synced to yet — and flagging it would NULL every profile that has
+    one, for no evidence-backed reason, which is a worse failure than the
+    silent zero this requirement exists to replace. The guard therefore
+    requires **evidence**: priced holdings (`core.dim_holdings` /
+    `core.dim_holdings_broker_reported`, below) OR at least one row in
+    `core.fct_transactions` for the account, ever, regardless of amount or
+    source. That is a **narrower reading than "any account with no balance
+    anchor,"** taken literally — an account with genuinely zero activity of
+    any kind stays silently absent, unchanged from today. That residual gap
+    is this requirement's own, stated plainly rather than absorbed: see
+    §Data Model for the exact predicate and what it does and does not catch.
 
     **Subject to the same account eligibility as every rung.** Requirement 9's
     `include_in_net_worth` and date-scoped `archived_at` predicate applies to a
@@ -180,17 +201,17 @@ this spec's to close.
     **A profile with no balance-spine row at all still gets exactly one.**
     `core.fct_balances_daily` returns zero rows, not a NULL-valued one, when
     `core.fct_balances` is empty for the whole profile. Reading that spine
-    alone, a profile whose only accounts are unanchored investment accounts
-    would then publish no `reports.net_worth` row at all — the same silent
-    failure this requirement exists to close, one layer further out. When the
-    balance-driven output is empty and the eligible unanchored count is
-    greater than zero, `reports.net_worth` publishes exactly one synthesized
-    row, with `net_worth` NULL and `unanchored_account_count` set to that
-    count — see below and §Data Model for how that row is dated and how its
-    eligibility is evaluated against a requested range rather than always
-    today. When the balance-driven output is empty and the eligible
-    unanchored count is zero too — no accounts connected, or none holding
-    priced value — no row is published either: a NULL total with a count of
+    alone, a profile whose only accounts are unanchored would then publish no
+    `reports.net_worth` row at all — the same silent failure this requirement
+    exists to close, one layer further out. When the balance-driven output is
+    empty and the eligible unanchored count is greater than zero,
+    `reports.net_worth` publishes exactly one synthesized row, with
+    `net_worth` NULL and `unanchored_account_count` set to that count — see
+    below and §Data Model for how that row is dated and how its eligibility
+    is evaluated against a requested range rather than always today. When the
+    balance-driven output is empty and the eligible unanchored count is zero
+    too — no accounts connected, or none carrying evidence of holding value
+    — no row is published either: a NULL total with a count of
     zero would misreport an empty profile as an incomplete one, which is a
     worse answer than an honest absence of rows. **The eligible unanchored
     count is what gates the synthesized row, not spine emptiness by itself.**
@@ -299,17 +320,37 @@ consumer that `dim_holdings.sql`'s own `positions`-driven shape cannot serve
 matching `("core", "dim_holdings")`'s own — so the read has ground truth to
 derive against instead of needing an exception.
 
-Both `core.dim_holdings` and `core.dim_holdings_broker_reported` are
-required — `core.dim_holdings` sums open lots, so it emits no row at all for
-a broker-reported position with no matching lot (an unbound security, a
-declined bootstrap, or a holdings snapshot that landed before its
-transactions), and `core.dim_holdings_broker_reported` is exactly the source
-`dim_holdings.sql`'s own comment names for that direction. The currencies
-and accounts rungs do not read either — the guard drives a profile total
-NULL, and only `reports.net_worth` publishes one. See
+**Evidence of holding value has three sources.** `core.dim_holdings` sums
+open lots, so it emits no row at all for a broker-reported position with no
+matching lot (an unbound security, a declined bootstrap, or a holdings
+snapshot that landed before its transactions); `core.dim_holdings_broker_reported`
+is exactly the source `dim_holdings.sql`'s own comment names for that
+direction; and `core.fct_transactions` — already `core.*`, so it needs no
+relation of its own — supplies the non-investment case Requirement 14's
+qualifier adds: any account with at least one recorded transaction,
+regardless of source or amount. An account is a guard candidate if it
+appears in *any* of the three and has no row in `core.fct_balances` at all.
+The currencies and accounts rungs do not read any of them — the guard drives
+a profile total NULL, and only `reports.net_worth` publishes one. See
 `unanchored_account_count` below, and Requirement 14 for the join's
 account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3) is
 deliberately not one of these sources.
+
+**What the transaction-activity arm catches, and what it still misses.**
+`core.fct_transactions` carries `transaction_date`, but the guard reads it
+existentially — *has this account ever posted* — the same account-not-date
+scoping Requirement 14 already applies to the holdings signal, not a second
+pattern beside it. This is what makes a tabular import with no balance
+column, a Plaid account whose `current_balance` or `account_type` never
+resolved, or a manual account with postings and no assertion all surface as
+unanchored rather than silently absent — every one of them has transaction
+rows even though `core.fct_balances` has none. It does not reach an account
+with no transaction, no holding, and no balance of any kind: nothing in
+`core.*` distinguishes "genuinely never funded" from "funded but nothing
+observed yet" for an account with zero rows anywhere, and guessing would
+reintroduce the false-positive risk Requirement 14's qualifier exists to
+avoid. That account stays silently absent, exactly as it does today — the
+residual gap Requirement 14 states rather than absorbs.
 
 **`core.fct_balances_daily` is unchanged, deliberately.** Its early return on
 an empty profile (`if obs.empty: yield from (); return`) stays exactly as
@@ -355,15 +396,15 @@ the ordinary unranged call, `effective_from = effective_to = CURRENT_DATE`,
 which reduces to `archived_at IS NULL OR archived_at >= CURRENT_DATE` — the
 same "not yet archived as of today" test the guard always ran.
 
-The runner counts the eligible accounts from `core.dim_holdings` and
-`core.dim_holdings_broker_reported`, filtered through `core.dim_accounts`
-with that range-evaluated eligibility predicate and left-joined against
-`core.fct_balances` to keep only accounts with no balance row at all. When
-the balance-driven output from `reports.net_worth` (filtered to
-`[from_date, to_date]`, like every rung) is empty and that count is greater
-than zero, the runner appends the one synthesized row — every measure NULL,
-`account_count = 0`, `unanchored_account_count` set to the count — to the
-result it returns.
+The runner counts the eligible accounts from the union of `core.dim_holdings`,
+`core.dim_holdings_broker_reported`, and `core.fct_transactions` (distinct
+`account_id`), filtered through `core.dim_accounts` with that range-evaluated
+eligibility predicate and left-joined against `core.fct_balances` to keep
+only accounts with no balance row at all. When the balance-driven output
+from `reports.net_worth` (filtered to `[from_date, to_date]`, like every
+rung) is empty and that count is greater than zero, the runner appends the
+one synthesized row — every measure NULL, `account_count = 0`,
+`unanchored_account_count` set to the count — to the result it returns.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -439,7 +480,7 @@ account_count            INTEGER
 carried_forward_count    INTEGER
 currency_count           INTEGER        -- Distinct currencies held on this date
 unpriced_currency_count  INTEGER        -- How many of them had no rate; 0 means complete
-unanchored_account_count INTEGER        -- M2B.3 (Requirement 14). Accounts holding priced value with no balance row; 0 means none
+unanchored_account_count INTEGER        -- M2B.3 (Requirement 14). Priced holdings or transaction activity, no balance row; 0 means none
 total_assets             DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
 total_liabilities        DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
 net_worth                DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
@@ -459,11 +500,12 @@ fails closed.
 `unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
 Requirement 14 delivers the guard as its own work item precisely so the release
 gate on this row outlives M2B.2 closing. The report's runner counts it from
-`core.dim_holdings` and `core.dim_holdings_broker_reported` (§Data Model
-above) — sources none of the three rungs' own `kind VIEW` models reads —
-against `core.fct_balances`, filtered through the range-evaluated eligibility
-predicate described there, to count an eligible account carrying priced
-value with no balance row at all, and drives `net_worth` NULL the same way
+the union of `core.dim_holdings`, `core.dim_holdings_broker_reported`, and
+`core.fct_transactions` (§Data Model above) — sources none of the three
+rungs' own `kind VIEW` models reads together — against `core.fct_balances`,
+filtered through the range-evaluated eligibility predicate described there,
+to count an eligible account carrying evidence of holding value with no
+balance row at all, and drives `net_worth` NULL the same way
 `unpriced_currency_count` already does. Requirement 14 states why the join
 needs no per-date `balance_date` predicate of its own and why
 `core.fct_holdings_daily` (Pillar C.3) is deliberately not one of these
@@ -1090,23 +1132,33 @@ including the multi-currency persona, which already contains an account in a
 currency outside the rate provider's published set — so the unpriced path is
 reachable from a shipped fixture rather than a hand-built one.
 
-`M2B.3` adds three scenarios beside it, shaped like the unpriced-currency case
+`M2B.3` adds four scenarios beside it, shaped like the unpriced-currency case
 they follow. The first: a persona account holding priced securities and
 carrying no balance observation, alongside other balance-backed accounts,
 asserted to drive `net_worth` to NULL with an unanchored-account count of
 exactly one — never to a smaller populated total. The second: a persona
+account with recorded transactions and no priced holding and no balance
+observation — a tabular-import-with-no-balance-column shape — asserted to
+drive the same NULL-plus-count result through the transaction-activity arm
+of the qualifier, never through the holdings arm. The third: a persona
 whose accounts are *all* unanchored, so `core.fct_balances_daily` has no row
 for the profile at all — asserted to drive `reports.net_worth` to the
 synthesized row (Requirement 14): exactly one row, dated at the query's own
 `to_date` (`CURRENT_DATE` for an unranged call), `net_worth` NULL,
 unanchored-account count equal to the number of qualifying accounts — never
-to zero rows. The third: the same wholly-unanchored persona with one of its
+to zero rows. The fourth: the same wholly-unanchored persona with one of its
 accounts archived after the fact, queried over a historical range that
 predates the archival — asserted to still publish the synthesized row for
 that range, because the account was live and unanchored throughout it, even
 though a query with no range (evaluated as of today) would now find it
 ineligible. This is the regression guard for evaluating the guard's
 eligibility against the requested range rather than always against today.
+
+A fifth case is asserted as a **negative**: a persona account with no
+balance, no holding, and no transaction of any kind does *not* raise
+`unanchored_account_count` and does *not* NULL the total — the qualifier's
+residual gap, pinned so a future author does not "fix" it by widening the
+candidate set back to every balance-less account.
 
 ### Tier 3 — Integration
 
@@ -1132,15 +1184,21 @@ currencies, one of them unpriced. Three additions:
 
 - For `M2B.3`: a persona account holding priced securities with no balance
   observation of any kind, added to an existing balance-backed persona, so
-  the unanchored guard is exercised against a shipped fixture rather than a
-  hand-built one.
+  the unanchored guard's holdings arm is exercised against a shipped fixture
+  rather than a hand-built one.
+- For `M2B.3`'s transaction-activity arm: a persona account with recorded
+  transactions, no priced holding, and no balance observation, added to the
+  same persona — the tabular-import-without-a-balance-column shape.
+- For `M2B.3`'s residual gap: a persona account with no transaction, no
+  holding, and no balance of any kind, added to the same persona — asserted
+  NOT to raise the unanchored count, pinning the qualifier's negative case.
 - For `M2B.3`'s synthesized-row path: a wholly-unanchored persona — every
   account holding priced securities and no balance observation, so
   `core.fct_balances_daily` has no row for the profile at all.
 - For `M2B.3`'s range-evaluated eligibility: the same wholly-unanchored
   persona with one account later archived, so a query for a historical
   range predating the archival and a query with no range give different
-  answers — the fixture the third Tier 2 scenario above reads.
+  answers — the fixture the fourth Tier 2 scenario above reads.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
@@ -1201,16 +1259,13 @@ approved as a footnote rather than reviewed on its own terms.
   invariant M2B.1 records: the provider's reported balance already is the total
   position value. Excluding C.3 is also what narrows Requirement 14's guard to
   the account rather than the date — see that requirement for the consequence.
-- **A connected account with no balance observation outside investments** — a
-  Plaid cash or credit account whose `current_balance` came back NULL, or a
-  tabular import with no balance column. `core.fct_balances` drops that row
-  (`fct_balances.sql`'s `NOT balance IS NULL` / `NOT current_balance IS NULL`
-  filters) rather than anchoring it at zero, and Requirement 14's guard is
-  scoped to `core.dim_holdings` and `core.dim_holdings_broker_reported`, so
-  it does not see this case. The account goes silently absent rather than
-  visibly incomplete — a real gap the release bar in
-  [`roadmap.md`](../roadmap.md) states plainly rather than papering over, and
-  a candidate for a future work item once it has one.
+- **An account with zero evidence of any kind** — no balance row, no priced
+  holding, and no transaction, ever. Requirement 14's qualifier deliberately
+  does not flag it: nothing in `core.*` distinguishes "genuinely never
+  funded" from "funded but nothing observed yet" for a zero-row account, and
+  guessing risks NULLing every profile that has one for no evidence-backed
+  reason. It goes silently absent, unchanged from today — the residual gap
+  stated at Requirement 14's qualifier rather than a case this guard closes.
 - **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
