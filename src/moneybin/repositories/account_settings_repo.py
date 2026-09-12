@@ -128,31 +128,36 @@ class AccountSettingsRepo(BaseRepo):
         ``archived_at`` existed, so neither its ``before`` nor ``after`` image
         carries the key -- ``BaseRepo._restore_row`` only sets columns present
         in ``before``, so undoing one of these rows would leave ``archived_at``
-        at whatever it currently holds. Restoring ``archived=TRUE`` from such a
-        row could then leave ``archived=TRUE`` with ``archived_at`` stale or
-        NULL, breaking the "NULL while active" invariant. This is not a guess
-        about history: the undo performs the archive/unarchive transition
-        *right now*, so deriving from today's date is the same rule
-        ``AccountService.settings_update`` already applies to every live
-        FALSE->TRUE call. A post-V060 capture always carries the key and takes
-        the base-class path unchanged.
+        at whatever it currently holds. Deriving is only correct when this undo
+        actually flips ``archived`` -- comparing ``before`` to ``locate`` (the
+        event's captured after-image) is how we tell an archive/unarchive undo
+        from a legacy row whose ``archived`` was unchanged (some other field
+        moved); stamping the latter would corrupt a real ``archived_at`` with
+        today's date. When the transition IS an archive/unarchive, deriving
+        from today's date is the same rule ``AccountService.settings_update``
+        already applies to every live FALSE->TRUE call. Mutating ``before`` in
+        place also normalizes the legacy image so ``BaseRepo.undo_event``'s own
+        emitted audit row (``after=before``) reflects the value actually
+        written here -- otherwise undoing this undo would re-derive from
+        whatever "today" happens to be at redo time instead of restoring this
+        undo's date. A post-V060 capture always carries the key and takes the
+        base-class path unchanged.
         """
         super()._restore_row(before=before, locate=locate)
         if "archived_at" in before:
             return
+        if before.get("archived") == locate.get("archived"):
+            return
         where, where_params = self._pk_where(locate)
-        if before.get("archived") is True:
-            self._db.execute(
-                f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
-                f"SET archived_at = CURRENT_DATE WHERE {where}",
-                where_params,
-            )
-        else:
-            self._db.execute(
-                f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
-                f"SET archived_at = NULL WHERE {where}",
-                where_params,
-            )
+        derived_at = date.today() if before.get("archived") is True else None
+        self._db.execute(
+            f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
+            f"SET archived_at = ? WHERE {where}",
+            [derived_at, *where_params],
+        )
+        before["archived_at"] = (
+            derived_at.isoformat() if derived_at is not None else None
+        )
 
     def delete(
         self,

@@ -9,9 +9,18 @@ retired in this same change; ``archived_at`` lets a stock-measure report (net
 worth) exclude an account only for dates after it, instead of retroactively.
 
 Backfill, for every account currently ``archived=TRUE``: find the most recent
-``account_settings.set`` audit row on this account whose ``archived``
-transitioned FALSE -> TRUE (``app.audit_log`` is append-only, so this
-evidence has not decayed) and stamp ``archived_at`` with that row's date. A
+``app.audit_log`` row on this account whose ``archived`` transitioned FALSE ->
+TRUE (append-only, so this evidence has not decayed) and stamp ``archived_at``
+with that row's date. The action match is ``action LIKE 'account_settings.set%'``,
+not an exact ``= 'account_settings.set'`` — ``BaseRepo.undo_event`` records a
+reversal as ``f"{event.action}.undo"``, so undoing a prior unarchive re-archives
+via an ``account_settings.set.undo`` row (and undoing *that* undo via
+``account_settings.set.undo.undo``, arbitrarily deep), each carrying the same
+before/after row-image shape as a direct ``.set``. An exact-action match would
+skip that evidence and fall back to an older direct-``.set`` archive row (or
+none), stamping ``archived_at`` before the account's actual latest active
+period. The prefix is scoped safely: ``account_settings.delete`` and its own
+undo chain start with ``account_settings.delete``, never ``...set``. A
 transition counts either when ``before_value.archived`` reads ``'false'`` or
 when ``before_value`` is SQL ``NULL`` — ``AccountSettingsRepo.set`` captures no
 prior row on an account's first-ever settings write, and the absence of a row
@@ -84,7 +93,7 @@ def migrate(conn: object) -> None:
             WHERE target_schema = 'app'
               AND target_table = 'account_settings'
               AND target_id = ?
-              AND action = 'account_settings.set'
+              AND action LIKE 'account_settings.set%'
               AND (
                 before_value IS NULL
                 OR json_extract_string(before_value, '$.archived') = 'false'

@@ -469,16 +469,20 @@ same blanket exclusion `NOT archived` already applies today, preserved rather
 than narrowed. Only an archived account that *does* carry an `archived_at`
 gets the date-scoped exclusion this requirement exists to add. That is a
 change to a service write path, an `app.*` column semantic, and a backfill
-that reconstructs pre-archive intent from `before_value.include_in_net_worth`
-on the `archived` FALSE→TRUE audit row.
+that stamps `archived_at` from the `archived` FALSE→TRUE audit row —
+`include_in_net_worth` is left exactly as stored, never reconstructed: a
+cascade-written `FALSE` and a caller's own explicit
+`archived=True, include_in_net_worth=False` produce the same audit image, so
+there is no way to tell them apart from history alone (see §Prerequisites).
 `.claude/rules/design-principles.md` puts `app.*` schema semantics on the
 one-way-door trigger list, and a change of that shape earns its own review
 rather than approval alongside three report views. It is therefore a
 **prerequisite**, sequenced ahead of this spec exactly as the margin-loan defect
 was — see §Prerequisites.
 
-Nothing about that reconstruction decays while it waits: `app.audit_log` is
-append-only, with no prune, retention, or delete path, so each archive write
+Nothing about the audit evidence this backfill reads decays while any future
+decision about the ambiguous accounts it leaves untouched waits: `app.audit_log`
+is append-only, with no prune, retention, or delete path, so each archive write
 keeps its full prior row state indefinitely.
 
 ## Report allocation
@@ -868,15 +872,21 @@ approved as a footnote rather than reviewed on its own terms.
   no longer forces `include_in_net_worth=False` when `archived=True`;
   `archived_at DATE` (migration V060) carries the exclusion instead,
   date-scoped, stamped with today's date on the archived FALSE→TRUE transition
-  and cleared on unarchive. V060 backfilled every already-archived account,
-  reading `before_value.include_in_net_worth` from the most recent `archived`
-  FALSE→TRUE audit row to distinguish a cascade-written FALSE from one the
-  user chose, and restoring `include_in_net_worth` only for the former. An
-  archived account with no audit evidence for the transition was left
-  untouched rather than guessed at — `archived_at` stays NULL, preserving
-  today's behavior for that account: still excluded at every date, because
-  `archived` alone (with no date to scope by) is what today's blanket
-  `NOT archived` filter already keys on. `core.dim_accounts` now resolves
+  and cleared on unarchive. V060 backfilled every already-archived account's
+  `archived_at` from the most recent `archived` FALSE→TRUE audit row (direct
+  or via an undo of a prior unarchive). `include_in_net_worth` is left exactly
+  as stored throughout — never restored, even when
+  `before_value.include_in_net_worth` reads `true` (the retired cascade's own
+  signature): that signature is not unique to the cascade, since a caller who
+  explicitly passed `archived=True` *and* `include_in_net_worth=False` in one
+  call produces a byte-identical audit image, and the repo records full row
+  snapshots, not the kwargs a caller passed — there is no way to tell the two
+  apart from history alone, so V060 does not guess. An archived account with
+  no audit evidence for the transition was left untouched rather than guessed
+  at either — `archived_at` stays NULL, preserving today's behavior for that
+  account: still excluded at every date, because `archived` alone (with no
+  date to scope by) is what today's blanket `NOT archived` filter already
+  keys on. `core.dim_accounts` now resolves
   `archived_at` alongside `archived`. What remains **for this spec**:
   Requirement 9's own eligibility filter —
   `include_in_net_worth AND (NOT archived OR (archived_at IS NOT NULL AND

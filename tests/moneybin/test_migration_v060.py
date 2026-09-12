@@ -41,16 +41,17 @@ _NO_EVIDENCE = "acct-noevidence1"  # no FALSE->TRUE audit row -> leave alone ent
 _FIRST_WRITE = "acct-firstwrite1"  # archived on the account's first-ever settings row
 _ACTIVE = "acct-activeacct1"  # archived=False -> untouched
 _RE_ARCHIVED = "acct-rearchived1"  # two transitions -> most recent wins
+_UNDO_REARCHIVED = "acct-undorearch1"  # re-archived via undo -> undo's date wins
 
 
-def _audit_row_sql() -> str:
-    return """
+def _audit_row_sql(action: str = "account_settings.set") -> str:
+    return f"""
         INSERT INTO app.audit_log (
             audit_id, occurred_at, actor, action, target_schema, target_table,
             target_id, before_value, after_value, operation_id
-        ) VALUES (?, ?, 'cli', 'account_settings.set', 'app', 'account_settings',
+        ) VALUES (?, ?, 'cli', '{action}', 'app', 'account_settings',
                   ?, ?, ?, ?)
-    """
+    """  # noqa: S608  # test fixture SQL, action is a hardcoded literal
 
 
 @pytest.fixture()
@@ -78,6 +79,7 @@ def pre_v060_db(db: Database) -> Database:
             (_FIRST_WRITE, "First Write Archive", True, True),
             (_ACTIVE, "Active Account", False, True),
             (_RE_ARCHIVED, "Re-archived", True, False),
+            (_UNDO_REARCHIVED, "Undo Re-archived", True, True),
         ],
     )
 
@@ -152,6 +154,45 @@ def pre_v060_db(db: Database) -> Database:
             "op-rearchived2",
         ],
     )
+
+    # _UNDO_REARCHIVED: archived on 2026-01-05, unarchived on 2026-02-10, then
+    # re-archived by undoing that unarchive on 2026-03-15 -- BaseRepo.undo_event
+    # records the reversal as action='account_settings.set.undo', not
+    # 'account_settings.set'. The migration must still find this as the most
+    # recent FALSE->TRUE transition, not fall back to the 2026-01-05 row.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-undorearch1a",
+            "2026-01-05 09:00:00",
+            _UNDO_REARCHIVED,
+            '{"archived": false, "include_in_net_worth": true}',
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-undorearch1a",
+        ],
+    )
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-undorearch1b",
+            "2026-02-10 09:00:00",
+            _UNDO_REARCHIVED,
+            '{"archived": true, "include_in_net_worth": true}',
+            '{"archived": false, "include_in_net_worth": true}',
+            "op-undorearch1b",
+        ],
+    )
+    db.execute(
+        _audit_row_sql("account_settings.set.undo"),
+        [
+            "aud-undorearch1c",
+            "2026-03-15 09:00:00",
+            _UNDO_REARCHIVED,
+            '{"archived": false, "include_in_net_worth": true}',
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-undorearch1c",
+        ],
+    )
     return db
 
 
@@ -222,6 +263,21 @@ def test_v060_uses_most_recent_archive_transition(pre_v060_db: Database) -> None
     # before.include_in_net_worth on the winning (most recent) row is False,
     # but this migration never restores it regardless.
     assert include is False
+
+
+def test_v060_uses_most_recent_transition_including_undo(
+    pre_v060_db: Database,
+) -> None:
+    """A re-archival performed via undo (action='...set.undo') must win.
+
+    An exact `action = 'account_settings.set'` match would miss the undo row
+    and fall back to the earlier direct archive, dating the account before
+    its actual latest active period.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _UNDO_REARCHIVED)
+    assert archived_at == date(2026, 3, 15)
+    assert include is True
 
 
 def test_v060_idempotent_on_replay(pre_v060_db: Database) -> None:

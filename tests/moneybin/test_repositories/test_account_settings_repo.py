@@ -255,3 +255,67 @@ def test_undo_of_current_capture_leaves_archived_at_override_untouched(
     # Restored to the captured before-image exactly: archived=True with the
     # real historical date, not today's.
     assert row == (True, date(2026, 1, 10))
+
+
+def test_undo_of_legacy_row_with_unchanged_archived_leaves_archived_at_alone(
+    db: Database,
+) -> None:
+    """A legacy row whose `archived` didn't change must not touch archived_at.
+
+    The forward mutation this reverses changed `display_name` only --
+    `archived=True` in both its before and after image -- so this is NOT an
+    archive/unarchive transition. Undoing it must leave the live
+    `archived_at` at its real historical value rather than deriving today's
+    date from `before.get("archived")` alone. (Not built via
+    `_legacy_undo_event`: identical before/after images there would make
+    `BaseRepo.undo_event` treat the whole event as a no-op and never reach
+    `_restore_row` at all -- this needs a before/after pair that differs on
+    a non-`archived` field.)
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy3", archived=True, archived_at=date(2024, 3, 15))
+
+    before_image = _legacy_row(account_id="acct_legacy3", archived=True)
+    after_image = dict(before_image)
+    after_image["display_name"] = "Legacy Account Renamed"
+    event = AuditEvent(
+        audit_id="aud-legacy3",
+        occurred_at="2025-06-01T00:00:00",
+        actor="cli",
+        action="account_settings.set",
+        target_schema="app",
+        target_table="account_settings",
+        target_id="acct_legacy3",
+        before_value=before_image,
+        after_value=after_image,
+        parent_audit_id=None,
+        operation_id="op-legacy3",
+    )
+    repo.undo_event(event, actor="cli")
+
+    row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy3"],
+    ).fetchone()
+    assert row == (True, date(2024, 3, 15))
+
+
+def test_undo_of_legacy_row_normalizes_archived_at_into_its_own_audit(
+    db: Database,
+) -> None:
+    """The undo's own emitted audit row must carry the archived_at it derived.
+
+    Otherwise undoing THIS undo re-derives from whatever "today" is at redo
+    time instead of restoring the date this undo just wrote.
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy4", archived=False, archived_at=None)
+
+    event = _legacy_undo_event(
+        account_id="acct_legacy4", before_archived=True, after_archived=False
+    )
+    undo_result = repo.undo_event(event, actor="cli")
+
+    assert undo_result is not None
+    assert undo_result.after_value is not None
+    assert undo_result.after_value["archived_at"] == date.today().isoformat()
