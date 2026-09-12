@@ -165,9 +165,17 @@ this spec's to close.
     holding priced value that carries **no balance observation at all** —
     Defect 6's case — must not contribute zero in silence. It behaves the way
     an unpriced currency already does under Requirement 7: the profile total is
-    NULL, with an unanchored-account count beside it, and the `system doctor`
-    balance-staleness check Defect 4 defers lands with it — see
+    NULL, with an unanchored-account count beside it, and it carries the
+    `system doctor` balance-staleness check that Defect 4 deferred — see
     §"`moneybin system doctor`: balance staleness" for its full specification.
+
+    **Subject to the same account eligibility as every rung.** Requirement 9's
+    `include_in_net_worth` and date-scoped `archived_at` predicate applies to a
+    candidate unanchored account exactly as it applies to a balance-backed one:
+    an account the user has excluded or archived does not count toward
+    `unanchored_account_count` and does not NULL a total it was never part of.
+    This is not a second eligibility rule beside Requirement 9's — it is the
+    same one, applied to a source Requirement 9 did not yet have to join.
 
     **Scoped to the account, not to the date, and deliberately so.**
     `core.dim_holdings` is a current snapshot with no date dimension, and the
@@ -212,13 +220,24 @@ all three read. It must not be a TABLE: `include_in_net_worth`, `archived`, and
 materialized rows makes a later un-archive silently wrong. The same constraint
 binds M2P.3 — see §Key Decision 6.
 
-`M2B.3` adds a fourth source, read by `reports.net_worth` alone: `core.dim_holdings`,
-left-joined against `core.fct_balances` to find an account carrying priced value
-with no balance row of any kind. The currencies and accounts rungs do not read
-it — the guard drives a profile total NULL, and only `reports.net_worth`
-publishes one. See `unanchored_account_count` below, and Requirement 14 for the
-join's account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3)
-is deliberately not this source.
+`M2B.3` adds two more sources, read by `reports.net_worth` alone:
+`core.dim_holdings` and `prep.stg_plaid__investment_holdings`, together
+left-joined against `core.fct_balances` to find an account carrying priced
+value with no balance row of any kind. Both are required — `core.dim_holdings`
+sums open lots, so it emits no row at all for a broker-reported position with
+no matching lot (an unbound security, a declined bootstrap, or a holdings
+snapshot that landed before its transactions), and `dim_holdings.sql`'s own
+comment names `prep.stg_plaid__investment_holdings` as the source a check
+needs to cover that direction. The candidate set from either source is then
+joined to `core.dim_accounts` and passed through the same eligibility
+predicate the three rungs already apply — `include_in_net_worth` and the
+date-scoped archival predicate — so an account the user has excluded or
+archived never inflates `unanchored_account_count`. The currencies and
+accounts rungs do not read either source — the guard drives a profile total
+NULL, and only `reports.net_worth` publishes one. See
+`unanchored_account_count` below, and Requirement 14 for the join's
+account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3) is
+deliberately not one of these sources.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -313,12 +332,14 @@ fails closed.
 
 `unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
 Requirement 14 delivers the guard as its own work item precisely so the release
-gate on this row outlives M2B.2 closing. It joins `core.dim_holdings` — a source
-none of the three rungs otherwise reads — against `core.fct_balances` to count
-an account carrying priced value with no balance row at all, and drives
-`net_worth` NULL the same way `unpriced_currency_count` already does.
-Requirement 14 states why the join needs no `balance_date` predicate and why
-`core.fct_holdings_daily` (Pillar C.3) is deliberately not this source.
+gate on this row outlives M2B.2 closing. It joins `core.dim_holdings` and
+`prep.stg_plaid__investment_holdings` — sources none of the three rungs
+otherwise reads — against `core.fct_balances`, filtered through the same
+account-eligibility predicate as the other rungs, to count an eligible account
+carrying priced value with no balance row at all, and drives `net_worth` NULL
+the same way `unpriced_currency_count` already does. Requirement 14 states why
+the join needs no `balance_date` predicate and why `core.fct_holdings_daily`
+(Pillar C.3) is deliberately not one of these sources.
 
 ### Rate models
 
@@ -541,16 +562,25 @@ guard rather than stating its shape there. This is that shape, specified at the
 same level of detail as Requirement 5's rate-window bound and Requirement 7's
 NULL-total behavior.
 
-`net_worth_stale_balance` reads `reports.net_worth_accounts` at today's
-`balance_date` only — the daily spine carries a row for every past date too,
-and re-warning about a carry-forward that was already stale last month adds
-nothing. A row qualifies when its account already passed the eligibility
-filter (`include_in_net_worth AND NOT archived`, so a deliberately excluded or
-closed account never produces a warning nobody can act on) and the row is
-carried forward rather than observed (`is_observed = FALSE`) for longer than
-`DoctorSettings.balance_staleness_threshold_days` (default 30 — long enough to
-absorb an ordinary monthly statement cycle without firing on routine use,
-short enough to still catch an account nobody has refreshed in over a month).
+`net_worth_stale_balance` reads each eligible account's own latest
+observation from `reports.net_worth_accounts` — never a `balance_date` the
+check assumes to be today's. `core.fct_balances_daily`'s spine ends at the
+newest observation across *all* accounts, not at `CURRENT_DATE` (that model's
+own docstring states this), so a profile where every account has gone stale
+together has no row dated today at all; filtering to `balance_date =
+CURRENT_DATE` would find nothing and pass silently in precisely the case this
+check exists to catch. The check instead takes, per account that already
+passed the eligibility filter (`include_in_net_worth AND NOT archived`, so a
+deliberately excluded or closed account never produces a warning nobody can
+act on), that account's own most recent *observed* row (`is_observed = TRUE`,
+`MAX(balance_date)`) and compares `CURRENT_DATE - balance_date` — not the
+row's own `days_since_observed`, which is relative to the spine's last date
+rather than to today — against `DoctorSettings.balance_staleness_threshold_days`
+(default 30 — long enough to absorb an ordinary monthly statement cycle
+without firing on routine use, short enough to still catch an account nobody
+has refreshed in over a month). Reading each account's own latest row rather
+than a shared `balance_date` filter is what makes the check correct whether
+or not the spine happens to reach today.
 
 Severity is `warn`, not `fail`. The balance the check flags is still present
 and still contributes to the total; only Requirement 14's own guard — an

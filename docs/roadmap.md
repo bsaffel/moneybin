@@ -46,7 +46,7 @@ publish. Availability, not promotion.
 | **M1S–M1W** | Cross-source account, merchant, and category identity resolution; category taxonomy audit | ✅ shipped |
 | **M1R, M1X** | Format-compatibility fixtures; account subtype detail and Plaid liabilities | 🗓️ planned |
 | **M1Y** | Document–account binding and transaction-identity stability | 📐 — [document-account-binding.md](specs/document-account-binding.md) |
-| **M2A–M2B** | Curated reports plus net-worth and balance tracking | 🚧 — M2A and M2B.1 shipped; M2B.2 in progress and gating the first public release ([reports-net-worth-sql-surface.md](specs/reports-net-worth-sql-surface.md)) |
+| **M2A–M2B** | Curated reports plus net-worth and balance tracking | 🚧 — M2A and M2B.1 shipped; M2B.2 in progress and gating the first public release, with M2B.3's unanchored-account guard designed alongside it ([reports-net-worth-sql-surface.md](specs/reports-net-worth-sql-surface.md)) |
 | **M2C–M2P** | Budgets, recurring review, goals, projections, packages, richer report lineage | 📐/🗓️ per increment — see the [spec index](specs/INDEX.md) |
 | **M3A** | Safe evaluator path: `moneybin demo` and first-run | 🚧 demo shipped; first-run work remains |
 | **M3B** | Packaging and tester distribution (PyPI first; brew and `.mcpb` follow) | 🚧 release automation in place; no published package yet |
