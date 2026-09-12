@@ -424,6 +424,9 @@ filterwarnings = [
 # Documentation: https://coverage.readthedocs.io/en/7.4.0/config.html#run-section
 source = ["src"]
 omit = ["*/tests/*", "*/test_*", "*/venv/*", "*/__pycache__/*"]
+# Coverage.py 7.10+ instruments Python subprocesses and writes separate,
+# suffixed data files that must be combined before reporting.
+patch = ["subprocess"]
 
 [tool.coverage.report]
 # Documentation: https://coverage.readthedocs.io/en/latest/config.html#report-section

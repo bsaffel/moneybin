@@ -172,7 +172,7 @@ jobs:
         if: always()
         with:
           name: coverage-data-unit-${{ matrix.group }}
-          path: .coverage.unit.${{ matrix.group }}
+          path: .coverage.unit.${{ matrix.group }}*
           include-hidden-files: true
 
   # Combine the per-suite, per-shard coverage data into one report. Runs even
@@ -298,7 +298,7 @@ jobs:
         if: always()
         with:
           name: coverage-data-integration-${{ matrix.group }}
-          path: .coverage.integration.${{ matrix.group }}
+          path: .coverage.integration.${{ matrix.group }}*
           include-hidden-files: true
 
   test-e2e:
@@ -357,7 +357,7 @@ jobs:
         if: always()
         with:
           name: coverage-data-e2e-${{ matrix.group }}
-          path: .coverage.e2e.${{ matrix.group }}
+          path: .coverage.e2e.${{ matrix.group }}*
           include-hidden-files: true
 
   test-privacy-performance:
