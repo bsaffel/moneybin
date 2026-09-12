@@ -43,10 +43,10 @@ def system_db(db: Database) -> Database:
         INSERT INTO core.dim_accounts VALUES
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE),
+         'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, NULL, TRUE),
         ('ACC002', '222000050', 'SAVINGS', 'Other Bank', 'other_bank', '5678', 'ofx',
          'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, TRUE)
+         'Other Bank SAVINGS ...0002', TRUE, NULL, NULL, NULL, NULL, 'USD', NULL, FALSE, NULL, TRUE)
     """)  # test input, not executing SQL
 
     conn.execute(_INSERT_TRANSACTIONS)
@@ -209,7 +209,7 @@ def _insert_dim_account(
         ('ACC001', '111000025', 'CHECKING', 'Test Bank', 'test_bank', '1234', 'ofx',
          'test.qfx', ?, CURRENT_TIMESTAMP, ?,
          'Test Bank CHECKING ...0001', TRUE, NULL, NULL, NULL, NULL, 'USD',
-         NULL, FALSE, TRUE)
+         NULL, FALSE, NULL, TRUE)
         """,
         [dim_extracted_at, dim_updated_at],
     )

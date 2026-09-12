@@ -11,6 +11,7 @@ import dataclasses
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
 from typing import Any, cast
@@ -236,6 +237,7 @@ class AccountSettings:
     currency_code: str | None = None
     credit_limit: Decimal | None = None
     archived: bool = False
+    archived_at: date | None = None
     include_in_net_worth: bool = True
     default_cost_basis_method: str | None = None
 
@@ -251,6 +253,7 @@ class AccountSettings:
             "currency_code": self.currency_code,
             "credit_limit": self.credit_limit,
             "archived": self.archived,
+            "archived_at": self.archived_at,
             "include_in_net_worth": self.include_in_net_worth,
             "default_cost_basis_method": self.default_cost_basis_method,
         }
@@ -424,7 +427,7 @@ class AccountService:
             f"""
             SELECT account_id, display_name, official_name, last_four,
                    account_subtype, holder_category, currency_code,
-                   credit_limit, archived, include_in_net_worth,
+                   credit_limit, archived, archived_at, include_in_net_worth,
                    default_cost_basis_method
             FROM {ACCOUNT_SETTINGS.full_name}
             WHERE account_id = ?
@@ -443,8 +446,9 @@ class AccountService:
             currency_code=row[6],
             credit_limit=row[7],
             archived=row[8],
-            include_in_net_worth=row[9],
-            default_cost_basis_method=row[10],
+            archived_at=row[9],
+            include_in_net_worth=row[10],
+            default_cost_basis_method=row[11],
         )
 
     def list_accounts(
@@ -480,6 +484,7 @@ class AccountService:
             "holder_category",
             "currency_code",
             "archived",
+            "archived_at",
             "include_in_net_worth",
             "last_four",
             "credit_limit",
@@ -502,9 +507,10 @@ class AccountService:
                 holder_category=row[5],
                 currency_code=row[6],
                 archived=bool(row[7]),
-                include_in_net_worth=bool(row[8]),
-                last_four=row[9],
-                credit_limit=row[10],
+                archived_at=row[8],
+                include_in_net_worth=bool(row[9]),
+                last_four=row[10],
+                credit_limit=row[11],
             )
             for row in rows
         ]
@@ -529,6 +535,7 @@ class AccountService:
             "last_four",
             "credit_limit",
             "archived",
+            "archived_at",
             "include_in_net_worth",
             "source_type",
             "routing_number",
@@ -559,6 +566,7 @@ class AccountService:
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]
             archived=bool(r["archived"]),
+            archived_at=r["archived_at"],  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
             source_type=r["source_type"],  # type: ignore[arg-type]
         )
@@ -656,17 +664,19 @@ class AccountService:
         return settings
 
     def archive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
-        """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write.
+        """Set archived=TRUE and stamp archived_at with today's date.
 
-        Deprecated: prefer ``settings_update(archived=True)``.
+        include_in_net_worth is untouched -- archiving no longer cascades to
+        it. Deprecated: prefer ``settings_update(archived=True)``.
         """
         settings, _ = self.settings_update(account_id, archived=True, actor=actor)
         return settings
 
     def unarchive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
-        """Set archived=FALSE; does NOT restore include_in_net_worth (per spec).
+        """Set archived=FALSE and clear archived_at back to NULL.
 
-        Deprecated: prefer ``settings_update(archived=False)``.
+        include_in_net_worth is untouched -- it was never changed by
+        archiving. Deprecated: prefer ``settings_update(archived=False)``.
         """
         settings, _ = self.settings_update(account_id, archived=False, actor=actor)
         return settings
@@ -694,11 +704,15 @@ class AccountService:
         the updated settings and a list of soft-validation warnings (empty if
         all values are canonical).
 
-        Cascade: ``archived=True`` forces ``include_in_net_worth=False`` in the
-        same write to preserve the invariant that archived accounts never
-        contribute to net worth. ``archived=False`` does NOT auto-restore
-        ``include_in_net_worth`` — matches the prior ``unarchive()`` contract;
-        callers re-enable inclusion explicitly when intended.
+        ``archived`` and ``include_in_net_worth`` are independent fields —
+        archiving no longer forces ``include_in_net_worth=False``. Instead,
+        ``archived=True`` stamps ``archived_at`` with today's date the first
+        time the account transitions to archived (a later call while it is
+        already archived leaves the stored date untouched); ``archived=False``
+        clears ``archived_at`` back to NULL. ``archived_at`` is what lets a
+        stock-measure report (net worth) exclude the account only for dates
+        after it, instead of retroactively — see
+        docs/specs/reports-net-worth-sql-surface.md §``app.account_settings``.
 
         ``default_cost_basis_method`` is hard-validated (unlike the soft
         ``account_subtype`` / ``holder_category`` warnings): a non-CLEAR,
@@ -711,11 +725,15 @@ class AccountService:
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []
 
-        # Archive forces include_in_net_worth=False in the same write —
-        # resolved before _resolve() so an explicit caller value is
-        # overridden by the cascade.
-        if archived is True:
-            include_in_net_worth = False
+        # archived_at is date-scoped, derived history state, not a caller
+        # input: stamp it with today's date on the FALSE->TRUE transition
+        # (idempotent -- re-archiving an already-archived account leaves the
+        # stored date alone), and clear it back to NULL on unarchive.
+        # include_in_net_worth is untouched either way (no cascade).
+        if archived is True and not current.archived:
+            diff["archived_at"] = date.today()
+        elif archived is False and current.archived:
+            diff["archived_at"] = None
 
         def _resolve(field_name: str, new: object) -> None:
             if new is None:
@@ -810,6 +828,7 @@ class AccountService:
             currency_code=updated.currency_code,
             credit_limit=updated.credit_limit,
             archived=updated.archived,
+            archived_at=updated.archived_at,
             include_in_net_worth=updated.include_in_net_worth,
             default_cost_basis_method=updated.default_cost_basis_method,
             actor=actor,

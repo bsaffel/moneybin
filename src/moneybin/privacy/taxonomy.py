@@ -188,6 +188,10 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_id": DataClass.RECORD_ID,
         "account_subtype": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
+        # A user-authored decision date about this account's lifecycle, not
+        # pipeline observability — same rationale as trade_date/balance_date
+        # (privacy-data-classification.md's dim_holdings.price_date entry).
+        "archived_at": DataClass.TXN_DATE,
         "credit_limit": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
         "display_name": DataClass.USER_NOTE,
@@ -764,6 +768,9 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_subtype": DataClass.TXN_TYPE,
         "account_type": DataClass.TXN_TYPE,
         "archived": DataClass.TXN_TYPE,
+        # Same rationale as the app.account_settings entry above: a personal
+        # lifecycle decision date, not a "when was this recorded" timestamp.
+        "archived_at": DataClass.TXN_DATE,
         "credit_limit": DataClass.BALANCE,
         "currency_code": DataClass.CURRENCY,
         "display_name": DataClass.USER_NOTE,

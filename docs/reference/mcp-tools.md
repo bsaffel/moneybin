@@ -117,7 +117,7 @@ Access: write, not idempotent. Sensitivity: at least `low`.
 
 ### accounts_set
 
-Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). Archiving (is_archived=True) cascades include_in_net_worth=False atomically; unarchive does NOT restore the prior include value. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.
+Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent — set both explicitly if archiving should also exclude the account from net worth. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.
 
 Access: write, idempotent. Sensitivity: at least `critical`.
 

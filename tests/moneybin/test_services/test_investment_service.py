@@ -81,6 +81,7 @@ def _set_account_default_method(db: Database, method: str) -> None:
         currency_code=None,
         credit_limit=None,
         archived=False,
+        archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=method,
         actor="cli",

@@ -75,8 +75,9 @@ Structural: --official-name, --last-four, --subtype, --holder-category,
 via --clear-FIELD). --default-cost-basis-method must be one of fifo,
 hifo, specific, average — an invalid value is rejected before any write.
 Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
-Archive cascades --exclude in the same write; unarchive does NOT restore
-include. At least one field flag required.
+--archive/--unarchive and --include/--exclude are independent flags; pass
+both together if archiving should also exclude the account from net
+worth. At least one field flag required.
 
 Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
 
@@ -99,7 +100,7 @@ Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
 | `--display-name` | text |  | Custom display name override (use --clear-display-name to clear) |
 | `--default-cost-basis-method` | text |  | Per-account cost-basis default: fifo, hifo, specific, or average (NULL falls back to the global FIFO default) |
 | `--include / --exclude` | flag |  | Include or exclude this account from net worth |
-| `--archive / --unarchive` | flag |  | Archive (cascades --exclude) or unarchive (does not auto-restore include) |
+| `--archive / --unarchive` | flag |  | Archive or unarchive this account (does not change --include/--exclude) |
 | `--clear-official-name` | flag |  |  |
 | `--clear-last-four` | flag |  |  |
 | `--clear-subtype` | flag |  |  |
