@@ -150,7 +150,8 @@ this spec's to close.
     Defect 6's case — must not contribute zero in silence. It behaves the way
     an unpriced currency already does under Requirement 7: the profile total is
     NULL, with an unanchored-account count beside it, and the `system doctor`
-    balance-staleness check Defect 4 defers lands with it.
+    balance-staleness check Defect 4 defers lands with it — see
+    §"`moneybin system doctor`: balance staleness" for its full specification.
 
     **Scoped to the account, not to the date, and deliberately so.**
     `core.dim_holdings` is a current snapshot with no date dimension, and the
@@ -194,6 +195,14 @@ all three read. It must not be a TABLE: `include_in_net_worth`, `archived`, and
 `archived_at` are user-reversible, and baking a reversible filter into
 materialized rows makes a later un-archive silently wrong. The same constraint
 binds M2P.3 — see §Key Decision 6.
+
+`M2B.3` adds a fourth source, read by `reports.net_worth` alone: `core.dim_holdings`,
+left-joined against `core.fct_balances` to find an account carrying priced value
+with no balance row of any kind. The currencies and accounts rungs do not read
+it — the guard drives a profile total NULL, and only `reports.net_worth`
+publishes one. See `unanchored_account_count` below, and Requirement 14 for the
+join's account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3)
+is deliberately not this source.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -269,9 +278,10 @@ account_count            INTEGER
 carried_forward_count    INTEGER
 currency_count           INTEGER        -- Distinct currencies held on this date
 unpriced_currency_count  INTEGER        -- How many of them had no rate; 0 means complete
-total_assets             DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
-total_liabilities        DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
-net_worth                DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0
+unanchored_account_count INTEGER        -- M2B.3 (Requirement 14). Accounts holding priced value with no balance row; 0 means none
+total_assets             DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
+total_liabilities        DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
+net_worth                DECIMAL(18,2)  -- NULL when unpriced_currency_count > 0 or unanchored_account_count > 0
 ```
 
 No suffixes: every measure here is in `home_currency_code` by construction, and
@@ -284,6 +294,15 @@ This rung is the reason the other two are not enough. A caller who sums
 answer when one currency is unpriced, because SQL's `SUM()` skips NULL and
 silently returns the priced subset. This rung does the aggregation once, and
 fails closed.
+
+`unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
+Requirement 14 delivers the guard as its own work item precisely so the release
+gate on this row outlives M2B.2 closing. It joins `core.dim_holdings` — a source
+none of the three rungs otherwise reads — against `core.fct_balances` to count
+an account carrying priced value with no balance row at all, and drives
+`net_worth` NULL the same way `unpriced_currency_count` already does.
+Requirement 14 states why the join needs no `balance_date` predicate and why
+`core.fct_holdings_daily` (Pillar C.3) is deliberately not this source.
 
 ### Rate models
 
@@ -499,6 +518,39 @@ Nothing about that reconstruction decays while it waits: `app.audit_log` is
 append-only, with no prune, retention, or delete path, so each archive write
 keeps its full prior row state indefinitely.
 
+### `moneybin system doctor`: balance staleness — `M2B.3`
+
+Requirement 14 defers this check to the same work item as the unanchored-account
+guard rather than stating its shape there. This is that shape, specified at the
+same level of detail as Requirement 5's rate-window bound and Requirement 7's
+NULL-total behavior.
+
+`net_worth_stale_balance` reads `reports.net_worth_accounts` at today's
+`balance_date` only — the daily spine carries a row for every past date too,
+and re-warning about a carry-forward that was already stale last month adds
+nothing. A row qualifies when its account already passed the eligibility
+filter (`include_in_net_worth AND NOT archived`, so a deliberately excluded or
+closed account never produces a warning nobody can act on) and the row is
+carried forward rather than observed (`is_observed = FALSE`) for longer than
+`DoctorSettings.balance_staleness_threshold_days` (default 30 — long enough to
+absorb an ordinary monthly statement cycle without firing on routine use,
+short enough to still catch an account nobody has refreshed in over a month).
+
+Severity is `warn`, not `fail`. The balance the check flags is still present
+and still contributes to the total; only Requirement 14's own guard — an
+account with **no** balance row at all — drives the total to NULL.
+`DoctorReport.fail_count` counts only `fail` toward `moneybin system doctor`'s
+release-gating exit code (`doctor_service.py:228`), so a stale-but-present
+balance can surface without turning a release artifact red. That is the same
+trade the shipped `investment_stale_prices` check already makes for a
+carried-forward security close, and for the same reason: an aging number is a
+prompt to refresh it, not proof it is wrong.
+
+Implemented as one more invariant in `DoctorService` (`doctor_service.py`)
+alongside `investment_stale_prices`, with `balance_staleness_threshold_days`
+added to `DoctorSettings` (`src/moneybin/config.py`) and the check's row and
+threshold documented in `docs/specs/moneybin-doctor.md`'s invariant table.
+
 ## Report allocation
 
 ### One name per report
@@ -620,7 +672,8 @@ tests named in §Testing Strategy.
   rung. Its current per-currency body moves to `net_worth_currencies.sql` and
   gains the converted measures, the rate provenance columns, and
   `carried_forward_count`; both switch the eligibility filter to the
-  date-scoped form.
+  date-scoped form. **`M2B.3`** later adds the `core.dim_holdings` join and the
+  `unanchored_account_count` column to this same file, in its own change.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -648,6 +701,12 @@ tests named in §Testing Strategy.
   in this deletion too. (Enforcement item 3's `_SNAPSHOT_COLUMN_TYPES`
   tripwire already retired separately, when the snapshot path was keyed by
   name — issue #511.)
+
+**`M2B.3`** — not this pass, its own change:
+- `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
+- `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
+  invariant.
+- `docs/specs/moneybin-doctor.md` — the invariant table entry.
 
 ### Files to Delete
 
@@ -855,7 +914,7 @@ unanchored-account count of exactly one — never to a smaller populated total.
 ## Synthetic Data Requirements
 
 The `international` persona already supplies the shapes needed: several
-currencies, one of them unpriced. Two additions:
+currencies, one of them unpriced. Three additions:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -930,9 +989,5 @@ approved as a footnote rather than reviewed on its own terms.
 - **Named account subsets** — a filter layered over the ladder, not a grain.
 - **Per-lot cost basis** — the grain below account × security, belonging to the
   investments ledger.
-- **A `system doctor` check for balance staleness** — *no longer out of scope.*
-  It moved in with Requirement 14, which needs the invariant as well as the
-  column: this spec makes staleness queryable, and the threshold that turns it
-  into a failure ships beside the unanchored-account guard.
 - **Balance forecasting** — unchanged from M2B.1.
 - **Arbitrary display-currency conversion in SQL** — Key Decision 7.
