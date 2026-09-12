@@ -289,6 +289,18 @@ def plan_rate_backfill(
 ) -> tuple[RateWindow, ...]:
     """The rate windows this profile's own rows imply, newest bound at ``through``."""
     targets = _usable_targets(home_currency, display_currency_targets)
+    if home_currency is not None and _usable_currency(home_currency) is None:
+        # Never echo the stored value: a historical operator bypass can leave
+        # arbitrary text here, and this warning reaches the durable log.
+        if targets:
+            logger.warning(
+                "Rate backfill: the home currency is not a valid code; "
+                "planning display targets"
+            )
+        else:
+            logger.warning(
+                "Rate backfill skipped: the home currency is not a valid code"
+            )
     if not targets:
         return ()
     # The window is what the profile needs, never what the cache appears to

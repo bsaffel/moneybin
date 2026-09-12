@@ -516,7 +516,9 @@ def test_a_malformed_currency_code_yields_no_window(db: Database) -> None:
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
 
 
-def test_a_malformed_home_currency_plans_nothing(db: Database) -> None:
+def test_a_malformed_home_currency_warns_and_plans_nothing(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
     """The home currency is the other half of every pair the planner emits.
 
     `ProfileSettingsRepo.set_home_currency` validates on the way in, so this is
@@ -526,7 +528,50 @@ def test_a_malformed_home_currency_plans_nothing(db: Database) -> None:
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
 
-    assert plan_rate_backfill(db, home_currency="dollars", through=_TODAY) == ()
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        assert plan_rate_backfill(db, home_currency="dollars", through=_TODAY) == ()
+
+    assert "Rate backfill skipped: the home currency is not a valid code" in caplog.text
+    assert "dollars" not in caplog.text
+
+
+def test_valid_display_targets_still_plan_when_home_currency_is_malformed(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An invalid home setting does not discard the profile's valid target work."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency="dollars",
+            display_currency_targets=("GBP",),
+            through=_TODAY,
+        )
+
+    assert windows == (
+        RateWindow(
+            from_currency="EUR",
+            to_currency="GBP",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+    assert (
+        "the home currency is not a valid code; planning display targets" in caplog.text
+    )
+
+
+def test_absent_home_and_targets_leave_rate_planning_quiet(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unconfigured profile implies no work and no warning."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        assert plan_rate_backfill(db, home_currency=None, through=_TODAY) == ()
+
+    assert caplog.text == ""
 
 
 # ------------------------------ running the plan ------------------------------
