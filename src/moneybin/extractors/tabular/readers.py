@@ -5,6 +5,7 @@ string column names. This is the format-agnostic boundary — everything
 downstream operates on DataFrames regardless of source format.
 """
 
+import datetime
 import logging
 import re
 from dataclasses import dataclass
@@ -51,9 +52,9 @@ class ReadResult:
     header_row_looks_like_data: bool = False
     """True when the row consumed as the header also parses as a transaction
     record (date + amount) — a red flag that a real data row may have been
-    eaten as a header via an explicit skip_rows (CSV) or the always-on header
-    assumption (Excel). CSV auto-detection is its own safety net (it never
-    picks a data-looking row as the header), so this stays False there."""
+    eaten as a header via an explicit skip_rows override (CSV or Excel).
+    Auto-detection is its own safety net for both formats (it never picks a
+    data-looking row as the header), so this stays False there."""
 
     @property
     def rows_in_file(self) -> int:
@@ -121,6 +122,7 @@ def read_file(
             skip_rows=skip_rows,
             sheet=sheet,
             source_bytes=source_bytes,
+            has_header=has_header,
         )
     elif info.file_type == "parquet":
         result = _read_parquet(path, source_bytes=source_bytes)
@@ -240,23 +242,9 @@ def _detect_header(
 ) -> tuple[int, bool]:
     """Locate the header row, or determine the file is headerless.
 
-    Scans up to the first 30 content rows and decides between two outcomes:
-
-    - **Header present.** The first row that reads as labels (low numeric
-      ratio), does *not* itself parse as a transaction, *and* is followed by
-      a data row is the header. Returns ``(row_index, True)``. Scanning the
-      whole window means any number of data-like preamble rows above the
-      header — opening- and closing-balance summary lines such as
-      ``2026-01-01,100.00`` — are skipped rather than mistaken for the first
-      row of a headerless file. The follow-by-data check is what keeps a
-      footer/trailer that also reads as labels (``Downloaded On,2026-04-17``,
-      sitting *below* the data in a headerless file) from winning.
-    - **Headerless.** When no row qualifies as a header, the first row that
-      parses as a data record (date plus numeric amount) starts the data.
-      Returns ``(row_index, False)`` so the reader keeps that row. This is
-      the Wells Fargo case: ``Date,Amount,*,,Description`` with no header
-      line, where every row leads with a date (low numeric ratio) and so
-      none reads as a header.
+    Samples the first 30 content lines, splits each on ``delimiter``, and
+    delegates the header/headerless decision to ``_classify_header_rows`` —
+    see that function for the two-outcome algorithm.
 
     Args:
         path: File path.
@@ -279,14 +267,58 @@ def _detect_header(
             source_bytes=source_bytes,
         )
     ]
+    # A blank line becomes an empty cell list — _classify_header_rows skips
+    # any row with fewer than 2 cells, so this preserves the original
+    # "if not line.strip(): continue" behavior while keeping physical row
+    # indices intact (skip_rows / header_row is a physical row index).
+    rows = [[] if not line.strip() else line.split(delimiter) for line in lines]
+    return _classify_header_rows(rows)
 
+
+def _classify_header_rows(rows: list[list[str]]) -> tuple[int, bool]:
+    """Locate the header row, or determine the sampled rows are headerless.
+
+    Shared by every tabular reader — CSV/TSV/pipe/semicolon (``_detect_header``
+    splits sample lines on the delimiter) and Excel (``_read_excel`` samples
+    worksheet cell values directly) — so the header/headerless decision is
+    identical across formats; only how a physical row becomes a list of raw
+    cell strings differs.
+
+    Decides between two outcomes:
+
+    - **Header present.** The first row that reads as labels (low numeric
+      ratio), does *not* itself parse as a transaction, *and* is followed by
+      a data row is the header. Returns ``(row_index, True)``. Scanning the
+      whole window means any number of data-like preamble rows above the
+      header — opening- and closing-balance summary lines such as
+      ``2026-01-01,100.00`` — are skipped rather than mistaken for the first
+      row of a headerless file. The follow-by-data check is what keeps a
+      footer/trailer that also reads as labels (``Downloaded On,2026-04-17``,
+      sitting *below* the data in a headerless file) from winning.
+    - **Headerless.** When no row qualifies as a header, the first row that
+      parses as a data record (date plus numeric amount) starts the data.
+      Returns ``(row_index, False)`` so the reader keeps that row. This is
+      the Wells Fargo case: ``Date,Amount,*,,Description`` with no header
+      line, where every row leads with a date (low numeric ratio) and so
+      none reads as a header.
+
+    Args:
+        rows: The first ~30 physical rows, each a list of raw (unstripped)
+            cell strings. A row's position in this list IS its physical
+            skip_rows/header-row index, so callers must not drop or reorder
+            rows before calling this — a blank or too-short row is skipped
+            internally (via the ``len(parts) < 2`` / empty-``non_empty``
+            checks below), not by the caller filtering it out beforehand.
+
+    Returns:
+        ``(skip_rows, has_header)`` — rows to skip before the header (or
+        before the first data row when headerless), and whether a header
+        row is present.
+    """
     # Two passes (see docstring): find a label row followed by data, else fall
     # back to the first data row as headerless.
     qualifying: list[tuple[int, list[str]]] = []
-    for i, line in enumerate(lines):
-        if not line.strip():
-            continue
-        parts = line.split(delimiter)
+    for i, parts in enumerate(rows):
         if len(parts) < 2:
             continue
         non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
@@ -473,6 +505,102 @@ def _remove_repeated_headers(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(pl.Series(mask))
 
 
+def _excel_sample_rows(
+    path: Path,
+    sheet_name: str,
+    *,
+    source_bytes: bytes | None = None,
+    n: int = 30,
+) -> list[list[str]]:
+    """Read the first ``n`` physical rows of an Excel sheet as cell strings.
+
+    Streams via ``read_only`` rather than loading the whole sheet, mirroring
+    the text readers' raw-sample cost. Cell values stand in for a delimiter
+    split's fields, so ``_classify_header_rows`` runs unmodified on the result.
+
+    Args:
+        path: File path.
+        sheet_name: Sheet to sample.
+        source_bytes: Already materialized workbook object to inspect.
+        n: Maximum number of rows to sample.
+
+    Returns:
+        Rows as lists of raw (unstripped) cell strings; ``None`` cells become
+        ``""``.
+    """
+    import openpyxl
+
+    wb = openpyxl.load_workbook(
+        path if source_bytes is None else BytesIO(source_bytes),
+        read_only=True,
+        data_only=True,
+    )
+    try:
+        ws = wb[sheet_name]
+        return [
+            [_excel_cell_text(v) for v in row]
+            for row in ws.iter_rows(min_row=1, max_row=n, values_only=True)
+        ]
+    finally:
+        wb.close()
+
+
+def _excel_cell_text(value: object) -> str:
+    """Render one sampled cell as the text the header classifier expects.
+
+    A native Excel date cell arrives as ``datetime``, whose ``str()`` carries a
+    time suffix (``2026-01-01 00:00:00``). ``_DATE_FORMATS`` is date-only, so
+    ``detect_date_format`` would reject every such cell, ``_looks_like_data_row``
+    would never fire, and ``_classify_header_rows`` would fall back to treating
+    row 0 as a header — re-creating the eaten-first-row bug for the shape a
+    spreadsheet-native export actually has. Normalize to ISO instead; only the
+    classification sample is affected, never the values polars reads.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, datetime.datetime):
+        return value.date().isoformat()
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    return str(value)
+
+
+def _excel_row_looks_like_data_at(
+    path: Path,
+    sheet_name: str,
+    row_index: int,
+    *,
+    source_bytes: bytes | None = None,
+) -> bool:
+    """Return True if the physical row at ``row_index`` parses as a transaction.
+
+    Defense-in-depth check on the row an explicit Excel ``skip_rows`` override
+    is about to consume as a header — mirrors ``_row_looks_like_data_at`` for
+    CSV. Samples the physical cell values via ``_excel_sample_rows`` (which
+    applies ``_excel_cell_text``) rather than reading back ``df.columns``:
+    fastexcel's post-read stringification of a native Excel date/datetime
+    header cell doesn't reliably come back in a form ``detect_date_format``
+    recognizes, the same failure ``_excel_cell_text`` exists to prevent for
+    the auto-detection sample.
+
+    Args:
+        path: File path.
+        sheet_name: Sheet to sample.
+        row_index: Zero-based physical row index to check.
+        source_bytes: Already materialized workbook object to inspect.
+
+    Returns:
+        True when the row at ``row_index`` parses as a transaction record.
+    """
+    rows = _excel_sample_rows(
+        path, sheet_name, source_bytes=source_bytes, n=row_index + 1
+    )
+    if row_index >= len(rows):
+        return False
+    non_empty = [c.strip().strip('"').strip("'") for c in rows[row_index] if c.strip()]
+    return _looks_like_data_row(non_empty) if non_empty else False
+
+
 def _read_excel(
     path: Path,
     info: FormatInfo,
@@ -480,15 +608,20 @@ def _read_excel(
     skip_rows: int | None = None,
     sheet: str | None = None,
     source_bytes: bytes | None = None,
+    has_header: bool | None = None,
 ) -> ReadResult:
     """Read an Excel (.xlsx) file.
+
+    Shares header/headerless detection with the CSV/TSV/pipe/semicolon path
+    via ``_classify_header_rows`` — see that function for the algorithm.
 
     Args:
         path: File path.
         info: Format detection result (unused for Excel, kept for API consistency).
-        skip_rows: Rows to skip after header detection.
+        skip_rows: Explicit header-row index (overrides auto-detection).
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
         source_bytes: Already materialized workbook object to parse.
+        has_header: Persisted header decision; None runs detection.
 
     Returns:
         ReadResult with the parsed DataFrame and sheet metadata.
@@ -515,29 +648,53 @@ def _read_excel(
         finally:
             wb.close()
 
+    # Explicit skip_rows implies a header at that row; auto-detection both
+    # locates the header and decides whether the sheet has one at all — same
+    # contract as _read_text.
+    explicit_skip = skip_rows is not None
+    resolved_has_header = True
+    if skip_rows is None:
+        sample_rows = _excel_sample_rows(path, sheet_used, source_bytes=source_bytes)
+        skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
+    elif has_header is not None:
+        resolved_has_header = has_header
+
+    # header_row is the sheet's own absolute row index, and skip_rows here
+    # means "skip this many rows, then start reading" — passing skip_rows as
+    # header_row (headered) or as skip_rows with header_row=None (headerless)
+    # lets fastexcel's own header-dedup and type-coercion handle the read,
+    # rather than re-implementing it against a manually sliced DataFrame.
+    read_options = (
+        {"header_row": skip_rows}
+        if resolved_has_header
+        else {"header_row": None, "skip_rows": skip_rows}
+    )
     df = pl.read_excel(
         path if source_bytes is None else BytesIO(source_bytes),
         sheet_name=sheet_used,
+        has_header=resolved_has_header,
         infer_schema_length=0,
+        read_options=read_options,
     )
 
-    actual_skip = 0
-    if skip_rows is not None and skip_rows > 0:
-        df = df.slice(skip_rows)
-        actual_skip = skip_rows
+    # header_row_looks_like_data is defense-in-depth for the EXPLICIT
+    # skip_rows path only (mirrors _read_text). Auto-detection
+    # (_classify_header_rows) never selects a data-looking row as the header,
+    # so this is always False there. Classifies the physical sampled row, not
+    # df.columns — fastexcel's post-read column naming for a native Excel
+    # date/datetime cell doesn't reliably parse as a date (see
+    # _excel_row_looks_like_data_at).
+    header_row_looks_like_data = False
+    if explicit_skip and resolved_has_header:
+        header_row_looks_like_data = _excel_row_looks_like_data_at(
+            path, sheet_used, skip_rows, source_bytes=source_bytes
+        )
 
-    # pl.read_excel always consumes the sheet's first row as the header (no
-    # headerless detection exists for Excel), so has_header stays True. That
-    # unconditional assumption is exactly the unguarded case
-    # header_row_looks_like_data protects: if the consumed header (the column
-    # names) itself parses as a transaction, a real row-0 record was eaten.
-    header_row_looks_like_data = _looks_like_data_row([
-        str(c) for c in df.columns if str(c).strip()
-    ])
     return ReadResult(
         df=df,
-        skip_rows=actual_skip,
+        skip_rows=skip_rows,
         sheet_used=sheet_used,
+        has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
     )
 

@@ -3096,9 +3096,10 @@ class ImportService:
                 # reason, and a consumed header row is what pinned the tier —
                 # so re-classify before raising, or every surface prescribes a
                 # mapping retry for the one cause no mapping answers. Reached
-                # by a headerless XLSX on first contact: pl.read_excel always
-                # eats row 0 as the header, so _read_excel sets the flag with
-                # no explicit skip_rows involved.
+                # by a saved/matched format whose explicit skip_rows lands on
+                # a row that itself parses as a transaction (CSV or Excel —
+                # both readers compute the flag only for an explicit skip_rows;
+                # auto-detection never picks a data-looking row as the header).
                 raise ImportConfirmationRequiredError(
                     dataclasses.replace(
                         outcome,
@@ -3193,16 +3194,13 @@ class ImportService:
         # metrics below, because a refusal must not first record a silent
         # format reuse.
         #
-        # Which branch actually reaches it depends on the reader. For CSV the
-        # flag is computed only for an explicit skip_rows, so it can only be
-        # true when a saved or built-in format supplied the skip — the
-        # `elif matched_format:` branch, which asserts confidence="high" and
-        # would otherwise commit. For XLSX `_read_excel` computes it
-        # unconditionally, because pl.read_excel always consumes row 0 as the
-        # header; a first-contact headerless sheet therefore sets it too, and
-        # resolve_or_confirm refuses that at `low` before reaching here — the
-        # re-classification above the raise is what routes it correctly. The
-        # reviewed-plan branch refuses earlier with the same reason.
+        # The flag is computed only for an explicit skip_rows on every reader
+        # (CSV and Excel alike — both share _classify_header_rows, and
+        # auto-detection never picks a data-looking row as the header), so it
+        # can only be true when a saved or built-in format supplied the skip —
+        # the `elif matched_format:` branch, which asserts confidence="high"
+        # and would otherwise commit. The reviewed-plan branch refuses earlier
+        # with the same reason.
         #
         # No caller input clears it: a mapping override cannot un-consume a
         # header row, and resolve_or_confirm honours an Override at every tier

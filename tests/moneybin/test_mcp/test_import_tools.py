@@ -2799,48 +2799,42 @@ async def test_mapping_override_to_single_amount_retires_the_split_sign_rule(
     assert confirmed.data.rows_loaded == 2
 
 
-async def test_mapping_override_does_not_clear_a_structural_red_flag(
+async def test_headerless_excel_previews_and_confirms_cleanly(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """An override answers a column question, not "the header row is a transaction".
+    """A headerless Excel file must preview and confirm like CSV/Parquet (MB-449).
 
-    ``resolve_tier`` forces ``low`` on a structural red flag so the confirm
-    gate engages, and that forced tier is the only carrier of the flag into
-    import_confirm. Promoting to ``high`` on any override would let a
-    one-field correction disarm the gate for a file whose first transaction
-    row was consumed as column names.
+    Excel used to always consume row 0 as the header with no headerless
+    detection, forcing a structural red flag on every first-contact preview
+    that no mapping override could clear (`import_preview` never threads an
+    explicit skip_rows, so auto-detection is the only path this MCP surface
+    ever takes). Excel now shares `_classify_header_rows` with CSV/Parquet:
+    the file previews with no red flag and both transactions load on confirm.
     """
     import openpyxl
 
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None
-    # No header row — pl.read_excel eats this real transaction as column names.
+    # No header row — every row is a real transaction (date + amount).
     ws.append(["2026-07-01", -4.50, "Coffee"])
     ws.append(["2026-07-02", 100.00, "Salary"])
     xlsx = tmp_path / "headerless.xlsx"
     wb.save(xlsx)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    baseline = await import_preview_coarse(file_path=str(xlsx))
-    assert baseline.data.header_row_looks_like_data is True
-    assert baseline.data.confidence == "low"
-
-    preview = await import_preview_coarse(
-        file_path=str(xlsx),
-        mapping={"description": "Coffee"},
-    )
-
-    assert preview.data.header_row_looks_like_data is True
-    assert preview.data.confidence == "low"
+    preview = await import_preview_coarse(file_path=str(xlsx))
+    assert preview.data.header_row_looks_like_data is False
 
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
-    assert confirmed.data.status == "confirmation_required"
+    assert confirmed.data.status == "complete"
+    assert confirmed.data.rows_loaded == 2
 
 
 async def test_import_preview_coarse_rejects_invalid_mapping_override(
@@ -3173,25 +3167,25 @@ async def test_unreadable_date_hint_names_a_recovery_that_can_change_the_format(
     assert "import_confirm(" not in hint, hint
 
 
-async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
+async def test_headerless_excel_hint_carries_no_structural_warning(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """A consumed header row is unfixable by mapping=, so don't recommend it.
+    """A correctly-detected headerless Excel sheet gets no red-flag hint (MB-449).
 
-    resolve_tier pins the tier to `low` on a structural red flag and no override
-    clears it, while no MCP or CLI surface exposes a skip-rows/no-header
-    correction — `skip_rows` is only ever written from detection. The generic
-    "send mapping={...}" hint therefore loops the agent through previews that
-    can never confirm; the only real recovery is at the source file.
+    Before this fix, a headerless Excel sheet always tripped the structural
+    red flag on first contact, and the hint it earned named no real recovery
+    ("fix the header row" for a file that already has none). Detection now
+    matches CSV/Parquet, so this same fixture previews with no red flag and
+    carries no such hint.
     """
     import openpyxl
 
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None
-    # No header row — pl.read_excel eats this real transaction as column names.
+    # No header row — every row is a real transaction (date + amount).
     ws.append(["2026-07-01", -4.50, "Coffee"])
     ws.append(["2026-07-02", 100.00, "Salary"])
     xlsx = tmp_path / "headerless.xlsx"
@@ -3200,11 +3194,9 @@ async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
 
     preview = await import_preview_coarse(file_path=str(xlsx))
 
-    assert preview.data.header_row_looks_like_data is True
+    assert preview.data.header_row_looks_like_data is False
     hint = " ".join(preview.actions)
-    assert "header row" in hint, hint
-    assert "mapping=" not in hint, hint
-    assert "import_confirm(" not in hint, hint
+    assert "header row" not in hint, hint
 
 
 async def test_account_confirmation_hint_never_names_the_raw_source_key(
