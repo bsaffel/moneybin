@@ -132,13 +132,14 @@ def resolve_curation_transaction_id(
 
     The single write-time resolution seam shared by every curation writer
     (notes, tags, splits, categories) — issue #538. Tries the id as given
-    first; if it names no row in ``core.fct_transactions`` OR
-    ``raw.manual_transactions`` (the same two-relation liveness test the
-    doctor's ``orphan_app_state`` invariant uses, so a manual transaction
+    first; if it names no row in ``core.fct_transactions`` OR an
+    un-aliased ``raw.manual_transactions`` row (so a manual transaction
     written moments before its ``refresh_run`` materializes it into
-    ``core.fct_transactions`` never misreads as unresolvable), walks the
-    append-only ``app.transaction_id_aliases`` forwarding chain to the
-    current canonical id.
+    ``core.fct_transactions`` never misreads as unresolvable, while one
+    that has since deduped away always falls through to the alias walk
+    below — see :func:`_live_transaction_ids`), walks the append-only
+    ``app.transaction_id_aliases`` forwarding chain to the current
+    canonical id.
 
     ``required=True`` (default) is for a write that CREATES or CHANGES state
     (add a note, add/set tags, add/set splits, set a category): it raises
@@ -199,9 +200,26 @@ def resolve_curation_transaction_id(
             f"Curation resolution skipped: liveness oracle absent for {transaction_id}"
         )
         return transaction_id
+    return _walk_alias_chain(db, transaction_id, required=required)
+
+
+def _walk_alias_chain(
+    db: Database,
+    transaction_id: str,
+    *,
+    required: bool,
+    reversed_edges: frozenset[str] | None = None,
+) -> str:
+    """The hop/cycle/reversed-edge walk, once the liveness oracle is known present.
+
+    Split out of :func:`resolve_curation_transaction_id` so
+    :func:`resolve_curation_transaction_ids`'s fallback loop can share one
+    ``reversed_edges`` set (and skip re-probing ``_relations_exist``, already
+    known true by the caller) across a whole batch of stale ids instead of
+    recomputing the heavier audit-log scan once per id.
+    """
     current = transaction_id
     seen: set[str] = set()
-    reversed_edges: frozenset[str] | None = None
     for _ in range(_MAX_ALIAS_RESOLUTION_HOPS):
         if current in seen:
             break  # defensive: the append-only map should never cycle
@@ -209,7 +227,8 @@ def resolve_curation_transaction_id(
         if _is_live_transaction(db, current):
             return current
         # Lazy and cached: only paid when a hop is actually needed, and only
-        # queried once even if this resolution takes several hops.
+        # queried once even if this resolution takes several hops — unless
+        # the caller already threaded one through for the whole batch.
         if reversed_edges is None:
             reversed_edges = _reversed_alias_edges(db)
         if current in reversed_edges:
@@ -232,12 +251,14 @@ def resolve_curation_transaction_ids(
     """Bulk counterpart to :func:`resolve_curation_transaction_id`.
 
     One chunked liveness query for the whole batch instead of one
-    ``execute()` per id — see that function's docstring for why a per-row
-    loop is disqualifying at batch scale. Falls back to the single-id walk
-    (alias hops included) only for ids the bulk check didn't find live,
+    ``execute()`` per id — see that function's docstring for why a per-row
+    loop is disqualifying at batch scale. Falls back to the alias-hop walk
+    (:func:`_walk_alias_chain`) only for ids the bulk check didn't find live,
     which should be rare: every current caller either sources ids fresh from
     ``core.fct_transactions`` (already live, resolved for free by the bulk
-    check) or is a caller-supplied id from an earlier preview.
+    check) or is a caller-supplied id from an earlier preview. The fallback
+    set shares one ``reversed_edges`` scan across every stale id in the
+    batch, rather than each one recomputing its own.
 
     Returns only the ids it could resolve, mapped to their live id — an id
     this cannot resolve is simply absent from the result rather than raising,
@@ -263,13 +284,20 @@ def resolve_curation_transaction_ids(
         return dict(zip(ids, ids, strict=True))
     live = _live_transaction_ids(db, ids)
     resolved: dict[str, str] = {tid: tid for tid in ids if tid in live}
-    for tid in ids:
-        if tid in resolved:
-            continue
-        try:
-            resolved[tid] = resolve_curation_transaction_id(db, tid)
-        except UserError:
-            continue  # left unresolved; caller decides what that means
+    fallback_ids = [tid for tid in ids if tid not in resolved]
+    if fallback_ids:
+        # Computed once for the whole fallback set, not once per id: the
+        # relations-exist probe is already known true (checked above), and
+        # this audit-log scan is the "far heavier than a liveness check"
+        # cost _walk_alias_chain otherwise pays lazily per single-id call.
+        reversed_edges = _reversed_alias_edges(db)
+        for tid in fallback_ids:
+            try:
+                resolved[tid] = _walk_alias_chain(
+                    db, tid, required=True, reversed_edges=reversed_edges
+                )
+            except UserError:
+                continue  # left unresolved; caller decides what that means
     return resolved
 
 
@@ -277,11 +305,32 @@ def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[s
     """Which of ``transaction_ids`` currently name a live transaction.
 
     The one definition of liveness (``core.fct_transactions`` OR
-    ``raw.manual_transactions``) shared by the single-id and bulk resolvers —
-    :func:`_is_live_transaction` delegates here rather than carrying a second
-    copy of the union, so a future change to what counts as "live" has one
-    place to land. Chunked so a large batch never builds a pathological
-    ``IN (...)`` list.
+    ``raw.manual_transactions`` minus deduped-away manuals) shared by the
+    single-id and bulk resolvers — :func:`_is_live_transaction` delegates
+    here rather than carrying a second copy of the union, so a future change
+    to what counts as "live" has one place to land. Chunked so a large batch
+    never builds a pathological ``IN (...)`` list.
+
+    The manual arm excludes a row with an outgoing alias edge
+    (``app.transaction_id_aliases.old_transaction_id``): once a manual
+    transaction dedupes into another source, ``core.fct_transactions`` drops
+    its predicted id but the immutable ``raw.manual_transactions`` row keeps
+    it forever (the same discriminator ``doctor_service.py``'s
+    ``_run_orphan_app_state`` names a "Known limitation" for its read-only
+    audit). Counting that stale id as live here — the write-time gate for
+    :func:`resolve_curation_transaction_id` — would return it unchanged
+    before the alias table is ever consulted, reproducing issue #538 for
+    every manual transaction that ever gets deduped. A manual row with no
+    alias yet (freshly created, before ``refresh_run`` materializes it into
+    ``core.fct_transactions``) has no edge to exclude, so that legitimate
+    case is untouched.
+
+    Deliberately not added to the ``_relations_exist`` probe below:
+    ``app.transaction_id_aliases`` is created at DB init (a plain
+    ``app.*`` schema table, unlike the transform-produced fact view and
+    manual-transactions table), so it exists whenever this query runs at
+    all — the probe only needs to guard the two relations that a first load
+    genuinely precedes.
     """
     ids = list(transaction_ids)
     if not ids:
@@ -295,8 +344,12 @@ def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[s
             SELECT transaction_id FROM {FCT_TRANSACTIONS.full_name}
              WHERE transaction_id IN ({placeholders})
             UNION
-            SELECT transaction_id FROM {MANUAL_TRANSACTIONS.full_name}
-             WHERE transaction_id IN ({placeholders})
+            SELECT m.transaction_id FROM {MANUAL_TRANSACTIONS.full_name} AS m
+             WHERE m.transaction_id IN ({placeholders})
+               AND NOT EXISTS (
+                 SELECT 1 FROM {TRANSACTION_ID_ALIASES.full_name} AS a
+                 WHERE a.old_transaction_id = m.transaction_id
+               )
             """,  # noqa: S608  # TableRef + parameterized IN-list placeholders
             [*chunk, *chunk],
         ).fetchall()
@@ -309,9 +362,10 @@ def _is_live_transaction(db: Database, transaction_id: str) -> bool:
 
     Single-id convenience wrapper over :func:`_live_transaction_ids` — see
     its docstring for the liveness definition (``core.fct_transactions`` OR
-    ``raw.manual_transactions``, the same pair ``_run_orphan_app_state``
-    unions, so a manual entry's predicted id resolves as live in the window
-    before the next ``refresh_run`` materializes it into the fact view).
+    an un-aliased ``raw.manual_transactions`` row, so a manual entry's
+    predicted id resolves as live in the window before the next
+    ``refresh_run`` materializes it into the fact view, but not once it has
+    deduped away).
     """
     return transaction_id in _live_transaction_ids(db, [transaction_id])
 
