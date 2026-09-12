@@ -169,7 +169,7 @@ No changes to core's dedup logic — cross-source dedup between Plaid and OFX/CS
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__transactions.sql` | Staging view |
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__balances.sql` | Staging view |
 | `tests/moneybin/test_extractors/test_plaid_extractor.py` | Unit tests for PlaidExtractor |
-| `tests/test_stg_plaid.py` | SQL tests for staging views |
+| `tests/moneybin/test_stg_plaid.py` | SQL tests for staging views |
 | `tests/moneybin/test_extractors/fixtures/plaid_sync_response.yaml` | Golden-file test fixture |
 
 ### Files to modify
@@ -311,7 +311,7 @@ See `sync-overview.md` testing strategy. These tests are marked `@pytest.mark.in
 
 - Server configured with `PLAID_ENV=sandbox`, sandbox `client_id` and `secret` (free, separate from production).
 - Sandbox test credentials: `user_good` / `pass_good` (Plaid-documented constants, not secrets).
-- Golden-file payloads captured from sandbox responses and stored in `tests/fixtures/plaid_sync_response.json` for offline unit tests.
+- Golden-file payloads captured from sandbox responses and stored in `tests/moneybin/test_extractors/fixtures/plaid_sync_response.yaml` for offline unit tests.
 - Sandbox supports error simulation: `user_bad` triggers login failures, specific metadata forces `ITEM_LOGIN_REQUIRED`, etc.
 
 ---

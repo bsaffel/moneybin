@@ -553,7 +553,12 @@ Each layer has a clear owner and responsibility:
 
 ### Provider contract
 
-Adding a new provider requires these artifacts. Nothing else changes — the framework, CLI, MCP tools, and error handling work for all providers automatically.
+These artifacts are necessary for a new provider, but they are not a complete
+plug-in contract. Today `SyncClient.get_data()` validates the Plaid-shaped
+`SyncDataResponse`, and the CLI/MCP service builders instantiate
+`PlaidExtractor`. Provider #2 therefore also requires the unresolved response
+model and extractor-dispatch decision described in
+[Cross-provider response shape](#cross-provider-response-shape-open-design-question).
 
 **1. Raw table DDL** — `src/moneybin/extractors/{provider}/schema/raw_{provider}_*.sql`
 
@@ -576,11 +581,10 @@ Normalize column names and types to be core-compatible. Apply sign convention fl
 
 Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_accounts` CTE in `dim_accounts.sql`, etc. Set `source_type = '{provider}'`.
 
-**What providers do NOT need to touch:**
+**What a provider implementation does NOT duplicate:**
 
-- `SyncClient` — provider-agnostic, speaks server API only
-- CLI commands — `sync pull`, `sync link`, etc. work for all providers
-- MCP tools — same tools, provider-unaware
+After its response model and dispatch are designed, it should not duplicate the
+shared CLI/MCP workflow, connection health state, or transport encryption.
 - Connection health — server-owned; providers do not add local connection state
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer
 
@@ -733,7 +737,11 @@ Phase 1 of this spec maps to **M1G — Plaid Transactions sync** in [`docs/roadm
 | SimpleFIN | `sync-simplefin.md` | Planned | Alternative aggregator used by Actual Budget. Lower coverage but no per-institution fees. |
 | MX | `sync-mx.md` | Planned | Enterprise-grade aggregator. Potential alternative to Plaid for hosted tier. |
 
-Adding a provider = writing a child spec + implementing the four artifacts from the [provider contract](#provider-contract). The framework, CLI, MCP tools, encryption, error handling, and schedule management are shared.
+Adding a provider requires a child spec, the four artifacts from the
+[provider contract](#provider-contract), and the provider-two response-model
+and extractor-dispatch decision. The workflow, connection health, transport
+encryption, error handling, and schedule-management concepts remain shared;
+their current Plaid-only wiring does not yet dispatch another provider.
 
 ---
 
@@ -771,7 +779,9 @@ Not designed here. Architectural constraints noted so the current design does no
 
 - **Time-to-first-sync.** A user goes from `moneybin sync login` to seeing bank transactions in `core.fct_transactions` in under 5 minutes. The flow is: login (30s) → link (2 min, mostly bank UI) → pull (30s) → done.
 - **Incremental reliability.** Nightly scheduled syncs complete without intervention for 30+ consecutive days. Failures produce actionable error messages, not silent gaps in data.
-- **Provider-agnostic framework.** Adding a second provider (SimpleFIN or MX) requires only a child spec and the four provider contract artifacts — no framework changes.
+- **Provider expansion boundary.** A second provider (SimpleFIN or MX) needs a
+  child spec, the provider artifacts, and the unresolved response-model and
+  extractor-dispatch decision; it is not yet a no-framework-change extension.
 - **Encryption readiness.** When the server implements Phase 5, the client activates E2E encryption with a key generation step and zero changes to the loading pipeline.
 - **No plaintext leakage.** Sync payloads are never written to disk in plaintext. In v1, they exist only in process memory during load. In v2, they're decrypted in memory only. The `SanitizedLogFormatter` prevents PII from appearing in logs.
 
