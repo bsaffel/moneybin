@@ -23,15 +23,16 @@ def _insert_provider(
     to_currency: str,
     rate_date: str,
     rate: str,
+    source_type: str = "frankfurter",
     loaded_at: str = "2026-01-05 09:00:00",
 ) -> None:
     db.execute(
         """
         INSERT INTO raw.exchange_rates
             (from_currency, to_currency, rate_date, rate, source_type, loaded_at)
-        VALUES (?, ?, ?::DATE, ?, 'frankfurter', ?::TIMESTAMP)
+        VALUES (?, ?, ?::DATE, ?, ?, ?::TIMESTAMP)
         """,  # test fixture, not executing user SQL
-        [from_currency, to_currency, rate_date, rate, loaded_at],
+        [from_currency, to_currency, rate_date, rate, source_type, loaded_at],
     )
 
 
@@ -116,6 +117,29 @@ def fct_exchange_rates_daily_db(
         to_currency="CCC",
         rate_date="2026-01-08",
         rate="2.0000",
+    )
+
+    # Two providers on the same pair/date: freshest loaded_at wins. Mirrors
+    # test_two_providers_on_one_day_resolve_by_freshest_write in
+    # test_fct_exchange_rates.py -- provider_obs re-implements that tie-break
+    # independently (own header comment says so) and needs its own pin.
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="EEE",
+        rate_date="2026-01-05",
+        rate="3.0000",
+        source_type="frankfurter",
+        loaded_at="2026-01-05 09:00:00",
+    )
+    _insert_provider(
+        db,
+        from_currency="USD",
+        to_currency="EEE",
+        rate_date="2026-01-05",
+        rate="3.1000",
+        source_type="exchangerate_host",
+        loaded_at="2026-01-05 10:00:00",
     )
 
     # Identity rows: an account denominated in a currency the provider never
@@ -248,6 +272,29 @@ def test_identity_rows_span_the_balance_spine_domain(
         # An identity price is definitional, not sourced from a named feed.
         assert r[4] is None
         assert r[5] == 0
+
+
+@pytest.mark.slow
+def test_two_providers_on_one_day_resolve_by_freshest_write(
+    fct_exchange_rates_daily_db: Database,
+) -> None:
+    """provider_obs's own tie-break, independent of core.fct_exchange_rates's.
+
+    A regression here would not just pick the wrong rate -- it would let two
+    provider rows for one (from_currency, to_currency, rate_date) survive
+    into provider_filled's join, emitting two rows for one
+    (from_currency, to_currency, effective_date) grain key. test_grain_is_unique
+    below exists to catch exactly that, but only if a fixture ever reaches the
+    colliding-provider branch.
+    """
+    row = fct_exchange_rates_daily_db.execute(
+        "SELECT rate, rate_source, rate_vendor FROM core.fct_exchange_rates_daily "
+        "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-05'"
+    ).fetchone()
+    assert row is not None
+    assert float(row[0]) == pytest.approx(3.1000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert row[1] == "provider"
+    assert row[2] == "exchangerate_host"
 
 
 @pytest.mark.slow

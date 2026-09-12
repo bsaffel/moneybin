@@ -893,8 +893,8 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("core", "fct_exchange_rates"): {
         "from_currency": DataClass.CURRENCY,
         "rate_vendor": DataClass.TXN_TYPE,
-        "rate": DataClass.CURRENCY,
         "rate_date": DataClass.TXN_DATE,
+        "rate": DataClass.CURRENCY,
         "rate_source": DataClass.TXN_TYPE,
         "to_currency": DataClass.CURRENCY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
