@@ -442,13 +442,13 @@ balance stays in 2022's net worth. Backfill sets `archived_at` to the archival
 audit-log date where one exists, and otherwise leaves it NULL, which preserves
 today's behavior for that account rather than guessing a cutoff.
 
-**The column alone preserves nothing.** `AccountService.settings_update` forces
-`include_in_net_worth=False` in the same write as `archived=True`
+**The column alone would have preserved nothing.** `AccountService.settings_update`
+used to force `include_in_net_worth=False` in the same write as `archived=True`
 (`src/moneybin/services/account_service.py:714-718`), and `archived=False`
-deliberately does not restore it. That flag carries no date, so every historical
-row of an archived account still fails the `include_in_net_worth` half of the
-eligibility filter and the history this column exists to preserve is excluded
-anyway. Adding the date predicate on top of the cascade is inert.
+deliberately did not restore it. That flag carried no date, so every historical
+row of an archived account still failed the `include_in_net_worth` half of the
+eligibility filter, and the history this column exists to preserve was excluded
+anyway. Adding the date predicate on top of that cascade would have been inert.
 
 The cascade is also redundant with the filter it defends. `reports.net_worth`
 already reads `a.include_in_net_worth AND NOT a.archived`

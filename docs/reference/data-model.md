@@ -148,7 +148,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `currency_code` | VARCHAR | ISO-4217. User override, else the currency the account's own source reported; `NULL` when nobody stated one — there is no `'USD'` default. See "Currency handling" above. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
 | `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
-| `include_in_net_worth` | BOOLEAN | Independent toggle; archiving forces FALSE. |
+| `include_in_net_worth` | BOOLEAN | Independent toggle, not forced by archiving. |
 
 Logical grain key: `account_id`.
 
