@@ -198,15 +198,15 @@ def plan_account_lot_selections(
     plan: dict[str, list[tuple[str, Decimal]]] = {}
     for row in rows:
         disposal, lot_id = str(row[0]), str(row[1])
-        # A missing disposal or unresolved live route cannot prove unrelatedness.
-        if row[3] is None or any(
+        # A resolved live disposal can prove scope before Core catches up.
+        if (row[3] is None and disposal not in current_manual) or any(
             key in current_manual and current_manual[key][0] is None
             for key in (disposal, str(row[10]))
         ):
             raise _refuse()
         if disposal not in checked:
             continue
-        if row[6] is None:
+        if row[3] is None or row[6] is None:
             raise _refuse()
         if (
             disposal in current_manual and current_manual[disposal] != (row[3], row[4])

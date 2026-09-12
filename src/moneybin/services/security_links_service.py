@@ -906,20 +906,18 @@ class SecurityLinksService:
             disposal_id = str(row[0])
             lot_id, quantity = str(row[1]), Decimal(row[2])
             lot_security = row[3]
-            # Unknown disposal identity remains ambiguous even with an unrelated lot.
+            # A resolved live disposal can prove scope before Core catches up.
             if (
-                row[8] is None
-                or row[7] is None
-                or any(
-                    key in live_manual and live_manual[key] is None
-                    for key in (disposal_id, row[6])
-                )
+                (row[8] is None or row[7] is None) and disposal_id not in live_manual
+            ) or any(
+                key in live_manual and live_manual[key] is None
+                for key in (disposal_id, row[6])
             ):
                 unremappable += 1
                 continue
             if disposal_id not in checked_disposals:
                 continue
-            if lot_security is None:
+            if row[8] is None or row[7] is None or lot_security is None:
                 unremappable += 1
                 continue
             if (disposal_id in live_manual and live_manual[disposal_id] != row[7]) or (
