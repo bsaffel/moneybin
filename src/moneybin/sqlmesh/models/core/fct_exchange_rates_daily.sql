@@ -46,17 +46,17 @@
    observation per (from_currency, to_currency, rate_date) ever reaches the
    densification below.
 
-   PROVIDER CARRIES FORWARD ALONGSIDE RATE AND PUBLISHED_DATE. A day carrying
+   RATE_VENDOR CARRIES FORWARD ALONGSIDE RATE AND PUBLISHED_DATE. A day carrying
    from an earlier observation names the same named feed that priced it —
    the forward-fill is one fact (a provider's quote persisting across
    non-publication days), not three independent ones, so the three columns
    move together through the same window function. See
-   core.fct_exchange_rates for why rate_source/provider is two columns
+   core.fct_exchange_rates for why rate_source/rate_vendor is two columns
    rather than one: the split is shared across all three rate models so a
    caller reads one vocabulary regardless of which one it joins.
 
    IDENTITY ROWS. For every currency appearing in core.dim_accounts, an X → X
-   row at 1.0 with rate_source = 'identity', provider = NULL (an identity
+   row at 1.0 with rate_source = 'identity', rate_vendor = NULL (an identity
    price is definitional, not sourced from a feed), and
    days_since_published = 0, spanning the date domain of
    core.fct_balances_daily (its global MIN/MAX(balance_date), not scoped per

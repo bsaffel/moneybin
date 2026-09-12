@@ -38,11 +38,11 @@
       the controlling invariant when that is ambiguous, so an uncovered gap
       between two standalone overrides stays unpriced rather than guessed.
 
-   Every row an override wins reads rate_source = 'override' and provider =
+   Every row an override wins reads rate_source = 'override' and rate_vendor =
    NULL — an override is user-authored, not sourced from a named feed, and a
    row an override does NOT win carries whatever core.fct_exchange_rates_daily
    already resolved (a named feed for 'provider', NULL for 'identity'). See
-   core.fct_exchange_rates for why rate_source/provider is two columns
+   core.fct_exchange_rates for why rate_source/rate_vendor is two columns
    rather than one, shared across all three rate models.
 
    The split exists because the two halves have opposite freshness

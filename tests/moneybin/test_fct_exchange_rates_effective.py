@@ -175,6 +175,36 @@ def test_an_override_on_the_friday_carries_to_the_weekend(db: Database) -> None:
 
 
 @pytest.mark.slow
+def test_a_direct_override_wins_over_one_carried_from_the_prior_day(
+    db: Database,
+) -> None:
+    """The two override arms can both match one row; the direct one wins.
+
+    Correcting Friday's quote reaches Saturday only through carry-forward
+    (rule 2, the `op` join on published_date). A second, different override
+    filed directly on that Saturday (rule 1, the `oe` join on effective_date)
+    must win over it — the documented precedence the CASE logic exists for.
+    """
+    _insert_override(
+        db, from_currency="USD", to_currency="EEE", rate_date="2026-01-09", rate="0.850"
+    )
+    _insert_override(
+        db, from_currency="USD", to_currency="EEE", rate_date="2026-01-10", rate="0.950"
+    )
+
+    row = db.execute(
+        "SELECT rate, published_date, days_since_published "
+        "FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'EEE' AND effective_date = '2026-01-10'"
+    ).fetchone()
+    assert row is not None
+    # The direct Saturday override wins, not the Friday override it carries from.
+    assert float(row[0]) == pytest.approx(0.950)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert str(row[1]) == "2026-01-10"
+    assert row[2] == 0
+
+
+@pytest.mark.slow
 def test_an_override_before_an_interior_gap_changes_every_carried_day(
     db: Database,
 ) -> None:

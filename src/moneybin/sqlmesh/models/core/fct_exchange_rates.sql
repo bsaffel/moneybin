@@ -13,7 +13,7 @@
    caller joining any of the three reads the same two names the same way.
    rate_source is the closed vocabulary ('provider' / 'override'; 'identity'
    only appears on the two downstream models, never here) that every
-   consumer branches on. provider carries the specific name behind a
+   consumer branches on. rate_vendor carries the specific name behind a
    'provider' row (raw.exchange_rates.source_type, e.g. 'frankfurter') and is
    NULL whenever rate_source is not 'provider' — an override is user-authored,
    not sourced from a named feed. Splitting the two is what lets one column
