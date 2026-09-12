@@ -52,15 +52,8 @@ def _make_settings_mock_for_hint(db_path: Path, mocker: Any) -> MagicMock:
 class TestDuckDBCLIInitialization:
     """Tests for DuckDB CLI encryption setup."""
 
-    def test_init_script_uses_duckdb_environment_lookup(
-        self, mocker: Any, tmp_path: Path
-    ) -> None:
+    def test_init_script_uses_duckdb_environment_lookup(self, tmp_path: Path) -> None:
         """The init script must not persist the encryption key it uses."""
-        synthetic_key = "synthetic-key-only-for-this-test"
-        mock_store = MagicMock()
-        mock_store.get_key.return_value = synthetic_key
-        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
-
         script_path = db_commands._create_init_script(  # pyright: ignore[reportPrivateUsage]  # unit test covers init script content
             tmp_path / "test.duckdb"
         )
@@ -70,8 +63,9 @@ class TestDuckDBCLIInitialization:
             script_path.unlink(missing_ok=True)
 
         assert "getenv('MONEYBIN_DATABASE__ENCRYPTION_KEY')" in script
-        assert synthetic_key not in script
+        assert "ENCRYPTION_KEY '" not in script
 
+    @pytest.mark.integration
     def test_duckdb_cli_supports_environment_lookup(self) -> None:
         """The bundled CLI, rather than the Python engine, evaluates ``getenv``."""
         duckdb_path = shutil.which("duckdb")
