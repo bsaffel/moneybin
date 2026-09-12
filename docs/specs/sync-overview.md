@@ -124,7 +124,7 @@ sequenceDiagram
 - Client calls `POST /sync/link/initiate` with `provider` and optional `provider_item_id` / `return_to`, receiving `session_id`, `link_url`, `link_type`, and `expiration`.
 - The client presents `link_url`; the server owns the provider interaction.
 - Client reads `GET /sync/link/status?session_id=...`, which returns `pending`, `linked`, or `failed` plus the session expiration. A linked response carries `provider_item_id` and may carry `institution_name`; a failed response carries `error`.
-- Text-mode CLI may wait for a terminal status. MCP returns the session and later checks it with `sync_link_status(session_id=...)`; JSON CLI uses `moneybin sync link-status` after the user completes the browser flow.
+- Text-mode CLI may wait for a terminal status. MCP returns the session and later checks it with `sync_status(session_id=...)`; JSON CLI uses `moneybin sync link-status` after the user completes the browser flow.
 
 ### Phase 3: Pull
 

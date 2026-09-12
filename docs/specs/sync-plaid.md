@@ -65,7 +65,7 @@ surface. The response is a `LinkInitiateResponse` with `session_id`,
 `institution_name`, while a failed response carries `error`. Text-mode CLI may
 wait through `SyncClient.poll_link_status()`. MCP and JSON CLI flows are
 event-driven: they return the session immediately, then use a later single-shot
-`sync_link_status(session_id=...)` / `moneybin sync link-status` call.
+`sync_status(session_id=...)` / `moneybin sync link-status` call.
 
 For headless environments, `--no-browser` prints `link_url` for the user to
 open on another device. A re-authentication selects the affected connection and
@@ -87,9 +87,11 @@ The three tables preserve Plaid's native values and pair their source-native
 key with required `source_origin` for connection-scoped deduplication. An
 account's `account_id` is the source-native key and can change on relink;
 `persistent_account_id`, when Plaid provides it, is the cross-relink identity
-reference. Transaction rows retain source-provided conversion legs
-(`to_amount`, `to_currency`) when present. Balance rows retain both the gross
-current balance and `margin_loan_amount`, which the core balance model nets.
+reference. The transaction DDL reserves `to_amount` and `to_currency`, but the
+current `SyncTransaction` model and extractor schema do not populate them, so
+the fields remain `NULL` until source conversion-leg support is implemented.
+Balance rows retain both the gross current balance and `margin_loan_amount`,
+which the core balance model nets.
 
 ### Client-side metadata generation
 

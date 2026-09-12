@@ -549,7 +549,7 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 | `docs/specs/sync-overview.md` | `sync connect` → `sync link` throughout (CLI table, MCP table, sequence diagrams, error messages, examples). Sync connection health remains server-owned through `GET /institutions`. |
 | `docs/specs/sync-plaid.md` | Same rename pass for plaid-specific copy and error-message text |
 | `src/moneybin/cli/sync.py` (or equivalent) | Rename Typer command `sync connect` → `sync link`. Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning routed through `logging.warning`. |
-| `src/moneybin/mcp/tools/sync.py` (or equivalent) | Expose link-session status through `sync_link_status(session_id=...)`. |
+| `src/moneybin/mcp/tools/sync.py` (or equivalent) | Expose link-session status through `sync_status(session_id=...)`. |
 | `src/moneybin/services/sync_service.py` (or equivalent) | Rename `SyncService.connect()` → `SyncService.link()` and any internal callers |
 | `tests/moneybin/test_cli/test_sync.py` | Update test invocations |
 | `tests/moneybin/test_mcp/test_sync.py` | Update tool fixtures |
