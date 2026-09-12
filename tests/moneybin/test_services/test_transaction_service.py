@@ -2041,6 +2041,45 @@ class TestCurationTransactionIdResolution:
         )
 
     @pytest.mark.unit
+    def test_remove_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_tags("T1", ["roadtrip"], actor="test")
+        removed = service.remove_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert removed == ["roadtrip"]
+        assert service.list_tags("T1") == []
+
+    @pytest.mark.unit
+    def test_set_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.set_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert result == ["roadtrip"]
+        assert service.list_tags("T1") == ["roadtrip"]
+
+    @pytest.mark.unit
+    def test_clear_splits_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), note="half", actor="test")
+        service.clear_splits("T1_OLD", actor="test")
+        assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_set_splits_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.set_splits(
+            "T1_OLD", [{"amount": Decimal("-50.00")}], actor="test"
+        )
+        assert [split.transaction_id for split in result] == ["T1"]
+        assert [split.transaction_id for split in service.list_splits("T1")] == ["T1"]
+
+    @pytest.mark.unit
     def test_add_note_against_unresolvable_id_raises_user_error(
         self, transaction_db: Database
     ) -> None:
@@ -2058,3 +2097,92 @@ class TestCurationTransactionIdResolution:
             "SELECT COUNT(*) FROM app.transaction_notes"
         ).fetchone()
         assert orphan_count == (0,)
+
+    @pytest.mark.unit
+    def test_remove_tags_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """Previously an idempotent no-op (DN2); now refused (issue #538).
+
+        An unknown id names no row to remove a tag from either way, but
+        silently reporting "nothing removed" hid a caller's typo the same
+        way a superseded id would have hidden a landed-on-a-dead-row write.
+        """
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.remove_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_clear_splits_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """Previously an idempotent no-op (DN2); now refused (issue #538)."""
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.clear_splits("NEVER_EXISTED", actor="test")
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    # -- apply_annotations (transactions_annotate) shares the same seam ------
+    #
+    # Coverage that the coarse batch pipeline behind the `transactions_annotate`
+    # MCP tool resolves a superseded id exactly like the granular writers above
+    # — the seam previously covered only add_note/add_tags/add_split/set_category
+    # via their own direct methods, leaving the batch path unresolved.
+
+    @pytest.mark.unit
+    def test_apply_annotations_note_add_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id="T1_OLD", text="resolved")],
+            actor="mcp",
+            operation_id="op_note_superseded",
+        )
+        notes = service.list_notes("T1")
+        assert [note.text for note in notes] == ["resolved"]
+        assert result.outcomes[0].target_ids == (notes[0].note_id,)
+        assert service.list_notes("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_tags_set_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.apply_annotations(
+            [TagsSet(kind="tags_set", transaction_id="T1_OLD", tags=["roadtrip"])],
+            actor="mcp",
+            operation_id="op_tags_superseded",
+        )
+        assert service.list_tags("T1") == ["roadtrip"]
+        assert service.list_tags("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_splits_set_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), actor="test")
+        service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="T1_OLD", splits=[])],
+            actor="mcp",
+            operation_id="op_splits_superseded",
+        )
+        assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_binding_names_the_resolved_id(
+        self, superseded_db: Database
+    ) -> None:
+        """The confirmation binding names the live id, never the caller's dead one.
+
+        A superseded id is visible in no view, so binding a confirmation on it
+        (instead of the live transaction the write will actually land on)
+        would confirm a target the reader cannot look up.
+        """
+        service = TransactionService(superseded_db)
+        plan = service.preview_annotations([
+            NoteAdd(kind="note_add", transaction_id="T1_OLD", text="x")
+        ])
+        assert plan.items[0].target_ids == ("T1",)

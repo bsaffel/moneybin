@@ -1082,6 +1082,59 @@ def test_categorize_items_returns_did_you_mean_on_invalid_category(
     assert "FOOD" in detail["reason"]
 
 
+def test_categorize_items_against_superseded_id_resolves_to_live_transaction(
+    real_db: Database,
+) -> None:
+    """A superseded id supplied by a caller from an earlier preview.
+
+    The guarded write behind ``transactions_categorize_commit`` shares the
+    curation resolution seam (issue #538) — the id must land the category on
+    the live transaction, not the dead one ``upsert_guarded`` would otherwise
+    insert under with no FK to catch it.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-superseded", category="Food & Drink")
+    ])
+    assert result.applied == 1
+    row = real_db.execute(
+        "SELECT transaction_id FROM app.transaction_categories"
+    ).fetchone()
+    assert row == ("txn-live",)
+
+
+def test_categorize_items_against_unresolvable_id_is_a_per_item_error(
+    real_db: Database,
+) -> None:
+    """An unresolvable id fails just that item — the batch keeps going."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="never-existed", category="Food & Drink"),
+        CategorizationItem(transaction_id="ts1", category="Food & Drink"),
+    ])
+    assert result.applied == 1
+    assert result.errors == 1
+    assert real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories "
+        "WHERE transaction_id = 'never-existed'"
+    ).fetchone() == (0,)
+
+
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
     """list_pending_proposals returns proposals recorded via AutoRuleService."""
     from moneybin.services.auto_rule_service import AutoRuleService

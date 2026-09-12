@@ -990,6 +990,103 @@ class TestSetCategoryResolvesSupersededId:
         assert count == (0,)
 
 
+class TestWriteCategorizationResolvesSupersededId:
+    """The guarded engine write shares the curation resolution seam too.
+
+    ``write_categorization``/``write_categorizations`` back the categorize-
+    commit workflow and the rule/merchant engine passes — a superseded id
+    supplied to either must land on the live transaction, not the dead one
+    (issue #538).
+    """
+
+    @staticmethod
+    def _seed_live_and_superseded(db: Database) -> None:
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date) "
+            "VALUES ('txn-live', -20, '2026-05-01')"
+        )
+        db.execute(
+            "INSERT INTO app.transaction_id_aliases "
+            "(old_transaction_id, new_transaction_id, created_at) "
+            "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+        )
+
+    @pytest.mark.unit
+    def test_write_categorization_against_superseded_id_resolves_to_live(
+        self, db: Database
+    ) -> None:
+        self._seed_live_and_superseded(db)
+        svc = CategorizationService(db)
+        outcome = svc.write_categorization(
+            transaction_id="txn-superseded",
+            category="Engine",
+            subcategory=None,
+            categorized_by="ai",
+        )
+        assert outcome.written is True
+        row = db.execute(
+            "SELECT transaction_id FROM app.transaction_categories"
+        ).fetchone()
+        assert row == ("txn-live",)
+
+    @pytest.mark.unit
+    def test_write_categorization_against_unresolvable_id_raises_user_error(
+        self, db: Database
+    ) -> None:
+        svc = CategorizationService(db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            svc.write_categorization(
+                transaction_id="never-existed",
+                category="Engine",
+                subcategory=None,
+                categorized_by="ai",
+            )
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_write_categorizations_batch_against_superseded_id_resolves_to_live(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        self._seed_live_and_superseded(db)
+        written = applier.write_categorizations([
+            {
+                "transaction_id": "txn-superseded",
+                "category": "Engine",
+                "subcategory": None,
+                "categorized_by": "rule",
+                "merchant_id": None,
+                "rule_id": None,
+                "confidence": 1.0,
+                "source_type": "internal",
+            }
+        ])
+        assert written == {"txn-live"}
+        row = db.execute(
+            "SELECT transaction_id FROM app.transaction_categories"
+        ).fetchone()
+        assert row == ("txn-live",)
+
+    @pytest.mark.unit
+    def test_write_categorizations_batch_against_unresolvable_id_raises_user_error(
+        self, db: Database, applier: MatchApplier
+    ) -> None:
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            applier.write_categorizations([
+                {
+                    "transaction_id": "never-existed",
+                    "category": "Engine",
+                    "subcategory": None,
+                    "categorized_by": "rule",
+                    "merchant_id": None,
+                    "rule_id": None,
+                    "confidence": 1.0,
+                    "source_type": "internal",
+                }
+            ])
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+
 class TestCreateRulesDualWrite:
     """Phase 1 dual-write: create_rules populates category_id on categorization_rules."""
 

@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import duckdb
 
 from moneybin.database import Database
+from moneybin.matching.aliasing import resolve_curation_transaction_ids
 from moneybin.metrics.registry import (
     CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS,
     CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED,
@@ -268,6 +269,15 @@ class CategorizationOrchestrator:
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]
+        # Bulk-resolved once for the whole batch (issue #538 perf follow-up):
+        # this is the categorize-commit workflow's caller-supplied ids, so
+        # Phase 4 below must route through the curation resolution seam, but
+        # a per-item resolve_curation_transaction_id() call inside that loop
+        # would turn a batch write into O(n) query round trips. An id absent
+        # here (bulk check found it not live, and the single-id alias walk
+        # still couldn't resolve it) is reported as a per-item error in
+        # Phase 4 rather than aborting the batch.
+        resolved_txn_ids = resolve_curation_transaction_ids(self._db, txn_ids)
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (
@@ -347,6 +357,25 @@ class CategorizationOrchestrator:
             txn_id = item.transaction_id
             category = item.category
             subcategory = item.subcategory
+            if txn_id not in resolved_txn_ids:
+                # Neither txn_id nor anything it forwards to names a live
+                # transaction (issue #538) — reported per-item, same as any
+                # other Phase 4 failure, rather than aborting the batch.
+                errors += 1
+                error_details.append({
+                    "transaction_id": txn_id,
+                    # Named specifically rather than reusing the generic
+                    # "check logs" reason below: the remedy differs. A stale
+                    # id is fixed by re-reading the preview that produced it,
+                    # not by retrying this call, and the caller can only tell
+                    # those apart if the reason says so.
+                    "reason": (
+                        "The transaction reference did not match a "
+                        "transaction; re-run the preview to get current ids."
+                    ),
+                })
+                continue
+            resolved_txn_id = resolved_txn_ids[txn_id]
             try:
                 # Resolve pre-existing merchant first (read-only) so the
                 # precedence-guarded write below can attach the matched
@@ -413,11 +442,12 @@ class CategorizationOrchestrator:
                     merchants_created += 1
 
                 outcome = self._applier.write_categorization(
-                    transaction_id=txn_id,
+                    transaction_id=resolved_txn_id,
                     category=category,
                     subcategory=subcategory,
                     categorized_by="ai",
                     merchant_id=merchant_id,
+                    resolve_transaction_id=False,
                 )
                 if not outcome.written:
                     # Higher-priority source already categorized this row;

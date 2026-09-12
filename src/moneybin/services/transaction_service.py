@@ -475,15 +475,27 @@ class TransactionService:
         return plan
 
     def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
-        """Resolve every batch target before writes begin."""
+        """Resolve every batch target before writes begin.
+
+        ``NoteAdd``/``TagsSet``/``SplitsSet`` resolve ``transaction_id`` through
+        the shared curation seam first, same as every granular writer
+        (``add_note``, ``set_tags``, ``set_splits``, ...) — otherwise a
+        superseded id passed through the coarse ``transactions_annotate``
+        batch bypasses the seam entirely and either lands state on a dead id
+        or is hard-refused where the granular path would have resolved it
+        (issue #538).
+        """
         if isinstance(request, NoteAdd):
             validate_note_text(request.text)
-            self._annotation_transaction_amount(request.transaction_id)
+            transaction_id = resolve_curation_transaction_id(
+                self._db, request.transaction_id
+            )
+            self._annotation_transaction_amount(transaction_id)
             return _PreparedAnnotation(
                 request=request,
-                target_ids=(request.transaction_id,),
+                target_ids=(transaction_id,),
                 changed=True,
-                state_digest=_state_digest({"transaction_id": request.transaction_id}),
+                state_digest=_state_digest({"transaction_id": transaction_id}),
             )
 
         if isinstance(request, (NoteEdit, NoteDelete)):
@@ -502,12 +514,15 @@ class TransactionService:
             )
 
         if isinstance(request, TagsSet):
-            mutation = self._prepare_tags_set(request.transaction_id, request.tags)
+            transaction_id = resolve_curation_transaction_id(
+                self._db, request.transaction_id
+            )
+            mutation = self._prepare_tags_set(transaction_id, request.tags)
             if request.tags or not mutation.to_remove:
-                self._annotation_transaction_amount(request.transaction_id)
+                self._annotation_transaction_amount(transaction_id)
             return _PreparedAnnotation(
                 request=request,
-                target_ids=(request.transaction_id,),
+                target_ids=(transaction_id,),
                 changed=mutation.changed,
                 destructive=mutation.destructive,
                 mutation=mutation,
@@ -518,18 +533,19 @@ class TransactionService:
             )
 
         if isinstance(request, SplitsSet):
-            transaction_amount = self._annotation_transaction_amount(
-                request.transaction_id
+            transaction_id = resolve_curation_transaction_id(
+                self._db, request.transaction_id
             )
+            transaction_amount = self._annotation_transaction_amount(transaction_id)
             mutation = self._prepare_splits_set(
-                request.transaction_id,
+                transaction_id,
                 request.splits,
                 expected_total=transaction_amount,
                 require_categories=True,
             )
             return _PreparedAnnotation(
                 request=request,
-                target_ids=(request.transaction_id,),
+                target_ids=(transaction_id,),
                 changed=mutation.changed,
                 destructive=mutation.destructive,
                 mutation=mutation,
@@ -652,8 +668,10 @@ class TransactionService:
         request = prepared.request
         if isinstance(request, NoteAdd):
             note_id = uuid.uuid4().hex[:12]
+            # target_ids[0] is the id resolve_curation_transaction_id resolved
+            # in _prepare_annotation, not necessarily request.transaction_id.
             self._notes_repo.add(
-                transaction_id=request.transaction_id,
+                transaction_id=prepared.target_ids[0],
                 note_id=note_id,
                 text=request.text,
                 actor=actor,
