@@ -173,7 +173,7 @@ Using profile: demo
 └────────────┴────────────┴──────────┘
 ```
 
-The rate is units of the second currency per one unit of the first, must be positive, and is written with an audit-log row. A correction is one rate per pair per date, not a per-transaction spread: two same-day conversions at different effective rates are one rate here, and the difference is realized FX gain or loss, which is [not reported yet](#what-is-not-built-yet). `fx delete AED EUR 2025-12-19` withdraws the correction and returns that date to provider pricing; it is the only way to withdraw one, since `set` can only change the number. The deletion is recorded like every other write: `moneybin system audit undo <operation_id>` restores the removed override, subject to the normal later-write guard.
+The rate is units of the second currency per one unit of the first, must be positive, and is written with an audit-log row. A correction is one rate per pair per date, not a per-transaction spread: two same-day conversions at different effective rates are one rate here, and the difference is realized FX gain or loss, which is [not reported yet](#what-is-not-built-yet). `fx delete AED EUR 2025-12-19` withdraws the correction; it is the only way to withdraw one, since `set` can only change the number. A provider rate reappears for that date only if the backfill already cached one before the override was set — deleting AED/EUR here leaves the date unpriced, because AED is not a pair Frankfurter publishes and the backfill stores nothing for an unsupported pair. Reports that need it fall back to per-currency sub-totals until another rate is recorded. The deletion is recorded like every other write: `moneybin system audit undo <operation_id>` restores the removed override, subject to the normal later-write guard.
 
 ## Read a report in one currency
 
@@ -211,7 +211,7 @@ The `data` array is cut after the first account row above; the four other accoun
 
 ### When a rate is missing
 
-A converting report needs a rate for every foreign row it returns. When one is missing the whole report falls back to per-currency sub-totals rather than converting the rows it can and leaving the rest, because a figure that mixes converted and unconverted rows is worse than no figure. The home-currency default falls back quietly, so a profile that has set one is not warned on every read it cannot price; ask for a currency explicitly and the reason is printed, and lands in `summary.degraded_reason` under `--output json`:
+A converting report needs a rate for every foreign row it fetches, not only the ones it returns: a capped read pulls one extra row past the cap to detect truncation, converts the whole fetched set first, then drops that extra row — so a missing rate on the discarded row alone still degrades the response. When any row's rate is missing, the whole report falls back to per-currency sub-totals rather than converting the rows it can and leaving the rest, because a figure that mixes converted and unconverted rows is worse than no figure. The home-currency default falls back quietly, so a profile that has set one is not warned on every read it cannot price; ask for a currency explicitly and the reason is printed, and lands in `summary.degraded_reason` under `--output json`:
 
 ```console
 $ uv run moneybin reports large-transactions --top 2 --display-currency EUR
