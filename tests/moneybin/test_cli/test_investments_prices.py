@@ -32,6 +32,11 @@ from moneybin.services.price_service import PullResult, UnpricedSecurity
 runner = CliRunner()
 
 _REFRESH_HINT = "moneybin refresh"
+# `_REFRESH_HINT` is a substring of this stale, pre-fix spelling, so a
+# positive `_REFRESH_HINT in output` assertion alone would stay green even
+# if the source regressed back to it. Every positive assertion below pairs
+# with `_STALE_REFRESH_HINT not in output` to actually catch that regression.
+_STALE_REFRESH_HINT = "moneybin refresh run"
 
 
 def _pull_result(
@@ -73,6 +78,7 @@ class TestPricesPullRefresh:
 
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
+        assert _STALE_REFRESH_HINT not in result.output
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_pull(_pull_result(rows_written=0, securities_priced=0))
@@ -142,6 +148,7 @@ class TestPricesPullRefresh:
         assert result.exit_code == 1
         assert "model VTI not found" in caplog.text
         assert _REFRESH_HINT in caplog.text
+        assert _STALE_REFRESH_HINT not in caplog.text
 
     @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
@@ -199,6 +206,7 @@ class TestPriceMarkRefresh:
 
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
+        assert _STALE_REFRESH_HINT not in result.output
 
     @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
@@ -258,6 +266,7 @@ class TestPriceMarkRefresh:
         assert result.exit_code == 1
         assert "model VTI not found" in caplog.text
         assert _REFRESH_HINT in caplog.text
+        assert _STALE_REFRESH_HINT not in caplog.text
 
     @patch("moneybin.orchestration.refresh.refresh")
     @patch("moneybin.cli.commands.investments.prices.get_database")
@@ -306,6 +315,7 @@ class TestPriceMarkRefresh:
 
         assert result.exit_code == 0
         assert _REFRESH_HINT in result.output
+        assert _STALE_REFRESH_HINT not in result.output
 
     @patch("moneybin.cli.commands.investments.prices.get_database")
     @_patched_resolve()
