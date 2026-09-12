@@ -1,0 +1,1 @@
+system doctor's unknown-currency and mixed-currency warnings, and the investments prices pull/set/delete hints, named commands that no longer exist (moneybin transform, moneybin refresh run). They now point at moneybin transform apply and moneybin profile set home_currency plus moneybin refresh.

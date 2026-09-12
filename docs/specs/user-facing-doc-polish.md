@@ -1,7 +1,21 @@
 # Feature: User-Facing Documentation Polish
 
 ## Status
-in-progress
+implemented
+
+> **Progress note (2026-09-11).** Phase 3 of the 2026-09 public docs pass
+> closed the remaining scope: `docs/guides/investments.md` and
+> `docs/guides/multi-currency.md` were written from captured demo
+> transcripts (family and international personas), three stale source
+> strings surfaced while writing them were fixed (`system doctor`'s
+> unknown-currency and mixed-currency advice, and the `investments prices`
+> command hints — all named a `moneybin refresh run` / `moneybin
+> transform` invocation that no longer exists), and the generated
+> `docs/reference/cli/investments.md` page was regenerated. With
+> `account-identifiers.md`, `data-pipeline.md`, `system-overview.md`, and
+> the storefront/guide rewrites landed in earlier phases, no scope from
+> [Information architecture (2026-09)](#information-architecture-2026-09)
+> remains open, so the spec moves to `implemented`.
 
 > **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M0D and M3B close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land.
 
