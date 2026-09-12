@@ -2862,6 +2862,13 @@ class ImportService:
                 else None,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
+                # Excel's date-column normalizer must not rewrite a column a
+                # caller-declared time-bearing format still relies on (see
+                # _normalize_excel_date_columns) — the declared format can
+                # come from this call's own --date-format/mapping override or
+                # from a saved TabularFormat replayed without a fresh one.
+                date_format_override=date_format_override
+                or (matched_format.date_format if matched_format else None),
             )
         else:
             from moneybin.extractors.tabular.format_detector import FormatInfo
@@ -2879,6 +2886,10 @@ class ImportService:
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
                 has_header=reviewed_plan.has_header,
+                # Same reasoning as the sibling branch above: a replayed
+                # preview can carry its own declared format even with no
+                # fresh override on this call.
+                date_format_override=date_format_override or reviewed_plan.date_format,
             )
         df = read_result.df
 

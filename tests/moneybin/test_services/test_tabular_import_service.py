@@ -771,6 +771,82 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
+    def test_time_bearing_date_format_override_still_imports_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A caller-declared time-bearing --date-format must not be defeated.
+
+        Before Excel's native-date normalization existed, "%Y-%m-%d %H:%M:%S"
+        was the only documented way to import this exact shape: fastexcel
+        renders a native Excel date cell as "2026-07-01 00:00:00", and no
+        _DATE_FORMATS entry is time-bearing. _normalize_excel_date_columns
+        now runs on every read and would truncate that same column to
+        "2026-07-01" before the override ever sees it, dropping the
+        override's parse rate to 0% and turning a previously-working import
+        into IMPORT_INVALID_DATE_FORMAT. A time-bearing override must skip
+        normalization for this read so it still reads the column shape it
+        names.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_time_override.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y-%m-%d %H:%M:%S",
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_bare_date_format_override_keeps_normalizing_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A bare (no time component) --date-format must not disable normalization.
+
+        Mirrors the sibling test above but proves the other direction: an
+        override with no time component is asking for bare dates, so
+        blanket-skipping normalization whenever ANY override is present
+        would throw away this PR's own fix for a native-date Excel column
+        (test_headered_xlsx_with_native_date_cells_imports_completely,
+        just with an explicit rather than detected date format).
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_bare_override.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y-%m-%d",
+        )
+
+        assert result.rows_loaded == 2
+
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
     ) -> None:

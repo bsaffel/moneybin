@@ -88,6 +88,7 @@ def read_file(
     no_row_limit: bool = False,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
+    date_format_override: str | None = None,
 ) -> ReadResult:
     """Read a file into a format-agnostic Polars DataFrame.
 
@@ -101,6 +102,8 @@ def read_file(
         no_row_limit: If True, skip row count limits.
         source_bytes: Already materialized source object to parse.
         has_header: Persisted header decision; None runs detection.
+        date_format_override: Caller-supplied strptime format. Excel-only
+            (see ``_normalize_excel_date_columns``); ignored for other formats.
 
     Returns:
         ReadResult with DataFrame and metadata.
@@ -125,6 +128,7 @@ def read_file(
             sheet=sheet,
             source_bytes=source_bytes,
             has_header=has_header,
+            date_format_override=date_format_override,
         )
     elif info.file_type == "parquet":
         result = _read_parquet(path, source_bytes=source_bytes)
@@ -557,7 +561,9 @@ def _excel_sample_rows(
 _EXCEL_MIDNIGHT_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) 00:00:00$")
 
 
-def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
+def _normalize_excel_date_columns(
+    df: pl.DataFrame, *, date_format_override: str | None = None
+) -> pl.DataFrame:
     """Collapse a native-date column's rendered text to its date.
 
     ``_excel_cell_text`` closes this gap for the header-classification
@@ -579,7 +585,21 @@ def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
     column that happens to hold one value shaped exactly like
     ``"2026-01-01 00:00:00"`` must not be silently truncated; only a column
     that is *entirely* that shape is treated as a native date column.
+
+    Skipped entirely when ``date_format_override`` declares a time component
+    (``%H``/``%M``/``%S``/``%I``/``%p``): an explicit format is the caller
+    declaring what the raw bytes look like — before this reader existed,
+    ``"%Y-%m-%d %H:%M:%S"`` was the only documented way to import this exact
+    native-date shape — so rewriting the column out from under a declared
+    format would turn a previously-working import into
+    ``IMPORT_INVALID_DATE_FORMAT``. An override with no time component is
+    asking for bare dates, so normalization still runs for it.
     """
+    if date_format_override is not None and any(
+        directive in date_format_override
+        for directive in ("%H", "%M", "%S", "%I", "%p")
+    ):
+        return df
     date_cols = [
         col
         for col in df.select(cs.string()).columns
@@ -657,6 +677,7 @@ def _read_excel(
     sheet: str | None = None,
     source_bytes: bytes | None = None,
     has_header: bool | None = None,
+    date_format_override: str | None = None,
 ) -> ReadResult:
     """Read an Excel (.xlsx) file.
 
@@ -671,6 +692,9 @@ def _read_excel(
         sheet: Sheet name to read. If None, picks the sheet with the most rows.
         source_bytes: Already materialized workbook object to parse.
         has_header: Persisted header decision; None runs detection.
+        date_format_override: Caller-supplied strptime format (CLI/MCP
+            ``--date-format`` or a saved ``TabularFormat.date_format``); see
+            ``_normalize_excel_date_columns`` for how it gates normalization.
 
     Returns:
         ReadResult with the parsed DataFrame and sheet metadata.
@@ -754,7 +778,7 @@ def _read_excel(
     )
     # Normalize the values actually loaded, not just the classification
     # sample — see _normalize_excel_date_columns.
-    df = _normalize_excel_date_columns(df)
+    df = _normalize_excel_date_columns(df, date_format_override=date_format_override)
 
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT
     # skip_rows path only (mirrors _read_text). Auto-detection
