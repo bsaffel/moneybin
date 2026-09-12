@@ -1812,6 +1812,11 @@ def test_active_governance_does_not_teach_legacy_registry_names() -> None:
         MCP_SERVER_GUIDE,
     )
     stale_terms = (
+        # Both spellings stay: the per-report tools were retired outright, so
+        # the pre-rename names are the ones a stale document is most likely to
+        # still teach, and the post-rename spellings never existed as tools.
+        "reports_spending",
+        "reports_cashflow",
         "reports_spending_trend",
         "reports_cash_flow",
         "reports_networth",
