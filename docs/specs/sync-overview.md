@@ -34,7 +34,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 ### What this spec defines (client-side)
 
 - The provider-agnostic interaction model (authenticate → connect → pull → decrypt → load → transform)
-- Client infrastructure: `SyncClient`, connection health tracking, provider loaders
+- Client infrastructure: `SyncClient`, connection health tracking, provider extractors
 - CLI namespace (`moneybin sync *`) and MCP tools
 - E2E encryption design with `EncryptionBackend` abstraction
 - Error handling and recovery patterns
@@ -104,7 +104,7 @@ sequenceDiagram
     CLI->>CLI: Decrypt with private key (v2) or parse directly (v1)
 
     Note over User,DB: Phase 5: Load & Transform
-    CLI->>DB: Provider loader → raw.{provider}_* tables
+    CLI->>DB: Provider extractor → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
     CLI->>Server: POST /sync/ack (best effort)
     CLI->>DB: sqlmesh run → prep → core
@@ -124,7 +124,7 @@ sequenceDiagram
 - Client calls `POST /sync/link/initiate` with `provider` and optional `provider_item_id` / `return_to`, receiving `session_id`, `link_url`, `link_type`, and `expiration`.
 - The client presents `link_url`; the server owns the provider interaction.
 - Client reads `GET /sync/link/status?session_id=...`, which returns `pending`, `linked`, or `failed` plus the session expiration. A linked response carries `provider_item_id` and may carry `institution_name`; a failed response carries `error`.
-- Text-mode CLI may wait for a terminal status. MCP returns the session and later checks it with `sync_status(session_id=...)`; JSON CLI uses `moneybin sync link-status` after the user completes the browser flow.
+- Text-mode CLI may wait for a terminal status. MCP returns the session and later checks it with `sync_link_status(session_id=...)`; JSON CLI uses `moneybin sync link-status` after the user completes the browser flow.
 
 ### Phase 3: Pull
 
@@ -138,15 +138,15 @@ sequenceDiagram
 Designed as a first-class part of the protocol. v1 ships without encryption; v2 activates when the server implements its Phase 5.
 
 - **v1 (current):** Server returns plain JSON over HTTPS. TLS protects data in transit. DuckDB encryption at rest protects data once loaded. Server has read access to plaintext financial data — an accepted and documented risk (see [E2E encryption design](#e2e-encryption-design) for mitigation).
-- **v2 (designed, implementation phased):** Server encrypts the sync payload to the client's registered public key. Client decrypts locally. The JSON shape inside the encrypted blob is identical to the unencrypted format — everything downstream (loaders, staging, core) is unchanged.
+- **v2 (designed, implementation phased):** Server encrypts the sync payload to the client's registered public key. Client decrypts locally. The JSON shape inside the encrypted blob is identical to the unencrypted format — everything downstream (extractors, staging, core) is unchanged.
 
 The client auto-negotiates: if the server returns `Content-Type: application/json`, parse directly. If the server returns `Content-Type: application/age`, decrypt first. No client-side configuration needed — a v2 client works against both v1 and v2 servers.
 
 ### Phase 5: Load & Transform
 
 - Client downloads JSON via `GET /sync/data`.
-- Provider-specific loader parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
-- Loader handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
+- Provider-specific extractor parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
+- Extractor handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
 - After the raw writes are durable, client calls `POST /sync/ack` before transforming. Ack is best-effort: a failure is logged without failing the pull, leaving the broker cursor unadvanced so the next pull re-delivers a loss-free, deduplicated payload.
 - Runs `sqlmesh run` to propagate through staging → core.
 - Connection health remains server-authoritative and is read through `GET /institutions`.
@@ -205,21 +205,21 @@ the status view and its actionable guidance. `moneybin sync status` and
 current requirement of this spec. A future local mirror would need its own
 contract before it can become an implementation plan.
 
-### Provider-specific loaders
+### Provider-specific extractors
 
-Each provider gets a loader class that owns the translation from server JSON to raw DuckDB tables:
+Each provider owns an extractor package that translates server JSON to raw DuckDB tables:
 
 | Responsibility | Where it lives |
 |---|---|
-| Raw table DDL | `src/moneybin/sql/schema/raw_{provider}_*.sql` |
-| JSON → raw table loading | `src/moneybin/loaders/{provider}_loader.py` |
-| Provider-specific semantics | Loader class (sign conventions, removed records, etc.) |
+| Raw table DDL | `src/moneybin/extractors/{provider}/schema/raw_{provider}_*.sql` |
+| JSON → raw table loading | `src/moneybin/extractors/{provider}/extractor.py` |
+| Provider-specific semantics | Extractor class (sign conventions, removed records, etc.) |
 | Staging views | `src/moneybin/sqlmesh/models/prep/stg_{provider}__*.sql` |
 | Core integration | New CTEs + `UNION ALL` in `src/moneybin/sqlmesh/models/core/` |
 
-The `SyncClient` doesn't know about raw tables or DuckDB. The loader doesn't know about HTTP. Clean separation — each component is testable independently.
+The `SyncClient` doesn't know about raw tables or DuckDB. The extractor doesn't know about HTTP. Clean separation — each component is testable independently.
 
-**Loading pattern:** Provider loaders use `Database.ingest_dataframe()` for batch inserts (Polars → Arrow → DuckDB, zero-copy) or DuckDB's `read_json()` for direct JSON ingestion. The choice is per-loader based on data shape. Both paths go through the encrypted `Database` connection.
+**Loading pattern:** Provider extractors validate the response, build typed Polars DataFrames, and write through `Database.ingest_dataframe()` (Polars → Arrow → DuckDB). All writes use the encrypted `Database` connection.
 
 ---
 
@@ -391,7 +391,7 @@ stateDiagram-v2
 2. **Storage.** Private key stored in OS keychain (`keyring`), same storage path as the DB encryption key (`privacy-data-protection.md`). Never written to disk in plaintext. If the user opts for passphrase-based storage, the private key is encrypted with an Argon2id-derived key from the passphrase — same pattern as DB passphrase mode (ADR-009).
 3. **Registration.** Client sends public key to server via `POST /auth/register-key`. Server stores it alongside the user record. The server uses this key to encrypt all sync payloads before returning them.
 4. **Encryption.** Server encrypts sync payloads to the client's registered public key before returning from `GET /sync/data`. Response body is an encrypted blob instead of raw JSON.
-5. **Decryption.** Client decrypts with its private key. The JSON inside is identical to the unencrypted format — loaders, staging views, and core models are all unchanged.
+5. **Decryption.** Client decrypts with its private key. The JSON inside is identical to the unencrypted format — extractors, staging views, and core models are all unchanged.
 6. **Rotation.** `moneybin sync key rotate` generates a new key pair, registers the new public key with the server. Old key retained briefly for in-flight payloads during the transition window.
 
 ### Key protection
@@ -486,19 +486,23 @@ Sync errors fall into three categories with distinct recovery paths.
 
 ### Connection errors
 
-Provider-specific error codes are surfaced in `GET /sync/data` at
-`metadata.institutions`. The client maps these per-institution results to
-actionable messages without needing to know which aggregator generated them.
+`moneybin sync pull` exposes provider-specific error codes from `GET /sync/data`
+at `metadata.institutions` as raw per-institution results. It does not map or
+retry those codes. `moneybin sync status` reads `GET /institutions` and maps
+known connection-health codes to actionable guidance.
 
-| Error code | Cause | Client behavior |
+| Error code | Cause | `sync status` guidance |
 |---|---|---|
-| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | Surface server-reported status with: "Chase needs re-authentication — run `moneybin sync link`." |
-| `ITEM_NOT_FOUND` | Connection revoked or expired | Surface the server-reported status and guidance to reconnect. |
-| `NO_ACCOUNTS` | Institution returned no accounts | Warn user, suggest reconnecting with different credentials. |
-| `INSTITUTION_DOWN` | Bank's system unavailable | Log warning, skip institution, continue with others. Suggest retry later. |
-| Unknown error code | Unmapped provider error | Log raw error code and message. Display: "Unexpected error from {institution} — check `moneybin sync status` for details." |
+| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | "{institution} needs re-authentication — run `moneybin sync link --institution {institution}`." |
+| `ITEM_NOT_FOUND` | Connection revoked or expired | "{institution} connection was revoked. Run `moneybin sync link` to reconnect." |
+| `INSTITUTION_NOT_RESPONDING` | Bank's system unavailable | "{institution} is temporarily unavailable. Try again later." |
+| `INSTITUTION_DOWN` | Bank's system unavailable | "{institution} is down for maintenance. Try again later." |
+| `RATE_LIMIT_EXCEEDED` | Too many API calls | "Rate limit reached. Sync will resume on the next scheduled run." |
+| `PRODUCTS_NOT_READY` | Initial data pull is incomplete | "{institution} is still processing initial data. Try again in a few minutes." |
 
-The error code vocabulary is owned by the server. As providers are added, new error codes may appear. The client handles unknown codes gracefully — log and display the raw message rather than crash.
+The error-code vocabulary is owned by the server. Pull leaves unknown codes raw;
+for an error-state connection with an unknown code, `sync status` supplies its
+generic re-authentication guidance.
 
 ### Infrastructure errors
 
@@ -535,7 +539,7 @@ Schwab: ❌ ITEM_LOGIN_REQUIRED
 ### How provider data flows through the warehouse
 
 ```
-Server JSON → Provider Loader → raw.{provider}_* → prep.stg_{provider}__* → core.dim/fct_*
+Server JSON → Provider Extractor → raw.{provider}_* → prep.stg_{provider}__* → core.dim/fct_*
 ```
 
 Each layer has a clear owner and responsibility:
@@ -551,15 +555,15 @@ Each layer has a clear owner and responsibility:
 
 Adding a new provider requires these artifacts. Nothing else changes — the framework, CLI, MCP tools, and error handling work for all providers automatically.
 
-**1. Raw table DDL** — `src/moneybin/sql/schema/raw_{provider}_*.sql`
+**1. Raw table DDL** — `src/moneybin/extractors/{provider}/schema/raw_{provider}_*.sql`
 
 Tables preserve the provider's native shape. Column comments follow database conventions (`.claude/rules/database.md`). No generic "sync transactions" table — each provider defines its own columns, types, and primary keys.
 
-**2. Loader class** — `src/moneybin/loaders/{provider}_loader.py`
+**2. Extractor class** — `src/moneybin/extractors/{provider}/extractor.py`
 
-Parses provider-shaped JSON from `SyncClient.get_data()` and loads into raw tables via `Database.ingest_dataframe()` or `read_json()`. Handles provider-specific semantics:
+Parses provider-shaped JSON from `SyncClient.get_data()` and loads typed DataFrames into raw tables through `Database.ingest_dataframe()`. Handles provider-specific semantics:
 
-- Sign convention (e.g., Plaid: positive = expense; the loader preserves this — the flip happens in staging)
+- Sign convention (e.g., Plaid: positive = expense; the extractor preserves this — the flip happens in staging)
 - Removed/deleted records (e.g., Plaid's `removed_transactions`)
 - Dedup on re-load (primary key constraints, `INSERT OR REPLACE`)
 - Client-side metadata generation (`source_file = 'sync_{job_id}'`, `extracted_at = metadata.synced_at`, `loaded_at = CURRENT_TIMESTAMP`)
@@ -580,11 +584,11 @@ Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_account
 - Connection health — server-owned; providers do not add local connection state
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer
 
-**Partial-payload guard (provider robustness).** A provider response can be internally incomplete — some accounts, holdings, or securities present, others missing — while still returning success at the transport layer. This is distinct from [Partial success handling](#partial-success-handling), which is per-institution success/failure across a sync job; here a single institution's response is itself partial. A loader must never treat a partial payload as complete (e.g. inferring an absent account was closed, or that missing holdings mean an empty portfolio). Detect the partial condition, load what arrived, and surface which accounts/entities were skipped so downstream reconciliation and the user can see the gap. This matters most for the investments product (holdings/securities frequently arrive partial), but the guard is provider-agnostic and belongs here so every provider inherits it.
+**Partial-payload guard (provider robustness).** A provider response can be internally incomplete — some accounts, holdings, or securities present, others missing — while still returning success at the transport layer. This is distinct from [Partial success handling](#partial-success-handling), which is per-institution success/failure across a sync job; here a single institution's response is itself partial. An extractor must never treat a partial payload as complete (e.g. inferring an absent account was closed, or that missing holdings mean an empty portfolio). Detect the partial condition, load what arrived, and surface which accounts/entities were skipped so downstream reconciliation and the user can see the gap. This matters most for the investments product (holdings/securities frequently arrive partial), but the guard is provider-agnostic and belongs here so every provider inherits it.
 
 ### Cross-provider response shape (open design question)
 
-Two architectural decisions intersect when a second provider lands. The artifact-level decision is already made in the "Provider contract" section above: per-provider raw tables, per-provider loaders, per-provider staging views. The **HTTP-layer decision** — what shape the server returns to the client — is currently implicit, and the answer Phase 1 baked in deserves a deliberate revisit before provider #2 ships.
+Two architectural decisions intersect when a second provider lands. The artifact-level decision is already made in the "Provider contract" section above: per-provider raw tables, per-provider extractors, per-provider staging views. The **HTTP-layer decision** — what shape the server returns to the client — is currently implicit, and the answer Phase 1 baked in deserves a deliberate revisit before provider #2 ships.
 
 **What's in the code today.**
 
@@ -592,7 +596,7 @@ The client's response models in `src/moneybin/connectors/sync_models.py` are nam
 
 | Field | Plaid-specific assumption |
 |---|---|
-| `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the loader or model. |
+| `SyncTransaction.amount` | positive = expense (Plaid convention). The MoneyBin sign flip lives in `prep.stg_plaid__transactions`, NOT in the extractor or model. |
 | `SyncTransaction.category` | single flat string. We're collapsing Plaid's `personal_finance_category.primary` + `.detailed` somewhere in the server pipeline. |
 | `SyncTransaction.merchant_name` | populated by Plaid's merchant enrichment. SimpleFIN doesn't send this; OFX/MX use different sources. |
 | `SyncTransaction.pending` | meaningful (Plaid models pending → posted transitions). SimpleFIN doesn't surface pending. |
@@ -604,7 +608,7 @@ The names suggest provider-agnostic; the contents don't.
 
 **Option A — Server normalizes per-provider data to a canonical client shape.** The server speaks Plaid/SimpleFIN/MX/etc. internally and produces a single normalized stream. The sign flip, category flattening, and pending semantics all move server-side. `SyncDataResponse` becomes the genuinely-shared contract its name suggests.
 
-- Pros: client stays one code path; one loader, one set of staging views; future providers are pure server-side work.
+- Pros: client stays one code path; one extractor, one set of staging views; future providers are pure server-side work.
 - Cons: lossy when a provider exposes data the canonical shape doesn't capture; server team carries the per-provider transformation debt; the per-provider `raw.{provider}_*` artifact convention in the section above would collapse to `raw.sync_*` with a `provider` discriminator column — which contradicts the established OFX/tabular pattern.
 
 **Option B — Server passes provider-shaped data through; client normalizes per provider.** `SyncDataResponse` becomes a tagged union (or splits into `PlaidSyncResponse`, `SimpleFINSyncResponse`, etc.). Each provider extractor (`PlaidExtractor`, `SimpleFINExtractor`) reads its variant and writes to its own `raw.{provider}_*` tables. Per-provider staging views apply the right sign/category/pending semantics. Core models `UNION ALL` from each as today.
@@ -614,7 +618,7 @@ The names suggest provider-agnostic; the contents don't.
 
 **The two paths are currently inconsistent.**
 
-The artifact-level convention this spec defines (per-provider raw tables, loaders, staging views) is **Option B**. The HTTP-layer model names (`Sync*` in `sync_models.py`) suggest **Option A**. Phase 1 worked because there's only one provider — the inconsistency doesn't bite. Provider #2 will force the call.
+The artifact-level convention this spec defines (per-provider raw tables, extractors, staging views) is **Option B**. The HTTP-layer model names (`Sync*` in `sync_models.py`) suggest **Option A**. Phase 1 worked because there's only one provider — the inconsistency doesn't bite. Provider #2 will force the call.
 
 **Recommendation.**
 
@@ -644,7 +648,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 | Area | What's tested |
 |---|---|
 | `SyncClient` methods | Mocked httpx responses: success, auth errors, server errors, timeouts, polling logic (including `slow_down` backoff) |
-| Provider loaders | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
+| Provider extractors | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
 | Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (keychain mock + file fallback), refresh logic |
 | Connection health | `GET /institutions` response mapping and error-code-to-guidance mapping |
 | Schedule management | Plist/cron generation and parsing, idempotent install/remove |
@@ -749,7 +753,7 @@ Framework spec. Sync operates in the "Encrypted Sync" data flow tier (ADR-002). 
 
 ### Data Protection — `privacy-data-protection.md`
 
-Infrastructure spec. The `Database` class that sync loaders write through handles encryption at rest, schema initialization, and migrations. Sync does not interact with encryption directly — it uses `get_database()` like every other component.
+Infrastructure spec. The `Database` class that sync extractors write through handles encryption at rest, schema initialization, and migrations. Sync does not interact with encryption directly — it uses `get_database()` like every other component.
 
 ---
 

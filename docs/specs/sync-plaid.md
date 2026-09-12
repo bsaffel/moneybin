@@ -65,7 +65,7 @@ surface. The response is a `LinkInitiateResponse` with `session_id`,
 `institution_name`, while a failed response carries `error`. Text-mode CLI may
 wait through `SyncClient.poll_link_status()`. MCP and JSON CLI flows are
 event-driven: they return the session immediately, then use a later single-shot
-`sync_status(session_id=...)` / `moneybin sync link-status` call.
+`sync_link_status(session_id=...)` / `moneybin sync link-status` call.
 
 For headless environments, `--no-browser` prints `link_url` for the user to
 open on another device. A re-authentication selects the affected connection and
@@ -77,109 +77,19 @@ passes its `provider_item_id` to the same initiate endpoint.
 
 ### Raw tables
 
-Three tables in the `raw` schema, preserving Plaid's native data shape. Column comments follow `.claude/rules/database.md` conventions.
+The shipped DDL is colocated with the extractor:
 
-#### `raw.plaid_accounts`
+- [`raw_plaid_accounts.sql`](../../src/moneybin/extractors/plaid/schema/raw_plaid_accounts.sql)
+- [`raw_plaid_transactions.sql`](../../src/moneybin/extractors/plaid/schema/raw_plaid_transactions.sql)
+- [`raw_plaid_balances.sql`](../../src/moneybin/extractors/plaid/schema/raw_plaid_balances.sql)
 
-```sql
-/* Bank accounts connected via Plaid; one record per account per institution */
-CREATE TABLE IF NOT EXISTS raw.plaid_accounts (
-    account_id VARCHAR NOT NULL,        -- Plaid account_id; reissued when the item is relinked
-    persistent_account_id VARCHAR,      -- Cross-relink identity ref; NULL when the institution does not supply one
-    account_type VARCHAR,               -- depository, credit, loan, investment, other
-    account_subtype VARCHAR,            -- checking, savings, credit card, etc.
-    institution_name VARCHAR,           -- Human-readable name from Plaid
-    name VARCHAR,                       -- Institution-reported account name; distinguishes sibling accounts
-    official_name VARCHAR,              -- Official account name from the institution
-    mask VARCHAR,                       -- Last 4 digits of the account number
-    source_file VARCHAR NOT NULL,       -- Logical identifier: sync_{job_id}
-    source_type VARCHAR NOT NULL DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,     -- provider_item_id; scopes dedup to the institution connection
-    extracted_at TIMESTAMP,             -- From metadata.synced_at
-    loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, source_origin)
-);
-```
-
-#### `raw.plaid_transactions`
-
-```sql
-/* Transaction records fetched from Plaid transactions/sync endpoint; one record per transaction per sync payload */
-CREATE TABLE IF NOT EXISTS raw.plaid_transactions (
-    transaction_id VARCHAR NOT NULL,   -- Plaid transaction_id; stable unique identifier
-    account_id VARCHAR NOT NULL,       -- Plaid account_id; foreign key to raw.plaid_accounts
-    transaction_date DATE NOT NULL,    -- Date the transaction posted; from Plaid date field
-    amount DECIMAL(18, 2) NOT NULL,    -- Plaid amount; CAUTION: Plaid convention is positive = expense; sign flip happens in staging
-    description VARCHAR,               -- Plaid name field; merchant or payee description
-    merchant_name VARCHAR,             -- Plaid merchant_name; normalized merchant name; NULL when Plaid cannot identify
-    category VARCHAR,                  -- Plaid personal_finance_category.primary; broad spending category
-    original_description VARCHAR,      -- Plaid original_description; raw, unmodified bank text (distinct from description=name)
-    iso_currency_code VARCHAR,         -- Plaid iso_currency_code (ISO 4217)
-    authorized_date DATE,              -- Plaid authorized_date
-    pending_transaction_id VARCHAR,    -- Plaid pending_transaction_id; links pending -> posted
-    payment_channel VARCHAR,           -- Plaid payment_channel: online, in store, other
-    check_number VARCHAR,              -- Plaid check_number
-    merchant_entity_id VARCHAR,        -- Plaid merchant_entity_id; stable merchant id (captured for future merchant resolution)
-    location_address VARCHAR,          -- Plaid location.address
-    location_city VARCHAR,             -- Plaid location.city
-    location_region VARCHAR,           -- Plaid location.region
-    location_postal_code VARCHAR,      -- Plaid location.postal_code
-    location_country VARCHAR,          -- Plaid location.country
-    location_latitude DOUBLE,          -- Plaid location.lat
-    location_longitude DOUBLE,         -- Plaid location.lon
-    category_detailed VARCHAR,         -- Plaid personal_finance_category.detailed (captured for future categorization)
-    category_confidence VARCHAR,       -- Plaid personal_finance_category.confidence_level (captured for future categorization)
-    pending BOOLEAN                    -- True if transaction has not yet settled
-        DEFAULT false,
-    source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
-    source_type VARCHAR NOT NULL       -- Always 'plaid' for this table
-        DEFAULT 'plaid',
-    source_origin VARCHAR,             -- Plaid item_id; scopes dedup to the institution connection
-    extracted_at TIMESTAMP             -- When the server fetched this data from Plaid (from metadata.synced_at)
-        DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                -- When this record was inserted into the local database
-        DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (transaction_id, source_origin)
-);
-```
-
-Tier-1 fields (`original_description`, `iso_currency_code`, `authorized_date`,
-`pending_transaction_id`, `payment_channel`, `check_number`, `location_*`) flow
-through staging into `core.fct_transactions` — filling columns the Plaid CTE in
-`int_transactions__unioned` previously left `NULL`/`'USD'`, with
-`original_description` added as a new first-class column (distinct from the cleaned
-`description` and from `memo`). The Tier-2 fields (`merchant_entity_id`,
-`category_detailed`, `category_confidence`) are captured but not yet consumed:
-`merchant_entity_id` is reserved for canonical merchant-identity resolution and the
-PFC detail/confidence for auto-categorization. Plaid fields with no current consumer
-(account owner, payment metadata, counterparties, logos) are intentionally not
-captured.
-
-#### `raw.plaid_balances`
-
-```sql
-/* Account balance snapshots from Plaid; one record per account per balance date per sync payload */
-CREATE TABLE IF NOT EXISTS raw.plaid_balances (
-    account_id VARCHAR NOT NULL,       -- Plaid account_id; foreign key to raw.plaid_accounts
-    balance_date DATE NOT NULL,        -- Date the balance was reported
-    current_balance DECIMAL(18, 2),    -- Current balance including pending transactions
-    available_balance DECIMAL(18, 2),  -- Available balance (current minus holds); NULL for credit accounts
-    balance_limit DECIMAL(18, 2),      -- Plaid `limit`, renamed: reserved word, and distinct from user-asserted app.account_settings.credit_limit
-    margin_loan_amount DECIMAL(18, 2), -- Borrowed funds; investment accounts only. current_balance is gross, so core nets this out
-    iso_currency_code VARCHAR,         -- ISO 4217; mutually exclusive with unofficial_currency_code
-    unofficial_currency_code VARCHAR,  -- Non-ISO (crypto) currency; core COALESCEs the pair
-    source_file VARCHAR NOT NULL,      -- Logical identifier: sync_{job_id}
-    source_type VARCHAR NOT NULL       -- Always 'plaid' for this table
-        DEFAULT 'plaid',
-    source_origin VARCHAR NOT NULL,    -- Plaid item_id; scopes dedup to the institution connection
-    last_updated_datetime TIMESTAMP,   -- Provider "as-of" time; populated only by some institutions. Naive UTC wall clock, as every raw Plaid wire datetime is
-    extracted_at TIMESTAMP             -- When the server fetched this data from Plaid (from metadata.synced_at)
-        DEFAULT CURRENT_TIMESTAMP,
-    loaded_at TIMESTAMP                -- When this record was inserted into the local database
-        DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (account_id, balance_date, source_origin)
-);
-```
+The three tables preserve Plaid's native values and pair their source-native
+key with required `source_origin` for connection-scoped deduplication. An
+account's `account_id` is the source-native key and can change on relink;
+`persistent_account_id`, when Plaid provides it, is the cross-relink identity
+reference. Transaction rows retain source-provided conversion legs
+(`to_amount`, `to_currency`) when present. Balance rows retain both the gross
+current balance and `margin_loan_amount`, which the core balance model nets.
 
 ### Client-side metadata generation
 
@@ -201,88 +111,29 @@ SQLMesh views in the `prep` schema. Each normalizes Plaid's data shape for core 
 
 ### `prep.stg_plaid__accounts`
 
-```sql
-MODEL (
-  name prep.stg_plaid__accounts,
-  kind VIEW
-);
-
-SELECT
-  account_id,
-  NULL::VARCHAR AS routing_number,
-  account_type,
-  institution_name,
-  NULL::VARCHAR AS institution_fid,
-  official_name,
-  mask,
-  account_subtype,
-  source_file,
-  source_type,
-  source_origin,
-  extracted_at,
-  loaded_at
-FROM raw.plaid_accounts
-```
+The shipped view is
+[`stg_plaid__accounts.sql`](../../src/moneybin/sqlmesh/models/prep/stg_plaid__accounts.sql).
+It resolves an accepted source-native `app.account_links` reference with
+`COALESCE(links.account_id, a.account_id)`, retains the original Plaid key as
+`source_account_key`, maps `account_type` through `seeds.account_type_map`, and
+projects the institution's `name` as `account_label`.
 
 ### `prep.stg_plaid__transactions`
 
-```sql
-MODEL (
-  name prep.stg_plaid__transactions,
-  kind VIEW
-);
-
-SELECT
-  transaction_id,
-  account_id,
-  transaction_date AS posted_date,
-  -1 * amount AS amount,              -- Flip Plaid convention (positive = expense) to MoneyBin convention (negative = expense)
-  TRIM(description) AS description,
-  TRIM(merchant_name) AS merchant_name,
-  category,
-  pending AS is_pending,
-  source_file,
-  source_type,
-  source_origin,
-  extracted_at,
-  loaded_at
-FROM raw.plaid_transactions
-```
+The shipped view is
+[`stg_plaid__transactions.sql`](../../src/moneybin/sqlmesh/models/prep/stg_plaid__transactions.sql).
+It resolves the same accepted source-native account link, retains
+`source_account_key`, and carries the transaction's source fields into the
+warehouse projection.
 
 The `-1 * amount` flip is the single most important transformation in the staging layer. Plaid: positive = expense, negative = income. MoneyBin: negative = expense, positive = income. Raw preserves Plaid's convention faithfully; the flip happens here and only here.
 
 ### `prep.stg_plaid__balances`
 
-```sql
-MODEL (
-  name prep.stg_plaid__balances,
-  kind VIEW
-);
-
-SELECT
-  COALESCE(links.account_id, b.account_id) AS account_id,  -- canonical id via app.account_links; source-native only if unresolved
-  b.account_id AS source_account_key,
-  b.balance_date,
-  b.current_balance,
-  b.available_balance,
-  b.balance_limit,
-  b.margin_loan_amount,
-  b.iso_currency_code,
-  b.unofficial_currency_code,
-  b.source_file,
-  b.source_type,
-  b.source_origin,
-  b.last_updated_datetime,
-  b.extracted_at,
-  b.loaded_at
-FROM raw.plaid_balances AS b
-LEFT JOIN app.account_links AS links
-  ON links.status = 'accepted'
-  AND links.ref_kind = 'source_native'
-  AND links.source_type = b.source_type
-  AND links.source_origin = b.source_origin
-  AND links.ref_value = b.account_id
-```
+The shipped view is
+[`stg_plaid__balances.sql`](../../src/moneybin/sqlmesh/models/prep/stg_plaid__balances.sql).
+It resolves the same accepted source-native account link and retains the Plaid
+account key as `source_account_key`.
 
 Like every other source's balance/account staging view, this resolves the
 canonical `account_id` from `app.account_links` so balances key on the same id
@@ -361,7 +212,7 @@ These are defined in `sync-overview.md` and shared across all providers:
 
 `PlaidExtractor.load()` derives `source_file`, extraction time, and account-to-
 institution lineage from the typed sync response before it writes raw tables.
-Each table-specific loader builds a typed Polars DataFrame, adds its lineage
+Each table-specific extractor method builds a typed Polars DataFrame, adds its lineage
 columns, and sends it through `Database.ingest_dataframe()` with that table's
 conflict behavior. Sync payloads stay in memory; the implementation does not
 write plaintext temporary files.

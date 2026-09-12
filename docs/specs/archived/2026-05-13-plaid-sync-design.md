@@ -21,5 +21,6 @@ credentials, callbacks, and webhook handling are not a MoneyBin client
 contract. Consult [`sync-plaid.md`](../sync-plaid.md) and
 [`sync-overview.md`](../sync-overview.md) for current behavior.
 
-The complete historical design remains available in Git history before this
-supersession record. It must not be used as an implementation authority.
+The complete historical design remains available at
+`git show 174a7d4881a3e76484ab30b1a68e9b783a28e633:docs/specs/2026-05-13-plaid-sync-design.md`.
+It must not be used as an implementation authority.
