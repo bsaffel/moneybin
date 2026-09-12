@@ -69,7 +69,7 @@ this spec's to close.
 | 1 | A margin account's net worth was overstated by the size of its loan. The sync server sends `margin_loan_amount`, `SyncBalance` did not declare it, and Pydantic's default `extra='ignore'` discarded it silently. | `src/moneybin/connectors/sync_models.py:232` now declares the field; it reaches the spine through `prep/stg_plaid__balances.sql` and `core/fct_balances.sql`, on migration `V058`. | **Already closed**, by #565, before this spec. Kept in the table because the ladder's correctness depends on the balance it reads, and a reader checking that dependency should find it answered rather than absent. |
 | 2 | Archiving an account rewrites net-worth history. `archived` is a plain BOOLEAN with no date, and the filter applies to every `balance_date`, so closing an account in 2026 retroactively removes it from 2022. | `src/moneybin/sql/schema/app_account_settings.sql:13`, `src/moneybin/sqlmesh/models/reports/net_worth.sql:21` | **Closed here** — Requirement 9, behind the prerequisite that requirement names. |
 | 3 | `core:networth_history` cannot convert currency at all. | `src/moneybin/reports/service_reports.py:170` vs `:122` | **Closed here** — Requirements 1 and 3. |
-| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/render.py:632-633` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
+| 4 | Staleness is invisible on every net-worth surface. `fct_balances_daily` carries `is_observed`, `observation_source`, and `reconciliation_delta`; only `observation_source` reaches a report, rendered as a bare blank cell, and `reconciliation_delta` reaches none. No `system doctor` check covers balance staleness. | `src/moneybin/services/networth_service.py:111-118`, `src/moneybin/cli/commands/reports/networth.py:110` | **Closed here** — Requirement 8. The `system doctor` balance-staleness check moves to the beta increment in Defect 6. |
 | 5 | The double-count invariant that Pillar D must uphold has no guard. Safe today only because no holding is wired into net worth. | `investments-overview.md` §Pillar D states the two tests in future tense | **Not this spec.** Belongs with Pillar D; named here so it is not lost. |
 | 6 | An investment account with priced holdings and no balance observation contributes exactly zero to net worth — Requirement 9 of M2B.1 emits no rows without an anchor, and nothing detects the gap. | `investments-overview.md` §Open, `doctor_service.py` invariant list | **Closed for the public beta** — Requirement 14, delivered as work item `M2B.3` rather than as part of the work already in flight here. Full Pillar D integration stays post-release; the guard that keeps its absence honest does not. |
 
@@ -142,9 +142,10 @@ this spec's to close.
     because those accounts are excluded by it regardless. The moment this
     requirement replaces that filter with the date-scoped one, they stop being
     excluded by `archived` and start being excluded by a flag some of their
-    owners never set. Deciding them — most likely by surfacing them for review
-    rather than inferring intent a second time — is part of this requirement,
-    not a leftover of the migration.
+    owners never set. Deciding them is part of this requirement, not a
+    leftover of the migration, and closes with a named `system doctor`
+    check rather than an inferred intent — see §Prerequisites for the
+    check's predicate and §Implementation Plan for where it lands.
 10. **The net-worth reports become SQL-backed.** They become `@report` runners
     over the new views, and `ServiceReportSpec` and its executor branch are
     deleted. This is `.claude/rules/reports.md` §"A new report is SQL-backed"
@@ -183,8 +184,10 @@ this spec's to close.
     silent zero this requirement exists to replace. The guard therefore
     requires **evidence**: priced holdings (`core.dim_holdings` /
     `core.dim_holdings_broker_reported`, below) OR at least one row in
-    `core.fct_transactions` for the account, ever, regardless of amount or
-    source. That is a **narrower reading than "any account with no balance
+    `core.fct_transactions` or `core.fct_investment_transactions` for the
+    account, ever, regardless of amount or source — a dividend, fee, or
+    other investment-ledger event counts exactly as a cash-ledger posting
+    does. That is a **narrower reading than "any account with no balance
     anchor,"** taken literally — an account with genuinely zero activity of
     any kind stays silently absent, unchanged from today. That residual gap
     is this requirement's own, stated plainly rather than absorbed: see
@@ -208,7 +211,12 @@ this spec's to close.
     `core.fct_balances` is empty for the whole profile. Reading that spine
     alone, a profile whose only accounts are unanchored would then publish no
     `reports.net_worth` row at all — the same silent failure this requirement
-    exists to close, one layer further out. When the balance-driven output is
+    exists to close, one layer further out. This is the named case, but not
+    the only one that empties the balance-driven output a requested range
+    sees: a range that predates or postdates every account's own recorded
+    balance history empties it too, even on a profile with data elsewhere —
+    see §Data Model for why the guard's trigger is the requested range's own
+    emptiness, not a check scoped to the whole profile. When the balance-driven output is
     empty and the eligible unanchored count is greater than zero,
     `reports.net_worth` publishes exactly one synthesized row, with
     `net_worth` NULL and `unanchored_account_count` set to that count — see
@@ -292,9 +300,9 @@ binds M2P.3 — see §Key Decision 6.
 `kind VIEW` query with it directly. The count and its NULL gate are a
 property of the row, computed on the SQL surface every rung already is, not
 hidden behind a runner a direct SQL reader never sees. Only the one case a
-view genuinely cannot express on its own — synthesizing a row for a profile
-with no balance-spine row at all — still needs the runner, and even that
-reads no `prep.*` and touches no spine.
+view genuinely cannot express on its own — synthesizing a row for a
+requested range with no balance-spine rows in it at all — still needs the
+runner, and even that reads no `prep.*` and touches no spine.
 
 **Why the candidate set cannot be read from `prep.*` directly, in the view or
 anywhere else in `reports.*`.** `report_class_derivation.py` parses every
@@ -333,41 +341,50 @@ consumer that `dim_holdings.sql`'s own `positions`-driven shape cannot serve
 matching `("core", "dim_holdings")`'s own — so the read has ground truth to
 derive against instead of needing an exception.
 
-**Evidence of holding value has three sources, and `reports.net_worth`'s
-`kind VIEW` reads all three directly — no runner involved.**
+**Evidence of holding value has four sources, and `reports.net_worth`'s
+`kind VIEW` reads all four directly — no runner involved.**
 `core.dim_holdings` sums open lots, so it emits no row at all for a
 broker-reported position with no matching lot (an unbound security, a
 declined bootstrap, or a holdings snapshot that landed before its
 transactions); `core.dim_holdings_broker_reported` is exactly the source
 `dim_holdings.sql`'s own comment names for that direction; and
-`core.fct_transactions` — already `core.*`, so it needs no relation of its
-own — supplies the non-investment case Requirement 14's qualifier adds: any
-account with at least one recorded transaction, regardless of source or
-amount. All three are `core.*`, so the view joining them keeps
-`assert_acyclic` satisfied on its own terms, not through a runner workaround
-of the check.
+`core.fct_transactions` and `core.fct_investment_transactions` — both
+already `core.*`, so neither needs a relation of its own — together supply
+the non-investment and investment-ledger cases Requirement 14's qualifier
+adds: any account with at least one recorded transaction on either ledger,
+regardless of source or amount. The two ledgers are genuinely separate
+models — `core.fct_investment_transactions` is never unioned into
+`core.fct_transactions` — so an account whose only activity is investment
+events (a dividend, a fee, a fully-disposed position) needs its own arm; the
+cash-ledger table cannot see it. All four are `core.*`, so the view joining
+them keeps `assert_acyclic` satisfied on its own terms, not through a runner
+workaround of the check.
 
-**What the transaction-activity arm catches, and what it still misses.**
-`core.fct_transactions` carries `transaction_date`, but the guard reads it
-existentially — *has this account ever posted* — the same account-not-date
-scoping Requirement 14 already applies to the holdings signal, not a second
-pattern beside it. This is what makes a tabular import with no balance
-column, a Plaid account whose `current_balance` or `account_type` never
-resolved, or a manual account with postings and no assertion all surface as
-unanchored rather than silently absent — every one of them has transaction
-rows even though `core.fct_balances` has none. It does not reach an account
-with no transaction, no holding, and no balance of any kind: nothing in
-`core.*` distinguishes "genuinely never funded" from "funded but nothing
-observed yet" for an account with zero rows anywhere, and guessing would
-reintroduce the false-positive risk Requirement 14's qualifier exists to
-avoid. That account stays silently absent, exactly as it does today — the
-residual gap Requirement 14 states rather than absorbs.
+**What the two transaction-activity arms catch together, and what they
+still miss.** Both ledgers carry their own transaction date, but the guard
+reads each existentially — *has this account ever posted, on either ledger*
+— the same account-not-date scoping Requirement 14 already applies to the
+holdings signal, not a second pattern beside it. This is what makes a
+tabular import with no balance column, a Plaid account whose
+`current_balance` or `account_type` never resolved, a manual account with
+postings and no assertion, and an investment account whose only activity is
+a dividend, a fee, or a fully-disposed position with an empty newest broker
+snapshot all surface as unanchored rather than silently absent — every one
+of them has a row on one ledger or the other even though `core.fct_balances`
+has none. It does not reach an account with no transaction on either ledger,
+no holding, and no balance of any kind: nothing in `core.*` distinguishes
+"genuinely never funded" from "funded but nothing observed yet" for an
+account with zero rows anywhere, and guessing would reintroduce the
+false-positive risk Requirement 14's qualifier exists to avoid. That account
+stays silently absent, exactly as it does today — the residual gap
+Requirement 14 states rather than absorbs, narrower now than it was with
+three sources but not closed.
 
 **The count and the NULL gate are per row, computed by the view, at that
 row's own `balance_date` — the same shape Requirement 9's eligibility
 predicate already uses.** For every balance-driven row `reports.net_worth`
 emits, `unanchored_account_count` is the number of candidate accounts (the
-three sources above) that have no row in `core.fct_balances` at all and pass
+four sources above) that have no row in `core.fct_balances` at all and pass
 `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
 archived_at)` — correlated to that row's own `balance_date`, exactly as
 Requirement 9 already evaluates eligibility for the balance-backed measures
@@ -394,15 +411,37 @@ would leak a scaffold row to every one of them, not only to
 `reports.net_worth`.
 
 **Only one case still needs the runner, and it is the one case a view
-genuinely cannot express: a profile with no balance-spine row at all.** When
-`core.fct_balances` is empty for the whole profile, `reports.net_worth`
-emits no row for any date, so there is no row for the per-row count above to
-attach to — the gap Requirement 14 names ("a profile with no balance-spine
-row at all still gets exactly one"). *Whether* to synthesize does not depend
-on `from_date`/`to_date` at all: it is a global fact about the profile,
-independent of any requested range. What genuinely needs the range is *how*
-the synthesized row is dated and evaluated, because — unlike every other row
-— it has no `balance_date` of its own to correlate against. This is the one
+genuinely cannot express: a requested range with no balance-spine rows in
+it.** The view attaches a correct count to every row it emits, but it emits
+nothing for a date with no balance observation at all — so whenever the
+runner's own filtered query (below) comes back empty, there is no row for
+the per-row count to attach to. That happens for two reasons, and the
+guard has to cover both: a profile with no balance data ever (the gap
+Requirement 14 names — "a profile with no balance-spine row at all still
+gets exactly one"), and a profile *with* balance data whose requested range
+simply falls outside it. The second is not hypothetical:
+`fct_balances_daily.py`'s per-account spine runs from that account's own
+first observation through the global last one
+(`fct_balances_daily.py:186-197`) and no further, so a historical query for
+a range that predates every account's first balance observation returns
+zero real rows exactly like a wholly-empty profile does — even when an
+eligible unanchored account was live throughout that range. Gating
+synthesis on "`core.fct_balances` is empty for the whole profile" catches
+only the first reason: the second gets the ordinary filtered query back
+empty, correctly finds `core.fct_balances` is *not* globally empty, and
+skips synthesis — landing back on the exact silent-absence failure
+Requirement 14 exists to close, recurring for range queries instead of only
+the never-had-any-balance case.
+
+The fix matches the diagnosis: trigger synthesis on *the runner's own
+filtered result being empty*, not on a separate global-emptiness check. A
+profile with no balance data ever is simply the case where every possible
+range's filtered result happens to be empty, so this one condition
+subsumes it rather than sitting beside it as a second check. *Whether* to
+synthesize is therefore answered entirely by the ordinary filter's own
+result; *how* the synthesized row is dated and evaluated is the one thing
+that still needs `from_date`/`to_date`, because — unlike every real row —
+it has no `balance_date` of its own to correlate against. This is the one
 remaining place `reports.net_worth`'s runner does work the view cannot: it
 holds `from_date`/`to_date` as bound parameters, the way
 `src/moneybin/reports/definitions/cash_flow.py:172-181` already holds
@@ -415,25 +454,25 @@ itself cannot see) is the same.
 The runner computes `effective_to` as `to_date` when supplied, else
 `CURRENT_DATE`, and `effective_from` as `from_date` when supplied, else
 `effective_to` — collapsing to a single day for the ordinary "what am I
-worth right now" call. When `core.fct_balances` is empty for the whole
-profile and the count of eligible candidates — `include_in_net_worth AND
+worth right now" call. When the runner's own filtered query (below) returns
+zero rows and the count of eligible candidates — `include_in_net_worth AND
 (archived_at IS NULL OR archived_at >= effective_from)`, over-stating rather
 than under-stating exactly as the per-row predicate above would if it had a
 date to correlate against — is greater than zero, the runner appends one
 synthesized row dated `balance_date = effective_to`, every measure NULL,
 `account_count = 0`, `unanchored_account_count` set to that count. Dating it
 at `effective_to` keeps it inside `[effective_from, effective_to]`, so it
-survives the runner's own range filter with no separate sentinel needed —
-and unlike the earlier design, this `effective_from`/`effective_to`
-computation now fires only for this one global-emptiness case, never for an
-ordinary balance-driven row.
+survives the runner's own range filter with no separate sentinel needed. An
+out-of-range query against a profile with *no* eligible candidate still
+correctly returns zero rows, exactly like any other `@report` — the count
+is zero, so the guard does not fire.
 
 **The runner's ordinary filter is otherwise the range every `@report`
 already applies, with "no range" meaning the latest row, not today.**
 `NetworthService.current()` — the service this spec retires — already
 resolves "now" as `WITH latest AS (SELECT MAX(balance_date) FROM
 reports.net_worth ...) ... INNER JOIN latest`
-(`src/moneybin/services/networth_service.py:53-62`), because
+(`src/moneybin/services/networth_service.py:54-62`), because
 `core.fct_balances_daily`'s spine ends at the newest observation across
 *all* accounts (`fct_balances_daily.py:186`, `global_last_date =
 obs["balance_date"].max()`), not at `CURRENT_DATE` — the ordinary case for a
@@ -442,23 +481,33 @@ old, not today. `reports.net_worth`'s runner keeps that exact resolution:
 `from_date`/`to_date` given filters `WHERE balance_date BETWEEN ? AND ?`,
 same as any ranged `@report`; neither given resolves to `WHERE balance_date
 = (SELECT MAX(balance_date) FROM reports.net_worth)`, the same query
-`NetworthService.current()` already runs, so an ordinary "what am I worth"
-call keeps returning the latest available row instead of an empty result
-because today itself has no balance data. The two runner responsibilities
-are independent: this filter picks which real rows come back, and only when
-it comes back empty does the runner check whether `core.fct_balances` is
-globally empty and, if so, run the `effective_from`/`effective_to`
-computation above — the ordinary path never touches it.
+`NetworthService.current()` already runs. This query's result is exactly
+what the synthesis check above reads: an ordinary "what am I worth" call on
+a normal profile keeps returning the latest available row, and only a
+genuinely empty result — globally, or for a historical range outside all
+recorded data — reaches the synthesis check at all.
+
+**Which layer owns which case, stated once.** The view owns every row that
+exists: its per-row count and NULL gate are correct for any real
+balance-driven row, in any requested range, with no runner involvement.
+The runner owns exactly one thing beyond applying the ordinary range
+filter: deciding what to do when that filter's own result is empty — check
+for an eligible candidate, and if one exists, synthesize the one row the
+view had no real row to attach a count to. Neither layer duplicates the
+other's job, and the boundary between them is the filtered result's own
+emptiness, not a separate global check.
 
 **What a direct SQL reader still cannot get from the bare view.** The one
-corner case above — a profile with no balance-spine row at all — still
-returns nothing to a plain `SELECT * FROM reports.net_worth`, because the
-view has no per-query parameter to date a synthesized row with and no real
-row to attach one to. Every other case — including every mixed
-anchored/unanchored profile, which is the shape a direct SQL reader
-actually hits in practice — is correct with no runner at all. Stated
-plainly rather than absorbed: the split is clean except for this one
-global-emptiness case, which is inherent to what a `kind VIEW` with no
+case above — a requested range with no balance-spine rows in it, whether
+because the whole profile has none or because this particular range falls
+outside the data it has — still returns nothing to a plain `SELECT * FROM
+reports.net_worth ... WHERE balance_date BETWEEN ? AND ?`, because the view
+has no per-query parameter to date a synthesized row with and no real row
+to attach one to. Every other case — including every mixed
+anchored/unanchored profile within its own data, which is the shape a
+direct SQL reader actually hits in practice — is correct with no runner at
+all. Stated plainly rather than absorbed: the split is clean except for
+this one empty-result case, which is inherent to what a `kind VIEW` with no
 per-query parameters can express, not a gap in this design.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
@@ -556,14 +605,16 @@ fails closed.
 Requirement 14 delivers the guard as its own work item precisely so the
 release gate on this row outlives M2B.2 closing. The view itself counts it,
 per row, from the union of `core.dim_holdings`, `core.dim_holdings_broker_reported`,
-and `core.fct_transactions` (§Data Model above) — sources none of the other
-two rungs reads — correlated against `core.fct_balances` and `core.dim_accounts`
+`core.fct_transactions`, and `core.fct_investment_transactions` (§Data Model
+above) — sources none of the other two rungs reads — correlated against
+`core.fct_balances` and `core.dim_accounts`
 at that row's own `balance_date`, to count an eligible account carrying
 evidence of holding value with no balance row at all, and drives `net_worth`
 NULL the same way `unpriced_currency_count` already does. Only the
-report's runner, and only for a profile with no balance-spine row at all,
-computes this column outside the view — §Data Model states why that one
-case cannot be expressed without a requested range to anchor a row to.
+report's runner, and only when the requested range has no balance-spine
+rows in it at all, computes this column outside the view — §Data Model
+states why that one case cannot be expressed without a requested range to
+anchor a row to.
 Requirement 14 states why the join needs no per-date `balance_date`
 predicate beyond the row's own and why `core.fct_holdings_daily` (Pillar
 C.3) is deliberately not one of these sources.
@@ -951,8 +1002,11 @@ Migration:
 - `src/moneybin/sql/migrations/V0NN__add_account_settings_archived_at.py`
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
-comparing the three rungs against generator ground truth, and the two guard
-tests named in §Testing Strategy.
+comparing the three rungs against generator ground truth, the two guard
+tests named in §Testing Strategy, and an acceptance test for
+`account_archive_intent_ambiguous`: an account backfilled by V0NN into the
+ambiguous state warns, and warns no longer once `accounts set` writes either
+flag explicitly for it.
 
 ### Files to Modify
 
@@ -962,10 +1016,10 @@ tests named in §Testing Strategy.
   `carried_forward_count`; both switch the eligibility filter to the
   date-scoped form. **`M2B.3`** later adds the `unanchored_account_count`
   column and its NULL gate to this file's own query, in its own change —
-  joining the new `core.*` model (below) and `core.fct_transactions`,
-  correlated per row against each row's own `balance_date`. Only the
-  global-emptiness synthesized row lives in the runner (`net_worth.py`)
-  instead; see §Data Model.
+  joining the new `core.*` model (below), `core.fct_transactions`, and
+  `core.fct_investment_transactions`, correlated per row against each row's
+  own `balance_date`. Only the empty-range synthesized row lives in the
+  runner (`net_worth.py`) instead; see §Data Model.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -974,6 +1028,12 @@ tests named in §Testing Strategy.
 - `src/moneybin/sqlmesh/models/core/dim_accounts.sql` — resolve `archived_at`
   alongside `archived`. Two column comments there still name the retired
   `agg_net_worth` model (`:362-363`); correct them while in the file.
+- `src/moneybin/services/doctor_service.py` — the
+  `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
+  severity, flagging an account the V0NN backfill left ambiguous with no
+  later settings write to resolve it.
+- `docs/specs/moneybin-doctor.md` — that invariant's table entry, separate
+  from `net_worth_stale_balance`'s (`M2B.3`, its own change).
 - `src/moneybin/reports/_framework/convert.py` — `convert_records` prices every
   money-classed column using the row's original currency. Pointed at a column
   that is *already* home-converted it applies the rate a second time, silently,
@@ -1223,6 +1283,20 @@ balance, no holding, and no transaction of any kind does *not* raise
 residual gap, pinned so a future author does not "fix" it by widening the
 candidate set back to every balance-less account.
 
+A sixth case pins the empty-range fix directly: a persona with ordinary
+balance-backed accounts and one eligible unanchored account, queried over a
+historical range that predates every account's own first balance
+observation — asserted to still publish the synthesized row for that
+range, because `core.fct_balances` is not globally empty (the ordinary
+persona's rows exist elsewhere) but the range-filtered result is. This is
+the case that distinguishes "filtered result empty" from "globally empty"
+as the trigger; the earlier version of this guard passed the third and
+fourth scenarios above while still failing this one. A seventh case covers
+the fourth evidence arm: a persona investment account whose only activity
+is a dividend or fee in `core.fct_investment_transactions` — no
+`core.fct_transactions` row, no holding, no balance — asserted to drive the
+guard through that arm alone.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -1263,6 +1337,14 @@ multi-currency, and five for `M2B.3`:
   persona with one account later archived, so a query for a historical
   range predating the archival and a query with no range give different
   answers — the fixture the fourth Tier 2 scenario above reads.
+- For `M2B.3`'s empty-range trigger: the existing balance-backed persona,
+  queried over a historical range that predates its own earliest balance
+  observation, with the persona account from the first bullet above still
+  present and eligible — the fixture the sixth Tier 2 scenario reads.
+- For `M2B.3`'s fourth evidence arm: a persona investment account with a
+  dividend or fee recorded only in `core.fct_investment_transactions` — no
+  cash-ledger transaction, no holding, no balance — the fixture the
+  seventh Tier 2 scenario reads.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
@@ -1302,10 +1384,22 @@ approved as a footnote rather than reviewed on its own terms.
   `AccountSettingsRepo.set` records row snapshots rather than caller kwargs
   and cannot tell a cascade-written `FALSE` from one the user chose
   (Requirement 9's "a set of accounts this requirement has to decide" is the
-  same fact, stated once). Deciding that set — most likely by surfacing it
-  for review rather than inferring intent a second time — is this
-  requirement's own job, not the backfill's. Rationale and the redundancy
-  that makes the cascade removable: §`app.account_settings`.
+  same fact, stated once). Deciding that set is this requirement's own job,
+  not the backfill's, and it closes with a named mechanism rather than a
+  restated intention: a new `system doctor` invariant,
+  `account_archive_intent_ambiguous` (`warn` severity, alongside
+  `net_worth_stale_balance`), flags every account where `archived = TRUE AND
+  include_in_net_worth = FALSE` and no `app.audit_log` row for that
+  account's settings postdates V0NN's own backfill timestamp for it — the
+  signal that nothing has confirmed the exclusion since the cascade wrote
+  it. The existing `moneybin accounts set <id> --include`/`--exclude` write
+  path is the resolution: either flag writes a fresh, dated
+  `app.audit_log` row (`AccountSettingsRepo.set`'s own audit pairing,
+  Invariant 10) that clears the check on the next `system doctor` run — no
+  new schema, write path, or CLI/MCP surface needed beyond the existing
+  account-settings write. Rationale and the redundancy that makes the
+  cascade removable: §`app.account_settings`; the check's file and
+  acceptance test: §Implementation Plan.
 - **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
   spec, which is the sequencing this section describes working as intended. The
   guard its neighbouring docstring implied — a test that fails when a wire field
