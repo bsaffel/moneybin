@@ -129,6 +129,22 @@ this spec's to close.
    spec's to build** — retiring the archive cascade in `AccountService`, without
    which `archived_at` preserves nothing. See §`app.account_settings` and
    §Prerequisites.
+
+    **Inherited from the prerequisite: a set of accounts this requirement has
+    to decide.** `V060` backfills `archived_at` but deliberately leaves
+    `include_in_net_worth` exactly as stored, including where the retired
+    cascade is what forced it to `FALSE`. It cannot do otherwise: the cascade
+    ran ahead of `_resolve()`, so an account the user only archived and one the
+    user archived *and* explicitly excluded — a pair both the CLI and
+    `accounts_set` accept in a single call — leave byte-identical audit images,
+    and `AccountSettingsRepo.set` records row snapshots rather than caller
+    kwargs. Nothing moves while the blanket `NOT archived` filter stands,
+    because those accounts are excluded by it regardless. The moment this
+    requirement replaces that filter with the date-scoped one, they stop being
+    excluded by `archived` and start being excluded by a flag some of their
+    owners never set. Deciding them — most likely by surfacing them for review
+    rather than inferring intent a second time — is part of this requirement,
+    not a leftover of the migration.
 10. **The net-worth reports become SQL-backed.** They become `@report` runners
     over the new views, and `ServiceReportSpec` and its executor branch are
     deleted. This is `.claude/rules/reports.md` §"A new report is SQL-backed"
