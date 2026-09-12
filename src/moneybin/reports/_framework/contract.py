@@ -41,6 +41,20 @@ _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 #: it, into every cold start (`test_cli_main_import_does_not_load_heavy_deps`).
 ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
 
+#: KNOWN GAP, deliberately open until the net-worth ladder needs it. A column
+#: declaring `currency_basis="home"` gives its row a second source currency, so
+#: the attribution problem above returns for that half: `applied_rates` holds
+#: both rates and this column names only the row's own. It is not closed the
+#: same way, because a home currency is report-level metadata — one value per
+#: call, resolved once by `ReportCatalog.execute` — and stamping a per-row
+#: column with a constant would publish the wrong shape to avoid a second
+#: lookup. Nothing reaches this today: no shipped report declares a home-basis
+#: column. The first one that does is `reports.net_worth`
+#: (`account_balance_home`, `net_worth_home` — reports-net-worth-sql-surface.md
+#: Requirement 10), and that is where the envelope has to start publishing the
+#: home currency alongside the rates, rather than leaving a caller to infer
+#: which rate priced which basis.
+
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and
 #: ``report_tier`` reads it; defined here beside the id grammar it belongs to.

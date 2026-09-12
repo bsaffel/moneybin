@@ -191,14 +191,18 @@ def convert_records(
 
     ``columns`` is the report's declared ``OutputColumn`` sequence, needed only
     to find a column whose basis is ``"home"`` — see ``_home_basis_columns``.
-    ``home_currency`` is required whenever ``columns`` names one; a home-basis
-    column already equal to ``to_currency`` resolves an identity rate for free
-    (``CurrencyService.resolve_rate``), so a read into the home currency — the
-    common case (Requirement 9's default) — leaves it untouched at zero extra
-    cost, while a read into an arbitrary third currency reprices it from
-    ``home_currency`` exactly like any other column. Both default to ``None``,
-    which is every call site before the net-worth ladder and converts every
-    money-classed column exactly as this function always has.
+    ``home_currency`` is required only when a row actually holds a value in
+    such a column — ``account_balance_home`` is documented nullable
+    (``reports-net-worth-sql-surface.md``), so declaring the column is not
+    evidence any row needs the rate, and a projection where it is null on
+    every row must not degrade over a currency nobody asked to price. A
+    home-basis column already equal to ``to_currency`` resolves an identity
+    rate for free (``CurrencyService.resolve_rate``), so a read into the home
+    currency — the common case (Requirement 9's default) — leaves it untouched
+    at zero extra cost, while a read into an arbitrary third currency reprices
+    it from ``home_currency`` exactly like any other column. Both default to
+    ``None``, which is every call site before the net-worth ladder and converts
+    every money-classed column exactly as this function always has.
     """
     target = canonical_currency(to_currency)
     rows = [dict(record) for record in records]
@@ -237,7 +241,16 @@ def convert_records(
         return ConversionOutcome(rows, None, semantics.fx_basis or _NO_DECLARED_BASIS)
 
     home: str | None = None
-    if home_basis:
+    #: Whether this projection actually needs a home rate — the same per-row
+    #: test `home_plan` applies a few lines down. `account_balance_home` is
+    #: documented nullable (`reports-net-worth-sql-surface.md`), so a home-basis
+    #: column being declared is not evidence any row holds a value in it; an
+    #: all-null projection must convert its row-basis amounts exactly like a
+    #: report that declares no home-basis column at all.
+    needs_home = home_basis and any(
+        row.get(name) is not None for row in rows for name in home_amounts
+    )
+    if needs_home:
         # A home-basis column needs its own FROM currency, and this function has
         # no row-level source for it the way `currency_column` is one — the
         # profile's home currency is report-level metadata, resolved once rather

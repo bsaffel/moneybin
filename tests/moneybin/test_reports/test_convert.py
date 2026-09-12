@@ -254,6 +254,42 @@ def test_a_malformed_home_currency_segments_rather_than_guessing(
     assert "Dollars" not in outcome.degraded_reason
 
 
+def test_an_all_null_home_basis_projection_converts_without_a_home_currency(
+    saved_db: Database,
+) -> None:
+    """A declared home-basis column is not evidence any row needs its rate.
+
+    ``account_balance_home`` is documented nullable
+    (``reports-net-worth-sql-surface.md``) — a profile with no home currency
+    set is exactly the state that produces an all-null projection. The
+    per-row gate further down already skips resolving a rate for a null
+    home-basis cell (``test_a_null_home_basis_value_does_not_demand_a_home_
+    rate``); this is the same relief applied to the declaration-level
+    requirement above it, so a result where every home-basis cell happens to
+    be null still converts its row-basis amounts instead of degrading over a
+    home currency no row actually needs.
+    """
+    _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
+    service = CurrencyService(saved_db)
+    classes = {**_CLASSES, "amount_home": DataClass.BALANCE}
+
+    outcome = convert_records(
+        [_row(amount_home=None)],
+        classes=classes,
+        semantics=_semantics(),
+        to_currency="USD",
+        service=service,
+        columns=_HOME_BASIS_COLUMNS,
+        # No home_currency: the profile has none set, which is the documented
+        # nullable state — not a caller omission.
+    )
+
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "USD"
+    assert outcome.records[0]["amount"] == Decimal("109.00")
+    assert outcome.records[0]["amount_home"] is None
+
+
 def test_converted_rows_report_the_display_currency_not_the_original(
     saved_db: Database,
 ) -> None:
