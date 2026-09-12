@@ -539,8 +539,9 @@ short enough to still catch an account nobody has refreshed in over a month).
 Severity is `warn`, not `fail`. The balance the check flags is still present
 and still contributes to the total; only Requirement 14's own guard — an
 account with **no** balance row at all — drives the total to NULL.
-`DoctorReport.fail_count` counts only `fail` toward `moneybin system doctor`'s
-release-gating exit code (`doctor_service.py:228`), so a stale-but-present
+`DoctorReport.failing` counts only `fail` toward `moneybin system doctor`'s
+release-gating exit code (`doctor_service.py:228`, read at
+`cli/commands/system/doctor.py:68`), so a stale-but-present
 balance can surface without turning a release artifact red. That is the same
 trade the shipped `investment_stale_prices` check already makes for a
 carried-forward security close, and for the same reason: an aging number is a
