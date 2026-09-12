@@ -3,7 +3,7 @@
 import logging
 import sys
 from collections.abc import Mapping
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -291,7 +291,11 @@ def profile_show(
         if settings:
             logger.info("  Settings (database):")
             for k, v in settings.items():
-                shown = "(not set)" if v is None or v == () else v
+                if k == "display_currency_targets" and isinstance(v, tuple):
+                    targets = cast(tuple[str, ...], v)
+                    shown = ", ".join(targets) if targets else "(not set)"
+                else:
+                    shown = "(not set)" if v is None else v
                 logger.info(f"    {k}: {shown}")
 
 

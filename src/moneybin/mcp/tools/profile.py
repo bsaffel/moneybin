@@ -53,7 +53,8 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
                 else []
             )
             + [
-                'Use profile_set(display_currency_targets=["EUR"]) to add report targets'
+                'Use profile_set(display_currency_targets=["EUR"]) to set or replace '
+                "the full report target list"
             ]
         ),
     )

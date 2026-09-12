@@ -178,8 +178,26 @@ async def test_profile_actions_explain_how_to_set_home_and_display_currencies(
 
     assert env.actions == [
         'Use profile_set(home_currency="USD") to set your home currency',
-        'Use profile_set(display_currency_targets=["EUR"]) to add report targets',
+        (
+            'Use profile_set(display_currency_targets=["EUR"]) to set or replace '
+            "the full report target list"
+        ),
     ]
+
+
+async def test_profile_actions_do_not_imply_display_targets_are_appended(
+    mcp_db: object,
+) -> None:
+    """The target write replaces its collection, so its hint must say that."""
+    await profile_set(display_currency_targets=["GBP"])
+
+    env = await profile()
+
+    assert (
+        'Use profile_set(display_currency_targets=["EUR"]) to set or replace '
+        "the full report target list"
+    ) in env.actions
+    assert not any("add report targets" in action for action in env.actions)
 
 
 def test_profile_read_is_annotated_read_only() -> None:

@@ -161,6 +161,22 @@ def test_show_calls_empty_display_targets_not_set(
     assert "display_currency_targets: (not set)" in caplog.text
 
 
+def test_show_renders_populated_display_targets_as_a_human_list(
+    profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Targets are profile preferences, not a Python tuple for users to parse."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("home_currency", "GBP", actor="test")
+    settings.set_setting("display_currency_targets", "EUR,GBP", actor="test")
+
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
+        result = runner.invoke(app, ["show"])
+
+    assert result.exit_code == 0
+    assert "display_currency_targets: EUR, GBP" in caplog.text
+    assert "display_currency_targets: ('EUR', 'GBP')" not in caplog.text
+
+
 def test_show_survives_a_database_that_predates_the_settings_table(
     profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
 ) -> None:
