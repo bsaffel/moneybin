@@ -545,7 +545,8 @@ Numbered, testable. Tagged by phase.
     sync held it. Refresh already holds that lock. The step runs after `transform`
     because the pairs and dates are derived from `core.*`, and last because nothing
     downstream consumes it, so a provider outage costs the run nothing that had
-    already succeeded. A profile with no home currency set fetches nothing.
+    already succeeded. A profile with neither a home currency nor declared
+    targets fetches nothing.
 
     A pair the step could not fill is reported as one of three kinds, because
     their remedies differ. A *failed* pair — the provider call raised — is

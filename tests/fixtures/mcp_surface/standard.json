@@ -1,5 +1,5 @@
 {
-  "sha256": "50b3656d2e983739dc4e1e58368d32b88edf5e9f62a131f756e7c4837f204259",
+  "sha256": "d855a3c512d4d0a12e205918ba1c6705f5abbab6263819acbd5e59225ad6b538",
   "tool_count": 50,
   "tools": [
     {
@@ -2595,7 +2595,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Read the active profile's name and managed settings, including its home currency. The home currency is null until the user chooses one; MoneyBin never assumes USD.",
+        "description": "Read the active profile's name and managed settings, including its home currency and declared display-currency targets. The home currency is null until the user chooses one; MoneyBin never assumes USD.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {},
@@ -2610,12 +2610,12 @@
         },
         "name": "profile"
       },
-      "description_bytes": 163,
+      "description_bytes": 201,
       "input_schema_bytes": 62,
       "name": "profile",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 419
+      "total_bytes": 457
     },
     {
       "annotation_bytes": 90,
@@ -2626,18 +2626,38 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing \u2014 amounts keep their original currency. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
+        "description": "Set the profile's home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "display_currency_targets": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO 4217 codes to prepare for report reads."
+            },
             "home_currency": {
-              "description": "ISO 4217 code, three uppercase letters (USD, EUR, GBP).",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "ISO 4217 code, three uppercase letters (USD, EUR, GBP)."
             }
           },
-          "required": [
-            "home_currency"
-          ],
           "type": "object"
         },
         "meta": {
@@ -2649,12 +2669,12 @@
         },
         "name": "profile_set"
       },
-      "description_bytes": 213,
-      "input_schema_bytes": 196,
+      "description_bytes": 267,
+      "input_schema_bytes": 383,
       "name": "profile_set",
       "other_bytes": 62,
       "output_schema_bytes": 0,
-      "total_bytes": 611
+      "total_bytes": 849
     },
     {
       "annotation_bytes": 90,
@@ -5229,5 +5249,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 61938
+  "total_bytes": 62214
 }
