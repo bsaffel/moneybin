@@ -332,7 +332,7 @@ moneybin db query "SELECT COUNT(*) FROM core.fct_transactions"
 moneybin db info
 ```
 
-`db shell` and `db query` build a short-lived temporary init script (`0600` permissions) that runs `ATTACH '<path>' (..., ENCRYPTION_KEY '...')` and then `USE moneybin`. The DuckDB CLI binary must be installed separately (see [duckdb.org/docs/installation](https://duckdb.org/docs/installation/)) — `db shell` exits with a hint if it's missing. There's also `moneybin db ui` for browser-based read-only exploration; it's not relevant to the security model and uses the same attach pattern.
+`db shell`, `db query`, and `db ui` build a short-lived, key-free init script (`0600` permissions) that runs `ATTACH '<path>' (..., ENCRYPTION_KEY getenv('MONEYBIN_DATABASE__ENCRYPTION_KEY'))` and then `USE moneybin`. MoneyBin supplies the key only through the DuckDB CLI child process environment, and removes the init script in a `finally` block. The DuckDB CLI binary must be installed separately (see [duckdb.org/docs/installation](https://duckdb.org/docs/installation/)) — `db shell` exits with a hint if it's missing. `db ui` provides browser-based read-only exploration with the same attach pattern.
 
 ---
 
