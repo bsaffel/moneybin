@@ -142,7 +142,9 @@ test-all: venv ## Development: Run all tests except performance budgets with ver
 
 test-cov: venv ## Development: Run tests with coverage report
 	@echo "$(BLUE)🧪 Running tests with coverage...$(RESET)"
-	@uv run pytest --cov=src tests/ -m "unit and not slow" --durations=25
+	# The 92% gate belongs to CI's unit/integration/E2E aggregate, not this partial suite.
+	@uv run pytest --cov=src --cov-report= --cov-fail-under=0 tests/ -m "unit and not slow" --durations=25
+	@uv run coverage report --fail-under=0
 	@echo "$(BLUE)📊 Coverage report generated$(RESET)"
 
 test-integration: venv ## Development: Run integration tests only
