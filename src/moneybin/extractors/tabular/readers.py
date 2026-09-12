@@ -558,7 +558,7 @@ _EXCEL_MIDNIGHT_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) 00:00:00$")
 
 
 def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
-    """Collapse a native-date cell's rendered text to its date.
+    """Collapse a native-date column's rendered text to its date.
 
     ``_excel_cell_text`` closes this gap for the header-classification
     sample, which reads cells directly via openpyxl and sees the original
@@ -572,9 +572,24 @@ def _normalize_excel_date_columns(df: pl.DataFrame) -> pl.DataFrame:
     that shape still isn't recognized by any ``_DATE_FORMATS`` entry, which
     is a separate, disclosed gap for ``date_detection`` to close, not this
     reader.
+
+    Rewrites only when EVERY non-null value in a column matches the
+    anchored midnight pattern — never a per-cell replace. Raw is untouched
+    data from loaders (AGENTS.md's Data Layers table), so a Description/Memo
+    column that happens to hold one value shaped exactly like
+    ``"2026-01-01 00:00:00"`` must not be silently truncated; only a column
+    that is *entirely* that shape is treated as a native date column.
     """
+    date_cols = [
+        col
+        for col in df.select(cs.string()).columns
+        if (non_null := df[col].drop_nulls()).len() > 0
+        and non_null.str.contains(_EXCEL_MIDNIGHT_DATETIME_RE.pattern).all()
+    ]
+    if not date_cols:
+        return df
     return df.with_columns(
-        cs.string().str.replace(_EXCEL_MIDNIGHT_DATETIME_RE.pattern, "${1}")
+        pl.col(date_cols).str.replace(_EXCEL_MIDNIGHT_DATETIME_RE.pattern, "${1}")
     )
 
 
@@ -750,9 +765,19 @@ def _read_excel(
     # _excel_row_looks_like_data_at).
     header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
-        header_row_looks_like_data = _excel_row_looks_like_data_at(
-            path, sheet_used, skip_rows, source_bytes=source_bytes
-        )
+        try:
+            header_row_looks_like_data = _excel_row_looks_like_data_at(
+                path, sheet_used, skip_rows, source_bytes=source_bytes
+            )
+        except (InvalidFileException, zipfile.BadZipFile):
+            # Same fallback as the auto-detect branch above, and for the same
+            # reason: a saved/matched TabularFormat with file_type="xls" and
+            # skip_rows > 0 reaches this defense-in-depth sampler too, and
+            # openpyxl still can't open a legacy .xls (path or bytes shape —
+            # see the auto-detect branch's comment for why the two shapes
+            # raise different exceptions). An unreadable sampler has no
+            # opinion; the real read below still succeeds via fastexcel.
+            header_row_looks_like_data = False
 
     return ReadResult(
         df=df,

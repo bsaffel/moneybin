@@ -3215,11 +3215,20 @@ class ImportService:
                 # resolve_or_confirm refuses a low tier with its own generic
                 # reason, and a consumed header row is what pinned the tier —
                 # so re-classify before raising, or every surface prescribes a
-                # mapping retry for the one cause no mapping answers. Reached
-                # by a saved/matched format whose explicit skip_rows lands on
-                # a row that itself parses as a transaction (CSV or Excel —
-                # both readers compute the flag only for an explicit skip_rows;
-                # auto-detection never picks a data-looking row as the header).
+                # mapping retry for the one cause no mapping answers. In THIS
+                # `else:` branch (matched_format is None, reviewed_plan is
+                # None), read_result.header_row_looks_like_data is always
+                # False: it was computed from the read_file() call above using
+                # the pre-header-matching matched_format, which is None here,
+                # so skip_rows was None and both readers' auto-detection path
+                # never flags a data-looking row. The header_row_looks_like_data
+                # arm of classify_unconfirmable_plan is therefore unreachable
+                # from this exact call site — it stays wired here as
+                # defense-in-depth for the shared classifier, which the
+                # `reviewed_plan is not None` and `elif matched_format:`
+                # branches above DO reach with True for a saved/matched format
+                # whose explicit skip_rows lands on a row that itself parses
+                # as a transaction.
                 raise ImportConfirmationRequiredError(
                     dataclasses.replace(
                         outcome,

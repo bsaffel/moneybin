@@ -784,6 +784,112 @@ class TestExcelReader:
         assert result.has_header is True
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
 
+    def test_explicit_skip_rows_openpyxl_failure_falls_back_instead_of_raising(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A saved/matched format's explicit skip_rows must not crash either.
+
+        Before this fix, the EXPLICIT skip_rows branch's defense-in-depth
+        check (_excel_row_looks_like_data_at, called only when
+        explicit_skip and resolved_has_header) had no guard around openpyxl
+        at all — unlike the auto-detect branch above, which already falls
+        back on InvalidFileException/BadZipFile. A saved/matched
+        TabularFormat with file_type="xls" and skip_rows > 0 went from
+        working (pre-PR: calamine/fastexcel handled the whole read, openpyxl
+        was never touched) to crashing with an unhandled InvalidFileException.
+        Mirrors test_openpyxl_failure_falls_back_instead_of_raising's mocking
+        shape, but with an explicit skip_rows so the OTHER call site is the
+        one under test.
+        """
+        import openpyxl
+        from openpyxl.utils.exceptions import InvalidFileException
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        path = tmp_path / "unreadable_by_openpyxl.xlsx"
+        wb.save(path)
+
+        mocker.patch(
+            "openpyxl.load_workbook",
+            side_effect=InvalidFileException("unsupported format"),
+        )
+
+        result = read_file(
+            path, FormatInfo(file_type="excel"), skip_rows=0, sheet="Sheet"
+        )
+        assert result.skip_rows == 0
+        assert result.has_header is True
+        assert result.header_row_looks_like_data is False
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+
+    def test_explicit_skip_rows_bytes_bad_zip_falls_back_instead_of_raising(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Same defect, MCP confirm-after-preview replay (bytes) shape.
+
+        Mirrors test_bytes_path_openpyxl_bad_zip_falls_back_instead_of_raising,
+        but with an explicit skip_rows so the defense-in-depth call
+        (_excel_row_looks_like_data_at) is what hits the real OLE2 bytes —
+        given bytes, openpyxl skips its filename check and fails inside
+        ZipFile(...) with zipfile.BadZipFile rather than InvalidFileException.
+        Drives the sampler with the real leading bytes of an OLE2 compound
+        file so openpyxl raises BadZipFile on its own, not because a mock
+        says so; only the downstream pl.read_excel is mocked, standing in for
+        calamine actually parsing a well-formed legacy .xls stream.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        stub_df = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["42.5"],
+            "Description": ["Coffee"],
+        })
+        mocker.patch("polars.read_excel", return_value=stub_df)
+
+        result = read_file(
+            tmp_path / "legacy_replay.xls",
+            FormatInfo(file_type="excel"),
+            skip_rows=0,
+            sheet="Sheet1",
+            source_bytes=ole2_magic_bytes,
+        )
+        assert result.skip_rows == 0
+        assert result.has_header is True
+        assert result.header_row_looks_like_data is False
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+
+    def test_partial_midnight_match_column_left_untouched(self, tmp_path: Path) -> None:
+        """A column with only ONE midnight-shaped value must not be rewritten.
+
+        _normalize_excel_date_columns must require the WHOLE column to match
+        the midnight pattern before rewriting any of it, not just the current
+        cell — raw is untouched data from loaders (AGENTS.md's Data Layers
+        table). A Description column holding one value shaped exactly like
+        "2026-01-01 00:00:00" is not a date column and must be left
+        untouched, while a genuine all-midnight native date column beside it
+        is still normalized.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 1, 1), 42.50, "2026-01-01 00:00:00"])
+        ws.append([datetime.date(2026, 1, 2), 10.00, "Coffee"])
+        path = tmp_path / "mixed_column.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.df["Date"].to_list() == ["2026-01-01", "2026-01-02"]
+        assert result.df["Description"].to_list() == [
+            "2026-01-01 00:00:00",
+            "Coffee",
+        ]
+
 
 class TestParquetReader:
     """Tests for Parquet file reading."""
