@@ -20,7 +20,10 @@ from typing import Any, Literal, Protocol, cast
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.matching.aliasing import resolve_curation_transaction_id
+from moneybin.matching.aliasing import (
+    resolve_curation_transaction_id,
+    resolve_curation_transaction_ids,
+)
 from moneybin.matching.hashing import gold_key_unmatched
 from moneybin.protocol.pagination import (
     KeysetPosition,
@@ -464,7 +467,10 @@ class TransactionService:
         requests: Sequence[AnnotationRequest],
     ) -> AnnotationPlan:
         """Resolve an exact annotation plan without mutating state."""
-        prepared = tuple(self._prepare_annotation(request) for request in requests)
+        resolved_ids = self._bulk_resolve_annotation_ids(requests)
+        prepared = tuple(
+            self._prepare_annotation(request, resolved_ids) for request in requests
+        )
         self._reject_composed_annotations(prepared)
         plan = AnnotationPlan(items=prepared)
         if plan.changed_count == 0:
@@ -474,15 +480,67 @@ class TransactionService:
             )
         return plan
 
-    def _prepare_annotation(self, request: AnnotationRequest) -> _PreparedAnnotation:
+    def _bulk_resolve_annotation_ids(
+        self, requests: Sequence[AnnotationRequest]
+    ) -> dict[str, str]:
+        """One bulk resolve for every transaction-addressed request in the batch.
+
+        ``NoteAdd``/``TagsSet``/``SplitsSet`` each name a ``transaction_id``;
+        resolving them one at a time turns an N-item batch into up to N
+        catalog+liveness round trips, doubled again by the MCP commit path's
+        second preflight before it writes — exactly the O(n) cost
+        :func:`resolve_curation_transaction_ids` exists to collapse into one
+        chunked query. An id absent from the result was not resolvable even
+        by the bulk resolver's own ``required=True`` fallback walk; each
+        request applies its own permissive-vs-strict semantics to that
+        absence in :meth:`_resolve_annotation_transaction_id`, exactly as
+        calling the single-id resolver with that request's ``required``
+        would have.
+        """
+        ids = [
+            request.transaction_id
+            for request in requests
+            if isinstance(request, (NoteAdd, TagsSet, SplitsSet))
+        ]
+        if not ids:
+            return {}
+        return resolve_curation_transaction_ids(self._db, ids)
+
+    def _resolve_annotation_transaction_id(
+        self, transaction_id: str, resolved_ids: dict[str, str], *, required: bool
+    ) -> str:
+        """Apply one request's required semantics to the batch's bulk-resolved map.
+
+        Mirrors :func:`resolve_curation_transaction_id`'s ``required``
+        contract exactly, reading from the already-computed batch map instead
+        of re-walking: ``required=True`` raises when the id is absent (the
+        bulk resolver's own fallback already tried the full walk and still
+        couldn't place it); ``required=False`` falls through to the id
+        unchanged, the same permissive orphan-cleanup no-op.
+        """
+        resolved = resolved_ids.get(transaction_id)
+        if resolved is not None:
+            return resolved
+        if not required:
+            return transaction_id
+        raise UserError(
+            "The transaction reference did not match a transaction.",
+            code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
+        )
+
+    def _prepare_annotation(
+        self, request: AnnotationRequest, resolved_ids: dict[str, str]
+    ) -> _PreparedAnnotation:
         """Resolve every batch target before writes begin.
 
-        ``NoteAdd``/``TagsSet``/``SplitsSet`` resolve ``transaction_id`` through
-        the shared curation seam first, same as every granular writer
-        (``add_note``, ``set_tags``, ``set_splits``, ...) — otherwise a
+        ``NoteAdd``/``TagsSet``/``SplitsSet`` resolve ``transaction_id``
+        through ``resolved_ids`` — the shared curation seam, bulk-resolved
+        once for the whole batch by :meth:`_bulk_resolve_annotation_ids` —
+        same as every granular writer (``add_note``, ``set_tags``,
+        ``set_splits``, ...) resolves individually. Skipping this would let a
         superseded id passed through the coarse ``transactions_annotate``
-        batch bypasses the seam entirely and either lands state on a dead id
-        or is hard-refused where the granular path would have resolved it
+        batch bypass the seam entirely, either landing state on a dead id or
+        being hard-refused where the granular path would have resolved it
         (issue #538). ``TagsSet``/``SplitsSet`` mirror their granular
         counterparts' add-vs-remove asymmetry: an empty desired list is a
         pure clear and resolves permissively (``required=False``, orphan
@@ -490,8 +548,8 @@ class TransactionService:
         """
         if isinstance(request, NoteAdd):
             validate_note_text(request.text)
-            transaction_id = resolve_curation_transaction_id(
-                self._db, request.transaction_id
+            transaction_id = self._resolve_annotation_transaction_id(
+                request.transaction_id, resolved_ids, required=True
             )
             self._annotation_transaction_amount(transaction_id)
             return _PreparedAnnotation(
@@ -517,8 +575,8 @@ class TransactionService:
             )
 
         if isinstance(request, TagsSet):
-            transaction_id = resolve_curation_transaction_id(
-                self._db, request.transaction_id, required=bool(request.tags)
+            transaction_id = self._resolve_annotation_transaction_id(
+                request.transaction_id, resolved_ids, required=bool(request.tags)
             )
             mutation = self._prepare_tags_set(transaction_id, request.tags)
             # Mirrors the SplitsSet branch below: skip the amount lookup
@@ -541,8 +599,8 @@ class TransactionService:
             )
 
         if isinstance(request, SplitsSet):
-            transaction_id = resolve_curation_transaction_id(
-                self._db, request.transaction_id, required=bool(request.splits)
+            transaction_id = self._resolve_annotation_transaction_id(
+                request.transaction_id, resolved_ids, required=bool(request.splits)
             )
             # expected_total is only meaningful for a non-empty desired
             # sequence (_prepare_splits_set skips the total check on an empty
@@ -647,11 +705,30 @@ class TransactionService:
                 )
 
     def _annotation_transaction_amount(self, transaction_id: str) -> Decimal:
-        """Resolve one annotation transaction and return its signed amount."""
+        """Resolve one annotation transaction and return its signed amount.
+
+        Falls back to ``raw.manual_transactions`` when the id has no row in
+        ``core.fct_transactions`` yet — the same liveness definition
+        ``resolve_curation_transaction_id`` already used to accept this exact
+        id (a fresh manual transaction is legitimately live before the next
+        ``refresh_run`` materializes it). By the time an id reaches here, the
+        resolver has already forwarded any aliased-away manual id onward, so
+        one staying itself and missing from the fact view can only be an
+        un-aliased manual row — no separate alias check is needed here.
+        Without this fallback, a note or non-empty tag/split set added via
+        ``transactions_annotate`` immediately after ``transactions_create``
+        would be refused, even though the granular writers (``add_note``,
+        ``set_tags``, ``add_split``) accept the identical id today.
+        """
         row = self._db.conn.execute(
             f"SELECT amount FROM {FCT_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # TableRef constant
             [transaction_id],
         ).fetchone()
+        if row is None:
+            row = self._db.conn.execute(
+                f"SELECT amount FROM {MANUAL_TRANSACTIONS.full_name} WHERE transaction_id = ?",  # TableRef constant
+                [transaction_id],
+            ).fetchone()
         if row is None:
             raise UserError(
                 "The transaction reference did not match a transaction.",
@@ -1266,12 +1343,18 @@ class TransactionService:
             self._db.begin()
             try:
                 for entry, raw_result in cat_entries:
+                    # resolve_transaction_id=False: raw_result.transaction_id
+                    # was minted by this same call, moments earlier, and
+                    # cannot possibly be aliased yet — resolving each one in
+                    # this loop would cost up to _MANUAL_BATCH_MAX individual
+                    # catalog+liveness round trips for zero benefit.
                     cat_service.set_category_in_active_txn(
                         raw_result.transaction_id,
                         category=entry["category"],
                         subcategory=entry.get("subcategory"),
                         categorized_by="user",
                         actor=actor,
+                        resolve_transaction_id=False,
                     )
                 self._db.commit()
             except Exception:

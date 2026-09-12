@@ -246,6 +246,7 @@ class CategorizationService:
         subcategory: str | None,
         categorized_by: Literal["user"] = "user",
         actor: str,
+        resolve_transaction_id: bool = True,
     ) -> None:
         """``set_category`` body without txn boundaries (caller owns the transaction)."""
         self._applier.set_category_in_active_txn(
@@ -254,6 +255,7 @@ class CategorizationService:
             subcategory=subcategory,
             categorized_by=categorized_by,
             actor=actor,
+            resolve_transaction_id=resolve_transaction_id,
         )
 
     def apply_review_categorization_in_active_txn(

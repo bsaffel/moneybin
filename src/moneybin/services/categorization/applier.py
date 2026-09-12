@@ -455,6 +455,7 @@ class MatchApplier:
         subcategory: str | None,
         categorized_by: Literal["user"] = "user",
         actor: str,
+        resolve_transaction_id: bool = True,
     ) -> None:
         """``set_category`` body without txn boundaries.
 
@@ -468,14 +469,24 @@ class MatchApplier:
         a higher-priority existing categorization. New callers needing a
         non-user write must route through :meth:`write_categorization`.
 
-        ``transaction_id`` is resolved through the shared curation seam first
-        (issue #538). Safe for ``TransactionService.create_manual_batch``'s
-        pre-materialization write too: the resolver's liveness check also
-        accepts a row still only in ``raw.manual_transactions`` (the manual
-        entry's own raw insert, already committed by the time this runs), the
-        same allowance the doctor's ``orphan_app_state`` invariant makes.
+        ``resolve_transaction_id=True`` (default) resolves ``transaction_id``
+        through the shared curation seam first (issue #538) — the safety net
+        for :meth:`set_category`'s single caller-supplied id. Safe for
+        ``TransactionService.create_manual_batch``'s pre-materialization write
+        too: the resolver's liveness check also accepts a row still only in
+        ``raw.manual_transactions`` (the manual entry's own raw insert,
+        already committed by the time this runs), the same allowance the
+        doctor's ``orphan_app_state`` invariant makes. ``create_manual_batch``
+        instead passes ``resolve_transaction_id=False`` for the ids it just
+        minted in that same call (mirroring :meth:`write_categorization`'s
+        identical fast path): they cannot possibly be aliased yet, so
+        resolving up to ``_MANUAL_BATCH_MAX`` of them one at a time in a loop
+        would be exactly the per-row cost
+        :func:`resolve_curation_transaction_id`'s own docstring calls
+        disqualifying at batch scale, for zero benefit.
         """
-        transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
+        if resolve_transaction_id:
+            transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         category_id = resolve_category_id(self._db, category, subcategory)
         # Routes through the repo (paired audit, full before/after — Req 4).
         # in_outer_txn=True: the caller already owns the transaction.

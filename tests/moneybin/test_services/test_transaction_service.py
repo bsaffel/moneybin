@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -1878,6 +1879,55 @@ class TestManualEntry:
         assert "category.set" in actions
 
     @pytest.mark.unit
+    def test_create_manual_batch_categorization_skips_transaction_id_resolution(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Categorizing a fresh manual batch must not resolve ids it just minted.
+
+        Each entry's ``transaction_id`` is the predicted gold key this same
+        call derived moments earlier (see ``ManualEntryRawResult``'s
+        docstring) — it cannot possibly be aliased yet, so resolving it again
+        per row would cost up to ``_MANUAL_BATCH_MAX`` individual
+        catalog+liveness round trips for zero benefit.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+
+        real_execute = transaction_db.execute
+        liveness_queries: list[str] = []
+
+        def counting_execute(query: str, params: list[Any] | None = None) -> object:
+            if (
+                "manual_transactions" in query.lower()
+                and "transaction_id in (" in query.lower()
+            ):
+                liveness_queries.append(query)
+            return real_execute(query, params)
+
+        monkeypatch.setattr(transaction_db, "execute", counting_execute)
+
+        result = service.create_manual_batch(
+            [
+                self._entry(category="Food & Drink", subcategory="Coffee Shops"),
+                self._entry(category="Shopping", amount=Decimal("-20.00")),
+                self._entry(category="Food & Drink", amount=Decimal("-30.00")),
+            ],
+            actor="cli",
+        )
+
+        assert len(liveness_queries) == 0, (
+            "Expected zero transaction-id resolution queries for freshly-"
+            f"minted manual ids, got {len(liveness_queries)}"
+        )
+        placeholders = ", ".join("?" for _ in result.results)
+        cat_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "  # noqa: S608  # test-built placeholders, not user input
+            f"WHERE transaction_id IN ({placeholders})",
+            [r.transaction_id for r in result.results],
+        ).fetchone()
+        assert cat_count == (3,)
+
+    @pytest.mark.unit
     def test_create_manual_batch_without_category_writes_no_categorization(
         self, transaction_db: Database
     ) -> None:
@@ -2322,3 +2372,90 @@ class TestCurationTransactionIdResolution:
 
         assert exc.value.code == "mutation_invalid_input"
         assert len(service.list_splits("T1")) == 1
+
+    @pytest.mark.unit
+    def test_apply_annotations_note_add_against_a_freshly_created_manual_id(
+        self, transaction_db: Database
+    ) -> None:
+        """A note added moments after ``transactions_create`` must not be refused.
+
+        Before the next ``refresh_run`` materializes the manual row into
+        ``core.fct_transactions``, ``resolve_curation_transaction_id`` already
+        treats the un-aliased manual row as live -- but the amount lookup
+        right after it used to query ``core.fct_transactions`` only, so it
+        disagreed with the resolver that just accepted the same id and
+        refused. The granular ``add_note`` writer never hit this (it never
+        needs the amount), so the coarse ``transactions_annotate`` path must
+        match it rather than carry its own, stricter definition of liveness.
+        """
+        transaction_db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id) VALUES ('A1')"
+        )
+        service = TransactionService(transaction_db)
+        batch = service.create_manual_batch(
+            [
+                {
+                    "account_id": "A1",
+                    "amount": Decimal("-12.34"),
+                    "transaction_date": "2026-04-15",
+                    "description": "Coffee Shop",
+                }
+            ],
+            actor="cli",
+        )
+        manual_id = batch.results[0].transaction_id
+        assert transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM core.fct_transactions WHERE transaction_id = ?",
+            [manual_id],
+        ).fetchone() == (0,), "not yet materialized -- the case under test"
+
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id=manual_id, text="pending review")],
+            actor="mcp",
+            operation_id="op_manual_note",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert [note.text for note in service.list_notes(manual_id)] == [
+            "pending review"
+        ]
+
+    @pytest.mark.unit
+    def test_preview_annotations_bulk_resolves_transaction_ids_once_per_batch(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A batch of many NoteAdd requests must cost one bulk liveness query.
+
+        Before this fix, ``_prepare_annotation`` called the single-id resolver
+        once per transaction-addressed request, so a full batch (``requests``
+        capped at ``settings.mcp.max_items``) cost up to N catalog+liveness
+        round trips — doubled again by the MCP commit path re-running preflight
+        before it writes. ``resolve_curation_transaction_ids`` collapses that
+        into one chunked query per preview pass.
+        """
+        service = TransactionService(transaction_db)
+
+        real_execute = transaction_db.execute
+        liveness_queries: list[str] = []
+
+        def counting_execute(query: str, params: list[Any] | None = None) -> object:
+            if (
+                "manual_transactions" in query.lower()
+                and "transaction_id in (" in query.lower()
+            ):
+                liveness_queries.append(query)
+            return real_execute(query, params)
+
+        monkeypatch.setattr(transaction_db, "execute", counting_execute)
+
+        requests = [
+            NoteAdd(kind="note_add", transaction_id="T1", text=f"note {i}")
+            for i in range(5)
+        ]
+        plan = service.preview_annotations(requests)
+
+        assert len(plan.items) == 5
+        assert len(liveness_queries) == 1, (
+            f"Expected exactly 1 bulk liveness query for 5 requests in one "
+            f"batch, got {len(liveness_queries)}"
+        )
