@@ -37,7 +37,7 @@ SELECT
   g.valuation_rate_date, /* Date of the actual terms or stored valuation rate */
   c.executed_rate, /* Actual received units per sent unit */
   g.valuation_rate, /* Rate used for Home-currency proceeds */
-  GREATEST(g.updated_at, l.updated_at, c.updated_at) AS updated_at, /* Latest contributing input timestamp */
+  GREATEST(g.updated_at, l.updated_at, c.updated_at, a.updated_at) AS updated_at, /* Latest contributing input timestamp */
   c.from_amount, /* Positive magnitude actually sent in from_currency */
   c.to_amount, /* Positive magnitude actually received in to_currency */
   g.disposed_amount, /* Positive amount of Currency disposed */

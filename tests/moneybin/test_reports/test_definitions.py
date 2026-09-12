@@ -118,6 +118,7 @@ def test_realized_fx_filters_are_canonicalized_and_typed() -> None:
     ("parameters", "message"),
     [
         ({"from_date": "2026/01/01"}, "from_date must be an ISO date"),
+        ({"from_date": "2026-02-30"}, "from_date must be an ISO date"),
         ({"to_date": "2026-1-01"}, "to_date must be an ISO date"),
         ({"currency": "EURO"}, "currency_code must be exactly 3 uppercase letters"),
         ({"coverage": "covered"}, "Unknown coverage: covered"),
@@ -129,6 +130,16 @@ def test_realized_fx_rejects_invalid_filters(
     """Malformed filters fail before DuckDB can compare them lexically."""
     with pytest.raises(ValueError, match=message):
         realized_fx(None, **parameters)  # type: ignore[arg-type]
+
+
+def test_realized_fx_rejects_inverted_date_range() -> None:
+    """A report window cannot end before it starts."""
+    with pytest.raises(ValueError, match="from_date must be on or before to_date"):
+        realized_fx(  # type: ignore[arg-type]
+            None,
+            from_date="2026-02-02",
+            to_date="2026-02-01",
+        )
 
 
 def test_core_report_definitions_have_complete_financial_semantics() -> None:

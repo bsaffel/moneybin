@@ -147,10 +147,14 @@ def _install_realized_fx_sources(model_db: Database) -> None:
     model_db.execute("""
         CREATE OR REPLACE TABLE core.dim_accounts (
             account_id VARCHAR,
-            display_name VARCHAR
+            display_name VARCHAR,
+            updated_at TIMESTAMP
         )
     """)
-    model_db.execute("INSERT INTO core.dim_accounts VALUES ('acct', 'Travel Wallet')")
+    model_db.execute("""
+        INSERT INTO core.dim_accounts VALUES
+            ('acct', 'Travel Wallet', '2026-03-06 12:00:00')
+    """)
 
 
 def test_realized_fx_preserves_one_row_per_consumed_lot(
@@ -200,6 +204,22 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
     ]
 
 
+def test_realized_fx_updated_at_includes_account_name_source(
+    model_db: Database,
+) -> None:
+    """Freshness advances when the joined account display name advances."""
+    _install_realized_fx_sources(model_db)
+    _install_report(model_db, "realized_fx")
+
+    updated_at = model_db.execute("""
+        SELECT updated_at
+        FROM reports.realized_fx
+        WHERE currency_lot_id = 'lot-a'
+    """).fetchone()
+
+    assert updated_at == (datetime(2026, 3, 6, 12),)
+
+
 def test_realized_fx_keeps_incomplete_rows_without_joined_lineage(
     model_db: Database,
 ) -> None:
@@ -231,7 +251,7 @@ def test_realized_fx_keeps_incomplete_rows_without_joined_lineage(
         None,
         None,
         None,
-        datetime(2026, 3, 5, 12),
+        datetime(2026, 3, 6, 12),
     )
 
 

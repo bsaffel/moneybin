@@ -317,6 +317,8 @@ def realized_fx(
         validate_date(from_date, "from_date")
     if to_date is not None:
         validate_date(to_date, "to_date")
+    if from_date is not None and to_date is not None and from_date > to_date:
+        raise ValueError("from_date must be on or before to_date")
     if coverage not in REALIZED_FX_COVERAGE:
         raise ValueError(f"Unknown coverage: {coverage}")
     if currency is not None:
