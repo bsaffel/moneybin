@@ -427,6 +427,10 @@ omit = ["*/tests/*", "*/test_*", "*/venv/*", "*/__pycache__/*"]
 
 [tool.coverage.report]
 # Documentation: https://coverage.readthedocs.io/en/latest/config.html#report-section
+# The combined unit/integration/E2E baseline is 92.859% (MB-69, 2026-09-11).
+# Round down to a whole percentage point so normal environment variance cannot
+# fail the gate while any meaningful coverage regression does.
+fail_under = 92
 exclude_lines = [
     "pragma: no cover",
     "def __repr__",
