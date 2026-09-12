@@ -177,6 +177,23 @@ this spec's to close.
     This is not a second eligibility rule beside Requirement 9's — it is the
     same one, applied to a source Requirement 9 did not yet have to join.
 
+    **A profile with no balance-spine row at all still gets exactly one.**
+    `core.fct_balances_daily` returns zero rows, not a NULL-valued one, when
+    `core.fct_balances` is empty for the whole profile. Reading that spine
+    alone, a profile whose only accounts are unanchored investment accounts
+    would then publish no `reports.net_worth` row at all — the same silent
+    failure this requirement exists to close, one layer further out. When the
+    balance-driven output is empty and the eligible unanchored count is
+    greater than zero, `reports.net_worth` publishes exactly one row dated
+    `CURRENT_DATE`, with `net_worth` NULL and `unanchored_account_count` set
+    to that count. When the balance-driven output is empty and the eligible
+    unanchored count is zero too — no accounts connected, or none holding
+    priced value — no row is published either: a NULL total with a count of
+    zero would misreport an empty profile as an incomplete one, which is a
+    worse answer than an honest absence of rows. **The eligible unanchored
+    count is what gates the synthesized row, not spine emptiness by itself.**
+    See §Data Model for how the row is built without changing the spine.
+
     **Scoped to the account, not to the date, and deliberately so.**
     `core.dim_holdings` is a current snapshot with no date dimension, and the
     dated position spine that would answer "did this account hold priced value
@@ -238,6 +255,22 @@ NULL, and only `reports.net_worth` publishes one. See
 `unanchored_account_count` below, and Requirement 14 for the join's
 account-not-date scoping and why `core.fct_holdings_daily` (Pillar C.3) is
 deliberately not one of these sources.
+
+**`core.fct_balances_daily` is unchanged, deliberately.** Its early return on
+an empty profile (`if obs.empty: yield from (); return`) stays exactly as
+shipped — this requirement does not make the spine read `core.dim_holdings`
+or synthesize a row itself. That model is general-purpose and
+holdings-agnostic, read by all three rungs and by consumers outside this spec
+that have no concept of an unanchored account; coupling it to this guard
+would leak a scaffold row to every one of them, not only to
+`reports.net_worth`. Instead, `reports.net_worth`'s own query `UNION ALL`s a
+single synthesized row onto its balance-driven output — `balance_date =
+CURRENT_DATE`, every measure NULL, `unanchored_account_count` set to the
+eligible unanchored count computed from `core.dim_holdings`,
+`prep.stg_plaid__investment_holdings`, and the eligibility predicate above —
+guarded to appear only when the balance-driven output is empty *and* that
+count is greater than zero. Requirement 14 states the reasoning for gating on
+the count rather than on emptiness alone.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -941,10 +974,16 @@ including the multi-currency persona, which already contains an account in a
 currency outside the rate provider's published set — so the unpriced path is
 reachable from a shipped fixture rather than a hand-built one.
 
-`M2B.3` adds one scenario beside it, shaped like the unpriced-currency case
-it follows: a persona account holding priced securities and carrying no
-balance observation, asserted to drive `net_worth` to NULL with an
-unanchored-account count of exactly one — never to a smaller populated total.
+`M2B.3` adds two scenarios beside it, shaped like the unpriced-currency case
+they follow. The first: a persona account holding priced securities and
+carrying no balance observation, alongside other balance-backed accounts,
+asserted to drive `net_worth` to NULL with an unanchored-account count of
+exactly one — never to a smaller populated total. The second: a persona
+whose accounts are *all* unanchored, so `core.fct_balances_daily` has no row
+for the profile at all — asserted to drive `reports.net_worth` to the
+synthesized row (Requirement 14): exactly one row, dated `CURRENT_DATE`,
+`net_worth` NULL, unanchored-account count equal to the number of qualifying
+accounts — never to zero rows.
 
 ### Tier 3 — Integration
 
@@ -969,12 +1008,17 @@ currencies, one of them unpriced. Three additions:
   window, so `days_since_published` takes a value greater than 1.
 
 - For `M2B.3`: a persona account holding priced securities with no balance
-  observation of any kind, so the unanchored guard is exercised against a
-  shipped fixture rather than a hand-built one.
+  observation of any kind, added to an existing balance-backed persona, so
+  the unanchored guard is exercised against a shipped fixture rather than a
+  hand-built one.
+- For `M2B.3`'s synthesized-row path: a wholly-unanchored persona — every
+  account holding priced securities and no balance observation, so
+  `core.fct_balances_daily` has no row for the profile at all.
 
 Ground truth needs expected net worth per day in the home currency, the
-expected NULL dates for the unpriced currency, and — for `M2B.3` — the expected
-unanchored-account count.
+expected NULL dates for the unpriced currency, and — for `M2B.3` — the
+expected unanchored-account count and, for the wholly-unanchored persona,
+the synthesized row's `CURRENT_DATE` `balance_date`.
 
 ## Dependencies
 
