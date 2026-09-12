@@ -192,6 +192,20 @@ this spec's to close.
     zero would misreport an empty profile as an incomplete one, which is a
     worse answer than an honest absence of rows. **The eligible unanchored
     count is what gates the synthesized row, not spine emptiness by itself.**
+
+    **That row has to survive a historical range query too, not only an
+    unbounded one.** This requirement already counts an unanchored account
+    across the whole requested range, not just today (above), so a caller
+    asking about last quarter on an all-unanchored profile has to see the
+    same NULL total and count a caller asking about right now sees —
+    `balance_date = CURRENT_DATE` is a publication detail of how the row is
+    built, not a claim that the gap is today's alone. Filtering it like any
+    other row, on a plain `balance_date BETWEEN ? AND ?`, would drop it from
+    any requested range that excludes today — reintroducing the exact
+    silent absence this requirement exists to close, one layer downstream in
+    the report runner instead of in the spine. The report's own date-range
+    filter therefore keeps the synthesized row regardless of the requested
+    range; see §Data Model for the exact predicate.
     See §Data Model for how the row is built without changing the spine.
 
     **Scoped to the account, not to the date, and deliberately so.**
@@ -238,15 +252,23 @@ materialized rows makes a later un-archive silently wrong. The same constraint
 binds M2P.3 — see §Key Decision 6.
 
 `M2B.3` adds two more sources, read by `reports.net_worth` alone:
-`core.dim_holdings` and `prep.stg_plaid__investment_holdings`, together
-left-joined against `core.fct_balances` to find an account carrying priced
-value with no balance row of any kind. Both are required — `core.dim_holdings`
+`core.dim_holdings` and `prep.stg_plaid__investment_holdings` scoped to each
+item's newest snapshot — the same receipt-scoped join `dim_holdings.sql`'s
+`newest_snapshot` CTE performs against
+`prep.stg_plaid__investment_holdings_snapshots`, never the retained holdings
+rows directly. Retained rows survive across snapshots, so reading the raw
+table would let a liquidated item's newest pull — which writes zero holdings
+rows — leave its last non-empty snapshot's rows in place, permanently
+flagging a correctly-empty account as unanchored and NULLing the profile
+total forever. Scoping to the newest snapshot receipt reads that pull as no
+candidate rows instead, exactly as `dim_holdings.sql`'s own comment on
+`provider_reported` requires. Both sources are required — `core.dim_holdings`
 sums open lots, so it emits no row at all for a broker-reported position with
 no matching lot (an unbound security, a declined bootstrap, or a holdings
-snapshot that landed before its transactions), and `dim_holdings.sql`'s own
-comment names `prep.stg_plaid__investment_holdings` as the source a check
-needs to cover that direction. The candidate set from either source is then
-joined to `core.dim_accounts` and passed through the same eligibility
+snapshot that landed before its transactions), and this snapshot-scoped read
+of `prep.stg_plaid__investment_holdings` is the source `dim_holdings.sql`'s
+own comment names for that direction. The candidate set from either source is
+then joined to `core.dim_accounts` and passed through the same eligibility
 predicate the three rungs already apply — `include_in_net_worth` and the
 date-scoped archival predicate — so an account the user has excluded or
 archived never inflates `unanchored_account_count`. The currencies and
@@ -267,10 +289,26 @@ would leak a scaffold row to every one of them, not only to
 single synthesized row onto its balance-driven output — `balance_date =
 CURRENT_DATE`, every measure NULL, `unanchored_account_count` set to the
 eligible unanchored count computed from `core.dim_holdings`,
-`prep.stg_plaid__investment_holdings`, and the eligibility predicate above —
-guarded to appear only when the balance-driven output is empty *and* that
-count is greater than zero. Requirement 14 states the reasoning for gating on
-the count rather than on emptiness alone.
+`prep.stg_plaid__investment_holdings` (scoped to each item's newest snapshot,
+above), and the eligibility predicate above — guarded to appear only when the
+balance-driven output is empty *and* that count is greater than zero.
+Requirement 14 states the reasoning for gating on the count rather than on
+emptiness alone.
+
+**The report's own `from_date`/`to_date` filter cannot be a plain
+`balance_date BETWEEN ? AND ?`, or the synthesized row disappears from any
+requested range that excludes today.** Every `@report` runner wraps its view
+in exactly that kind of predicate — see
+`src/moneybin/reports/definitions/cash_flow.py:176-179` for the pattern
+`core:cashflow` already follows. The synthesized row is the only row
+`reports.net_worth` ever publishes with `account_count = 0`: every
+balance-driven row is grouped from at least one balance observation, so
+`account_count = 0` never occurs there. `reports.net_worth`'s runner filters
+on `WHERE (balance_date BETWEEN ? AND ?) OR (account_count = 0 AND
+unanchored_account_count > 0)` — every balance-driven row still filters on
+its own date normally, and the synthesized row, when the count gate above
+publishes it at all, survives whatever range was requested instead of only
+the range containing today.
 
 Column order follows Rule B of `.claude/rules/column-ordering.md`: grain keys →
 identifying labels → dimensions → dates → provenance → measures, headline
@@ -366,8 +404,9 @@ fails closed.
 `unanchored_account_count` is `M2B.3`'s column on this same rung, not M2B.2's:
 Requirement 14 delivers the guard as its own work item precisely so the release
 gate on this row outlives M2B.2 closing. It joins `core.dim_holdings` and
-`prep.stg_plaid__investment_holdings` — sources none of the three rungs
-otherwise reads — against `core.fct_balances`, filtered through the same
+`prep.stg_plaid__investment_holdings` scoped to each item's newest snapshot
+receipt (§Data Model above) — sources none of the three rungs otherwise
+reads — against `core.fct_balances`, filtered through the same
 account-eligibility predicate as the other rungs, to count an eligible account
 carrying priced value with no balance row at all, and drives `net_worth` NULL
 the same way `unpriced_currency_count` already does. Requirement 14 states why
@@ -576,8 +615,12 @@ user-authored preference with a derived one.
 So the fix is to retire the cascade and let `archived_at` carry the exclusion,
 date-scoped: `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
 archived_at)`. That is a change to a service write path, an `app.*` column
-semantic, and a backfill that reconstructs pre-archive intent from
-`before_value.include_in_net_worth` on the `archived` FALSE→TRUE audit row.
+semantic, and a backfill that sets `archived_at` from the archival audit-log
+date and leaves `include_in_net_worth` exactly as stored — it cannot do
+otherwise, because a cascade-written `FALSE` and a user-chosen one leave
+byte-identical audit images (Requirement 9's "a set of accounts this
+requirement has to decide" states why, and names the accounts this puts in
+front of the user for review rather than reconstructing).
 `.claude/rules/design-principles.md` puts `app.*` schema semantics on the
 one-way-door trigger list, and a change of that shape earns its own review
 rather than approval alongside three report views. It is therefore a
@@ -602,13 +645,22 @@ newest observation across *all* accounts, not at `CURRENT_DATE` (that model's
 own docstring states this), so a profile where every account has gone stale
 together has no row dated today at all; filtering to `balance_date =
 CURRENT_DATE` would find nothing and pass silently in precisely the case this
-check exists to catch. The check instead takes, per account that already
-passed the eligibility filter (`include_in_net_worth AND NOT archived`, so a
-deliberately excluded or closed account never produces a warning nobody can
-act on), that account's own most recent *observed* row (`is_observed = TRUE`,
-`MAX(balance_date)`) and compares `CURRENT_DATE - balance_date` — not the
-row's own `days_since_observed`, which is relative to the spine's last date
-rather than to today — against `DoctorSettings.balance_staleness_threshold_days`
+check exists to catch. **"Eligible" here means the account's current state,
+not the date-scoped predicate Requirement 9 applies inside
+`reports.net_worth_accounts` itself.** That view keeps an archived account's
+rows for the dates before `archived_at` — preserving that history is the
+whole point of Requirement 9 — so reading `MAX(balance_date)` straight off it
+would still find a deliberately closed account's last pre-archival balance
+and flag it stale. The check instead joins against `core.dim_accounts` and
+applies `include_in_net_worth AND NOT archived` evaluated against the
+account's present row — current-state, not date-scoped — before taking, per
+account that passes it, that account's own most recent *observed* row from
+`reports.net_worth_accounts` (`is_observed = TRUE`, `MAX(balance_date)`). That
+explicit current-state join is what makes a deliberately excluded or closed
+account never produce a warning nobody can act on. The check then compares
+`CURRENT_DATE - balance_date` — not the row's own `days_since_observed`, which
+is relative to the spine's last date rather than to today — against
+`DoctorSettings.balance_staleness_threshold_days`
 (default 30 — long enough to absorb an ordinary monthly statement cycle
 without firing on routine use, short enough to still catch an account nobody
 has refreshed in over a month). Reading each account's own latest row rather
@@ -1047,11 +1099,15 @@ approved as a footnote rather than reviewed on its own terms.
   exclusion instead, date-scoped, and the net-worth eligibility filter becomes
   `include_in_net_worth AND (archived_at IS NULL OR balance_date <=
   archived_at)`. Needs the `archived_at` column and its migration, the service
-  change, and a backfill that reads `before_value.include_in_net_worth` from the
-  `archived` FALSE→TRUE audit row to distinguish a cascade-written FALSE from
-  one the user chose. `app.audit_log` is append-only, so that reconstruction
-  does not decay while this waits. Rationale and the redundancy that makes the
-  cascade removable: §`app.account_settings`.
+  change, and a backfill that sets `archived_at` from the archival audit-log
+  date and leaves `include_in_net_worth` exactly as stored, since
+  `AccountSettingsRepo.set` records row snapshots rather than caller kwargs
+  and cannot tell a cascade-written `FALSE` from one the user chose
+  (Requirement 9's "a set of accounts this requirement has to decide" is the
+  same fact, stated once). Deciding that set — most likely by surfacing it
+  for review rather than inferring intent a second time — is this
+  requirement's own job, not the backfill's. Rationale and the redundancy
+  that makes the cascade removable: §`app.account_settings`.
 - **The margin-loan defect** (Defect 1) — **closed** by #565, ahead of this
   spec, which is the sequencing this section describes working as intended. The
   guard its neighbouring docstring implied — a test that fails when a wire field
@@ -1069,6 +1125,16 @@ approved as a footnote rather than reviewed on its own terms.
   invariant M2B.1 records: the provider's reported balance already is the total
   position value. Excluding C.3 is also what narrows Requirement 14's guard to
   the account rather than the date — see that requirement for the consequence.
+- **A connected account with no balance observation outside investments** — a
+  Plaid cash or credit account whose `current_balance` came back NULL, or a
+  tabular import with no balance column. `core.fct_balances` drops that row
+  (`fct_balances.sql`'s `NOT balance IS NULL` / `NOT current_balance IS NULL`
+  filters) rather than anchoring it at zero, and Requirement 14's guard is
+  scoped to `core.dim_holdings` and `prep.stg_plaid__investment_holdings`, so
+  it does not see this case. The account goes silently absent rather than
+  visibly incomplete — a real gap the release bar in
+  [`roadmap.md`](../roadmap.md) states plainly rather than papering over, and
+  a candidate for a future work item once it has one.
 - **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
