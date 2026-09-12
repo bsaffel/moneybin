@@ -237,6 +237,22 @@ def _walk_alias_chain(
         if next_id is None:
             break
         current = next_id
+    # The forward walk is exhausted (dead end, stale reversed edge, or cycle)
+    # without finding a live id. Deleting an anchor's source rows can
+    # re-anchor a merge group onto a member that already has an *outgoing*
+    # forward edge (module docstring, "A second pass heals what the first
+    # cannot see") — the caller's id is then live under its predecessor, not
+    # anything it forwards to. :func:`_heal_stranded_curation` already walks
+    # this undirected for existing curation; :func:`_live_predecessor` shares
+    # that same query so a fresh write gets the same coverage. Bounded: a
+    # component with more than one live member is ambiguous and never
+    # resolved — silently picking one would be a wrong write against a live
+    # transaction, never a safe guess.
+    if reversed_edges is None:
+        reversed_edges = _reversed_alias_edges(db)
+    predecessor = _live_predecessor(db, current, reversed_edges)
+    if predecessor is not None:
+        return predecessor
     if not required:
         return transaction_id  # orphan cleanup: operate on the id as given
     raise UserError(
@@ -454,27 +470,10 @@ ORDER BY old_id
 """  # noqa: S608  # TableRef constants and code-supplied column expressions only
 
 
-# Curation stranded on an id no view serves, and the live id to move it to.
-#
-# The alias map is walked as an UNDIRECTED graph: a re-anchor can hand an id
-# back, so the live id is as often the stranded id's predecessor as its
-# successor, and only the connected component answers "which ids have ever
-# named this transaction". `UNION` (not `UNION ALL`) in the recursive term is
-# the visited set -- it terminates at the fixpoint, so a cycle cannot hang the
-# walk. `core.fct_transactions` is the liveness oracle deliberately: it is what
-# `app_transaction_categories_fk` anti-joins, so a component this query calls
-# live is one the doctor will too.
-#
-# A component with no live member produces no row here at all (the JOIN drops
-# it), which is the "leave it alone" case; `live_count` distinguishes the other
-# one, where several ids in the component are live and nothing says which the
-# curation belongs to.
-#
-# `{{live_edges}}` drops the edges of re-keys a reversal took back — see
-# :func:`_reversed_alias_edges`. It is a format hole rather than a fixed
-# predicate because the excluded ids arrive as a bind list of unknown length.
-_STRANDED_CURATION_SQL = f"""
-WITH RECURSIVE curated AS (
+# Curation-bearing ids that currently join no live row in core.fct_transactions
+# -- the seed set _heal_stranded_curation resolves in bulk every forwarding pass.
+_STRANDED_CURATION_IDS_SQL = f"""
+WITH curated AS (
   SELECT DISTINCT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
   UNION
   SELECT DISTINCT transaction_id FROM {TRANSACTION_NOTES.full_name}
@@ -482,16 +481,44 @@ WITH RECURSIVE curated AS (
   SELECT DISTINCT transaction_id FROM {TRANSACTION_TAGS.full_name}
   UNION
   SELECT DISTINCT transaction_id FROM {TRANSACTION_SPLITS.full_name}
-), live AS (
-  -- Materialized once and anti-joined, never correlated: core.fct_transactions
-  -- is the whole merge/dedup/categorization pipeline, and a per-row subquery
-  -- over it is O(N x view). Same reason the doctor's FK invariant does this.
-  SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
-), stranded AS (
-  SELECT c.transaction_id
-  FROM curated AS c
-  LEFT JOIN live AS l ON l.transaction_id = c.transaction_id
-  WHERE l.transaction_id IS NULL
+)
+SELECT c.transaction_id
+FROM curated AS c
+LEFT JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.transaction_id
+WHERE l.transaction_id IS NULL
+ORDER BY c.transaction_id
+"""  # noqa: S608  # TableRef constants only
+
+# The live member(s) of each seed id's undirected alias component. Shared by
+# _heal_stranded_curation (seeded from _STRANDED_CURATION_IDS_SQL's result, one
+# call for the whole batch) and _live_predecessor (seeded from one
+# caller-supplied id inside :func:`_walk_alias_chain`) — one query, one
+# definition of the walk, per the coherence rule in
+# .claude/rules/design-principles.md.
+#
+# The alias map is walked as an UNDIRECTED graph: a re-anchor can hand an id
+# back, so the live id is as often a seed's predecessor as its successor, and
+# only the connected component answers "which ids have ever named this
+# transaction" (module docstring, "A second pass heals what the first cannot
+# see"). `UNION` (not `UNION ALL`) in the recursive term is the visited set --
+# it terminates at the fixpoint, so a cycle cannot hang the walk.
+# `core.fct_transactions` is the liveness oracle deliberately: it is what
+# `app_transaction_categories_fk` anti-joins, so a component this query calls
+# live is one the doctor will too.
+#
+# A component with no live member produces no row here at all (the JOIN drops
+# it), which is the "leave it alone" / "still unresolvable" case; `live_count`
+# distinguishes the other one, where several ids in the component are live and
+# nothing says which the seed now means — every caller treats that as
+# unresolved rather than guessing.
+#
+# `{{live_edges}}` drops the edges of re-keys a reversal took back — see
+# :func:`_reversed_alias_edges`. It is a format hole rather than a fixed
+# predicate because the excluded ids arrive as a bind list of unknown length.
+# `{{seed_placeholders}}` is the same kind of hole for the seed list.
+_LIVE_COMPONENT_SQL = f"""
+WITH RECURSIVE seed(transaction_id) AS (
+  VALUES {{seed_placeholders}}
 ), alias_edges AS (
   SELECT old_transaction_id, new_transaction_id
   FROM {TRANSACTION_ID_ALIASES.full_name}
@@ -501,21 +528,21 @@ WITH RECURSIVE curated AS (
   UNION ALL
   SELECT new_transaction_id AS src, old_transaction_id AS dst FROM alias_edges
 ), component AS (
-  SELECT transaction_id AS stranded_id, transaction_id AS member FROM stranded
+  SELECT transaction_id AS seed_id, transaction_id AS member FROM seed
   UNION
-  SELECT c.stranded_id, e.dst
+  SELECT c.seed_id, e.dst
   FROM component AS c
   JOIN edges AS e ON e.src = c.member
 )
 SELECT
-  c.stranded_id,
+  c.seed_id,
   MIN(c.member) AS live_id,
   COUNT(*) AS live_count
 FROM component AS c
-JOIN live AS l ON l.transaction_id = c.member
-GROUP BY c.stranded_id
-ORDER BY c.stranded_id
-"""  # noqa: S608  # TableRef constants only
+JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.member
+GROUP BY c.seed_id
+ORDER BY c.seed_id
+"""  # noqa: S608  # TableRef constants + format holes; every value bound as a placeholder
 
 
 #: The audit action every alias row is written under; the anchor `matches undo`
@@ -913,17 +940,52 @@ def _reversed_alias_edges(db: Database) -> frozenset[str]:
     return frozenset(old_id for op in undone for old_id in ids_by_operation[op])
 
 
-def _stranded_curation_query(reversed_ids: tuple[str, ...]) -> tuple[str, list[str]]:
-    """The stranded-curation query with the reversed re-keys' edges removed."""
+def _live_component_query(
+    seed_ids: Sequence[str], reversed_ids: tuple[str, ...]
+) -> tuple[str, list[str]]:
+    """The live-component query for ``seed_ids`` with reversed re-keys' edges removed.
+
+    Bind order matters: the seed placeholders appear first in
+    :data:`_LIVE_COMPONENT_SQL` (the ``seed`` CTE), before the ``live_edges``
+    ``NOT IN`` list (the ``alias_edges`` CTE), so ``params`` must match.
+    """
+    seed_placeholders = ", ".join("(?)" for _ in seed_ids)
     if not reversed_ids:
-        return _STRANDED_CURATION_SQL.format(live_edges="TRUE"), []
+        sql = _LIVE_COMPONENT_SQL.format(
+            seed_placeholders=seed_placeholders, live_edges="TRUE"
+        )
+        return sql, list(seed_ids)
     placeholders = ", ".join("?" for _ in reversed_ids)
-    return (
-        _STRANDED_CURATION_SQL.format(
-            live_edges=f"old_transaction_id NOT IN ({placeholders})"
-        ),
-        list(reversed_ids),
+    sql = _LIVE_COMPONENT_SQL.format(
+        seed_placeholders=seed_placeholders,
+        live_edges=f"old_transaction_id NOT IN ({placeholders})",
     )
+    return sql, [*seed_ids, *reversed_ids]
+
+
+def _live_predecessor(
+    db: Database, transaction_id: str, reversed_edges: frozenset[str]
+) -> str | None:
+    """The unique live member of ``transaction_id``'s undirected alias component.
+
+    Called by :func:`_walk_alias_chain` once its forward walk is exhausted:
+    deleting an anchor's source rows can re-anchor a merge group onto a member
+    that already has an *outgoing* forward edge, so the id a caller holds may
+    be live under a predecessor the forward walk alone would never reach (see
+    :data:`_LIVE_COMPONENT_SQL`). Returns ``None`` both when no live member
+    exists and when more than one does — resolution must never guess which
+    live transaction an ambiguous id now means.
+    """
+    sql, params = _live_component_query(
+        (transaction_id,), tuple(sorted(reversed_edges))
+    )
+    row = db.execute(sql, params).fetchone()
+    if row is None:
+        return None
+    _seed_id, live_id, live_count = row
+    if int(live_count) != 1:
+        return None
+    return str(live_id)
 
 
 def _relations_exist(db: Database, *refs: TableRef) -> bool:
@@ -1056,8 +1118,15 @@ def _heal_stranded_curation(
         )
         return 0
 
-    sql, params = _stranded_curation_query(tuple(sorted(_reversed_alias_edges(db))))
+    stranded_ids = [
+        str(row[0]) for row in db.execute(_STRANDED_CURATION_IDS_SQL).fetchall()
+    ]
     forwarded = 0
+    if not stranded_ids:
+        return forwarded
+    sql, params = _live_component_query(
+        stranded_ids, tuple(sorted(_reversed_alias_edges(db)))
+    )
     for stranded_id, live_id, live_count in db.execute(sql, params).fetchall():
         if int(live_count) != 1:
             # Several ids in the component are live, so the transaction the
