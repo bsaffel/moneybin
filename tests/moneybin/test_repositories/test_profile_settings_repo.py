@@ -42,6 +42,56 @@ def test_home_currency_is_unset_on_a_fresh_profile(repo: ProfileSettingsRepo) ->
     assert repo.get_home_currency() is None
 
 
+def test_display_currency_targets_start_empty_and_round_trip_normalized(
+    repo: ProfileSettingsRepo,
+) -> None:
+    """Declared display targets are an empty set until explicitly chosen."""
+    assert repo.get_display_currency_targets() == ()
+
+    repo.set_display_currency_targets(("eur", "GBP", "EUR"), actor="cli")
+
+    assert repo.get_display_currency_targets() == ("EUR", "GBP")
+
+
+def test_pre_v060_schema_keeps_home_currency_readable_and_targets_empty(
+    db: Database, repo: ProfileSettingsRepo
+) -> None:
+    """Read-only callers can inspect a pre-V060 profile before migration runs."""
+    repo.set_home_currency("EUR", actor="cli")
+    db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
+
+    assert repo.get_home_currency() == "EUR"
+    assert repo.get_display_currency_targets() == ()
+
+
+def test_display_currency_target_change_is_undoable(
+    db: Database, repo: ProfileSettingsRepo
+) -> None:
+    """Undo restores the prior target collection rather than only a scalar field."""
+    with operation() as first_write:
+        repo.set_display_currency_targets(("EUR",), actor="cli")
+    with operation() as second_write:
+        repo.set_display_currency_targets(("GBP",), actor="cli")
+
+    UndoService(db).undo(second_write, actor="cli")
+    assert repo.get_display_currency_targets() == ("EUR",)
+
+    UndoService(db).undo(first_write, actor="cli")
+    assert repo.get_display_currency_targets() == ()
+
+
+def test_invalid_display_currency_target_leaves_prior_targets_untouched(
+    repo: ProfileSettingsRepo,
+) -> None:
+    """Validation precedes the audited write, so bad target input cannot clobber it."""
+    repo.set_display_currency_targets(("EUR",), actor="cli")
+
+    with pytest.raises(ValueError):
+        repo.set_display_currency_targets(("not-a-currency",), actor="cli")
+
+    assert repo.get_display_currency_targets() == ("EUR",)
+
+
 def test_home_currency_reads_as_unset_before_the_table_exists(
     db: Database, repo: ProfileSettingsRepo
 ) -> None:

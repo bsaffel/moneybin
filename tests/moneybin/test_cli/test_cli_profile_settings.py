@@ -71,6 +71,47 @@ def test_managed_key_writes_the_database_not_config_yaml(
     assert config["logging"]["level"] == "INFO"
 
 
+def test_display_currency_targets_write_the_database_not_config_yaml(
+    profile_home: Path, db: Database
+) -> None:
+    """A comma-separated CLI target list is normalized and persists as settings."""
+    result = runner.invoke(app, ["set", "display_currency_targets", "eur, GBP,EUR"])
+
+    assert result.exit_code == 0
+    assert ProfileSettingsService(db).get_settings().display_currency_targets == (
+        "EUR",
+        "GBP",
+    )
+    config = yaml.safe_load((profile_home / "config.yaml").read_text())
+    assert "display_currency_targets" not in config
+
+
+def test_empty_display_currency_targets_clear_the_declared_targets(
+    profile_home: Path, db: Database
+) -> None:
+    """An empty CLI value deliberately restores the no-extra-refresh-cost default."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("display_currency_targets", "EUR", actor="test")
+
+    result = runner.invoke(app, ["set", "display_currency_targets", ""])
+
+    assert result.exit_code == 0
+    assert settings.get_settings().display_currency_targets == ()
+
+
+def test_invalid_display_currency_target_preserves_the_existing_targets(
+    profile_home: Path, db: Database
+) -> None:
+    """The CLI validates before an invalid target can replace the saved list."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("display_currency_targets", "EUR", actor="test")
+
+    result = runner.invoke(app, ["set", "display_currency_targets", "not-a-code"])
+
+    assert result.exit_code == 1
+    assert settings.get_settings().display_currency_targets == ("EUR",)
+
+
 def test_dotted_key_still_writes_config_yaml(profile_home: Path, db: Database) -> None:
     """The existing config path is untouched by the dispatch."""
     result = runner.invoke(app, ["set", "logging.level", "DEBUG"])

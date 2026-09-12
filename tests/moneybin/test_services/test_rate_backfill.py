@@ -23,7 +23,13 @@ import pytest
 from moneybin.connectors.rates.errors import RateFeedUnreachableError
 from moneybin.connectors.rates.protocol import RateObservation
 from moneybin.database import Database
-from moneybin.services.currency_service import MAX_BACKWARD_RESOLUTION_DAYS
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.reports._framework.convert import convert_records
+from moneybin.services.currency_service import (
+    MAX_BACKWARD_RESOLUTION_DAYS,
+    CurrencyService,
+)
 from moneybin.services.rate_backfill import (
     RateBackfillNotReadyError,
     RateWindow,
@@ -131,6 +137,35 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
     assert windows == (
         RateWindow(
             from_currency="EUR",
+            to_currency="USD",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_declared_display_targets_add_held_to_target_windows_without_duplicates(
+    db: Database,
+) -> None:
+    """One held currency is covered for home and each distinct non-identity target."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="GBP")
+
+    windows = plan_rate_backfill(
+        db,
+        home_currency="USD",
+        display_currency_targets=("EUR", "GBP", "USD", "EUR"),
+        through=_TODAY,
+    )
+
+    assert windows == (
+        RateWindow(
+            from_currency="GBP",
+            to_currency="EUR",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+        RateWindow(
+            from_currency="GBP",
             to_currency="USD",
             start=date(2026, 3, 10),
             end=_TODAY,
@@ -568,6 +603,74 @@ def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
     ]
     assert result.rates_written == 1
     assert result.pairs_failed == ()
+
+
+def test_declared_target_stores_the_provider_pair_a_report_names_as_evidence(
+    db: Database,
+) -> None:
+    """Display conversion reads the direct pair refresh gathered and names it."""
+    on = date(2026, 3, 10)
+    _add_transaction(db, on=on, currency="GBP")
+    adapter = _DatedAdapter(on)
+
+    run_rate_backfill(
+        db,
+        home_currency="USD",
+        display_currency_targets=("EUR",),
+        through=_TODAY,
+        adapter=adapter,
+    )
+
+    outcome = convert_records(
+        [
+            {
+                "txn_date": on,
+                "currency_code": "GBP",
+                "amount": Decimal("10.00"),
+            }
+        ],
+        classes={
+            "txn_date": DataClass.TXN_DATE,
+            "currency_code": DataClass.CURRENCY,
+            "amount": DataClass.TXN_AMOUNT,
+        },
+        semantics=ReportSemantics(
+            unit="currency",
+            currency="currency_code",
+            sign="negative expense; positive income",
+            kind="flow",
+            valuation_basis="transaction amount",
+            fx_basis="transaction date",
+            time_basis="transaction date",
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=("test",),
+            fx_date="txn_date",
+        ),
+        to_currency="EUR",
+        service=CurrencyService(db),
+    )
+
+    assert adapter.ranges == [
+        (
+            "GBP",
+            "EUR",
+            on - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        ),
+        (
+            "GBP",
+            "USD",
+            on - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        ),
+    ]
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "EUR"
+    assert [
+        (rate.from_currency, rate.to_currency) for rate in outcome.applied_rates
+    ] == [("GBP", "EUR")]
 
 
 def test_planning_against_an_unbuilt_core_raises_the_named_precondition(

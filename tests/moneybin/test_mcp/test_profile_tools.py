@@ -78,12 +78,66 @@ async def test_profile_set_then_profile_round_trips_the_home_currency(
     assert (await profile()).data.home_currency == "EUR"
 
 
+async def test_profile_set_round_trips_normalized_display_currency_targets(
+    mcp_db: object,
+) -> None:
+    """The agent surface accepts a target list without changing home currency."""
+    write_env = await profile_set(display_currency_targets=["eur", "GBP", "EUR"])
+
+    assert write_env.error is None
+    assert write_env.data.display_currency_targets == ("EUR", "GBP")
+    assert (await profile()).data.display_currency_targets == ("EUR", "GBP")
+
+
+async def test_profile_set_home_currency_preserves_declared_display_targets(
+    mcp_db: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The patch-shaped tool changes the requested setting and leaves targets intact."""
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        MagicMock(),
+    )
+    await profile_set(display_currency_targets=["EUR"])
+
+    env = await profile_set(home_currency="USD")
+
+    assert env.error is None
+    assert env.data.home_currency == "USD"
+    assert env.data.display_currency_targets == ("EUR",)
+
+
 async def test_profile_set_rejects_a_malformed_currency(mcp_db: object) -> None:
     """A bad code returns an error envelope and leaves the setting unchanged."""
     env = await profile_set(home_currency="dollars")
 
     assert env.error is not None
     assert (await profile()).data.home_currency is None
+
+
+async def test_profile_set_rejects_a_bad_target_without_changing_the_collection(
+    mcp_db: object,
+) -> None:
+    """An MCP validation error cannot clobber a target selected earlier."""
+    await profile_set(display_currency_targets=["EUR"])
+
+    env = await profile_set(display_currency_targets=["not-a-code"])
+
+    assert env.error is not None
+    assert (await profile()).data.display_currency_targets == ("EUR",)
+
+
+async def test_profile_set_classifies_an_empty_target_as_invalid_input(
+    mcp_db: object,
+) -> None:
+    """A malformed list must not surface as an unclassified server failure."""
+    await profile_set(display_currency_targets=["EUR"])
+
+    env = await profile_set(display_currency_targets=["EUR", "", "GBP"])
+
+    assert env.error is not None
+    assert env.error.code == "mutation_invalid_input"
+    assert (await profile()).data.display_currency_targets == ("EUR",)
 
 
 def test_profile_read_is_annotated_read_only() -> None:

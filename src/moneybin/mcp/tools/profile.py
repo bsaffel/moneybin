@@ -31,9 +31,9 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
     """Read the active profile's name and its managed settings.
 
     ``home_currency`` is the currency this profile treats as home. It is null
-    when the user has not chosen one — MoneyBin does not assume USD. Money
-    reports segment per currency until conversion ships, so use this to tell
-    which segment is the home one.
+    when the user has not chosen one — MoneyBin does not assume USD.
+    ``display_currency_targets`` names additional currencies refresh prepares
+    for report reads.
     """
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
@@ -41,17 +41,22 @@ def profile() -> ResponseEnvelope[ProfilePayload]:
         data=ProfilePayload(
             name=get_current_profile(auto_resolve=False),
             home_currency=settings.home_currency,
+            display_currency_targets=settings.display_currency_targets,
         ),
-        actions=['Use profile_set(home_currency="EUR") to change it'],
+        actions=['Use profile_set(display_currency_targets=["EUR"]) to change it'],
     )
 
 
 @mcp_tool(domain="profile", read_only=False, idempotent=True)
-def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
-    """Set the profile's home currency.
+def profile_set(
+    home_currency: str | None = None,
+    display_currency_targets: list[str] | None = None,
+) -> ResponseEnvelope[ProfileSetPayload]:
+    """Set the profile's home currency or explicit display targets.
 
     Args:
         home_currency: ISO 4217 code, three uppercase letters (USD, EUR, GBP).
+        display_currency_targets: ISO 4217 codes to prepare for report reads.
 
     This does not convert any stored amount — every transaction and balance
     keeps its original currency. It records which currency this profile
@@ -62,14 +67,26 @@ def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
     that disclosure is in ``register_profile_tools`` below — this docstring is
     not served.
     """
+    if (home_currency is None) == (display_currency_targets is None):
+        raise ValueError(
+            "Set exactly one of home_currency or display_currency_targets."
+        )
     with get_database(read_only=False) as db:
         service = ProfileSettingsService(db)
-        service.set_setting("home_currency", home_currency, actor="mcp.profile_set")
+        if home_currency is not None:
+            service.set_setting("home_currency", home_currency, actor="mcp.profile_set")
+        else:
+            service.set_setting(
+                "display_currency_targets",
+                display_currency_targets or (),
+                actor="mcp.profile_set",
+            )
         settings = service.get_settings()
     operation_id = current_operation_id()
     return build_envelope(
         data=ProfileSetPayload(
             home_currency=settings.home_currency,
+            display_currency_targets=settings.display_currency_targets,
             operation_id=operation_id,
         ),
         actions=["Use profile() to see the profile's current settings"],
@@ -77,7 +94,7 @@ def profile_set(home_currency: str) -> ResponseEnvelope[ProfileSetPayload]:
             RecoveryAction(
                 tool="system_audit_undo",
                 arguments={"operation_id": operation_id},
-                rationale="Restore the previous home currency.",
+                rationale="Restore the previous profile setting.",
                 confidence="certain",
                 idempotent=False,
             ),
@@ -91,15 +108,16 @@ def register_profile_tools(mcp: FastMCP) -> None:
         mcp,
         profile,
         "profile",
-        "Read the active profile's name and managed settings, including its "
-        "home currency. The home currency is null until the user chooses one; "
-        "MoneyBin never assumes USD.",
+        "Read the active profile's name and managed settings, including its home "
+        "currency and declared display-currency targets. The home currency is null "
+        "until the user chooses one; MoneyBin never assumes USD.",
     )
     register(
         mcp,
         profile_set,
         "profile_set",
-        "Set the profile's home currency (ISO 4217). Records which currency is "
-        "home; converts nothing — amounts keep their original currency. Writes "
-        "app.profile_settings. Reverse with system_audit_undo(operation_id=...).",
+        "Set the profile's home currency or report display-currency targets (ISO "
+        "4217). Updating targets prepares provider-published rate pairs; it converts "
+        "nothing and does not restate accounting. Writes app.profile_settings. Reverse with "
+        "system_audit_undo(operation_id=...).",
     )

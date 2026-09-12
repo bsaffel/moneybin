@@ -199,7 +199,10 @@ def _read_managed_settings(
     set_current_profile(name)
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
-    return {"home_currency": settings.home_currency}
+    return {
+        "home_currency": settings.home_currency,
+        "display_currency_targets": settings.display_currency_targets,
+    }
 
 
 def _set_managed_setting(
@@ -296,7 +299,10 @@ def profile_set(
     key: Annotated[
         str,
         typer.Argument(
-            help="Config key (e.g., logging.level) or managed key (home_currency)"
+            help=(
+                "Config key (e.g., logging.level) or managed key "
+                "(home_currency, display_currency_targets)"
+            )
         ),
     ],
     value: Annotated[str, typer.Argument(help="Value to set")],
@@ -308,7 +314,7 @@ def profile_set(
     """Set a configuration value on a profile.
 
     Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
-    managed keys (``home_currency``) write ``app.profile_settings`` in the
+    managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
     profile's database, where the report guards can read them.
     """
     svc = ProfileService()

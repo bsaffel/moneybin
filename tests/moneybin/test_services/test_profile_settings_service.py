@@ -38,6 +38,35 @@ def test_set_setting_persists_the_home_currency(
     assert len(restated) == 1
 
 
+def test_display_currency_targets_are_normalized_without_restatement(
+    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing read targets plans future rates but never restates accounting."""
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        restated.append,
+    )
+
+    service.set_setting("display_currency_targets", " eur, GBP,EUR ", actor="cli")
+
+    assert service.get_settings().display_currency_targets == ("EUR", "GBP")
+    assert restated == []
+
+
+def test_set_setting_classifies_a_malformed_display_target_list(
+    service: ProfileSettingsService,
+) -> None:
+    """An empty comma-delimited target is mutation-invalid input, not a server bug."""
+    service.set_setting("display_currency_targets", "EUR", actor="cli")
+
+    with pytest.raises(UserError) as excinfo:
+        service.set_setting("display_currency_targets", "EUR,,GBP", actor="cli")
+
+    assert excinfo.value.code == "mutation_invalid_input"
+    assert service.get_settings().display_currency_targets == ("EUR",)
+
+
 def test_set_setting_rejects_an_unknown_key(service: ProfileSettingsService) -> None:
     """An unrecognized managed key is refused, and the error names the real ones.
 

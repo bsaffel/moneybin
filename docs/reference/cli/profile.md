@@ -108,7 +108,7 @@ Usage: `moneybin profile show [OPTIONS] [NAME]`
 Set a configuration value on a profile.
 
 Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
-managed keys (``home_currency``) write ``app.profile_settings`` in the
+managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
 profile's database, where the report guards can read them.
 
 Usage: `moneybin profile set [OPTIONS] KEY VALUE`
@@ -117,7 +117,7 @@ Usage: `moneybin profile set [OPTIONS] KEY VALUE`
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `KEY` | text | yes | Config key (e.g., logging.level) or managed key (home_currency) |
+| `KEY` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets) |
 | `VALUE` | text | yes | Value to set |
 
 **Options**

@@ -32,8 +32,8 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`investments_securities_set`](#investments_securities_set) | Create or update securities in app.securities by stable ID or ticker. | write, idempotent | at least `low` |
 | [`privacy`](#privacy) | Read active AI consent status or exact, cursor-paginated privacy log events. | read-only, idempotent | up to `low` |
 | [`privacy_consent_set`](#privacy_consent_set) | Atomically grant or revoke consent for one or more feature categories. | write, destructive, idempotent | at least `low` |
-| [`profile`](#profile) | Read the active profile's name and managed settings, including its home currency. | read-only, idempotent | at least `low` |
-| [`profile_set`](#profile_set) | Set the profile's home currency (ISO 4217). | write, idempotent | at least `low` |
+| [`profile`](#profile) | Read the active profile's name and managed settings, including its home currency and declared display-currency targets. | read-only, idempotent | at least `low` |
+| [`profile_set`](#profile_set) | Set the profile's home currency or report display-currency targets (ISO 4217). | write, idempotent | at least `low` |
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
 | [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `high` |
@@ -500,7 +500,7 @@ Access: write, destructive, idempotent. Sensitivity: at least `low`.
 
 ### profile
 
-Read the active profile's name and managed settings, including its home currency. The home currency is null until the user chooses one; MoneyBin never assumes USD.
+Read the active profile's name and managed settings, including its home currency and declared display-currency targets. The home currency is null until the user chooses one; MoneyBin never assumes USD.
 
 Access: read-only, idempotent. Sensitivity: at least `low`.
 
@@ -508,13 +508,14 @@ No parameters.
 
 ### profile_set
 
-Set the profile's home currency (ISO 4217). Records which currency is home; converts nothing — amounts keep their original currency. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
+Set the profile's home currency or report display-currency targets (ISO 4217). Updating targets prepares provider-published rate pairs; it converts nothing and does not restate accounting. Writes app.profile_settings. Reverse with system_audit_undo(operation_id=...).
 
 Access: write, idempotent. Sensitivity: at least `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `home_currency` | string |  | required; ISO 4217 code, three uppercase letters (USD, EUR, GBP). |
+| `home_currency` | string |  | ISO 4217 code, three uppercase letters (USD, EUR, GBP). |
+| `display_currency_targets` | array of string |  | ISO 4217 codes to prepare for report reads. |
 
 ### refresh_run
 

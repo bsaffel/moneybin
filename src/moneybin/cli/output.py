@@ -182,8 +182,8 @@ display_currency_option: str | None = typer.Option(
         "ISO-4217 code to price every amount in (e.g. EUR). Each row converts at "
         "its own date. Amounts stay in their original currency — and the result "
         "says so — when any row has no rate. 'moneybin refresh' stores rates "
-        "into your home currency only, so any other target falls back until its "
-        "own rates are stored."
+        "for your home currency and profile display targets; set targets with "
+        "'moneybin profile set display_currency_targets EUR,GBP'."
     ),
 )
 
