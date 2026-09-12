@@ -6,11 +6,11 @@ implemented
 > **Progress note (2026-09-11).** Phase 3 of the 2026-09 public docs pass
 > closed the remaining scope: `docs/guides/investments.md` and
 > `docs/guides/multi-currency.md` were written from captured demo
-> transcripts (family and international personas), three stale source
-> strings surfaced while writing them were fixed (`system doctor`'s
-> unknown-currency and mixed-currency advice, and the `investments prices`
-> command hints — all named a `moneybin refresh run` / `moneybin
-> transform` invocation that no longer exists), and the generated
+> transcripts (family and international personas). Writing them, and the
+> review rounds that followed, surfaced five stale or incomplete output
+> strings in `src/`, all naming a `moneybin refresh run` / bare `moneybin
+> transform` invocation that no longer exists or an incomplete remedy —
+> see Background for the full list — and the generated
 > `docs/reference/cli/investments.md` page was regenerated. With
 > `account-identifiers.md`, `data-pipeline.md`, `system-overview.md`, and
 > the storefront/guide rewrites landed in earlier phases, no scope from
@@ -33,7 +33,15 @@ The tagline `Your finances, understood by AI.` stays as the aspirational vision 
 - [`docs/decisions/009-encryption-key-management.md`](../decisions/009-encryption-key-management.md) — KDF + key-storage decisions referenced from the threat model.
 - Existing user-facing assets that this spec extends: [`README.md`](../../README.md), [`SECURITY.md`](../../SECURITY.md) (already strong, no change), [`CONTRIBUTING.md`](../../CONTRIBUTING.md) (one minor addition), [`docs/guides/database-security.md`](../guides/database-security.md).
 
-This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change originally scoped was `pyproject.toml` metadata polish (already on the M3B distribution work). Phase 3 (2026-09-11) additionally touched three output strings surfaced while writing the new guides — `DoctorService`'s unknown-currency and mixed-currency advice, and the `investments prices pull/set/delete` command hints — each a stale command name corrected to the one that actually runs; see Testing Strategy for their regression coverage.
+This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change originally scoped was `pyproject.toml` metadata polish (already on the M3B distribution work). Phase 3 (2026-09-11) and its review rounds additionally corrected five output strings surfaced while writing and fact-checking the new guides — counted from `git diff origin/main...HEAD -- src/`:
+
+1. `DoctorService._run_currency_integrity`'s unknown-currency (fail) remedy: bare `` `moneybin transform` `` → `` `moneybin transform apply` ``.
+2. `DoctorService._run_currency_integrity`'s mixed-currency (warn) remedy: renamed `` `moneybin reports balance_drift` `` → `` `moneybin reports balance-drift` ``; replaced "conversion to a single display currency is not built yet" — false, conversion already existed — with the real `profile set home_currency` / `refresh` / `fx set` remedy; then branched that remedy on whether a home currency is already set, since the unconditional wording was redundant and partly inaccurate on a profile that had already chosen one.
+3. `DoctorService._run_dedup_reconciliation`'s remedy: the identical bare-`` `moneybin transform` `` defect as #1, in a check this spec did not originally touch.
+4. `PriceService.list_prices`'s missing-`core.fct_security_prices` warning: `` `moneybin refresh run` `` → `` `moneybin refresh` ``.
+5. `investments prices pull/set/delete`'s post-write hint and failure message (`_report_refresh_failure`, `_echo_refresh_hint`, and their docstrings): the same `` `moneybin refresh run` `` → `` `moneybin refresh` `` correction, five call sites across one command group.
+
+See Testing Strategy for their regression coverage.
 
 ## Requirements
 
@@ -135,7 +143,7 @@ The `now` batch and the M0D item above are the bulk of this spec, and both are s
 
 ## CLI Interface
 
-Not applicable to the spec's original scope: no new commands, flags, or output shapes. Phase 3 (2026-09-11) corrected the wording of three existing outputs — `investments prices pull/set/delete`'s post-write hint and `system doctor`'s currency-check advice — from a stale command name to the one that actually runs; no argument, flag, or exit-code behavior changed.
+Not applicable to the spec's original scope: no new commands, flags, or output shapes. Phase 3 (2026-09-11) and its review rounds corrected the wording of five existing outputs — the `investments prices pull/set/delete` command's post-write hint and failure message, `PriceService.list_prices`'s missing-table warning, and `system doctor`'s `currency_integrity` (both its fail and warn detail) and `dedup_reconciliation` advice — see Background for the full enumeration. No argument, flag, or exit-code behavior changed.
 
 ## MCP Interface
 

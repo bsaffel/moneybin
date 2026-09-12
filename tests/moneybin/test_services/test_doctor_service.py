@@ -21,6 +21,7 @@ from moneybin.metrics.registry import (
     UNKNOWN_CURRENCY_ROWS,
 )
 from moneybin.repositories import concrete_repo_classes
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.doctor_service import (
     DoctorReport,
     DoctorService,
@@ -2796,6 +2797,42 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
     detail = result.detail or ""
     assert "EUR" in detail
     assert "USD" in detail
+    assert "moneybin profile set home_currency" in detail
+    assert "withhold any combined figure" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_warn_with_home_currency_set_skips_redundant_advice(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile that already chose a home currency needs different advice.
+
+    Telling the user to set what is already set is noise, and claiming every
+    combined figure is withheld is false: `networth`, `large-transactions`, and
+    `balance-drift` already convert into the home currency whenever their rates
+    are on disk. Only the five aggregating reports still sub-total regardless.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # test input, not user data
+    ProfileSettingsRepo(doctor_db).set_home_currency("USD", actor="test")
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "EUR" in detail
+    assert "USD" in detail
+    # The setting is already USD — telling the user to set it is redundant,
+    # and "withhold any combined figure" is false once conversion can run.
+    assert "moneybin profile set home_currency" not in detail
+    assert "withhold any combined figure" not in detail
+    assert "price into USD" in detail
+    assert "moneybin refresh" in detail
+    assert "moneybin fx set <from> <to> <date> <rate>" in detail
+    # The balance-drift fact holds regardless of home currency — must survive.
+    assert "balance-drift" in detail
 
 
 @pytest.mark.unit
