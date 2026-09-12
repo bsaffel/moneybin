@@ -96,16 +96,17 @@ sequenceDiagram
     User->>CLI: moneybin sync pull
     CLI->>Server: POST /sync/trigger
     Server->>Provider: Fetch transactions
-    Server-->>CLI: job_id, completed/failed, per-institution results
+    Server-->>CLI: job_id, status, transaction_count
 
     Note over User,DB: Phase 4: Decrypt (v2 — designed, not yet implemented)
     CLI->>Server: GET /sync/data
-    Server-->>CLI: Encrypted payload (v2) or plain JSON (v1)
+    Server-->>CLI: Encrypted payload (v2) or plain JSON (v1), metadata.institutions
     CLI->>CLI: Decrypt with private key (v2) or parse directly (v1)
 
     Note over User,DB: Phase 5: Load & Transform
     CLI->>DB: Provider loader → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
+    CLI->>Server: POST /sync/ack (best effort)
     CLI->>DB: sqlmesh run → prep → core
     CLI->>User: Summary: N transactions from M institutions
 ```
@@ -129,7 +130,8 @@ sequenceDiagram
 
 - Client calls `POST /sync/trigger`, optionally scoped to a single institution via `provider_item_id`.
 - `--force` flag passes `reset_cursor: true` for full re-fetch of all available history.
-- The endpoint waits for server-side completion and returns per-institution results; some may succeed while others fail. The client handles partial success (see [Error handling](#error-handling--recovery)).
+- The endpoint waits for server-side completion and returns `job_id`, `status`, and `transaction_count`. The client requires `status="completed"` before it reads the payload.
+- Per-institution outcomes are in `GET /sync/data` at `metadata.institutions`; some may succeed while others fail. The client handles partial success (see [Error handling](#error-handling--recovery)).
 
 ### Phase 4: Decrypt
 
@@ -145,6 +147,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - Client downloads JSON via `GET /sync/data`.
 - Provider-specific loader parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
 - Loader handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
+- After the raw writes are durable, client calls `POST /sync/ack` before transforming. Ack is best-effort: a failure is logged without failing the pull, leaving the broker cursor unadvanced so the next pull re-delivers a loss-free, deduplicated payload.
 - Runs `sqlmesh run` to propagate through staging → core.
 - Connection health remains server-authoritative and is read through `GET /institutions`.
 
@@ -483,7 +486,9 @@ Sync errors fall into three categories with distinct recovery paths.
 
 ### Connection errors
 
-Provider-specific error codes are surfaced through the server's per-institution results. The client maps them to actionable messages without needing to know which aggregator generated them.
+Provider-specific error codes are surfaced in `GET /sync/data` at
+`metadata.institutions`. The client maps these per-institution results to
+actionable messages without needing to know which aggregator generated them.
 
 | Error code | Cause | Client behavior |
 |---|---|---|
@@ -500,7 +505,7 @@ The error code vocabulary is owned by the server. As providers are added, new er
 | Error | Cause | Client behavior |
 |---|---|---|
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
-| Sync job timeout | The synchronous trigger request exceeded its wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
+| Sync job timeout | The synchronous trigger request exceeded its wait | Report that completion is unknown; no job id was returned. Retry `moneybin sync pull`. Use `moneybin sync status` only to inspect current connection health. |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
 | Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh run`) independently. |
 

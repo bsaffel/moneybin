@@ -1,12 +1,12 @@
-# Plaid Sync Phase 1 — Superseded Design Record
+# Plaid Sync Phase 1 — Archived Design Record
 
-> **Superseded.** This 2026-05-13 design no longer defines the Plaid sync
-> contract. [`sync-plaid.md`](sync-plaid.md) is the indexed, implemented
+> **Archived.** This 2026-05-13 design no longer defines the Plaid sync
+> contract. [`sync-plaid.md`](../sync-plaid.md) is the indexed, implemented
 > canonical record.
 
 ## Status
 
-superseded
+archived
 
 The original document claimed precedence over `sync-plaid.md`, which left two
 competing specifications. Its surviving client-facing decisions are reconciled
@@ -18,7 +18,8 @@ accounting convention.
 
 moneybin-sync remains opaque to the client. Server-side provider details,
 credentials, callbacks, and webhook handling are not a MoneyBin client
-contract. Consult `sync-plaid.md` and `sync-overview.md` for current behavior.
+contract. Consult [`sync-plaid.md`](../sync-plaid.md) and
+[`sync-overview.md`](../sync-overview.md) for current behavior.
 
 The complete historical design remains available in Git history before this
 supersession record. It must not be used as an implementation authority.

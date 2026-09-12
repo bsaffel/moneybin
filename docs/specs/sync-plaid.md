@@ -454,7 +454,9 @@ def handle_removed_transactions(self, removed_ids: list[str]) -> int:
 
 ## Plaid-specific error codes
 
-The server surfaces Plaid error codes in the per-institution results of the sync response. The client maps these to actionable guidance:
+The server surfaces Plaid error codes in `GET /sync/data` at
+`metadata.institutions`. The client maps these per-institution results to
+actionable guidance:
 
 | Plaid error code | Meaning | Client message |
 |---|---|---|
@@ -543,7 +545,8 @@ The synthetic data generator (`testing-synthetic-data.md`) should produce data t
 - **Sign convention edge cases.** Transactions with zero amount, very large amounts, and negative amounts (income) in Plaid convention.
 - **Pending → confirmed transitions.** Pairs of payloads where a transaction appears as `pending = true` in the first and `pending = false` in the second.
 - **Removed transactions.** Payloads with non-empty `removed_transactions[]` arrays.
-- **Multi-institution syncs.** Payloads with per-institution results including partial failures.
+- **Multi-institution syncs.** Payloads whose `metadata.institutions` list
+  includes partial failures.
 - **Error simulation.** Payloads with `ITEM_LOGIN_REQUIRED` and other error codes in the metadata results.
 
 These fixtures should be generated deterministically (seeded) and stored as golden files. They complement (not replace) live Plaid Sandbox testing.
