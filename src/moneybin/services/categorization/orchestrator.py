@@ -36,6 +36,7 @@ poisons future matching or auto-rule training.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from time import perf_counter
@@ -278,6 +279,16 @@ class CategorizationOrchestrator:
         # still couldn't resolve it) is reported as a per-item error in
         # Phase 4 rather than aborting the batch.
         resolved_txn_ids = resolve_curation_transaction_ids(self._db, txn_ids)
+        # How many items resolve to each live transaction — a batch built
+        # from a stale preview can carry both a superseded id and its
+        # canonical id (or two different superseded ids that forward to one
+        # live row). Checked per-item in Phase 4 below, mirroring
+        # transaction_service._reject_composed_annotations's overlap guard.
+        resolved_id_counts = Counter(
+            resolved_txn_ids[item.transaction_id]
+            for item in items
+            if item.transaction_id in resolved_txn_ids
+        )
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (
@@ -287,12 +298,20 @@ class CategorizationOrchestrator:
         )
 
         txn_rows: dict[str, TxnRow] = {}
+        # Fetch by the RESOLVED ids, not the caller's original txn_ids: a
+        # superseded id has no row under itself in core.fct_transactions, so
+        # fetching by the original id silently starves Phase 4's context
+        # lookups (description/memo/merchant fields) for exactly the
+        # superseded-id case this module resolves ids to support. An id
+        # resolve_curation_transaction_ids couldn't resolve is simply absent
+        # from resolved_txn_ids.values() and reported as a Phase 4 error below.
+        fetch_ids = list(dict.fromkeys(resolved_txn_ids.values()))
         # merchant_entity_id lives on core.bridge_merchant_entities;
         # fetch_rows_for_ids LEFT JOINs it on the gold transaction_id (falling
         # back to a NULL entity id when the bridge or its entity columns are
         # absent) so rung-0 entity resolution can run before name matching.
         try:
-            rows = self._matcher.fetch_rows_for_ids(txn_ids)
+            rows = self._matcher.fetch_rows_for_ids(fetch_ids)
             txn_rows = {
                 row.transaction_id: TxnRow(
                     description=row.description,
@@ -376,6 +395,24 @@ class CategorizationOrchestrator:
                 })
                 continue
             resolved_txn_id = resolved_txn_ids[txn_id]
+            if resolved_id_counts[resolved_txn_id] > 1:
+                # Two or more items resolve to the same live transaction.
+                # Applying them independently would let same-priority writes
+                # race (the second silently wins) and double-run merchant
+                # resolution, auto-rule recording, and exemplar accumulation
+                # for what is really one transaction — reject every
+                # colliding item rather than let iteration order decide.
+                errors += 1
+                error_details.append({
+                    "transaction_id": txn_id,
+                    "reason": (
+                        "Skipped: another item in this batch resolves to "
+                        "the same live transaction; submit one "
+                        "categorization per live transaction."
+                    ),
+                    "error": "resolved_id_collision",
+                })
+                continue
             try:
                 # Resolve pre-existing merchant first (read-only) so the
                 # precedence-guarded write below can attach the matched
@@ -386,8 +423,11 @@ class CategorizationOrchestrator:
                 # auto-rule training.
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
-                description = ctx.description_for(txn_id)
-                memo = ctx.memo_for(txn_id)
+                # ctx is keyed by the RESOLVED id (Phase 2 fetches by
+                # resolved_txn_ids.values()), so every lookup below uses
+                # resolved_txn_id, not the caller's original txn_id.
+                description = ctx.description_for(resolved_txn_id)
+                memo = ctx.memo_for(resolved_txn_id)
                 match_text, _norm_desc, _norm_memo = build_match_inputs(
                     description, memo
                 )
@@ -400,7 +440,7 @@ class CategorizationOrchestrator:
                             ctx.merchant_mappings,
                             description=description,
                             memo=memo,
-                            merchant_name=ctx.merchant_name_for(txn_id),
+                            merchant_name=ctx.merchant_name_for(resolved_txn_id),
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
@@ -429,9 +469,9 @@ class CategorizationOrchestrator:
                     self._applier,
                     rejected=rejected,
                     pending=pending,
-                    merchant_entity_id=ctx.merchant_entity_id_for(txn_id),
-                    source_type=ctx.merchant_entity_source_type_for(txn_id),
-                    provider_merchant_name=ctx.merchant_name_for(txn_id),
+                    merchant_entity_id=ctx.merchant_entity_id_for(resolved_txn_id),
+                    source_type=ctx.merchant_entity_source_type_for(resolved_txn_id),
+                    provider_merchant_name=ctx.merchant_name_for(resolved_txn_id),
                     name_match=existing,
                     current_merchant_id=merchant_id,
                 )
@@ -472,7 +512,7 @@ class CategorizationOrchestrator:
                 # categorization actually landed.
                 try:
                     auto_rule_svc.record_categorization(
-                        txn_id,
+                        resolved_txn_id,
                         category,
                         subcategory=subcategory,
                         merchant_id=merchant_id,

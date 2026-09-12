@@ -1133,6 +1133,80 @@ def test_categorize_items_against_unresolvable_id_is_a_per_item_error(
     ).fetchone() == (0,)
 
 
+def test_categorize_items_rejects_two_ids_resolving_to_the_same_live_transaction(
+    real_db: Database,
+) -> None:
+    """A batch built from a stale preview can carry both a superseded id and its canonical id.
+
+    Applying both independently would let same-priority writes race (the
+    second silently wins) while both count as applied and merchant/auto-rule
+    side effects double-run — reject the collision instead of letting
+    iteration order decide (issue #538).
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-superseded", category="Food & Drink"),
+        CategorizationItem(transaction_id="txn-live", category="Shopping"),
+    ])
+
+    assert result.applied == 0
+    assert result.errors == 2
+    assert {detail["error"] for detail in result.error_details} == {
+        "resolved_id_collision"
+    }
+    assert real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = 'txn-live'"
+    ).fetchone() == (0,)
+
+
+def test_categorize_items_against_superseded_id_still_resolves_merchant_and_exemplar(
+    real_db: Database,
+) -> None:
+    """Merchant resolution and exemplar accumulation must key on the resolved id.
+
+    Not the caller's superseded one — otherwise Phase 2's txn_rows lookup
+    misses the row entirely and both silently no-op for exactly the
+    superseded-id case this module resolves ids to support.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS COFFEE', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(
+            transaction_id="txn-superseded",
+            category="Food & Drink",
+            canonical_merchant_name="Starbucks",
+        )
+    ])
+
+    assert result.applied == 1
+    assert result.merchants_created == 1
+    merchant_row = real_db.execute(
+        "SELECT canonical_name, exemplars FROM app.user_merchants "
+        "WHERE canonical_name = 'Starbucks'"
+    ).fetchone()
+    assert merchant_row is not None
+    assert merchant_row[1]  # non-empty exemplar list — proves match_text was found
+
+
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
     """list_pending_proposals returns proposals recorded via AutoRuleService."""
     from moneybin.services.auto_rule_service import AutoRuleService
