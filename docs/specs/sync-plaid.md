@@ -23,7 +23,7 @@ Implement the first sync provider for MoneyBin: Plaid Transactions. Pull checkin
 4. Sign convention is preserved faithfully in raw (Plaid: positive = expense). The flip to MoneyBin convention (negative = expense) happens exclusively in staging views.
 5. Plaid's `removed_transactions` are deleted from `raw.plaid_transactions` on each sync.
 6. SQLMesh staging views standardize Plaid data for core consumption. Core models include Plaid data via `UNION ALL` with `source_type = 'plaid'`.
-7. `app.sync_connections` is updated after every sync with per-institution status, transaction counts, and error details.
+7. Connection health is read from moneybin-sync's `GET /institutions` response, with per-institution status and error codes mapped to actionable guidance.
 8. Plaid-specific error codes are mapped to actionable user guidance per `sync-overview.md` error handling patterns.
 9. No PII or financial data in logs. Transaction counts, institution names, and masked account numbers only.
 10. After a successful sync that changes raw state (loads new rows or processes removals), `SyncService.pull()` runs the post-load refresh pipeline (`moneybin.orchestration.refresh.refresh`) once before returning. Refresh is a top-level MoneyBin domain concept — "update everything based on the latest new data" — covering the canonical gsheet, matching, SQLMesh apply, categorization, and identity stages on the current database state. After refresh, derived `core.*` models (notably `core.dim_accounts`) reflect the new data; Plaid transactions cross-match against same-day OFX/CSV rows per [`matching-overview.md`](matching-overview.md); user-defined categorization rules fire immediately with source-precedence enforcement against Plaid hints. The MCP `sync_pull` contract always uses that default; the CLI offers `--no-refresh` for explicit operator batching. SQLMesh failures soft-fail: raw rows remain durable; the result envelope reports `transforms_applied=false` with a `transforms_error` string and the CLI exits non-zero so agents and scripts detect that core tables are stale. Matching, categorization, and identity are best-effort. No-op syncs (no loads, no removals) skip refresh entirely. **Performance:** refresh is dominated by SQLMesh apply (typically 5–30s; `sqlmesh.Context` init alone is 2–5s). Internal service callers that deliberately batch scheduled or webhook-driven pulls may pass `refresh=False` and run one refresh afterward.
@@ -338,7 +338,6 @@ These are defined in `sync-overview.md` and shared across all providers:
 | `src/moneybin/cli/commands/sync.py` | CLI commands (login, link, link-status, pull, status, etc.) |
 | `src/moneybin/mcp/tools/sync.py` | MCP tools (`sync_pull`, `sync_status`, etc.) |
 | `src/moneybin/services/sync_service.py` | `SyncService` — business logic for pull/link/status, called by both CLI and MCP |
-| `src/moneybin/sql/schema/app_sync_connections.sql` | DDL for `app.sync_connections` |
 
 ### Key decisions
 

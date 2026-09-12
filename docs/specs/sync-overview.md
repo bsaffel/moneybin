@@ -107,7 +107,6 @@ sequenceDiagram
     CLI->>DB: Provider loader → raw.{provider}_* tables
     CLI->>DB: Handle removed transactions
     CLI->>DB: sqlmesh run → prep → core
-    CLI->>DB: Update app.sync_connections
     CLI->>User: Summary: N transactions from M institutions
 ```
 
@@ -147,7 +146,7 @@ The client auto-negotiates: if the server returns `Content-Type: application/jso
 - Provider-specific loader parses JSON into provider-specific raw tables (e.g., `raw.plaid_*` for Plaid).
 - Loader handles provider-specific semantics (e.g., Plaid's `removed_transactions` — deletes from raw).
 - Runs `sqlmesh run` to propagate through staging → core.
-- Updates `app.sync_connections` with last sync time, transaction count, and status.
+- Connection health remains server-authoritative and is read through `GET /institutions`.
 
 ---
 
@@ -192,29 +191,16 @@ All server responses are typed with Pydantic models: `AuthToken`,
 `SyncDataResponse`, `SyncAckResponse`, and `ConnectedInstitution`. Field
 constraints enforce validation at the system boundary per `.claude/rules/security.md`.
 
-### Connection health tracking
+### Connection health
 
-Local `app.sync_connections` table tracks connection state across syncs:
+moneybin-sync owns the live connection set and its health. `SyncClient` reads
+`GET /institutions`; `SyncService.list_connections()` maps that response to
+the status view and its actionable guidance. `moneybin sync status` and
+`sync_status` therefore read current server state, not a local cache.
 
-```sql
-/* Connected institutions and their sync health; one row per provider connection */
-CREATE TABLE IF NOT EXISTS app.sync_connections (
-    item_id VARCHAR NOT NULL,        -- Provider connection identifier (e.g., Plaid item_id)
-    provider VARCHAR NOT NULL,       -- Provider name: plaid, simplefin, mx
-    institution_name VARCHAR,        -- Human-readable institution name
-    status VARCHAR NOT NULL          -- Connection health: active, error, disconnected
-        DEFAULT 'active',
-    last_sync_at TIMESTAMP,          -- When the last successful sync completed
-    last_sync_txn_count INTEGER,     -- Transactions returned in the last sync
-    last_error VARCHAR,              -- Most recent error message (NULL when healthy)
-    last_error_code VARCHAR,         -- Provider error code for programmatic handling
-    created_at TIMESTAMP             -- When this institution was first connected
-        DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (item_id)
-);
-```
-
-Updated after every sync from the server's per-institution results. `moneybin sync status` reads from this table and maps error codes to actionable guidance.
+`app.sync_connections` is not implemented in the shipped client and is not a
+current requirement of this spec. A future local mirror would need its own
+contract before it can become an implementation plan.
 
 ### Provider-specific loaders
 
@@ -247,7 +233,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
 | `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
-| `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger sync, poll, download, load, transform |
+| `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
 ### Schedule management
@@ -501,8 +487,8 @@ Provider-specific error codes are surfaced through the server's per-institution 
 
 | Error code | Cause | Client behavior |
 |---|---|---|
-| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | Update `app.sync_connections.status = 'error'`. Display: "Chase needs re-authentication — run `moneybin sync link`." |
-| `ITEM_NOT_FOUND` | Connection revoked or expired | Update status to `disconnected`. Display guidance to reconnect. |
+| `ITEM_LOGIN_REQUIRED` | Bank requires re-authentication | Surface server-reported status with: "Chase needs re-authentication — run `moneybin sync link`." |
+| `ITEM_NOT_FOUND` | Connection revoked or expired | Surface the server-reported status and guidance to reconnect. |
 | `NO_ACCOUNTS` | Institution returned no accounts | Warn user, suggest reconnecting with different credentials. |
 | `INSTITUTION_DOWN` | Bank's system unavailable | Log warning, skip institution, continue with others. Suggest retry later. |
 | Unknown error code | Unmapped provider error | Log raw error code and message. Display: "Unexpected error from {institution} — check `moneybin sync status` for details." |
@@ -514,17 +500,18 @@ The error code vocabulary is owned by the server. As providers are added, new er
 | Error | Cause | Client behavior |
 |---|---|---|
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
-| Sync job timeout | Polling exceeded max wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
+| Sync job timeout | The synchronous trigger request exceeded its wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
 | Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh run`) independently. |
 
 ### Partial success handling
 
-The server syncs all institutions in parallel via `Promise.allSettled`. Some may succeed while others fail. The client:
+The server can return mixed per-institution outcomes. The client:
 
 1. Loads data from all successful institutions.
-2. Updates `app.sync_connections` for each institution (success and failure).
-3. Reports per-institution results to the user.
+2. Reports per-institution results to the user.
+3. Reads the server's current connection health through `sync_status` when a
+   follow-up status check is needed.
 4. Exits with code 0 if any institution succeeded, code 1 if all failed.
 
 ```
@@ -585,7 +572,7 @@ Add `{provider}_transactions` CTE in `fct_transactions.sql`, `{provider}_account
 - `SyncClient` — provider-agnostic, speaks server API only
 - CLI commands — `sync pull`, `sync link`, etc. work for all providers
 - MCP tools — same tools, provider-unaware
-- `app.sync_connections` — `provider` column discriminates; schema is shared
+- Connection health — server-owned; providers do not add local connection state
 - `EncryptionBackend` — encryption is at the transport layer, not the provider layer
 
 **Partial-payload guard (provider robustness).** A provider response can be internally incomplete — some accounts, holdings, or securities present, others missing — while still returning success at the transport layer. This is distinct from [Partial success handling](#partial-success-handling), which is per-institution success/failure across a sync job; here a single institution's response is itself partial. A loader must never treat a partial payload as complete (e.g. inferring an absent account was closed, or that missing holdings mean an empty portfolio). Detect the partial condition, load what arrived, and surface which accounts/entities were skipped so downstream reconciliation and the user can see the gap. This matters most for the investments product (holdings/securities frequently arrive partial), but the guard is provider-agnostic and belongs here so every provider inherits it.
@@ -654,7 +641,7 @@ All unit tests and SQL tests run against mocked HTTP responses and in-memory Duc
 | `SyncClient` methods | Mocked httpx responses: success, auth errors, server errors, timeouts, polling logic (including `slow_down` backoff) |
 | Provider loaders | JSON parsing, raw table loading, dedup on re-load, removed-record handling |
 | Auth flow | Device Authorization polling (success, timeout, denied, slow_down), token storage/retrieval (keychain mock + file fallback), refresh logic |
-| Connection health | `app.sync_connections` updates from server responses, error-code-to-guidance mapping |
+| Connection health | `GET /institutions` response mapping and error-code-to-guidance mapping |
 | Schedule management | Plist/cron generation and parsing, idempotent install/remove |
 | Staging views (SQL) | Sign convention flip, column mapping to core-compatible schema |
 | Core integration (SQL) | Provider data appears with correct `source_type`, `UNION ALL` produces no duplicates |
@@ -692,7 +679,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 - `SyncClient` with login, logout, Link-session initiation/status, disconnect, pull
 - `PlaidLoader` with raw table DDL, JSON loading, `removed_transactions`
 - Plaid staging views and core model integration (see `sync-plaid.md`)
-- `app.sync_connections` table and health tracking
+- Server-authoritative connection health through `GET /institutions`
 - CLI commands: `login`, `logout`, `link`, `link-status`, `disconnect`, `pull`, `status`
 - MCP tools: `sync_pull`, `sync_status`, `sync_link`, `sync_disconnect`
 - MCP prompt: `sync_review`
