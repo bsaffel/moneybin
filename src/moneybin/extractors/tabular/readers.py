@@ -565,6 +565,42 @@ def _excel_cell_text(value: object) -> str:
     return str(value)
 
 
+def _excel_row_looks_like_data_at(
+    path: Path,
+    sheet_name: str,
+    row_index: int,
+    *,
+    source_bytes: bytes | None = None,
+) -> bool:
+    """Return True if the physical row at ``row_index`` parses as a transaction.
+
+    Defense-in-depth check on the row an explicit Excel ``skip_rows`` override
+    is about to consume as a header — mirrors ``_row_looks_like_data_at`` for
+    CSV. Samples the physical cell values via ``_excel_sample_rows`` (which
+    applies ``_excel_cell_text``) rather than reading back ``df.columns``:
+    fastexcel's post-read stringification of a native Excel date/datetime
+    header cell doesn't reliably come back in a form ``detect_date_format``
+    recognizes, the same failure ``_excel_cell_text`` exists to prevent for
+    the auto-detection sample.
+
+    Args:
+        path: File path.
+        sheet_name: Sheet to sample.
+        row_index: Zero-based physical row index to check.
+        source_bytes: Already materialized workbook object to inspect.
+
+    Returns:
+        True when the row at ``row_index`` parses as a transaction record.
+    """
+    rows = _excel_sample_rows(
+        path, sheet_name, source_bytes=source_bytes, n=row_index + 1
+    )
+    if row_index >= len(rows):
+        return False
+    non_empty = [c.strip().strip('"').strip("'") for c in rows[row_index] if c.strip()]
+    return _looks_like_data_row(non_empty) if non_empty else False
+
+
 def _read_excel(
     path: Path,
     info: FormatInfo,
@@ -644,12 +680,15 @@ def _read_excel(
     # header_row_looks_like_data is defense-in-depth for the EXPLICIT
     # skip_rows path only (mirrors _read_text). Auto-detection
     # (_classify_header_rows) never selects a data-looking row as the header,
-    # so this is always False there.
+    # so this is always False there. Classifies the physical sampled row, not
+    # df.columns — fastexcel's post-read column naming for a native Excel
+    # date/datetime cell doesn't reliably parse as a date (see
+    # _excel_row_looks_like_data_at).
     header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
-        header_row_looks_like_data = _looks_like_data_row([
-            str(c) for c in df.columns if str(c).strip()
-        ])
+        header_row_looks_like_data = _excel_row_looks_like_data_at(
+            path, sheet_used, skip_rows, source_bytes=source_bytes
+        )
 
     return ReadResult(
         df=df,

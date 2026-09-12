@@ -553,6 +553,34 @@ class TestExcelReader:
         assert result.has_header is True
         assert result.header_row_looks_like_data is True
 
+    def test_explicit_skip_rows_native_date_pointed_at_data_row_is_flagged(
+        self, tmp_path: Path
+    ) -> None:
+        """Same red flag, but the skipped row's date is a native Excel date.
+
+        Regression for the reopened MB-449 gap: the explicit-skip_rows check
+        used to classify ``df.columns`` (fastexcel's post-hoc stringification
+        of the consumed header row) instead of the raw sampled cell. A
+        ``datetime.date`` value (not a string) makes openpyxl store the date
+        column as a native date cell — the shape
+        test_explicit_skip_rows_pointed_at_data_row_is_flagged's
+        string-valued date does not cover, and the one fastexcel's column
+        naming doesn't reliably render back into a recognized date string.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([datetime.date(2026, 1, 1), 42.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 10.00, "Tea"])
+        path = tmp_path / "headerless_native_date.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"), skip_rows=0)
+        assert result.has_header is True
+        assert result.header_row_looks_like_data is True
+
     def test_persisted_headerless_decision_survives_explicit_skip_rows(
         self, tmp_path: Path
     ) -> None:
