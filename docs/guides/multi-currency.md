@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-12 -->
 # Multi-currency
 
 Every transaction, balance, and investment event keeps the currency it arrived in, and no report adds two currencies into one figure without a stored rate behind it. Declare a home currency and the three reports whose rows are single dated events price themselves into it at read time; the five that aggregate keep one sub-total per currency. Rates come from Frankfurter's ECB reference series, your own corrections outrank them, and nothing converted is ever written to disk.
@@ -95,7 +95,7 @@ Transform restatement completed in 9.78s
 ✅ Set home_currency=EUR
 ```
 
-The restatement rebuilds the currency-lot models that depend on which currency is home (see [What is not built yet](#what-is-not-built-yet)). Setting it converts nothing: every stored amount keeps its original currency, and the setting only names the default target for a converted read. `profile show` lists it under `Settings (database)`, the setting takes any ISO 4217 code, and there is no unset; change it by setting another code.
+The restatement rebuilds the currency-lot models that depend on which currency is home (see [What is not built yet](#what-is-not-built-yet)). Setting it converts nothing: every stored amount keeps its original currency, and the setting only names the default target for a converted read. `profile show` lists it under `Settings (database)`, the setting takes any ISO 4217 code, and there is no dedicated unset command; changing it means setting another code. Each `profile set` writes an audit row, so `moneybin system audit undo <operation_id>` reverses one — including back to unset, when it is the first home-currency write on the profile — subject to the normal later-write guard (undo refuses once a later operation touched the same setting).
 
 ## Gather rates
 
@@ -149,7 +149,7 @@ Using profile: demo
 └────────────┴────────────┴─────────────┘
 ```
 
-Rates are stored to 8 decimal places, and the first answer cached for a pair on a date is the one kept: once a date is on disk MoneyBin does not ask the provider about it again, so a later revision to that date never arrives. The dates with no row are weekends and ECB holidays, which the provider never publishes.
+Rates are stored to 8 decimal places, and the first answer cached for a pair on a date is the one kept: once a date is on disk MoneyBin does not ask the provider about it again, so a later revision to that date never arrives. On a pair whose `refresh` reported a clean, fully-covered backfill, the only dates with no row are weekends and ECB holidays, which the provider never publishes. A pair with a discarded or interrupted backfill can also be missing an ordinary weekday — an interior gap `fx list` cannot distinguish from a holiday, because it only reads what is on disk and never fetches.
 
 ## Record your own rate
 

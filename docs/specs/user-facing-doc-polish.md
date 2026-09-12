@@ -33,7 +33,7 @@ The tagline `Your finances, understood by AI.` stays as the aspirational vision 
 - [`docs/decisions/009-encryption-key-management.md`](../decisions/009-encryption-key-management.md) — KDF + key-storage decisions referenced from the threat model.
 - Existing user-facing assets that this spec extends: [`README.md`](../../README.md), [`SECURITY.md`](../../SECURITY.md) (already strong, no change), [`CONTRIBUTING.md`](../../CONTRIBUTING.md) (one minor addition), [`docs/guides/database-security.md`](../guides/database-security.md).
 
-This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change is `pyproject.toml` metadata polish (already on the M3B distribution work).
+This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change originally scoped was `pyproject.toml` metadata polish (already on the M3B distribution work). Phase 3 (2026-09-11) additionally touched three output strings surfaced while writing the new guides — `DoctorService`'s unknown-currency and mixed-currency advice, and the `investments prices pull/set/delete` command hints — each a stale command name corrected to the one that actually runs; see Testing Strategy for their regression coverage.
 
 ## Requirements
 
@@ -135,7 +135,7 @@ The `now` batch and the M0D item above are the bulk of this spec, and both are s
 
 ## CLI Interface
 
-Not applicable. No CLI changes.
+Not applicable to the spec's original scope: no new commands, flags, or output shapes. Phase 3 (2026-09-11) corrected the wording of three existing outputs — `investments prices pull/set/delete`'s post-write hint and `system doctor`'s currency-check advice — from a stale command name to the one that actually runs; no argument, flag, or exit-code behavior changed.
 
 ## MCP Interface
 
@@ -152,6 +152,7 @@ This is documentation work; testing is by inspection and review.
 - **Trust-signal audit** — every quality badge or claim links to a real check, command, workflow, or spec; remove anything aspirational.
 - **CHANGELOG accuracy** — entries cross-referenced against `git log --oneline` for the relevant range; PR numbers cited.
 - **Threat model accuracy** — claims in `docs/guides/threat-model.md` cross-checked against [`privacy-data-protection.md`](privacy-data-protection.md) and ADR-009.
+- **Output-string regression tests** — the Phase 3 command-hint corrections are guarded, not just proofread: `tests/moneybin/test_cli/test_investments_prices.py` asserts the corrected `investments prices` hint text and, separately, the absence of the stale spelling (a bare positive match on the fixed string is a substring of the stale one and cannot fail on regression); `tests/moneybin/test_services/test_doctor_service.py` does the same for both corrected `system doctor` checks (`currency_integrity`, `dedup_reconciliation`).
 
 ## Synthetic Data Requirements
 
