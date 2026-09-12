@@ -70,7 +70,23 @@
    rate is picked up by the next run with no incremental bookkeeping and no
    staleness marker — matching core.fct_balances_daily and
    core.fct_security_prices. A user override is deliberately NOT part of that
-   recompute; see the header note above. */
+   recompute; see the header note above.
+
+   KNOWN DEFERRAL. CurrencyService._store() restates only
+   core.bridge_currency_conversions and its downstream dependents
+   (fx_accounting_refresh.restate_fx_accounting) when `moneybin fx rate`
+   caches a newly fetched quote. It does not restate this table, so a
+   pair/date fetched after the last sqlmesh run stays stale, or entirely
+   absent, here (and therefore in core.fct_exchange_rates_effective, which
+   is built on top of it) until the next full run. This mirrors the shipped
+   precedent of PriceService.pull never restating core.fct_security_prices,
+   also kind FULL, and is deliberately out of scope here: nothing reads
+   this table yet. It MUST be resolved before the net-worth ladder rungs
+   start reading it — either wire this model into the provider-rate refresh
+   path, or accept the staleness explicitly. See
+   docs/specs/reports-net-worth-sql-surface.md's Implementation Plan for
+   those rungs (reports/net_worth_accounts.sql,
+   reports/net_worth_currencies.sql). */
 MODEL (
   name core.fct_exchange_rates_daily,
   kind FULL,

@@ -239,6 +239,47 @@ def test_an_override_before_an_interior_gap_changes_every_carried_day(
 
 
 @pytest.mark.slow
+def test_an_override_on_an_interior_gap_day_does_not_forward_fill(
+    db: Database,
+) -> None:
+    """Rule 1 is exact-day only — it does not become a new carry-forward anchor.
+
+    Correcting Monday's *publication* (rule 2, tested above) cascades through
+    the whole gap it carries into. A direct override on Tuesday — itself an
+    interior day carried from Monday, not a publication day — is a fact about
+    Tuesday alone: rule 1 gives it `published_date = effective_date` and stops
+    there. Wednesday still carries Monday's unmodified provider quote. Treating
+    Tuesday's correction as also correcting Wednesday would infer a claim the
+    user never made — the same Requirement 5 (never manufacture a rate) that
+    keeps rule 3 from interior-filling between two standalone overrides.
+    """
+    _insert_override(
+        db, from_currency="USD", to_currency="FFF", rate_date="2026-01-06", rate="9.999"
+    )
+
+    rows = db.execute(
+        "SELECT effective_date, published_date, rate, rate_source "
+        "FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'FFF' ORDER BY effective_date"
+    ).fetchall()
+    assert [str(r[0]) for r in rows] == [
+        "2026-01-05",
+        "2026-01-06",
+        "2026-01-07",
+        "2026-01-08",
+    ]
+    # Tuesday: the direct override, scoped to itself.
+    assert str(rows[1][1]) == "2026-01-06"
+    assert float(rows[1][2]) == pytest.approx(9.999)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert rows[1][3] == "override"
+    # Wednesday: still carrying Monday's provider quote, untouched by Tuesday's
+    # correction.
+    assert str(rows[2][1]) == "2026-01-05"
+    assert float(rows[2][2]) == pytest.approx(1.000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert rows[2][3] == "provider"
+
+
+@pytest.mark.slow
 def test_an_override_on_an_unpriced_pair_is_still_visible(db: Database) -> None:
     """A correction for a pair the provider never priced still produces a row."""
     _insert_override(
