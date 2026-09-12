@@ -125,9 +125,11 @@ reach the ledger, everything downstream is existing machinery.
    a successful load, `SyncService.pull()` runs the standard post-load refresh
    (same semantics, soft-fail behavior, and opt-outs as `sync-plaid.md`
    Requirement 10).
-10. **Connection status.** `app.sync_connections` reflects investments in its
-    per-institution counts and error details, same envelope as cash sync.
-    Investments-specific Plaid error codes map to actionable guidance (below).
+10. **Connection status.** moneybin-sync owns connection health. The client
+    reads `GET /institutions` through `SyncService.list_connections()` and
+    maps error codes to actionable guidance. `GET /sync/data` exposes one
+    `status`, `error`, and `error_code` per institution at
+    `metadata.institutions`; product-specific error detail is unimplemented.
 11. **No PII or financial data in logs.** Record counts, institution names,
     and masked identifiers only — no tickers-with-quantities, no amounts.
 12. **Registration.** Provider-owned raw DDL lands in
@@ -1229,9 +1231,9 @@ Extends the `sync-plaid.md` error table (all codes there still apply):
 | `PRODUCTS_NOT_SUPPORTED` | Institution/account doesn't support the investments product | "{institution} doesn't provide investment data through Plaid. Cash accounts still sync normally." |
 | `INVALID_PRODUCT` | Item lacks investments consent (linked before consent expansion) | "{institution} was linked before investment access — run `moneybin sync link` to re-consent." |
 
-A partial failure (investments errored, cash succeeded) is recorded
-per-product in the institution's `app.sync_connections` error details; cash
-data still loads.
+`GET /sync/data` reports one outcome per institution, not separate cash and
+investments outcomes. Product-specific partial-failure reporting is
+unimplemented.
 
 ---
 
@@ -1310,7 +1312,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
 | `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
 | `src/moneybin/services/doctor_service.py` | **Nine** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; one provider security bound to two canonical securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
-| `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
+| `src/moneybin/connectors/sync_models.py` and `src/moneybin/extractors/plaid/extractor.py` | `SyncDataResponse` carries the three optional arrays; `PlaidExtractor` loads them |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
 | Review sweep (CLI `moneybin review` / MCP `reviews(kind="summary")`) | Add `security_links_pending` count |

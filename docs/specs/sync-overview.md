@@ -27,7 +27,7 @@ Sync is the bridge between MoneyBin's power-user core and mainstream usability:
 - **Trackers** (broadest appeal) — "just connect my bank" is the expected onboarding for anyone coming from Mint, YNAB, or Monarch. Sync eliminates the file-export friction that limits adoption.
 - **Power users** — CLI-driven sync with scheduling, per-institution control, and `--output json` for scripting.
 - **Budgeters** — automated nightly sync means budget tracking always has current data without manual imports.
-- **Wealth managers** — Plaid Investments (future child spec) will sync holdings, positions, and investment transactions alongside cash transactions.
+- **Wealth managers** — Plaid Investments syncs holdings, positions, and investment transactions alongside cash transactions.
 
 ## Scope boundary
 
@@ -542,8 +542,8 @@ Each layer has a clear owner and responsibility:
 
 | Layer | Owner | Responsibility |
 |---|---|---|
-| JSON response | Server (`api-contract.md`) | Provider-shaped data in server's native format |
-| Raw tables | Provider loader (e.g., `PlaidLoader`) | Faithful storage of provider data — no transformations, no sign flips |
+| JSON response | Server ([server API contract](../reference/server-api-contract.md)) | Provider-shaped data in server's native format |
+| Raw tables | Provider extractor (e.g., `PlaidExtractor`) | Faithful storage of provider data — no transformations, no sign flips |
 | Staging views | SQLMesh models in `prep` | Light cleaning, type casting, sign convention normalization, column renaming to core-compatible names |
 | Core tables | SQLMesh models in `core` | `UNION ALL` from all sources with `source_type` discriminator |
 
@@ -607,7 +607,7 @@ The names suggest provider-agnostic; the contents don't.
 - Pros: client stays one code path; one loader, one set of staging views; future providers are pure server-side work.
 - Cons: lossy when a provider exposes data the canonical shape doesn't capture; server team carries the per-provider transformation debt; the per-provider `raw.{provider}_*` artifact convention in the section above would collapse to `raw.sync_*` with a `provider` discriminator column — which contradicts the established OFX/tabular pattern.
 
-**Option B — Server passes provider-shaped data through; client normalizes per provider.** `SyncDataResponse` becomes a tagged union (or splits into `PlaidSyncResponse`, `SimpleFINSyncResponse`, etc.). Each loader (`PlaidLoader`, `SimpleFINLoader`) reads its variant and writes to its own `raw.{provider}_*` tables. Per-provider staging views apply the right sign/category/pending semantics. Core models `UNION ALL` from each as today.
+**Option B — Server passes provider-shaped data through; client normalizes per provider.** `SyncDataResponse` becomes a tagged union (or splits into `PlaidSyncResponse`, `SimpleFINSyncResponse`, etc.). Each provider extractor (`PlaidExtractor`, `SimpleFINExtractor`) reads its variant and writes to its own `raw.{provider}_*` tables. Per-provider staging views apply the right sign/category/pending semantics. Core models `UNION ALL` from each as today.
 
 - Pros: matches the per-provider artifact pattern already in this spec and already in OFX/tabular; lossless preservation; new providers don't require server-side normalization work.
 - Cons: client carries more per-provider code; the `Sync*` model names become misleading and need renaming.
@@ -682,7 +682,7 @@ The [`testing-overview.md`](testing-overview.md) umbrella spec deferred Plaid Sa
 ### Phase 1: Core sync flow (M1G deliverable)
 
 - `SyncClient` with login, logout, Link-session initiation/status, disconnect, pull
-- `PlaidLoader` with raw table DDL, JSON loading, `removed_transactions`
+- `PlaidExtractor` with raw table DDL, JSON loading, `removed_transactions`
 - Plaid staging views and core model integration (see `sync-plaid.md`)
 - Server-authoritative connection health through `GET /institutions`
 - CLI commands: `login`, `logout`, `link`, `link-status`, `disconnect`, `pull`, `status`
@@ -758,11 +758,10 @@ Infrastructure spec. The `Database` class that sync loaders write through handle
 Not designed here. Architectural constraints noted so the current design does not preclude them.
 
 1. **`sync push`** — multi-device sync. Push encrypted DuckDB state (or deltas) to the server so another device can pull it. Would add `moneybin sync push` command and bidirectional protocol extensions. **Merge at the matcher/provenance layer, never at raw rows.** A generic row-level three-way merge treats the same real transaction imported on two devices as two distinct rows and "cleanly" duplicates it; MoneyBin's transaction-identity semantics — content-derived identity plus the cross-source matcher and `meta.fct_transaction_provenance` — are exactly what collapse that duplicate. Any replication design routes conflict resolution through matching/provenance, not raw-row diffing.
-2. **Plaid Investments** — sync holdings, securities, and investment transactions. Gated on `investments-data-model.md` (M1J). New child spec: `sync-plaid-investments.md`.
-3. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
-4. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.
-5. **Integration test environment** — coordinated setup for running server-dependent tests. Separate spec covering docker-compose, Auth0 test tenant, sandbox credential management.
-6. **Compliance gap analysis** — assessment of MoneyBin's security posture against SOC 2, FIPS 140-3, and other certifications. Tracked separately.
+2. **Plaid Liabilities** — sync loan, mortgage, and credit card debt details. Separate child spec.
+3. **Webhook-based sync** — server pushes notifications when new data is available, eliminating polling. Requires a client-side listener or notification mechanism.
+4. **Integration test environment** — coordinated setup for running server-dependent tests. Separate spec covering docker-compose, Auth0 test tenant, sandbox credential management.
+5. **Compliance gap analysis** — assessment of MoneyBin's security posture against SOC 2, FIPS 140-3, and other certifications. Tracked separately.
 
 ## Success criteria
 
