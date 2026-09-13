@@ -169,11 +169,16 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
     rows = model_db.execute("""
         SELECT conversion_id, currency_lot_id, source_conversion_id,
                source_transfer_id, account_name, currency_code, home_currency,
-               disposed_amount, proceeds, cost_basis, gain_loss
+               disposed_amount, proceeds, cost_basis, gain_loss,
+               from_amount, to_amount
         FROM reports.realized_fx
         ORDER BY currency_lot_id
     """).fetchall()
 
+    # from_amount/to_amount are conversion-level totals (45.00/54.00), not
+    # lot-allocated: they repeat identically on both rows of this two-lot
+    # disposal by design, so a naive SUM() overstates conversion volume by the
+    # number of consumed lots. disposed_amount is the additive per-lot figure.
     assert rows == [
         (
             "dispose",
@@ -187,6 +192,8 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("36.00"),
             Decimal("30.00"),
             Decimal("6.00"),
+            Decimal("45.00"),
+            Decimal("54.00"),
         ),
         (
             "dispose",
@@ -200,6 +207,8 @@ def test_realized_fx_preserves_one_row_per_consumed_lot(
             Decimal("18.00"),
             Decimal("16.50"),
             Decimal("1.50"),
+            Decimal("45.00"),
+            Decimal("54.00"),
         ),
     ]
 
@@ -253,6 +262,35 @@ def test_realized_fx_keeps_incomplete_rows_without_joined_lineage(
         None,
         datetime(2026, 3, 6, 12),
     )
+
+
+def test_realized_fx_nulls_fabricated_acquisition_date_for_unmatched_inventory(
+    model_db: Database,
+) -> None:
+    """A negative-inventory disposal's placeholder acquisition_date is hidden.
+
+    The accounting loader sets ``acquisition_date = disposal_date`` on an
+    unmatched-remainder slice as a zero-basis placeholder, not an observed
+    date (``cost_basis.py``'s ``_UNMATCHED_LOT_ID`` slice). The report must
+    not publish that placeholder as a real acquisition date.
+    """
+    _install_realized_fx_sources(model_db)
+    model_db.execute("""
+        INSERT INTO core.fct_realized_fx_gains VALUES
+            ('gain-unmatched', 'acct', 'dispose', NULL, 'EUR', 'USD', 'fifo',
+             'actual', 'incomplete', 'negative_inventory', 5.00, 6.00, NULL,
+             NULL, 0.00, 1.20000000, '2026-03-04', '2026-03-04', '2026-03-04',
+             '2026-03-04 12:00:00')
+    """)
+    _install_report(model_db, "realized_fx")
+
+    row = model_db.execute("""
+        SELECT currency_lot_id, coverage_reason, acquisition_date, disposal_date
+        FROM reports.realized_fx
+        WHERE realized_fx_gain_id = 'gain-unmatched'
+    """).fetchone()
+
+    assert row == (None, "negative_inventory", None, date(2026, 3, 4))
 
 
 @pytest.fixture()

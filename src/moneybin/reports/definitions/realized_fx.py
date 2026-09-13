@@ -180,7 +180,7 @@ from moneybin.tables import REPORTS_REALIZED_FX
         ),
         OutputColumn(
             "acquisition_date",
-            "Date the consumed Currency was acquired.",
+            "Date the consumed Currency was acquired; null when no lot was matched.",
             DataClass.TXN_DATE,
         ),
         OutputColumn(
@@ -208,13 +208,18 @@ from moneybin.tables import REPORTS_REALIZED_FX
         ),
         OutputColumn(
             "from_amount",
-            "Positive magnitude actually sent in from_currency.",
+            "Positive magnitude actually sent in from_currency for the whole "
+            "conversion; repeats on every lot row from the same disposal, so "
+            "it is not additive at this row's grain (sum disposed_amount "
+            "instead).",
             DataClass.TXN_AMOUNT,
             money_kind="magnitude",
         ),
         OutputColumn(
             "to_amount",
-            "Positive magnitude actually received in to_currency.",
+            "Positive magnitude actually received in to_currency for the "
+            "whole conversion; repeats on every lot row from the same "
+            "disposal, so it is not additive at this row's grain.",
             DataClass.TXN_AMOUNT,
             money_kind="magnitude",
         ),
