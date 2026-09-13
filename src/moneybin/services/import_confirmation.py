@@ -28,6 +28,7 @@ ConfirmationReason = Literal[
     "sign_convention",
     "unreadable_date",
     "header_row_consumed",
+    "header_position_ambiguous",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -156,6 +157,16 @@ class ConfirmationRequired:
     design — the caller's column correction outranks a low score — and that
     is right for a mapping problem and wrong for this one, which no column
     correction touches. Surfaces route it to source repair, not a retry.
+
+    `reason='header_position_ambiguous'` is `header_row_consumed`'s
+    dismissible sibling: auto-detection picked a header-like row that has a
+    data-like row somewhere before it (see `ReadResult.header_position_
+    ambiguous`'s docstring in readers.py), and nothing is lost yet — unlike
+    `header_row_consumed`, no row has been read as column names. Confirming
+    (`confirm=True`, an Override, or replaying a `reviewed_plan` that showed
+    this in its preview) ratifies the detected header position and the
+    import proceeds; it exists as its own reason, not folded into
+    `header_row_consumed`, precisely so it stays confirmable.
 
     `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
     `transaction_date` column is mapped and nothing could read its values.
@@ -354,6 +365,45 @@ def header_row_consumed_recovery_mcp() -> str:
         "transaction — a real record was consumed as the header. No column "
         "correction can recover it, and MoneyBin exposes no skip-rows "
         "override. Add a header row to the source file and preview it again."
+    )
+
+
+def header_position_ambiguous_recovery(file_path: str) -> str:
+    """The dismissible recovery for an ambiguous auto-detected header, CLI.
+
+    UNLIKE `header_row_consumed_recovery`, this names a command that actually
+    resolves the gate: nothing has been consumed yet, so `--confirm` (or
+    `import confirm ... --accept`) ratifies the detected header position and
+    the import proceeds. Names the other honest option too — if the row
+    above the header is a real transaction, not a balance summary, the fix
+    is in the source file, and no flag changes that.
+    """
+    import shlex
+
+    quoted = shlex.quote(file_path)
+    return (
+        "A row before the detected header also reads as a transaction. If "
+        "it is a balance summary or similar preamble, the detected header is "
+        "correct — re-run with `moneybin import files "
+        f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
+        "proceed. If it is a real transaction, correct the source file "
+        "before importing — MoneyBin will otherwise treat it as skipped "
+        "preamble."
+    )
+
+
+def header_position_ambiguous_recovery_mcp() -> str:
+    """The dismissible recovery for an ambiguous auto-detected header, MCP.
+
+    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`, this
+    one has a command to offer, because confirming the SAME preview ratifies
+    the detected header position rather than restaging an unconfirmable plan.
+    """
+    return (
+        "A row before the detected header also reads as a transaction. If "
+        "it is a balance summary or similar preamble, the detected header is "
+        "correct — call import_confirm(preview_id=...) to proceed. If it is "
+        "a real transaction, correct the source file and preview it again."
     )
 
 

@@ -601,6 +601,7 @@ def import_files_command(
     except Exception as _exc:  # dispatch on type below
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
+            header_position_ambiguous_recovery,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
@@ -676,6 +677,10 @@ def import_files_command(
                     )
                 elif outcome.reason == "header_row_consumed":
                     confirm_actions.append(header_row_consumed_recovery())
+                elif outcome.reason == "header_position_ambiguous":
+                    confirm_actions.append(
+                        header_position_ambiguous_recovery(file_path_str)
+                    )
                 elif outcome.reason == "unreadable_date":
                     confirm_actions.append(unreadable_date_recovery(file_path_str))
                 else:
@@ -1988,6 +1993,7 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        header_position_ambiguous_recovery,
         header_row_consumed_recovery,
         unreadable_date_recovery,
     )
@@ -2068,6 +2074,8 @@ def import_confirm_command(
             )
         elif outcome.reason == "header_row_consumed":
             confirm_actions.append(header_row_consumed_recovery())
+        elif outcome.reason == "header_position_ambiguous":
+            confirm_actions.append(header_position_ambiguous_recovery(str(file_path)))
         elif outcome.reason == "unreadable_date":
             # `import confirm` carries no --date-format, so the recovery is a
             # different command, not a different flag on this one.
@@ -2147,6 +2155,11 @@ def import_confirm_command(
         elif outcome.reason == "header_row_consumed":
             logger.error("❌ A transaction row was consumed as the header.")
             logger.info(f"💡 {header_row_consumed_recovery()}")
+        elif outcome.reason == "header_position_ambiguous":
+            logger.error(
+                "❌ A row before the detected header looks like a transaction."
+            )
+            logger.info(f"💡 {header_position_ambiguous_recovery(str(file_path))}")
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
             logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")
@@ -2703,6 +2716,15 @@ def import_preview(
                 "⚠️  The row consumed as the header also parses as a transaction "
                 "(date + amount) — this may be a headerless file misread as having "
                 "a header. Re-run with a corrected --format or check the source file."
+            )
+        if read_result.header_position_ambiguous:
+            # Dismissible, unlike the flag above: --confirm ratifies the
+            # detected header position rather than being permanently blocked.
+            logger.warning(
+                "⚠️  A row before the detected header also reads as a "
+                "transaction. If it is a balance summary, the detected "
+                "header is correct — re-run with --confirm to proceed. If "
+                "it is a real transaction, correct the source file first."
             )
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 

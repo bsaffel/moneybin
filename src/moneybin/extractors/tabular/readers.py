@@ -52,23 +52,28 @@ class ReadResult:
     and for schema-typed formats (parquet/feather) where column names are
     metadata, not a consumed row."""
     header_row_looks_like_data: bool = False
-    """A red flag that a real transaction row may have been silently
-    consumed rather than loaded, via either of two independent paths (CSV or
-    Excel):
-
-    - An explicit ``skip_rows`` override lands on a row that itself parses
-      as a transaction record (date + amount) — the row picked as the
-      header IS a transaction.
-    - Auto-detection (``_classify_header_rows``) picks a header-like row
-      that has a data-like row somewhere before it. That earlier row might
-      be a genuine one- or two-line balance summary (an intentionally
-      skipped preamble) or real transaction data mistaken for one —
-      detection cannot tell those apart, so it flags the ambiguity instead
-      of silently guessing.
-
-    False whenever detection is unambiguous: a normal headered file, or a
-    genuinely headerless file (which only ever loses trailing rows, already
-    reported via ``rows_skipped_trailing``)."""
+    """True when the row consumed as the header also parses as a transaction
+    record (date + amount) — a red flag that a real data row may have been
+    eaten as a header via an explicit skip_rows override (CSV or Excel).
+    Auto-detection is its own safety net for both formats (it never picks a
+    data-looking row as the header itself), so this stays False there — see
+    ``header_position_ambiguous`` for auto-detection's own red flag. UNLIKE
+    that flag, this one is NOT dismissible: the row is already gone, consumed
+    as column names, and no confirmation recovers it (see
+    ``header_row_consumed_recovery``'s docstring)."""
+    header_position_ambiguous: bool = False
+    """True when auto-detection (``_classify_header_rows``) picked a
+    header-like row that has a data-like row somewhere before it. That
+    earlier row might be a genuine one- or two-line balance summary (an
+    intentionally skipped preamble — see ``_classify_header_rows``'s
+    docstring) or real transaction data mistaken for one; detection cannot
+    tell those apart. UNLIKE ``header_row_looks_like_data``, nothing is lost
+    yet at this point — the rows in question are merely classified as
+    preamble, not consumed as a header — so this IS dismissible: a caller
+    who confirms is ratifying the detected header position, not overriding
+    an unrecoverable loss. Always False for an explicit skip_rows (nothing
+    to detect) and for the headerless outcome (no header was picked at
+    all)."""
     excel_native_date_columns: frozenset[str] | None = None
     """Excel-only. Column names openpyxl reports as natively date/datetime
     typed (see ``_excel_native_date_columns``) — a property of the file,
@@ -214,19 +219,13 @@ def _read_text(
     elif has_header is not None:
         resolved_has_header = has_header
 
-    # header_row_looks_like_data is a red flag that a real data row may have
-    # been eaten as a header, via either of two independent paths:
-    #  - an EXPLICIT skip_rows lands on a row that itself parses as a
-    #    transaction (defense-in-depth for a caller-supplied index — has_header
-    #    is unconditionally True there, with no safety check of its own).
-    #  - AUTO-DETECTION (_detect_header/_classify_header_rows) picks a
-    #    header-like row with a data-like row somewhere before it — an
-    #    ambiguous shape the classifier cannot resolve on its own (see
-    #    _classify_header_rows's docstring), so it surfaces here instead of
-    #    silently trusting the guess. These two conditions are mutually
-    #    exclusive (skip_rows is either given or detected), so a plain
-    #    overwrite below is correct.
-    header_row_looks_like_data = preamble_looks_like_data
+    # header_row_looks_like_data is defense-in-depth for the EXPLICIT skip_rows
+    # path only (has_header is unconditionally True there — no safety check of
+    # its own). Auto-detection (_detect_header) never selects a data-looking row
+    # AS THE HEADER ITSELF, so computing it there would always be False — skip
+    # the read. header_position_ambiguous (below) is auto-detection's own,
+    # separately-dismissible red flag for the shape this one does not cover.
+    header_row_looks_like_data = False
     if explicit_skip:
         header_row_looks_like_data = resolved_has_header and _row_looks_like_data_at(
             path,
@@ -262,6 +261,7 @@ def _read_text(
         rows_skipped_trailing=rows_removed,
         has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
+        header_position_ambiguous=preamble_looks_like_data,
     )
 
 
@@ -811,6 +811,42 @@ def _excel_cell_text(value: object) -> str:
     return str(value)
 
 
+# Matches the exact text pl.read_excel(infer_schema_length=0) renders for a
+# native Excel date/datetime cell when calamine (not openpyxl) reads it: an
+# ISO date followed by a space and a time-of-day, with or without a
+# fractional-seconds tail. This is the fastexcel/calamine-sourced counterpart
+# to _excel_cell_text's isinstance(value, datetime) branch: with
+# infer_schema_length=0 every column is already Utf8 (str), so there is no
+# datetime OBJECT left to isinstance-check — calamine has already rendered it
+# to this exact shape by the time it reaches Python. Anchored full-string
+# (^...$) so an ordinary description column containing a date-shaped
+# substring is never partially rewritten.
+_FASTEXCEL_DATETIME_TEXT = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2}(\.\d+)?$"
+)
+
+
+def _fastexcel_probe_cell_text(value: str) -> str:
+    """Strip a calamine-rendered time-of-day suffix for header classification.
+
+    ``_classify_excel_headerless_via_fastexcel`` feeds ``_classify_header_rows``
+    a raw, unheadered fastexcel/calamine read. Unlike the openpyxl-backed probe
+    (``_excel_sample_rows``, which applies ``_excel_cell_text`` to typed
+    ``datetime`` objects), this read has ``infer_schema_length=0`` and so
+    already arrives as text — but calamine renders a native date/datetime cell
+    as ``"2026-01-01 00:00:00"``, the same time-suffixed shape
+    ``_excel_cell_text`` exists to strip. ``_DATE_FORMATS`` is date-only, so
+    that suffix defeats ``detect_date_format``/``_looks_like_data_row`` here
+    exactly as it would there, and a genuinely headerless legacy ``.xls`` with
+    native-typed dates falls through to the ``(0, True, False)`` default —
+    the first real transaction consumed as a header. Both probes must present
+    ``_classify_header_rows`` with the identical shape for identical
+    underlying data, or the two engines classify the same file differently.
+    """
+    match = _FASTEXCEL_DATETIME_TEXT.match(value)
+    return match.group(1) if match else value
+
+
 # Row cap for _excel_native_date_columns's typed scan. Measured on a real
 # 49,999-row x 15-column .xlsx: the full-column scan cost ~8.0s of a ~14.0s
 # read_file() call (>55% of total import time), and nearly all of that is
@@ -1109,8 +1145,14 @@ def _classify_excel_headerless_via_fastexcel(
             infer_schema_length=0,
             read_options={"header_row": None, "n_rows": 30},
         )
+        # _fastexcel_probe_cell_text strips the same calamine-rendered
+        # time-of-day suffix _excel_cell_text strips for the openpyxl-backed
+        # probe (see its docstring) — both probes must present
+        # _classify_header_rows with the identical shape for identical
+        # underlying data.
         sample_rows = [
-            [v if v is not None else "" for v in row] for row in probe_df.iter_rows()
+            [_fastexcel_probe_cell_text(v) if v is not None else "" for v in row]
+            for row in probe_df.iter_rows()
         ]
         return _classify_header_rows(sample_rows)
     except fastexcel.FastExcelError:
@@ -1305,17 +1347,15 @@ def _read_excel(
         )
     )
 
-    # header_row_looks_like_data is a red flag that a real data row may have
-    # been eaten as a header (mirrors _read_text — see its comment for the
-    # two independent paths: an EXPLICIT skip_rows landing on a data-looking
-    # row, or AUTO-DETECTION picking a header-like row with a data-like row
-    # before it). The explicit-skip branch below classifies the physical
-    # sampled row, not df.columns — fastexcel's post-read column naming for a
-    # native Excel date/datetime cell doesn't reliably parse as a date (see
-    # _excel_row_looks_like_data_at). The two conditions are mutually
-    # exclusive (skip_rows is either given or detected), so a plain overwrite
-    # is correct.
-    header_row_looks_like_data = preamble_looks_like_data
+    # header_row_looks_like_data is defense-in-depth for the EXPLICIT
+    # skip_rows path only (mirrors _read_text). Auto-detection
+    # (_classify_header_rows) never selects a data-looking row as the header
+    # ITSELF, so this stays False there — header_position_ambiguous (below)
+    # is auto-detection's own, separately-dismissible red flag. Classifies
+    # the physical sampled row, not df.columns — fastexcel's post-read column
+    # naming for a native Excel date/datetime cell doesn't reliably parse as
+    # a date (see _excel_row_looks_like_data_at).
+    header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
         # Same reasoning as the auto-detect branch's sheet_used check above:
         # a None sheet_used already proves openpyxl can't open this file, so
@@ -1346,6 +1386,7 @@ def _read_excel(
         sheet_used=sheet_used,
         has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
+        header_position_ambiguous=preamble_looks_like_data,
         excel_native_date_columns=native_date_columns,
     )
 

@@ -758,6 +758,14 @@ class ReviewedTabularPlan:
     """Fields the preview flagged as weakly matched. Required, not defaulted:
     an absent value re-scores as a clean mapping, which is how a flagged 0.85
     plan came to report score=1.0 beside its own "low" tier."""
+    header_position_ambiguous: bool = False
+    """Defaulted for backward compatibility with a plan persisted before this
+    field existed (`from_dict` on a stale row must not raise). See
+    `ReadResult.header_position_ambiguous`'s docstring — unlike
+    `header_row_looks_like_data`, replaying THIS plan (calling
+    `import_confirm`) is itself the ratification, because nothing was lost:
+    the preview already showed the ambiguity and the caller chose to
+    proceed."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON-ready representation."""
@@ -3400,22 +3408,22 @@ class ImportService:
         # metrics below, because a refusal must not first record a silent
         # format reuse.
         #
-        # The flag is true whenever a reader (CSV and Excel alike — both
-        # share _classify_header_rows) suspects a real transaction was
-        # consumed rather than loaded: either an explicit skip_rows landed on
-        # a row that itself parses as data (only reachable when a saved or
-        # built-in format supplied the skip — the `elif matched_format:`
-        # branch, which asserts confidence="high" and would otherwise
-        # commit), or auto-detection picked a header-like row with a
-        # data-like row before it — an ambiguity auto-detection cannot
-        # resolve on its own (see _classify_header_rows's docstring), so it
-        # surfaces here on EVERY branch, including first-contact and a
-        # matched_format whose skip_rows is unset. The reviewed-plan branch
-        # refuses earlier with the same reason.
+        # The flag is computed only for an explicit skip_rows on every reader
+        # (CSV and Excel alike — both share _classify_header_rows, and
+        # auto-detection never picks a data-looking row as the header
+        # ITSELF), so it can only be true when a saved or built-in format
+        # supplied the skip — the `elif matched_format:` branch, which
+        # asserts confidence="high" and would otherwise commit. The
+        # reviewed-plan branch refuses earlier with the same reason.
+        # header_position_ambiguous (checked separately below) is
+        # auto-detection's own red flag, and unlike this one it IS
+        # confirmable — folding the two together here previously blocked a
+        # legitimate summary-row file even with confirm=True, because this
+        # gate never checks confirm at all.
         #
-        # No caller input clears it: a mapping override cannot un-consume a
-        # header row, and resolve_or_confirm honours an Override at every tier
-        # by design.
+        # No caller input clears THIS reason: a mapping override cannot
+        # un-consume a header row, and resolve_or_confirm honours an
+        # Override at every tier by design.
         if read_result.header_row_looks_like_data:
             # Confidence is imported at module scope, but a sibling branch
             # imports it locally, which makes the name function-local here.
@@ -3480,6 +3488,84 @@ class ImportService:
                     reason="header_row_consumed",
                     samples=gate_samples,
                 )
+            )
+
+        # header_position_ambiguous is auto-detection's OWN red flag (see
+        # ReadResult's docstring in readers.py) — a data-like row precedes the
+        # header auto-detection picked, and the classifier cannot tell a real
+        # transaction from a legitimate balance-summary preamble apart. UNLIKE
+        # header_row_looks_like_data above, nothing is lost yet: the rows in
+        # question were classified as preamble, not consumed as a header. So
+        # this reason IS confirmable — ratified by confirm=True, an Override,
+        # or (for the reviewed_plan branch) the mere act of calling
+        # import_confirm on a preview that already showed it. reviewed_plan
+        # replays an EXPLICIT skip_rows, so read_result never recomputes this
+        # for that branch — the persisted plan value is the only source there.
+        header_position_ambiguous = (
+            reviewed_plan.header_position_ambiguous
+            if reviewed_plan is not None
+            else read_result.header_position_ambiguous
+        )
+        ratified_header_position = (
+            confirm or bool(overrides) or reviewed_plan is not None
+        )
+        if header_position_ambiguous:
+            if not ratified_header_position:
+                from moneybin.extractors.confidence import Confidence
+                from moneybin.extractors.tabular.column_mapper import collect_samples
+                from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+                from moneybin.services.import_confirmation import (
+                    ConfirmationRequired,
+                    ImportConfirmationRequiredError,
+                    ProposedMapping,
+                )
+
+                gate_samples = {
+                    dest: [v for v in collect_samples(df, column) if v is not None]
+                    for dest, column in resolved.field_mapping.items()
+                    if column in df.columns
+                }
+                record_counter(
+                    IMPORT_CONFIRMATIONS_TOTAL,
+                    labels={
+                        "channel": "tabular",
+                        "tier": resolved.confidence,
+                        "outcome": "declined",
+                    },
+                    emit_metrics=emit_metrics,
+                    observations=observations,
+                    disposition="rollback",
+                )
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=0.0,
+                            tier="low",
+                            flagged=(),
+                            missing_required=(),
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping=dict(resolved.field_mapping),
+                            sample_values=gate_samples,
+                            unmapped_columns=tuple(
+                                c
+                                for c in df.columns
+                                if c not in resolved.field_mapping.values()
+                            ),
+                        ),
+                        reason="header_position_ambiguous",
+                        samples=gate_samples,
+                    )
+                )
+            # Ratified: proceed with the detected header position, but stay
+            # visible about it rather than going fully silent (Magic stays
+            # visible) — the caller confirmed the risk, not the outcome.
+            logger.warning(
+                "⚠️  A row before the detected header also reads as a "
+                "transaction. Proceeding with the detected header position "
+                "as confirmed — if that row was a real transaction, it was "
+                "not imported."
             )
 
         # Record format match and detection confidence metrics

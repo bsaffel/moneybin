@@ -733,7 +733,7 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
-    def test_data_rows_before_an_auto_detected_header_refuse_not_silently_drop(
+    def test_data_rows_before_an_auto_detected_header_surface_not_silently_drop(
         self, db: Database, tmp_path: Path
     ) -> None:
         """Auto-detection must not silently discard real leading transactions.
@@ -752,11 +752,59 @@ class TestTabularConfirmationFlow:
         real transactions before a coincidentally header-like row" from "an
         opening/closing-balance summary line before the real header" (see
         test_summary_row_above_header_not_headerless in test_readers.py,
-        which intentionally keeps that second case silent). The fix folds
-        the ambiguity into header_row_looks_like_data so BOTH cases now
-        raise ImportConfirmationRequiredError instead of picking a silent
-        winner — converting silent data loss into a required confirmation.
+        which intentionally keeps that second case silent). Fixed via the
+        DISMISSIBLE ``header_position_ambiguous`` reason (a later Codex
+        finding caught the first fix routing this into ``header_row_
+        consumed``, which is UNCONFIRMABLE by design — that blocked a
+        legitimate summary-row file even with ``confirm=True``).
+
+        On first contact, an unconfirmed mapping refuses as ``unknown_layout``
+        before the header-ambiguity gate is ever reached (Req 4: no
+        auto-accept without a signal) — that refusal is the generic "nothing
+        was confirmed yet" gate, not evidence about header ambiguity
+        specifically. ``test_matched_format_header_position_ambiguous_is_
+        dismissible`` below isolates the header-ambiguity gate itself via a
+        matched_format import, which bypasses resolve_or_confirm entirely.
+        What THIS test pins is the end state: with ``confirm=True`` the file
+        imports, ratifying the detected header position — still not silent,
+        since the row(s) treated as preamble are exactly the ones the caller
+        confirmed away.
         """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        # Before the header_position_ambiguous fix, this raised
+        # header_row_consumed and confirm=True could not clear it — the
+        # regression this round's coordinator flagged.
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+        assert result.rows_loaded == 1
+
+    def test_matched_format_header_position_ambiguous_is_dismissible(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Isolate the header_position_ambiguous gate via matched_format.
+
+        A saved format whose skip_rows is 0 (falsy) re-runs auto-detection
+        live on every import and bypasses resolve_or_confirm entirely (the
+        mapping is already known), so this is the cleanest way to see the
+        gate's own reason rather than the generic first-contact
+        ``unknown_layout`` mapping-confirmation gate.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
         )
@@ -770,17 +818,103 @@ class TestTabularConfirmationFlow:
             "2026-01-03,5.00,Snack\n",
             encoding="utf-8",
         )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="ambiguous_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
 
         with pytest.raises(ImportConfirmationRequiredError) as exc_info:
             ImportService(db).import_file(
                 csv,
                 account_name="test",
                 refresh=False,
-                confirm=True,
+                confirm=False,
+                format_name="ambiguous_fixture",
                 save_format=False,
             )
+        assert exc_info.value.outcome.reason == "header_position_ambiguous"
 
-        assert exc_info.value.outcome.reason == "header_row_consumed"
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test2",
+            refresh=False,
+            confirm=True,
+            format_name="ambiguous_fixture",
+            save_format=False,
+        )
+        assert result.rows_loaded == 1
+
+    def test_matched_format_summary_row_confirm_true_imports(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The exact regression: a legitimate summary row must import cleanly.
+
+        Before the fix, ``header_position_ambiguous`` was folded into
+        ``header_row_consumed`` (unconfirmable), so even a genuine
+        opening-balance preamble like this one — the case
+        ``test_summary_row_above_header_not_headerless`` (test_readers.py)
+        proves the READER handles correctly — became permanently
+        unimportable at the service layer, regardless of ``confirm=True``.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "summary.csv"
+        csv.write_text(
+            "2026-01-01,100.00\n"
+            "Date,Amount,Description\n"
+            "2026-01-02,42.50,Coffee\n"
+            "2026-01-03,10.00,Tea\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="summary_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="summary_fixture",
+            save_format=False,
+        )
+        assert result.rows_loaded == 2
 
     def test_paginated_export_with_repeated_header_imports_without_confirmation(
         self, db: Database, tmp_path: Path

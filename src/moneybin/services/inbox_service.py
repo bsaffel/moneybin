@@ -950,6 +950,7 @@ class InboxService:
         )
         from moneybin.privacy.redaction import redact_typed
         from moneybin.services.import_confirmation import (
+            header_position_ambiguous_recovery,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
@@ -1036,6 +1037,10 @@ class InboxService:
             # pending/ until the source (or the saved format's skip_rows) is
             # corrected, which is the honest instruction.
             actions.append(header_row_consumed_recovery())
+        elif reason == "header_position_ambiguous":
+            # Unlike header_row_consumed, --accept genuinely resolves this —
+            # it ratifies the detected header position, nothing was consumed.
+            actions.append(header_position_ambiguous_recovery(str(moved_path)))
         elif reason == "unreadable_date":
             # Two halves, and only one stays inside the inbox lifecycle. A
             # wrong-column correction runs through `import confirm`, which

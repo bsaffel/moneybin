@@ -1092,6 +1092,40 @@ class TestExcelReader:
         assert len(result.df) == 2
         assert result.excel_native_date_columns is None
 
+    def test_headerless_legacy_xls_native_date_not_eaten_as_header(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A headerless legacy .xls with native-date cells must not be eaten.
+
+        Review finding (Codex P1): pl.read_excel(infer_schema_length=0)
+        renders a native Excel date/datetime cell as calamine's own text
+        shape ("2026-01-01 00:00:00", NOT the bare "2026-01-01" the sibling
+        test above stubs), but the rows are passed to _classify_header_rows
+        unnormalized. _DATE_FORMATS is date-only, so that time suffix defeats
+        date detection exactly as it would for the openpyxl-backed probe
+        (_excel_cell_text exists for precisely this reason) — the classifier
+        finds no row that looks like data, falls through to its own
+        (0, True, False) default, and a genuinely headerless file has its
+        first real transaction consumed as the header.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        stub_df = pl.DataFrame({
+            "column_1": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+            "column_2": ["42.5", "10"],
+            "column_3": ["Coffee", "Tea"],
+        })
+        mocker.patch("polars.read_excel", return_value=stub_df)
+
+        result = read_file(
+            tmp_path / "legacy_headerless_nativedate.xls",
+            FormatInfo(file_type="excel"),
+            source_bytes=ole2_magic_bytes,
+        )
+
+        assert result.has_header is False
+        assert len(result.df) == 2
+
     def test_headerless_legacy_xls_with_explicit_sheet_not_eaten_as_header(
         self, tmp_path: Path, mocker: MockerFixture
     ) -> None:

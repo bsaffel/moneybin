@@ -1000,6 +1000,7 @@ def _import_preview_tabular(
             has_header=read_result.has_header,
             rows_in_file=read_result.rows_in_file,
             header_row_looks_like_data=read_result.header_row_looks_like_data,
+            header_position_ambiguous=read_result.header_position_ambiguous,
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).
@@ -1138,6 +1139,11 @@ def import_preview_coarse(
             # Carried so a later refusal re-scores against the same evidence the
             # caller reviewed, instead of a clean mapping it never saw.
             flagged_fields=list(data.flagged_fields),
+            # Persisted so the confirm-time replay knows the preview already
+            # surfaced this — replaying THIS plan is itself the ratification
+            # (see ReviewedTabularPlan's docstring), unlike header_row_looks_
+            # like_data above.
+            header_position_ambiguous=data.header_position_ambiguous,
         ).to_dict()
     sha256, size = _bytes_identity(source_bytes)
     issued_at = datetime.now(UTC)
@@ -1152,6 +1158,7 @@ def import_preview_coarse(
     # to survive the preview_id rewrite at the end of this function.
     from moneybin.services.import_confirmation import (
         classify_unconfirmable_plan,
+        header_position_ambiguous_recovery_mcp,
         header_row_consumed_recovery_mcp,
         unreadable_date_recovery_mcp,
     )
@@ -1188,6 +1195,16 @@ def import_preview_coarse(
             actions = [
                 "Use import_confirm(preview_id=...) before the preview expires.",
             ]
+            # header_position_ambiguous does NOT force plan_is_unconfirmable —
+            # unlike header_row_looks_like_data, confirming this plan ratifies
+            # the detected header position rather than restaging an
+            # unconfirmable one. Still worth naming explicitly: the caller
+            # should look at data.header_position_ambiguous / data.samples
+            # before ratifying, not discover it only after import_confirm.
+            if reviewed_plan is not None and reviewed_plan.get(
+                "header_position_ambiguous"
+            ):
+                actions.append(header_position_ambiguous_recovery_mcp())
         elif plan_reason == "header_row_consumed":
             actions = [header_row_consumed_recovery_mcp()]
         elif plan_reason == "unreadable_date":
@@ -2204,6 +2221,13 @@ def _import_confirm_coarse_confirmation_actions(
         )
 
         actions.append(header_row_consumed_recovery_mcp())
+        return actions
+    if outcome.reason == "header_position_ambiguous":
+        from moneybin.services.import_confirmation import (
+            header_position_ambiguous_recovery_mcp,
+        )
+
+        actions.append(header_position_ambiguous_recovery_mcp())
         return actions
     if outcome.reason == "unreadable_date":
         # The generic hint below prescribes a mapping= retry, which cannot

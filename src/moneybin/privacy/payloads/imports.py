@@ -334,6 +334,7 @@ class ImportPreviewPayload:
     has_header: Annotated[bool, DataClass.AGGREGATE]
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
+    header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
 
 
 @row_set(NO_ROW_SET)
@@ -362,6 +363,7 @@ class ImportTabularPreviewCoarsePayload(BaseModel):
     has_header: Annotated[bool, DataClass.AGGREGATE]
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
+    header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
 
 
 @row_set("rows")
