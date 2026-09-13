@@ -88,7 +88,7 @@ class ReadResult:
     typed (see ``_excel_native_date_columns``) — a property of the file,
     discoverable at read time even though whether to actually rewrite those
     columns is a Stage 3+ decision (see
-    ``normalize_excel_date_columns_before_mapping``). ``None`` when openpyxl
+    ``normalize_excel_date_columns_for_detection``). ``None`` when openpyxl
     could not open the container at all (legacy ``.xls``); an empty
     frozenset means openpyxl opened fine but found no natively-typed date
     column. Always ``None`` for every other file type."""
@@ -570,6 +570,27 @@ def _remove_repeated_headers(df: pl.DataFrame) -> pl.DataFrame:
     return df.filter(pl.Series(mask))
 
 
+def _openpyxl_sheet_access_errors() -> tuple[type[Exception], ...]:
+    """The one failure tuple every openpyxl workbook-open or sheet-index site here shares.
+
+    A container openpyxl can't open at all (legacy ``.xls``, corruption)
+    raises ``InvalidFileException`` reading a path or ``zipfile.BadZipFile``
+    reading in-memory bytes; a sheet name that doesn't exist in an
+    otherwise-openable workbook raises a bare ``KeyError`` from
+    ``Workbook.__getitem__``. Every guard in this module must degrade the
+    same way for all three, so this is the one place they're named — a
+    function, not a bare module constant, because it defers the
+    ``openpyxl`` import: every call site here is Excel-only, but
+    ``readers.py`` itself is imported for every file type, and hoisting
+    this to a module-level tuple would force ``import openpyxl`` at
+    ``readers.py`` import time regardless of what file the caller is
+    actually reading.
+    """
+    from openpyxl.utils.exceptions import InvalidFileException
+
+    return (InvalidFileException, zipfile.BadZipFile, KeyError)
+
+
 def _excel_sample_rows(
     path: Path,
     sheet_name: str,
@@ -641,19 +662,22 @@ def normalize_excel_date_columns(
     is a separate, disclosed gap for ``date_detection`` to close, not this
     reader.
 
-    Public (no leading underscore) and Excel-only: called from
-    ``import_service.py``'s ``_import_tabular``, not from this module's own
-    ``_read_excel``. Normalization can't run at read time and still be
-    correct — Stage 3 (column mapping, including a saved format matched only
-    by implicit header signature) and the caller's effective date format are
-    both still unknown during the Stage 2 read, and either one can turn a
-    would-be normalization into a truncation of a format the caller
-    explicitly declared. The caller relocates this call to run after Stage 3
-    resolves both, and *before* ``map_columns`` (whose own content-based date
-    detection needs a recognized shape to identify or validate a native-date
-    column at all, by name alias or by scanning unclaimed columns).
+    Public (no leading underscore) and Excel-only: called only from
+    ``normalize_excel_date_columns_for_detection``'s auto-detect branch
+    (no known mapping yet), not from this module's own ``_read_excel``.
+    Normalization can't run at read time and still be correct — column
+    mapping is unresolved during the Stage 2 read, and a real destination
+    column isn't known yet, so this only ever produces a throwaway
+    detection copy feeding ``map_columns``'s own content-based discovery
+    (which needs a recognized shape to identify a native-date column at
+    all, by name alias or by scanning unclaimed columns) — never the real
+    imported frame, which ``normalize_excel_date_columns_after_mapping``
+    renders separately once the final mapping is known.
 
-    Three selection strategies:
+    Two selection strategies currently reachable in production (a third,
+    ``columns`` given, is exercised directly by this function's own unit
+    tests but has no live caller — ``_normalize_mapped_date_cells`` now
+    covers a known mapping's columns instead):
 
     - ``columns`` given (a caller already knows which columns are mapped
       date fields — see ``mapped_date_columns``): every one of them
@@ -791,7 +815,7 @@ def date_format_has_time_component(
     check: ``date_column`` is ``None`` or absent from ``df.columns`` — the
     first-contact case where the caller supplied ``--date-format`` without
     ``--mapping transaction_date=<column>`` to say which column it governs
-    (see ``normalize_excel_date_columns_before_mapping``'s auto-detect
+    (see ``normalize_excel_date_columns_for_detection``'s auto-detect
     branch, this function's only caller — ``date_column`` is always
     ``None`` there in practice), so there is genuinely no raw text to read
     yet. ``pl.read_excel(infer_schema_length=0)`` renders a native Excel
@@ -799,6 +823,14 @@ def date_format_has_time_component(
     timestamp (``"2026-01-01 00:00:00"``; see ``_excel_cell_text``'s
     docstring) absent a real time-of-day — so that stays a faithful
     stand-in for this one narrow case where the real column is unavailable.
+
+    Only ever consulted against the throwaway detection copy, never the
+    real imported frame — the real frame's date columns are always
+    rendered exactly once, later, by ``normalize_excel_date_columns_
+    after_mapping`` against the FINAL mapping, so this check no longer
+    protects the imported data itself from a premature rewrite; it only
+    decides whether the detection copy's broad auto-detect scan runs at
+    all, which affects what ``map_columns`` can discover by content.
     """
     if date_format is None:
         return False
@@ -815,12 +847,11 @@ def date_format_has_time_component(
 
 # The tabular schema's only date-typed destination fields (raw_tabular_
 # transactions.sql declares exactly these two as DATE). Single source of
-# truth for mapped_date_columns below — each of the three
-# normalize_excel_date_columns_before_mapping call sites must derive its
-# scope from this same list, not repeat "transaction_date" and "post_date"
-# by hand (that drift is the exact failure both functions' docstrings exist
-# to prevent).
-_DATE_TYPED_TABULAR_FIELDS: tuple[str, ...] = ("transaction_date", "post_date")
+# truth for mapped_date_columns below — public so a caller refreshing
+# post-render samples per destination field (MCP/CLI previews) iterates
+# this list instead of repeating "transaction_date"/"post_date" by hand,
+# which is exactly the drift both normalize functions' docstrings warn about.
+DATE_TYPED_TABULAR_FIELDS: tuple[str, ...] = ("transaction_date", "post_date")
 
 
 def mapped_date_columns(
@@ -828,19 +859,20 @@ def mapped_date_columns(
 ) -> tuple[str | None, list[str]]:
     """Split a field mapping into (transaction_date's column, other date columns).
 
-    The one place all three ``normalize_excel_date_columns_before_mapping``
-    callers get this list from, so it can't drift per call site again.
+    The one place every ``normalize_excel_date_columns_for_detection``/
+    ``_after_mapping`` caller gets this list from, so it can't drift per
+    call site again.
     """
     if not field_mapping:
         return None, []
-    primary = field_mapping.get(_DATE_TYPED_TABULAR_FIELDS[0])
+    primary = field_mapping.get(DATE_TYPED_TABULAR_FIELDS[0])
     others = [
-        field_mapping[f] for f in _DATE_TYPED_TABULAR_FIELDS[1:] if f in field_mapping
+        field_mapping[f] for f in DATE_TYPED_TABULAR_FIELDS[1:] if f in field_mapping
     ]
     return primary, others
 
 
-def normalize_excel_date_columns_before_mapping(
+def normalize_excel_date_columns_for_detection(
     df: pl.DataFrame,
     *,
     file_type: str,
@@ -848,44 +880,45 @@ def normalize_excel_date_columns_before_mapping(
     date_column: str | None = None,
     additional_date_columns: list[str] | None = None,
     native_date_columns: frozenset[str] | None = None,
-) -> tuple[pl.DataFrame, str | None]:
-    """Normalize the date columns known before column mapping resolves.
+) -> pl.DataFrame:
+    """Return a normalized COPY for ``map_columns``/format detection only.
+
+    Never mutates the caller's real frame, and the result must never be
+    imported or shown as a sample — it exists solely so date-shaped content
+    is recognizable to ``map_columns``'s content-based discovery and to
+    ``detect_date_format``, both of which need a bare-ISO (or already-typed)
+    shape rather than a native Excel cell's raw ``"<date> 00:00:00"`` text
+    (``_DATE_FORMATS`` is date-only). The real frame the import loads keeps
+    its native midnight cells untouched until ``normalize_excel_date_
+    columns_after_mapping`` renders them, once, against the FINAL mapping
+    and format — never here, and never twice.
 
     No-op for non-Excel file types. When no mapping is known yet
     (``date_column`` and ``additional_date_columns`` both empty), this is a
     pure auto-detect scan over every date-shaped column — see
     ``date_format_has_time_component`` for why a declared time-bearing
-    format short-circuits it. When a caller already names ``date_column``/
-    ``additional_date_columns`` (a first-contact ``--mapping`` override, a
-    saved format, or a replayed preview), every one of those columns is
-    rewritten cell-by-cell via ``_normalize_mapped_date_cells``, regardless
-    of its own native/text mix.
-
-    A column that only becomes a mapped date column *after* this call —
-    e.g. an aliased ``post_date`` column ``map_columns`` resolves later, on
-    a partial first-contact override that named only ``transaction_date`` —
-    is not in scope here by construction (the mapping isn't known yet).
-    ``normalize_excel_date_columns_after_mapping`` is the second pass that
-    covers it, once the final mapping and format are both resolved; every
-    caller of this function must also call that one.
-
-    Returns:
-        ``(possibly-rewritten df, date_format)`` — the input format,
-        unchanged.
+    format with no column reference short-circuits it. When a caller
+    already names ``date_column``/``additional_date_columns`` (a
+    first-contact ``--mapping`` override, a saved format, or a replayed
+    preview), every one of those columns is rewritten cell-by-cell via
+    ``_normalize_mapped_date_cells``, regardless of its own native/text mix
+    — needed even for an already-named column, since ``map_columns`` still
+    detects that column's actual date FORMAT from its (here, normalized)
+    values regardless of how the column itself was identified.
     """
     if file_type != "excel":
-        return df, date_format
+        return df
     mapped_columns = ([date_column] if date_column else []) + list(
         additional_date_columns or []
     )
     if not mapped_columns:
         if date_format_has_time_component(date_format, df=df, date_column=date_column):
-            return df, date_format
+            return df
         normalized, _ = normalize_excel_date_columns(
             df, native_date_columns=native_date_columns
         )
-        return normalized, date_format
-    return _normalize_mapped_date_cells(df, mapped_columns, date_format), date_format
+        return normalized
+    return _normalize_mapped_date_cells(df, mapped_columns, date_format)
 
 
 def normalize_excel_date_columns_after_mapping(
@@ -895,19 +928,25 @@ def normalize_excel_date_columns_after_mapping(
     field_mapping: dict[str, str] | None,
     date_format: str | None,
 ) -> pl.DataFrame:
-    """Re-run the mapped-column rewrite against the FINAL resolved mapping.
+    """Render the real frame's date columns, exactly once, against the FINAL mapping.
 
-    Every one of the three ``read_file`` callers (``import_service.py``'s
-    ``_import_tabular``, the MCP ``import_preview_coarse`` tool, the CLI
-    ``import preview`` command) must call this once column mapping and the
-    effective date format are both fully resolved, in addition to the
-    before-mapping pass above. A column that only becomes mapped via
-    ``map_columns``'s own alias detection — never named by the caller up
-    front — never reached that first pass, since it scopes to the columns
-    the caller already knew. Idempotent against a column the first pass
-    already normalized: ``_normalize_mapped_date_cells`` only rewrites
-    cells still in the native-midnight shape, so an already-reformatted
-    column is left alone on this second call.
+    This is the ONLY function that ever mutates the frame that gets
+    imported or shown as a post-render sample. Every one of the three
+    ``read_file`` callers (``import_service.py``'s ``_import_tabular``, the
+    MCP ``import_preview_coarse`` tool, the CLI ``import preview`` command)
+    calls this once column mapping and the effective date format are both
+    fully resolved — never before. Because the real frame was never touched
+    by ``normalize_excel_date_columns_for_detection`` (which only ever
+    normalized a throwaway copy), every mapped column here is still in its
+    original native/text shape regardless of whether the caller named it
+    up front or ``map_columns`` only aliased it in later, so this one call
+    is always sufficient — no second pass, no "did the first pass already
+    touch this column" bookkeeping.
+
+    Anything that reads the imported frame's date-column text — override
+    validation, confirmation-gate samples, preview sample_values, a
+    persisted reviewed plan — must run AFTER this call, or it sees
+    pre-render native/mixed text instead of what actually gets imported.
     """
     if file_type != "excel":
         return df
@@ -1142,7 +1181,6 @@ def _excel_native_date_columns(
         it cannot qualify regardless of how few or many values it holds.
     """
     import openpyxl
-    from openpyxl.utils.exceptions import InvalidFileException
 
     try:
         wb = openpyxl.load_workbook(
@@ -1150,9 +1188,14 @@ def _excel_native_date_columns(
             read_only=True,
             data_only=True,
         )
-    except (InvalidFileException, zipfile.BadZipFile):
+    except _openpyxl_sheet_access_errors():
         return None
     try:
+        # sheet_name not existing (a caller-supplied --sheet/saved-format
+        # sheet) raises the same bare KeyError _openpyxl_sheet_access_
+        # errors names — degrade to the shape heuristic the same as a
+        # container openpyxl can't open at all, rather than propagating an
+        # unclassified exception.
         ws = wb[sheet_name]
         num_cols = len(column_names)
         physical_indices = _excel_column_physical_indices(
@@ -1183,6 +1226,8 @@ def _excel_native_date_columns(
             for i in range(num_cols)
             if non_null_counts[i] > 0 and date_counts[i] * 2 > non_null_counts[i]
         )
+    except KeyError:
+        return None
     finally:
         wb.close()
 
@@ -1320,7 +1365,6 @@ def _read_excel(
         ReadResult with the parsed DataFrame and sheet metadata.
     """
     import openpyxl
-    from openpyxl.utils.exceptions import InvalidFileException
 
     sheet_used = sheet
     if sheet_used is None:
@@ -1342,7 +1386,7 @@ def _read_excel(
                 sheet_used = best_sheet
             finally:
                 wb.close()
-        except (InvalidFileException, zipfile.BadZipFile):
+        except _openpyxl_sheet_access_errors():
             # Same openpyxl-can't-open-this-container case the two sampler
             # guards below handle (see their comments for why path vs. bytes
             # raise different exceptions) — this call is the third and last
@@ -1389,7 +1433,7 @@ def _read_excel(
                     preamble_looks_like_data,
                     ambiguous_rows,
                 ) = _classify_header_rows(sample_rows)
-            except (InvalidFileException, zipfile.BadZipFile, KeyError):
+            except _openpyxl_sheet_access_errors():
                 # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
                 # legacy binary .xls. This sampling call is new: pre-PR,
                 # supplying --sheet skipped openpyxl entirely and let
@@ -1509,16 +1553,18 @@ def _read_excel(
                 header_row_looks_like_data = _excel_row_looks_like_data_at(
                     path, sheet_used, skip_rows, source_bytes=source_bytes
                 )
-            except (InvalidFileException, zipfile.BadZipFile):
+            except _openpyxl_sheet_access_errors():
                 # Same fallback as the auto-detect branch above, and for the
-                # same reason: a .xls-sourced saved format (file_type is
+                # same reasons: a .xls-sourced saved format (file_type is
                 # always "excel" — see format_detector.py's _EXTENSION_MAP —
                 # never the literal "xls") with skip_rows > 0 reaches this
                 # defense-in-depth sampler too, and openpyxl still can't open
                 # a legacy .xls (path or bytes shape — see the auto-detect
                 # branch's comment for why the two shapes raise different
-                # exceptions). An unreadable sampler has no opinion; the real
-                # read below still succeeds via fastexcel.
+                # exceptions); OR sheet_used (a saved format's sheet name)
+                # doesn't exist in an otherwise-openable workbook. An
+                # unreadable sampler has no opinion; the real read below
+                # still succeeds via fastexcel.
                 header_row_looks_like_data = False
 
     return ReadResult(

@@ -782,7 +782,7 @@ async def test_import_preview_coarse_maps_native_date_excel_column_correctly(
     """A native-date Excel column with unaliased headers must still map right.
 
     Regression: this preview path has no saved/matched format and no
-    date-format parameter, so ``normalize_excel_date_columns_before_mapping``
+    date-format parameter, so ``normalize_excel_date_columns_for_detection``
     must run unconditionally before ``map_columns`` here — skipping it
     doesn't just fail to detect the date column, it actively misidentifies
     it as ``description`` while the real description column drops out of
@@ -931,7 +931,7 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     """A caller-supplied transaction_date mapping must scope normalization.
 
     ``_import_preview_tabular`` must not call
-    ``normalize_excel_date_columns_before_mapping`` with
+    ``normalize_excel_date_columns_for_detection`` with
     ``date_column=None`` regardless of a caller-supplied ``mapping`` —
     that would normalize every native-date column it finds instead of just
     the one
@@ -983,7 +983,7 @@ async def test_import_preview_coarse_post_date_matches_what_import_stores(
 ) -> None:
     """The previewed post_date sample must match what the import stores.
 
-    All three normalize_excel_date_columns_before_mapping call sites now
+    All three normalize_excel_date_columns_after_mapping call sites now
     derive their scope from the shared mapped_date_columns helper, so a
     first-contact preview naming both transaction_date and post_date as
     native-Excel-date columns must show the same post_date the later
@@ -1053,6 +1053,81 @@ async def test_import_preview_coarse_post_date_matches_what_import_stores(
     assert [d.isoformat() for d in stored_post_dates] == preview.data.sample_values[
         "post_date"
     ]
+
+
+async def test_import_preview_post_date_only_override_matches_what_import_stores(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """D's headline round-14 counterexample, preview vs. replay.
+
+    The caller's ``mapping`` names ONLY ``post_date`` (native); ``Date``
+    (transaction_date) is discovered by content as TEXT in "%m/%d/%Y", not
+    ISO. If the preview's detection copy ever leaked into what it later
+    reports as ``sample_values["post_date"]`` -- or a real import replayed
+    from the same bytes rendered post_date differently -- this diverges
+    from what the confirm path actually stores.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append(["01/01/2026", date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append(["01/02/2026", date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_only_override.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"post_date": "Posted"}
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.mapping.get("transaction_date") == "Date"
+    assert preview.data.mapping.get("post_date") == "Posted"
+    assert preview.data.date_format == "%m/%d/%Y"
+    assert preview.data.sample_values["post_date"] == ["01/03/2026", "01/04/2026"]
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "post_date_only_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored_post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+
+    assert stored_post_dates == [date(2026, 1, 3), date(2026, 1, 4)]
+    assert None not in stored_post_dates
 
 
 @pytest.mark.parametrize(

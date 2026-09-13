@@ -52,7 +52,6 @@ from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
-from moneybin.log_sanitizer import mask_pii_shaped
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -107,7 +106,10 @@ from moneybin.protocol.pagination import (
     reject_inverted_keyset,
     validate_keyset_shape,
 )
-from moneybin.services.import_confirmation import sign_convention_effect
+from moneybin.services.import_confirmation import (
+    mask_disputed_rows,
+    sign_convention_effect,
+)
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.utils.file import file_sha256
 
@@ -853,9 +855,10 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
+        DATE_TYPED_TABULAR_FIELDS,
         mapped_date_columns,
         normalize_excel_date_columns_after_mapping,
-        normalize_excel_date_columns_before_mapping,
+        normalize_excel_date_columns_for_detection,
         read_file,
     )
     from moneybin.services.import_confirmation import (
@@ -872,28 +875,18 @@ def _import_preview_tabular(
         format_info = detect_format(path, source_bytes=source_bytes)
         read_result = read_file(path, format_info, source_bytes=source_bytes)
         # No saved/matched format and no date-format parameter exist on this
-        # preview path, so no declared time-bearing format can ever reach
-        # here — normalize before map_columns needs recognized values to
-        # find/validate the date column (see
-        # normalize_excel_date_columns_before_mapping's docstring: skipping
-        # this for a native-date Excel column doesn't just miss the date
-        # column, it misidentifies it as `description` while the real
-        # description column drops out of the mapping entirely). The
-        # returned effective format is unused here — this path never
-        # persists a date format for a later replay to disagree with.
-        # mapped_date_columns scopes to the caller's own mapping (mirrors
-        # the equivalent first-contact scoping in import_service.py's
-        # _import_tabular: known_mapping = overrides) so this preview
-        # normalizes the same date-typed columns the later confirm/replay
-        # will (import_service.py derives its own scope from the same
-        # helper) — otherwise a second genuinely native-date column (e.g. a
-        # "Posted" date beside the real transaction date) could normalize
-        # here but not there, and the imported value would silently diverge
-        # from what was previewed. An empty mapping still scans broadly,
-        # matching map_columns's own need to find the date column before it
-        # is known.
+        # preview path. detection_df is a throwaway copy — never imported,
+        # never shown as a sample — that only exists so map_columns /
+        # detect_date_format can recognize a native-typed date column's
+        # content; read_result.df stays untouched until the final render,
+        # below. mapped_date_columns scopes it to the caller's own mapping
+        # (mirrors the equivalent first-contact scoping in
+        # import_service.py's _import_tabular) so map_columns sees the same
+        # date-typed columns the later confirm/replay will discover. An
+        # empty mapping still scans broadly, matching map_columns's own
+        # need to find the date column before it is known.
         date_column, additional_date_columns = mapped_date_columns(mapping)
-        read_result.df, _ = normalize_excel_date_columns_before_mapping(
+        detection_df = normalize_excel_date_columns_for_detection(
             read_result.df,
             file_type=format_info.file_type,
             date_format=None,
@@ -902,7 +895,7 @@ def _import_preview_tabular(
             native_date_columns=read_result.excel_native_date_columns,
         )
         mapping_result = map_columns(
-            read_result.df,
+            detection_df,
             overrides=mapping,
             t_high=bands.t_high,
             t_med=bands.t_med,
@@ -948,9 +941,11 @@ def _import_preview_tabular(
         }
         for dest, column in field_mapping.items():
             if dest not in sample_values:
+                # read_result.df isn't rendered yet (below) — detection_df
+                # is the readable copy at this point.
                 sample_values[dest] = [
                     value
-                    for value in collect_samples(read_result.df, column)
+                    for value in collect_samples(detection_df, column)
                     if value is not None
                 ]
         sign_convention = coerce_sign_convention(
@@ -981,11 +976,11 @@ def _import_preview_tabular(
             t_med=bands.t_med,
         )
 
-    # Second normalization pass, against the FINAL mapping — covers a column
-    # (e.g. an aliased post_date) map_columns only resolved after the
-    # pre-mapping pass above ran scoped to a narrower known mapping. No
-    # --date-format parameter exists on this preview path, so the detector's
-    # own mapping_result.date_format is always the effective one.
+    # The ONLY render of read_result.df — exactly once, against the FINAL
+    # mapping, whether a column got there via the caller's own `mapping`
+    # override or map_columns's own alias detection. No --date-format
+    # parameter exists on this preview path, so the detector's own
+    # mapping_result.date_format is always the effective one.
     read_result.df = normalize_excel_date_columns_after_mapping(
         read_result.df,
         file_type=format_info.file_type,
@@ -993,9 +988,9 @@ def _import_preview_tabular(
         date_format=mapping_result.date_format,
     )
     # Keep previewed samples for the date-typed destinations in sync with
-    # what actually imports, rather than showing pre-normalization native
-    # text for a column the pass above just rewrote.
-    for dest in ("transaction_date", "post_date"):
+    # what actually imports, rather than showing pre-render native text for
+    # a column the render above just rewrote.
+    for dest in DATE_TYPED_TABULAR_FIELDS:
         column = field_mapping.get(dest)
         if column and column in read_result.df.columns:
             sample_values[dest] = [
@@ -1031,15 +1026,10 @@ def _import_preview_tabular(
             header_position_ambiguous=read_result.header_position_ambiguous,
             # DataClass.DESCRIPTION drives sensitivity-tier classification only
             # (privacy/redaction.py's _TRANSFORMS maps it to _passthrough), not
-            # value masking — so an account-number-shaped cell in a disputed
-            # row needs its own masking pass before this field is populated.
-            # mask_pii_shaped is the same value-shape masker the agent-safe
-            # SQL surface (sql_query) applies to raw/prep, reused rather than
-            # writing a second one.
-            header_position_ambiguous_rows=[
-                [mask_pii_shaped(cell)[0] for cell in row]
-                for row in read_result.header_position_ambiguous_rows
-            ],
+            # value masking — so this field needs its own masking pass.
+            header_position_ambiguous_rows=mask_disputed_rows(
+                read_result.header_position_ambiguous_rows
+            ),
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).

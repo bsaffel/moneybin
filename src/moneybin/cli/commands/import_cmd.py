@@ -994,20 +994,18 @@ def echo_disputed_rows(rows: Sequence[Sequence[str]]) -> None:
 
     Same routing as ``echo_accounts_created``: row content is file data, not
     static text, so it goes through ``typer.echo(err=True)`` rather than the
-    log pipeline — ``log_to_file`` defaults to True. Masks each cell via
-    ``mask_pii_shaped`` (the same value-shape masker the agent-safe SQL
-    surface applies to raw/prep) unconditionally — cli.md: "never assume CLI
-    users are 'trusted enough to skip redaction'" — so a caller can never
-    forget it by passing an already-masked row (idempotent) or a raw one.
+    log pipeline — ``log_to_file`` defaults to True. Masks unconditionally
+    (cli.md: "never assume CLI users are 'trusted enough to skip
+    redaction'") via ``mask_disputed_rows``, so a caller can never forget it
+    by passing an already-masked row (idempotent) or a raw one.
     """
     if not rows:
         return
-    from moneybin.log_sanitizer import mask_pii_shaped
+    from moneybin.services.import_confirmation import mask_disputed_rows
 
     typer.echo("   Disputed row(s):", err=True)
-    for row in rows:
-        masked = [mask_pii_shaped(cell)[0] for cell in row]
-        typer.echo(f"     {', '.join(masked)}", err=True)
+    for row in mask_disputed_rows(rows):
+        typer.echo(f"     {', '.join(row)}", err=True)
 
 
 def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
@@ -2600,7 +2598,7 @@ def import_preview(
     from moneybin.extractors.tabular.readers import (
         mapped_date_columns,
         normalize_excel_date_columns_after_mapping,
-        normalize_excel_date_columns_before_mapping,
+        normalize_excel_date_columns_for_detection,
         read_file,
     )
 
@@ -2694,16 +2692,20 @@ def import_preview(
 
         # This command has no --date-format flag, so the only declared format
         # that can ever reach here is a matched format's own persisted one.
-        # Skipping this for a native-date Excel column doesn't just miss the
-        # date column when map_columns runs below — it misidentifies it as
-        # `description` while the real description column drops out
-        # entirely. mapped_date_columns falls back to the caller's own
-        # --override mapping when no format matched, mirroring the
-        # first-contact scoping in import_service.py's _import_tabular.
+        # detection_df is a throwaway copy — never imported, never shown as
+        # a sample — that only exists so map_columns below can recognize a
+        # native-typed date column's content; df itself stays untouched
+        # until the final render, after the mapping resolves. Skipping this
+        # entirely would not just miss the date column when map_columns
+        # runs below — it would misidentify it as `description` while the
+        # real description column drops out entirely. mapped_date_columns
+        # falls back to the caller's own --override mapping when no format
+        # matched, mirroring the first-contact scoping in
+        # import_service.py's _import_tabular.
         date_column, additional_date_columns = mapped_date_columns(
             matched_format.field_mapping if matched_format else overrides
         )
-        df, _ = normalize_excel_date_columns_before_mapping(
+        detection_df = normalize_excel_date_columns_for_detection(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
@@ -2772,7 +2774,7 @@ def import_preview(
 
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
-                df,
+                detection_df,
                 overrides=overrides,
                 t_high=bands.t_high,
                 t_med=bands.t_med,
@@ -2807,9 +2809,9 @@ def import_preview(
             final_field_mapping = mapping_result.field_mapping
             final_effective_date_format = mapping_result.date_format
 
-        # Second normalization pass, against the FINAL mapping — covers a
-        # column (e.g. an aliased post_date) map_columns only resolved after
-        # the pre-mapping pass above ran scoped to a narrower known mapping.
+        # The ONLY render of df — exactly once, against the FINAL mapping,
+        # whether a column got there via matched_format/--override or
+        # map_columns's own alias detection over detection_df above.
         df = normalize_excel_date_columns_after_mapping(
             df,
             file_type=format_info.file_type,

@@ -815,15 +815,13 @@ class InboxService:
         entry["channel"] = outcome_obj.channel
         # The live drain summary, not the persisted sidecar (which stays
         # row-free) — carries the disputed row so import_inbox.py's text and
-        # JSON renderers can show it. Masked per value shape, same masker the
-        # agent-safe SQL surface applies to raw/prep.
+        # JSON renderers can show it, masked.
         if outcome_obj.header_position_ambiguous_rows:
-            from moneybin.log_sanitizer import mask_pii_shaped
+            from moneybin.services.import_confirmation import mask_disputed_rows
 
-            entry["header_position_ambiguous_rows"] = [
-                [mask_pii_shaped(cell)[0] for cell in row]
-                for row in outcome_obj.header_position_ambiguous_rows
-            ]
+            entry["header_position_ambiguous_rows"] = mask_disputed_rows(
+                outcome_obj.header_position_ambiguous_rows
+            )
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)

@@ -204,19 +204,20 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "read_file",
     ),
-    # why: pure DataFrame transform (no writes) — collapses a native-date
-    # Excel column's rendered text before map_columns/matched_format display
-    # needs recognized values; the adapter has no other way to avoid the
-    # same read->map sequence import_service.py's service layer applies.
+    # why: pure DataFrame transform (no writes) — builds a throwaway
+    # detection copy so map_columns/matched_format display can recognize a
+    # native-date Excel column's rendered text; the adapter has no other
+    # way to avoid the same read->map sequence import_service.py's service
+    # layer applies.
     (
         "cli/commands/import_cmd.py",
         "moneybin.extractors.tabular.readers",
-        "normalize_excel_date_columns_before_mapping",
+        "normalize_excel_date_columns_for_detection",
     ),
-    # why: pure DataFrame transform (no writes) — the second pass against the
-    # FINAL resolved mapping, once map_columns has run; same reason as the
-    # before-mapping entry above, needed so a column only aliased into the
-    # mapping after the first pass still normalizes before display.
+    # why: pure DataFrame transform (no writes) — the one render against the
+    # FINAL resolved mapping, once map_columns has run; needed so a column
+    # only aliased into the mapping after the detection copy above still
+    # renders correctly before display.
     (
         "cli/commands/import_cmd.py",
         "moneybin.extractors.tabular.readers",
@@ -261,7 +262,7 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
-        "normalize_excel_date_columns_before_mapping",
+        "normalize_excel_date_columns_for_detection",
     ),
     # why: pure DataFrame transform (no writes) — same reason as the CLI
     # after-mapping entry above.
@@ -277,6 +278,15 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
         "mapped_date_columns",
+    ),
+    # why: pure module-level constant (destination field names, not values)
+    # — the post-render sample refresh iterates it instead of hardcoding
+    # ("transaction_date", "post_date") by hand, same reason
+    # mapped_date_columns is allowlisted just above.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.readers",
+        "DATE_TYPED_TABULAR_FIELDS",
     ),
     # FIELD_ALIASES is a pure module-level constant (destination field name ->
     # alias list) — import_preview's mapping= override validates against its

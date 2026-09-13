@@ -16,7 +16,7 @@ from moneybin.extractors.tabular.readers import (
     date_format_has_time_component,
     normalize_excel_date_columns,
     normalize_excel_date_columns_after_mapping,
-    normalize_excel_date_columns_before_mapping,
+    normalize_excel_date_columns_for_detection,
     read_file,
 )
 
@@ -791,6 +791,39 @@ class TestExcelReader:
         )
         assert bounded == frozenset()
 
+    def test_native_date_columns_nonexistent_sheet_degrades_to_none(
+        self, tmp_path: Path
+    ) -> None:
+        """A sheet name openpyxl can't resolve must degrade, not raise.
+
+        ``wb[sheet_name]`` raises a bare ``KeyError`` for an unknown sheet —
+        the same failure family as ``InvalidFileException``/``BadZipFile``
+        (a container openpyxl can't open at all), so it must degrade to
+        ``None`` (falls back to the shape heuristic) the same way. Called
+        directly: end-to-end via ``read_file``, ``pl.read_excel`` (fastexcel)
+        already validates ``sheet_used`` before this function's one caller
+        ever reuses it, so the KeyError branch is unreachable through that
+        path — see the round-14 thread reply for the full trace.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-01", 42.5, "Coffee"])
+        path = tmp_path / "single_sheet.xlsx"
+        wb.save(path)
+
+        result = _excel_native_date_columns(
+            path,
+            "NoSuchSheet",
+            data_start_row=1,
+            has_header=True,
+            column_names=["Date", "Amount", "Description"],
+        )
+        assert result is None
+
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
     ) -> None:
@@ -1408,11 +1441,12 @@ class TestDateFormatHasTimeComponent:
         directives (%H/%M/%S/%I/%p/%X), so a format like
         ``"%Y-%m-%d 00:00:00"`` — spelling the time as literal characters,
         not a directive, e.g. built by formatting a sample value rather
-        than hand-written — was misjudged as date-only. That let
-        normalize_excel_date_columns_before_mapping rewrite the column to a
-        bare date, after which the declared format could no longer parse
-        it (a trailing literal "00:00:00" the rewritten text no longer
-        has). The fix tries the actual parse against the representative raw
+        than hand-written — was misjudged as date-only. That let the
+        auto-detect scan (normalize_excel_date_columns_for_detection, when
+        no mapping is known yet) rewrite the column to a bare date, after
+        which the declared format could no longer parse it (a trailing
+        literal "00:00:00" the rewritten text no longer has). The fix
+        tries the actual parse against the representative raw
         shape (``_excel_cell_text``'s "2026-01-01 00:00:00") instead of
         scanning for substrings, so any spelling of a time-bearing raw
         shape is caught, not just known directives.
@@ -1420,23 +1454,22 @@ class TestDateFormatHasTimeComponent:
         assert date_format_has_time_component("%Y-%m-%d 00:00:00") is True
 
     def test_literal_midnight_suffix_skips_normalization(self) -> None:
-        """End-to-end: the literal-suffix format must survive normalization.
+        """End-to-end: the literal-suffix format must survive rendering.
 
-        Exercises normalize_excel_date_columns_before_mapping directly (not
-        just the boolean helper) to prove the literal-suffix format
-        actually prevents the rewrite that would otherwise break it.
+        Exercises normalize_excel_date_columns_after_mapping directly (not
+        just the boolean helper): collapsing the native cell to ISO and
+        re-rendering into this literal-suffix format reproduces the exact
+        raw text, so the round-trip is a no-op here regardless.
         """
         df = pl.DataFrame({"Date": ["2026-01-01 00:00:00"], "Amount": ["1.00"]})
-        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+        normalized = normalize_excel_date_columns_after_mapping(
             df,
             file_type="excel",
+            field_mapping={"transaction_date": "Date"},
             date_format="%Y-%m-%d 00:00:00",
-            date_column="Date",
-            native_date_columns=frozenset({"Date"}),
         )
         # Unchanged: the literal-suffix format expects the raw text as-is.
         assert normalized["Date"].to_list() == ["2026-01-01 00:00:00"]
-        assert effective_format == "%Y-%m-%d 00:00:00"
 
     def test_fractional_seconds_format_recognized_via_actual_column(self) -> None:
         """A raw shape neither prior probe carries must still be recognized.
@@ -1471,7 +1504,7 @@ class TestDateFormatHasTimeComponent:
         )
 
     def test_fractional_seconds_format_skips_normalization(self) -> None:
-        """End-to-end: the fractional-seconds format must survive normalization.
+        """End-to-end: the fractional-seconds format must survive rendering.
 
         Mirrors test_literal_midnight_suffix_skips_normalization for the
         raw shape the representative-probe approach could never anticipate.
@@ -1480,22 +1513,20 @@ class TestDateFormatHasTimeComponent:
             "Date": ["2026-01-02 00:00:00.123000", "2026-01-03 00:00:00.456000"],
             "Amount": ["42.5", "10"],
         })
-        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+        normalized = normalize_excel_date_columns_after_mapping(
             df,
             file_type="excel",
+            field_mapping={"transaction_date": "Date"},
             date_format="%Y-%m-%d %H:%M:%S.%f",
-            date_column="Date",
-            native_date_columns=frozenset({"Date"}),
         )
         assert normalized["Date"].to_list() == [
             "2026-01-02 00:00:00.123000",
             "2026-01-03 00:00:00.456000",
         ]
-        assert effective_format == "%Y-%m-%d %H:%M:%S.%f"
 
 
-# Case grid for normalize_excel_date_columns_before_mapping's core invariant:
-# after normalization, every non-null value in every mapped date column is in
+# Case grid for normalize_excel_date_columns_after_mapping's core invariant:
+# after rendering, every non-null value in every mapped date column is in
 # a representation the returned format parses. transaction_date is always
 # mapped; post_date is optional. "native" cells are fastexcel's raw rendering
 # of an Excel-native date cell; "text" cells are already in the shape a
@@ -1580,12 +1611,19 @@ def _cell_kind_case(
 class TestNormalizeExcelDateCellInvariant:
     """Cell-level grid: cell kind x declared format x column role.
 
-    The invariant: in every mapped date column of the FINAL mapping,
-    rewrite exactly the cells whose text matches the native-midnight
-    rendering. Render them into the effective date_format, or bare ISO
-    when no format is known yet. Every other cell -- already-correct text,
-    ISO-shaped text (valid or calendar-invalid), an invalid midnight cell --
-    passes through byte-identical, and nothing ever raises.
+    The invariant: the frame that gets imported is rewritten EXACTLY ONCE,
+    by ``normalize_excel_date_columns_after_mapping``, after the final
+    field mapping and effective date format are known. Anything before
+    mapping (``normalize_excel_date_columns_for_detection``) only ever
+    produces a throwaway COPY for ``map_columns``/format detection -- the
+    real frame stays untouched (still native/mixed) until that one render,
+    regardless of whether a column was named up front or only aliased in
+    by the final mapping. Within that render: rewrite exactly the cells
+    whose text matches the native-midnight rendering, into the effective
+    date_format (or bare ISO when still unknown); every other cell --
+    already-correct text, ISO-shaped text (valid or calendar-invalid), an
+    invalid midnight cell -- passes through byte-identical, and nothing
+    ever raises.
     """
 
     @pytest.mark.parametrize(
@@ -1595,9 +1633,11 @@ class TestNormalizeExcelDateCellInvariant:
     @pytest.mark.parametrize(
         "column_role",
         [
-            "transaction_date_only",
+            "transaction_date_mapped_upfront",
             "post_date_mapped_upfront",
-            "post_date_mapped_later",
+            "only_post_date_mapped_upfront",
+            "neither_mapped_auto_detect",
+            "post_date_mapped_only_by_final_mapping",
         ],
     )
     def test_every_cell_kind_survives_or_rewrites_correctly(
@@ -1610,13 +1650,18 @@ class TestNormalizeExcelDateCellInvariant:
         date_col = [cases[k][0] for k in _CELL_KINDS]
         expected_date = [cases[k][1] for k in _CELL_KINDS]
 
-        if column_role == "transaction_date_only":
+        if column_role == "transaction_date_mapped_upfront":
+            # Mirrors the matched_format/reviewed_plan branches: the whole
+            # mapping is known before any normalization runs, so the real
+            # frame renders directly -- no detection copy needed at all.
             df = pl.DataFrame({"Date": date_col})
-            normalized, effective_format = normalize_excel_date_columns_before_mapping(
-                df, file_type="excel", date_format=declared_format, date_column="Date"
+            normalized = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type="excel",
+                field_mapping={"transaction_date": "Date"},
+                date_format=declared_format,
             )
             assert normalized["Date"].to_list() == expected_date
-            assert effective_format == declared_format
             return
 
         # post_date uses a different month/day so a transposition bug
@@ -1627,48 +1672,112 @@ class TestNormalizeExcelDateCellInvariant:
         }
         posted_col = [posted_cases[k][0] for k in _CELL_KINDS]
         posted_expected = [posted_cases[k][1] for k in _CELL_KINDS]
+        full_mapping = {"transaction_date": "Date", "post_date": "Posted"}
 
         if column_role == "post_date_mapped_upfront":
+            # Both fields known before any normalization runs -- same
+            # single-render shape as the case above, with two columns.
             df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
-            normalized, _ = normalize_excel_date_columns_before_mapping(
+            normalized = normalize_excel_date_columns_after_mapping(
                 df,
                 file_type="excel",
+                field_mapping=full_mapping,
                 date_format=declared_format,
-                date_column="Date",
-                additional_date_columns=["Posted"],
             )
             assert normalized["Date"].to_list() == expected_date
             assert normalized["Posted"].to_list() == posted_expected
             return
 
-        assert column_role == "post_date_mapped_later"
-        df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+        if column_role == "only_post_date_mapped_upfront":
+            # D's headline counterexample: a first-contact override names
+            # ONLY post_date. The detection copy must not touch the real
+            # frame's transaction_date column (not yet known to it), and
+            # the final render must still get both right once map_columns
+            # resolves transaction_date too.
+            df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+            detection_df = normalize_excel_date_columns_for_detection(
+                df,
+                file_type="excel",
+                date_format=None,
+                date_column=None,
+                additional_date_columns=["Posted"],
+            )
+            assert detection_df["Date"].to_list() == date_col, (
+                "detection copy must not diverge from what the real frame "
+                "will render -- if it collapses Date on its own guess, "
+                "map_columns could detect the wrong format from it"
+            )
+            assert df["Date"].to_list() == date_col, "real frame must stay untouched"
+            normalized = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type="excel",
+                field_mapping=full_mapping,
+                date_format=declared_format,
+            )
+            assert normalized["Date"].to_list() == expected_date
+            assert normalized["Posted"].to_list() == posted_expected
+            return
+
+        if column_role == "neither_mapped_auto_detect":
+            # No mapping known at all -- the detection copy runs its broad
+            # auto-detect scan (feeding map_columns's own discovery), but
+            # the real frame is still untouched until the final render.
+            df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+            detection_df = normalize_excel_date_columns_for_detection(
+                df,
+                file_type="excel",
+                date_format=None,
+            )
+            assert df["Date"].to_list() == date_col, "real frame must stay untouched"
+            assert df["Posted"].to_list() == posted_col, (
+                "real frame must stay untouched"
+            )
+            del detection_df  # only used to prove it's a separate object above
+            normalized = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type="excel",
+                field_mapping=full_mapping,
+                date_format=declared_format,
+            )
+            assert normalized["Date"].to_list() == expected_date
+            assert normalized["Posted"].to_list() == posted_expected
+            return
+
+        assert column_role == "post_date_mapped_only_by_final_mapping"
         # Only transaction_date is known before mapping resolves (a partial
-        # first-contact --mapping override names just the one column).
-        stage1, _ = normalize_excel_date_columns_before_mapping(
-            df, file_type="excel", date_format=declared_format, date_column="Date"
+        # first-contact override that names just the one column).
+        df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+        detection_df = normalize_excel_date_columns_for_detection(
+            df, file_type="excel", date_format=None, date_column="Date"
         )
-        assert stage1["Date"].to_list() == expected_date
-        # Posted is untouched -- it wasn't a known mapped column yet.
-        assert stage1["Posted"].to_list() == posted_col
-        # map_columns later aliases "Posted" to post_date; the after-mapping
-        # pass must finish normalizing it against the final mapping.
-        stage2 = normalize_excel_date_columns_after_mapping(
-            stage1,
+        assert detection_df["Posted"].to_list() == posted_col, (
+            "the detection copy must not touch a column outside the "
+            "caller's own known mapping"
+        )
+        assert df["Posted"].to_list() == posted_col, "real frame must stay untouched"
+        assert df["Date"].to_list() == date_col, "real frame must stay untouched"
+        # map_columns later aliases "Posted" to post_date; the one render
+        # against the FINAL mapping must get both columns right.
+        normalized = normalize_excel_date_columns_after_mapping(
+            df,
             file_type="excel",
-            field_mapping={"transaction_date": "Date", "post_date": "Posted"},
+            field_mapping=full_mapping,
             date_format=declared_format,
         )
-        assert stage2["Date"].to_list() == expected_date
-        assert stage2["Posted"].to_list() == posted_expected
+        assert normalized["Date"].to_list() == expected_date
+        assert normalized["Posted"].to_list() == posted_expected
 
 
-class TestNormalizeExcelDateColumnsBeforeMappingGrid:
+class TestNormalizeExcelDateColumnsAfterMappingGrid:
     """Parametrized grid: transaction_date shape x post_date shape x format.
 
     Exercises every combination of column-level native/text/mixed shape
     against format known/unknown, so no mapped column (or cell within one)
-    is left in a shape the eventual format cannot parse.
+    is left in a shape the eventual format cannot parse. field_mapping is
+    already fully known here (mirrors the matched_format/reviewed_plan
+    branches, and the auto-detect branch once map_columns has resolved it)
+    — normalize_excel_date_columns_after_mapping is the one function that
+    ever renders the real frame, regardless of how the mapping got built.
     """
 
     @pytest.mark.parametrize(
@@ -1696,25 +1805,24 @@ class TestNormalizeExcelDateColumnsBeforeMappingGrid:
             "Date": _render_role(_ROLE_DATES, transaction_date_role, text_shape),
             "Amount": ["-4.50", "10.00", "42.50", "5.00"],
         }
-        additional_date_columns: list[str] | None = None
+        field_mapping = {"transaction_date": "Date"}
         if post_date_role != "absent":
             columns["Posted"] = _render_role(_POST_DATES, post_date_role, text_shape)
-            additional_date_columns = ["Posted"]
+            field_mapping["post_date"] = "Posted"
 
         df = pl.DataFrame(columns)
         rows_before = len(df)
 
-        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+        normalized = normalize_excel_date_columns_after_mapping(
             df,
             file_type="excel",
+            field_mapping=field_mapping,
             date_format=declared_format,
-            date_column="Date",
-            additional_date_columns=additional_date_columns,
         )
 
         assert len(normalized) == rows_before
 
-        parse_format = effective_format if effective_format is not None else "%Y-%m-%d"
+        parse_format = declared_format if declared_format is not None else "%Y-%m-%d"
         expectations = [("Date", _ROLE_DATES)]
         if post_date_role != "absent":
             expectations.append(("Posted", _POST_DATES))
@@ -1726,19 +1834,17 @@ class TestNormalizeExcelDateColumnsBeforeMappingGrid:
                 parsed = datetime.datetime.strptime(value, parse_format).date()
                 assert parsed == expected, f"{column}: {value!r} != {expected}"
 
-    def test_mapped_column_normalizes_even_when_native_typing_excluded_it(
+    def test_mapped_column_normalizes_regardless_of_native_typing(
         self,
     ) -> None:
-        """A mapped column normalizes regardless of ``native_date_columns`` membership.
+        """A mapped column normalizes regardless of its own native/text mix.
 
         ``_excel_native_date_columns`` excludes a column from its frozenset
-        when native cells are a MINORITY of the sample, so a
-        mapped date column with SOME (but not most) native cells used to
-        fail the same membership check here — those native cells stayed
-        ``"YYYY-MM-DD 00:00:00"`` and failed the saved ``"%m/%d/%Y"``,
-        silently dropping them. A mapped column is a date column regardless
-        of its own native/text mix; ``native_date_columns`` no longer
-        matters once the caller already knows the mapping.
+        when native cells are a MINORITY of the sample -- irrelevant here,
+        since ``normalize_excel_date_columns_after_mapping`` doesn't accept
+        ``native_date_columns`` at all: a mapped column is a date column
+        regardless of its own native/text mix, once the caller already
+        knows the mapping, so there is no membership check left to fail.
         """
         df = pl.DataFrame({
             "Date": [
@@ -1749,15 +1855,11 @@ class TestNormalizeExcelDateColumnsBeforeMappingGrid:
             ],
         })
 
-        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+        normalized = normalize_excel_date_columns_after_mapping(
             df,
             file_type="excel",
+            field_mapping={"transaction_date": "Date"},
             date_format="%m/%d/%Y",
-            date_column="Date",
-            # Deliberately excludes "Date" -- simulates
-            # _excel_native_date_columns voting it out because native cells
-            # (1 of 4) are a minority of the sample.
-            native_date_columns=frozenset(),
         )
 
         assert normalized["Date"].to_list() == [
@@ -1766,7 +1868,6 @@ class TestNormalizeExcelDateColumnsBeforeMappingGrid:
             "01/03/2026",
             "01/04/2026",
         ]
-        assert effective_format == "%m/%d/%Y"
 
 
 class TestParquetReader:

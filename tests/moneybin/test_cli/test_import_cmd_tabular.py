@@ -604,7 +604,7 @@ class TestPreview:
 
         Same shape as the MCP `_import_preview_tabular` fix: first-contact
         `import preview` (no saved/matched format) never passed
-        `date_column` to `normalize_excel_date_columns_before_mapping`, so
+        `date_column` to `normalize_excel_date_columns_for_detection`, so
         an unrelated
         second native-date column ("Memo", auto-typed by some spreadsheet
         tool) got normalized too whenever a broad scan found it — even

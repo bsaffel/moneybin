@@ -12,6 +12,7 @@ invoked only when a confirm decision is needed.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -217,6 +218,22 @@ class ConfirmationRequired:
     header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
 
 
+def mask_disputed_rows(
+    rows: Sequence[Sequence[str]],
+) -> list[list[str]]:
+    """Mask each cell of the header_position_ambiguous disputed row(s).
+
+    The one place this masking is named: every surface that shows these
+    rows (confirmation_payload_dict, the inbox drain's live summary, the
+    MCP preview payload, the CLI's echo_disputed_rows) calls this instead
+    of repeating the comprehension and the rationale. Uses mask_pii_shaped
+    — the same value-shape masker the agent-safe SQL surface (sql_query)
+    applies to raw/prep — because an account number can appear in a
+    disputed row same as any other cell.
+    """
+    return [[mask_pii_shaped(cell)[0] for cell in row] for row in rows]
+
+
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
     """Serialize a ConfirmationRequired to the transport-neutral payload dict.
 
@@ -273,15 +290,11 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "sign_evidence": sign_evidence,
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
-        # Value-shape masked (mask_pii_shaped — the same masker the
-        # agent-safe SQL surface applies to raw/prep) rather than left
-        # unredacted: this dict feeds both the CLI recovery renderer and
-        # MCP's confirmation_required envelope, and an account-number-shaped
-        # cell must not reach either unmasked.
-        "header_position_ambiguous_rows": [
-            [mask_pii_shaped(cell)[0] for cell in row]
-            for row in outcome.header_position_ambiguous_rows
-        ],
+        # Masked: this dict feeds both the CLI recovery renderer and MCP's
+        # confirmation_required envelope.
+        "header_position_ambiguous_rows": mask_disputed_rows(
+            outcome.header_position_ambiguous_rows
+        ),
     }
 
 
