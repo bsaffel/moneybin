@@ -343,11 +343,23 @@ have the view read *that*.
 
 **`core.dim_holdings_broker_reported`** — a new `kind VIEW` in `core`,
 sitting beside `dim_holdings.sql` in `src/moneybin/sqlmesh/models/core/`,
-grain `account_id`. Its account universe is every `account_id`
-`prep.stg_plaid__accounts` reports **whose own `account_type` column
-resolves to `investment`** (the seed-normalized value
-`seeds.account_type_map` writes there; Plaid's `INVESTMENT` and `BROKERAGE`
-aliases both resolve to it — `src/moneybin/sqlmesh/models/seeds/account_type_map.csv`).
+grain `account_id`. Its account universe is direction-split, per the
+invariant above: every `account_id` `prep.stg_plaid__accounts` reports
+**whose own `account_type` column resolves to `investment`** (the
+seed-normalized value `seeds.account_type_map` writes there; Plaid's
+`INVESTMENT` and `BROKERAGE` aliases both resolve to it —
+`src/moneybin/sqlmesh/models/seeds/account_type_map.csv`) is eligible for
+both a `TRUE` and a `FALSE`/*absent* reading, below — **plus** every
+`account_id`, of any `account_type` including NULL, that carries a
+nonzero holdings row of its own in a mapped origin's newest snapshot,
+which is eligible for `TRUE` only. The second clause is what keeps this
+relation from reintroducing the defect the first clause was itself
+introduced to fix (§"This round refines that correction," below):
+`prep.stg_plaid__accounts:16-18` documents that `account_type` can stay
+NULL for an unmapped Plaid subtype, and an account in that state can
+still report a real, nonzero position — a positive observation the
+invariant says must count regardless of what the type column resolved
+to.
 
 **One canonical `account_id` can carry more than one Plaid `source_origin`
 — a relink is the common cause — so the universe is `account_id`s, never
@@ -364,25 +376,45 @@ single-origin account would be — scoped to that origin's own row in
 derivation below — and the per-origin results reduce to one row per
 `account_id`:
 
-- **`has_position = TRUE`** if **any** mapped origin resolves `TRUE`
-  (nonzero position or value evidence, below). One item's confirmed
-  position outranks a sibling item's silence or zero; a relink does not
-  erase a position the surviving item still reports.
-- **`has_position = FALSE`** only when **every** mapped origin that
-  appears in `newest_snapshot` resolves `FALSE`, and no mapped origin is
-  absent from `newest_snapshot` (next bullet) — an account is a
-  definitive zero only when every item that speaks for it says so.
-- **Absent — not published at all** — if **any** mapped origin has no
-  successful newest pull, i.e. is missing from `newest_snapshot`
-  entirely. This is the same absence described below for a single-origin
-  account (state 3), extended across an account's mapped origins rather
-  than invented as a second concept: an inconclusive-by-absence origin
-  must never license an override on another origin's say-so, so the
-  whole account falls out of this relation and is read by the outer join
-  downstream instead of by a value.
-- **`has_position = NULL`** otherwise — every mapped origin is present in
-  `newest_snapshot`, none resolves `TRUE`, and at least one resolves
-  `NULL`.
+**The reduction is evaluated in this explicit order — TRUE, then Absent,
+then FALSE, then NULL — each rule's condition read only once every
+earlier rule has failed to match, so a relinked account whose mapped
+origins could satisfy two rules at once never leaves it to a reader to
+guess which one wins** (review threads `4000344932`, `4000359368`; the
+invariant applied — a confirmed position is a positive observation and
+always outranks a sibling's silence, so it is checked, and wins, first):
+
+1. **`has_position = TRUE`** if **any** mapped origin resolves `TRUE`
+   (nonzero position or value evidence, below) — **type-agnostic**: an
+   origin's own `account_type` never gates this rule, because a positive
+   reading needs no license from the invariant, only an observation
+   (review threads `4000344929`, `4000359363`). One item's confirmed
+   position outranks a sibling item's silence, zero, *or absence*; a
+   relink does not erase a position the surviving item still reports,
+   whichever of those three states the sibling is in.
+2. **Absent — not published at all** — else, if **any** mapped origin
+   *eligible for a negative reading* (its own `account_type` resolves to
+   `investment`) has no successful newest pull, i.e. is missing from
+   `newest_snapshot` entirely. Reached only once rule 1 has failed to
+   match. This is the same absence described below for a single-origin
+   account (state 3), extended across an account's mapped origins rather
+   than invented as a second concept: an inconclusive-by-absence origin
+   must never license an override on another origin's say-so, so the
+   whole account falls out of this relation and is read by the outer join
+   downstream instead of by a value. A mapped origin whose `account_type`
+   is not `investment`, and which did not resolve `TRUE` under rule 1,
+   contributes to neither this rule nor rule 3 — the invariant permits no
+   negative inference from a source not competent to make one (§"The
+   account-type filter," below), so that origin is simply not evaluated
+   past rule 1.
+3. **`has_position = FALSE`** — else, when **every** mapped origin
+   eligible for a negative reading is present in `newest_snapshot` and
+   resolves `FALSE` — an account is a definitive zero only when every
+   item competent to speak for it says so, and only once rules 1 and 2
+   have both failed to match.
+4. **`has_position = NULL`** — otherwise: at least one origin eligible
+   for a negative reading is present in `newest_snapshot`, none resolved
+   `TRUE`, and at least one resolves `NULL`.
 
 **`as_of` is the MIN, not the MAX, of the contributing origins' own
 `as_of`.** Each receipt is definitive only for its own item as of its own
@@ -411,10 +443,42 @@ its own it resolved to `has_position = FALSE`, and the zero-snapshot
 override below suppressed its own transaction evidence, silently
 contributing zero for an account the holdings product never covered in the
 first place. Restricting the universe to `account_type = 'investment'` is
-what keeps a non-investment account off this relation entirely: absent
-here, it never resolves to any `has_position` value at all, and stays
-subject to the ordinary candidate-evidence rule (Requirement 14) like any
-other account the holdings product does not describe.
+what keeps a non-investment account off the *negative* branch of this
+relation: it can never resolve `FALSE` or *absent* through a sibling's
+receipt, because those readings require the invariant's license and a
+non-investment account's own receipt status says nothing about whether
+the holdings product describes it at all.
+
+**This round refines that correction rather than reverting it, and the
+earlier concern is exactly what the negative-inference half above still
+prevents** (review threads `4000344929`, `4000359363`). The prior round's
+fix was type-symmetric: it excluded a non-investment account from this
+relation *entirely*, in both directions at once. That is a stronger
+reading of the invariant than the invariant requires. A checking account
+with no holdings evidence of its own still correctly stays off this
+relation in the ordinary sense — it never resolves to any `has_position`
+value at all, and stays subject to the ordinary candidate-evidence rule
+(Requirement 14) like any other account the holdings product does not
+describe; nothing above changes that outcome, and §"The unanchored-account
+guard judges a depository account on its own evidence" (Tier 3) still
+pins it. But `prep.stg_plaid__accounts:16-18` documents that
+`account_type` can stay NULL for an unmapped Plaid subtype, and
+Requirement 14's own text names "a Plaid account whose `current_balance`
+or `account_type` never resolved" as a case the guard exists to close
+(§Requirements, above). An account in exactly that state — unresolved type, a genuine
+nonzero holdings snapshot of its own, no `core.dim_holdings` lot because
+the security is unbound, and no transaction posted yet — was invisible to
+every source under the type-symmetric filter: excluded here, unreachable
+via `core.dim_holdings`, and absent from both ledgers. The requirement and
+the mechanism contradicted each other. The fix above resolves the
+contradiction without reopening the defect the filter was built to close:
+the universe's positive branch is type-agnostic (rule 1, above), so a
+real position surfaces regardless of what the type column resolved to,
+while the negative branch stays `account_type = 'investment'`-gated
+exactly as the prior round established — an empty receipt from a source
+the holdings product may not even describe is not a positive observation
+of emptiness, so it earns no license under the invariant to declare
+`FALSE` or *absent*.
 
 For every mapped origin of a published account, the view LEFT JOINs
 `prep.stg_plaid__investment_holdings`, scoped to that origin's newest
@@ -537,6 +601,33 @@ implementation.
 So the read has ground truth to derive against instead of needing an
 exception.
 
+**The invariant every rule in this section is an application of, stated
+once so each rule below can cite it instead of re-deriving it:**
+
+> **Absence of evidence is never evidence of absence. Only a positive
+> observation of emptiness — a receipt that actually reports, and
+> reports nothing, from a source competent to report it for this
+> account — may remove an account from candidacy. Anything
+> inconclusive — no receipt at all, a receipt from a source that does
+> not describe this account, a sum whose zero cannot be told apart
+> from a canceled synthetic entry, two rules that could both fire with
+> no stated order between them — leaves the account a candidate.**
+
+Four consequences follow, each cited by name where it applies elsewhere in
+this section, rather than re-argued from scratch: `core.dim_holdings_broker_reported`'s
+account-type filter, just above, licenses a negative inference
+(`FALSE`/*absent*) only where the source is competent to make one, while a
+positive reading (`TRUE`) needs no such license and stays type-agnostic
+(§"The account-type filter," above); a relinked account's per-origin
+reduction, also just above, resolves in an explicit order — a confirmed
+position first, before any rule that turns on a sibling's silence — rather
+than as independently stated bullets a reader must sequence themselves
+(§above); the zero-snapshot override, below, requires a *positive* zero
+and stops at `has_position = FALSE`, never firing on `NULL` or on absence
+(§"The boundary is drawn at the receipt, not at the row," below); and a
+zero net cash effect, below, is decisive only when no synthetic bootstrap
+row could be the reason it reached zero (§"Cash held," below).
+
 **Evidence of holding value has four sources, and `reports.net_worth`'s
 `kind VIEW` reads all four directly — no runner involved.**
 `core.dim_holdings` sums open lots, so it emits no row at all for a
@@ -618,16 +709,34 @@ still counts toward Requirement 14's candidate set:
 
 - **Securities held**, from the newest receipt
   (`core.dim_holdings_broker_reported.has_position`): `TRUE` (nonzero
-  rows), a definitive `FALSE` (the zero-row or empty-receipt shape, above),
-  `NULL` (inconclusive), or *absent* — no row at all, because the item
-  never had a successful newest pull or the account falls outside the
-  relation's `account_type = 'investment'` universe (§ above).
+  rows, type-agnostic), a definitive `FALSE` (the zero-row or
+  empty-receipt shape, above — licensed only where a mapped origin's own
+  `account_type` resolves to `investment`), `NULL` (inconclusive), or
+  *absent* — no row at all, because every mapped origin eligible for a
+  negative reading had no successful newest pull, or because the account
+  carries no `investment`-typed origin and no positive evidence of its
+  own (§"The account-type filter," above).
 - **Cash held**, from `core.fct_investment_transactions`: the account's
   **net cash effect**, `SUM(amount)` over *every* row on that ledger —
   security-linked and cash-only alike, never gated on `quantity` — nonzero
-  or decisively zero (including no rows at all). This is a source
+  or *decisively* zero (including no rows at all). This is a source
   distinct from securities held: `has_position` is the broker's claim
   about positions, and cannot speak to cash the same pull never reports.
+  **"Decisively" excludes a zero that a synthetic opening-lot bootstrap
+  row could be the reason for** (review threads `4000344924`,
+  `4000359362` — the invariant applied): a bootstrap row
+  (`subtype = 'opening_bootstrap'`, `prep.stg_plaid__opening_lots.sql`)
+  synthesizes its `amount` from cost basis rather than observing one —
+  "these rows carry no Plaid amount" per that model's own comment
+  (`stg_plaid__opening_lots.sql:27-30`) — so a real in-window sale of a
+  bootstrapped position, credited at exactly the bootstrap's synthesized
+  cost, nets `SUM(amount)` to zero while the account's real sale proceeds
+  go unobserved by any balance. That is cumulative ledger *movement*
+  canceling to zero, not a positive observation that cash on hand is
+  zero; a zero sum with a contributing bootstrap row (`amount IS NOT
+  NULL`, so it genuinely participated in the sum) is therefore
+  inconclusive, below, exactly like every other inconclusive reading the
+  invariant names.
 - **Temporal order**, only meaningful when a security-position row
   (`quantity IS NOT NULL`, per the discriminator above) exists at all:
   the receipt's own `as_of` compared against `MAX(trade_date)` over the
@@ -640,22 +749,27 @@ still counts toward Requirement 14's candidate set:
   after that day's trade (§ below). Vacuously current when no
   security-position row exists, since there is then nothing later for the
   receipt to have missed.
-- **Account coverage** — already scoped above (`account_type =
-  'investment'`, the item published in `newest_snapshot`): a precondition
-  for the *absent* state, not a fifth independent axis.
+- **Account coverage** — already scoped above: the *absent* state's
+  precondition is that at least one mapped origin is eligible for a
+  negative reading (`account_type = 'investment'`) and missing from
+  `newest_snapshot`; this is a precondition for the *absent* state, not a
+  fifth independent axis, and it is direction-gated exactly as the
+  universe above is (§"The account-type filter," above).
 
 | Securities held | Security-position row exists? | Temporal order | Net cash effect | Override fires? | Investment-ledger candidacy |
 |---|---|---|---|---|---|
 | `TRUE` | — | — | — | Never | Candidate — security-position arm (existential) |
 | `NULL` | — | — | — | Never | Candidate — ordinary existential rule, either arm |
 | *absent* | — | — | — | Never | Candidate — ordinary existential rule, either arm |
-| `FALSE` | No | vacuous | Zero | Fires (nothing to cancel) | Not a candidate |
+| `FALSE` | No | vacuous | Zero, no bootstrap row | Fires (nothing to cancel) | Not a candidate |
+| `FALSE` | No | vacuous | Zero, bootstrap row contributes | Fires (nothing to cancel) | Candidate — cash arm (inconclusive zero, below) |
 | `FALSE` | No | vacuous | Nonzero | Fires, cancels nothing (no security-position row exists) | Candidate — cash arm |
-| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero | Fires | Not a candidate |
+| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero, no bootstrap row | Fires | Not a candidate |
+| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero, bootstrap row contributes | Fires — cancels the security-position arm only | Candidate — cash arm (inconclusive zero, below) |
 | `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Nonzero | Fires — cancels the security-position arm only | Candidate — cash arm (buy-then-sell, proceeds retained) |
-| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Zero | Does not fire — day-grain equality is inconclusive | Candidate — security-position arm survives (the receipt cannot prove it was pulled after that day's trade) |
+| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Zero | Does not fire — day-grain equality is inconclusive | Candidate — security-position arm survives (the receipt cannot prove it was pulled after that day's trade); the bootstrap distinction changes nothing here, since candidacy already holds through the surviving security-position arm |
 | `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
-| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates) |
+| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates); the bootstrap distinction changes nothing here, for the same reason |
 | `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
 
 **The predicate is a direct reading of this table, not a row added by
@@ -685,13 +799,24 @@ comparison only has to get the non-vacuous rows right: strict `>` is
 what keeps *same-day* out of the firing set together with *stale*,
 closing review thread `3999126866` without disturbing the vacuous case
 the `NOT EXISTS` disjunct now resolves on its own, regardless of how the
-comparison is written. The account's standing on the investment ledger
-is then:
+comparison is written.
+
+**The cash arm's own zero has the same "positive observation only"
+requirement, and the account's standing on the investment ledger states
+it directly rather than leaving `SUM(amount) = 0` to read as decisive by
+default** (review threads `4000344924`, `4000359362` — the invariant
+applied, in a different formula than `override_applies` above: a zero
+sum a bootstrap row could have produced is inconclusive, so it must not
+by itself clear the account, exactly as `NULL` and *absent* already
+don't in the security-position arm):
 
 ```
 candidate_via_investment_ledger :=
-  SUM(amount) <> 0                                   -- cash arm
-  OR (EXISTS a row WHERE quantity IS NOT NULL         -- security-position arm
+  ( SUM(amount) <> 0                                  -- cash arm: nonzero net effect
+    OR EXISTS (a row WHERE subtype = 'opening_bootstrap'
+               AND amount IS NOT NULL)                -- cash arm: a bootstrap-tainted zero is inconclusive, not decisive
+  )
+  OR (EXISTS a row WHERE quantity IS NOT NULL          -- security-position arm
       AND NOT override_applies)
 ```
 
@@ -731,6 +856,26 @@ than as a filtered subset of rows, is what keeps the fourth round from
 becoming a rerun of the third on the next liquidation shape: the security
 and cash arms now differ in which *aggregate* they compute, never in
 which *rows* are visible to each.
+
+**A further defect, found this round, sits in the cash arm's own
+aggregate rather than in `override_applies` — the same invariant, a
+different formula** (review threads `4000344924`, `4000359362`).
+`SUM(amount) <> 0` measures cumulative ledger *movement*, not cash
+actually on hand, and a synthetic opening-lot bootstrap row
+(`subtype = 'opening_bootstrap'`,
+`prep.stg_plaid__opening_lots.sql`) synthesizes its `amount` from cost
+basis rather than observing one — its own comment states plainly that
+"these rows carry no Plaid amount" (`stg_plaid__opening_lots.sql:27-30`).
+A real in-window sale of a bootstrapped position, credited at exactly the
+bootstrap's synthesized cost, therefore nets `SUM(amount)` to zero while
+the account actually holds the sale's real, unobserved proceeds —
+cumulative movement canceling to zero is not a positive observation that
+cash on hand is zero, and reading it as one is exactly the failure the
+invariant rules out. The fix reads `SUM(amount) = 0` as decisive only
+when no bootstrap row (`amount IS NOT NULL`, so it genuinely participated
+in the sum) contributed to it; when one did, the zero is inconclusive and
+the cash arm stays a candidate absent a real balance anchor
+(`candidate_via_investment_ledger`, above).
 
 **The temporal precondition is not a correction to an earlier round of
 this section — no earlier round considered it at all — but a gap this
@@ -2351,6 +2496,23 @@ the candidate's `archived_at` still synthesizes its row there, dated at
 `archived_at_floor` exactly as the eighth case already pins — proving the
 fix is scoped to the unranged path and does not regress the ranged one.
 
+**A tenth case pins the cash arm's bootstrap caveat directly** — the
+regression guard for reading a bootstrap-tainted zero as decisive
+(review threads `4000344924`, `4000359362`). A persona investment
+account whose only priced position is a pre-window opening-lot bootstrap
+(`subtype = 'opening_bootstrap'`), sold in full, in-window, at exactly
+its synthesized cost basis, so `SUM(amount)` on
+`core.fct_investment_transactions` nets to zero even though the sale's
+real proceeds were never observed on any balance — paired with a
+definitive-zero newest holdings snapshot in either liquidation shape and
+no other ledger row for the account: asserted to drive `net_worth` to
+NULL with an unanchored-account count that includes the account, never
+to a decisive-zero reading that drops it. Paired against the existing
+decisively-zero, two-ordinary-row liquidation fixture (§Tier 3), which
+correctly does not surface, so the two together prove the predicate
+discriminates on whether a bootstrap row contributed to the zero, not on
+the zero's mere presence.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -2496,6 +2658,29 @@ fix is scoped to the unranged path and does not regress the ranged one.
   on a separate `quantity IS NULL` row instead of the sell row itself — the
   three together prove the predicate reads the ledger's arithmetic, never
   a row's shape.
+- **The unanchored-account guard still fails when a synthetic bootstrap
+  row is what makes the liquidating sale net to zero — the cash arm's
+  bootstrap boundary (§Data Model, `SUM(amount)`, review threads
+  `4000344924`, `4000359362`).** `moneybin system doctor` against a
+  persona whose only account is a liquidated investment account — live
+  broker connection, a definitive-zero newest snapshot in either shape —
+  whose entire `core.fct_investment_transactions` history is a synthetic
+  opening-lot bootstrap row (`subtype = 'opening_bootstrap'`) opening the
+  position at cost, paired with one real in-window sell crediting exactly
+  that cost, so the pair's net cash effect is zero. The account has no
+  balance observation of any kind. Exits `1`, with
+  `net_worth_unanchored_accounts` at `fail` and `affected_ids` naming the
+  account. This is the regression guard for reading a bootstrap-tainted
+  zero as inconclusive rather than decisive: the bootstrap row's `amount`
+  is synthesized from cost basis, never observed
+  (`prep.stg_plaid__opening_lots.sql:27-30`), so a zero sum it
+  participates in proves the ledger's *movement* canceled, not that the
+  account's cash is actually zero — the account's real sale proceeds go
+  unobserved by any balance. Pair with the "does not fail for a
+  broker-reported definitive zero" case above, whose buy-then-sell pair
+  is two ordinary, fully-observed rows and correctly nets to a decisive
+  zero, so the two together prove the predicate discriminates on whether
+  a bootstrap row contributed to the zero, not on the sum's value alone.
 - **The unanchored-account guard still fails for a definitive-zero receipt
   that predates a later unbound buy — the override's temporal precondition
   (§Data Model, review thread `3999065577`).** `moneybin system doctor`
@@ -2527,7 +2712,7 @@ fix is scoped to the unranged path and does not regress the ranged one.
 
 The `international` persona already supplies the shapes needed: several
 currencies, one of them unpriced. Two additions for Requirement 9 and
-multi-currency, and fifteen for `M2B.3`:
+multi-currency, and sixteen for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -2618,6 +2803,15 @@ multi-currency, and fifteen for `M2B.3`:
   net to zero, and no separate cash-only row of any kind. The account
   still carries no balance observation of any kind. Added to the same
   persona; the fixture the Tier 3 cash-arm-aggregate case reads.
+- For `M2B.3`'s cash-arm bootstrap boundary: the same fully-liquidated
+  persona account — live broker connection, a definitive-zero newest
+  snapshot in either shape above — but with
+  `core.fct_investment_transactions` history replaced by a synthetic
+  opening-lot bootstrap row (`subtype = 'opening_bootstrap'`) opening the
+  position at cost, paired with one real in-window sell crediting exactly
+  that cost, so the pair's net cash effect is zero. The account still
+  carries no balance observation of any kind. Added to the same persona;
+  the fixture the Tier 3 cash-arm bootstrap case reads.
 - For `M2B.3`'s temporal-precondition boundary — the stale-receipt shape:
   the same fully-liquidated persona account's item, but with one more
   `core.fct_investment_transactions` row after the definitive-zero
