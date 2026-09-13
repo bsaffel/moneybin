@@ -529,21 +529,82 @@ When the runner's own filtered query returns zero rows and the count of
 eligible candidates — `include_in_net_worth AND (archived_at IS NULL OR
 effective_from IS NULL OR archived_at >= effective_from)`, over-stating
 rather than under-stating exactly as the per-row predicate would if it had
-a date to correlate against — is greater than zero, the runner appends one
-synthesized row dated `balance_date = effective_to`, every measure NULL,
-`account_count = 0`, `unanchored_account_count` set to that count. The
-added `effective_from IS NULL` arm is what an unbounded lower edge means
-for this predicate: with no starting boundary to compare against, every
-archival date — however old — falls "within" a range that has always
-included it, so the account-not-date over-statement already established
-for a bounded range extends unchanged to an unbounded one, not a second
-rule. Dating the row at `effective_to` keeps it inside
-`[effective_from, effective_to]` (or, when `effective_from` is `NULL`,
-inside `(-∞, effective_to]`), so it survives the runner's own range filter
-with no separate sentinel needed. An out-of-range query against a profile
-with *no* eligible candidate still correctly returns zero rows, exactly
-like any other `@report` — the count is zero, so neither the view's arm
-nor the runner's fallback fires.
+a date to correlate against — is greater than zero, the runner does not
+yet know it should synthesize a row. It still has to answer one more
+question first: is there a date inside the requested window the fallback
+can honestly date the row at.
+
+**The general rule governing every variant of this fallback: a synthesized
+row is never dated later than today, and it is only emitted when that date
+falls inside the caller's own window.** The guard reports what is known
+now or was known on a past date — never a forecast — so the candidate
+synthesis date is `synthesis_date = LEAST(effective_to, CURRENT_DATE)`, the
+most recent point in the window that is not in the future. The row is
+emitted, dated `balance_date = synthesis_date`, every measure NULL,
+`account_count = 0`, `unanchored_account_count` set to the candidate count,
+**only when `synthesis_date` also clears the window's lower edge**:
+`effective_from IS NULL OR effective_from <= synthesis_date`. When it does
+not — the entire requested window lies strictly after `CURRENT_DATE`, e.g.
+an explicit `from_date` next month with no `to_date`, or a `from_date`/
+`to_date` pair that are both future dates — no date inside the window
+qualifies, and the runner returns no row at all: the same honest emptiness
+a real historical range with no eligible candidate already returns, never
+a row dated outside the bounds the caller actually asked for.
+
+This single two-sided test — `synthesis_date = LEAST(effective_to,
+CURRENT_DATE)`, emit only if `effective_from IS NULL OR effective_from <=
+synthesis_date` — is what the fallback checks in every case, not one rule
+per shape of range:
+
+- **An open lower edge, bounded or unbounded upper edge, both not in the
+  future** (the ordinary case this fallback exists for, and the historical
+  range from a prior round): `effective_to` is today or earlier, so
+  `synthesis_date = effective_to`; `effective_from` unset or no later than
+  it, so the row is emitted, dated at `effective_to`, exactly as before
+  this rule was stated.
+- **A future-only lower bound with no upper bound** (this thread, comment
+  `3998057569`'s sibling on `3998057567`): `to_date` unset resolves
+  `effective_to` to `CURRENT_DATE`, so `synthesis_date = CURRENT_DATE`; the
+  supplied `from_date` is later than `CURRENT_DATE`, so the lower-edge test
+  fails and no row is emitted — the out-of-window row this thread flagged
+  no longer synthesizes.
+- **A single-day window that is itself in the future**
+  (`from_date == to_date`, both after today — a fourth, harder variant than
+  the reported one, since even the emitted date can no longer coincide with
+  either bound): `effective_to` is that future day, so
+  `synthesis_date = CURRENT_DATE` (today, earlier than the window); the
+  window's lower edge is that same future day, later than
+  `synthesis_date`, so the test fails identically and no row is emitted —
+  the rule generalizes past the single reported shape without adding a
+  second case for it.
+- **An inverted range** (`from_date > to_date`, both given) never reaches
+  this fallback at all — the validation above rejects it before
+  `effective_from`/`effective_to` are computed.
+
+Dating the row at `synthesis_date` rather than unconditionally at
+`effective_to` changes nothing for a window that includes `CURRENT_DATE`
+or lies wholly in the past — `synthesis_date` and `effective_to` are the
+same date there — and the `effective_from IS NULL` arm inside the
+eligible-candidate predicate above is untouched: it still governs which
+*accounts* count as eligible against an unbounded lower edge, a separate
+question from whether the window contains a legitimate synthesis date at
+all. The only behavioral change is that a window lying wholly in the
+future no longer synthesizes a row dated outside it. An out-of-range query
+against a profile with *no* eligible candidate still correctly returns
+zero rows, exactly like any other `@report` — the count is zero, so
+neither the view's arm nor the runner's fallback fires.
+
+**The runner's conditional-append filter inherits the same lower/upper
+asymmetry as `cash_flow.py`'s, and that is intentional, not a gap this
+rule papers over.** Per §"A one-sided range stays open on the side that
+wasn't given" above, supplying only `to_date` leaves `effective_from`
+unbounded rather than snapping it to `to_date`, exactly as
+`cash_flow.py:172-181`'s two independent conditionals leave
+`from_month`/`to_month` unbounded on whichever side is omitted. This rule
+does not change that: `effective_from` still defaults to unbounded, not to
+`effective_to`, when `from_date` is omitted — the fallback's lower-edge
+test reads that `NULL` as "clears any `synthesis_date`," which is what
+makes the past-and-present cases above fall through unchanged.
 
 **Which layer owns which case, stated once.** The view owns every row that
 can be dated without knowing the request: every real balance-driven row
@@ -1342,6 +1403,43 @@ AGENTS.md's AX bias both point at.
   Pick a `to_date` that lands on a day with no balance observation of its
   own, so the assertion fails under the collapsed-to-a-single-day rule and
   passes only under the open-below one.
+- **A future-only lower bound synthesizes nothing.** A persona with an
+  eligible unanchored candidate, queried with `from_date` set to a day after
+  `CURRENT_DATE` and no `to_date`, returns zero rows — not a row dated
+  before the requested lower bound. This pins the general synthesis-date
+  rule in §Data Model: `synthesis_date = LEAST(effective_to, CURRENT_DATE)`
+  must also clear `effective_from` before the runner emits anything, and
+  the case that surfaced the omission has to stay failing.
+- **Staleness invariant: entirely stale profile.** A persona whose every
+  eligible account's most recent *observed* balance
+  (`reports.net_worth_accounts.is_observed = TRUE`) is 45 days before
+  `CURRENT_DATE` — old enough that `core.fct_balances_daily`'s spine ends
+  more than a threshold-length ago and no row is dated `CURRENT_DATE` at
+  all — asserts `net_worth_stale_balance` returns one `warn` entry per
+  stale account, `affected_ids` naming every one. This is the regression
+  §"`moneybin system doctor`: balance staleness" names directly: a check
+  written against a shared `balance_date = CURRENT_DATE` filter instead of
+  each account's own latest row finds nothing and passes silently on this
+  exact fixture.
+- **Staleness invariant: current-state exclusion.** Two accounts share the
+  same 46-day-stale last observation; one has `include_in_net_worth =
+  FALSE` (a second fixture repeats this with `archived = TRUE` instead),
+  the other is ordinary and eligible. Asserts exactly one `warn` entry,
+  naming only the ordinary account. This is the regression guard for
+  joining eligibility off `core.dim_accounts`'s present-state row rather
+  than off `reports.net_worth_accounts`'s date-scoped `archived_at`
+  predicate, which would still surface a deliberately excluded or closed
+  account's last pre-archival balance as a live warning nobody can act on.
+- **Staleness invariant: threshold boundary.** One account's most recent
+  observed balance is dated exactly `balance_staleness_threshold_days`
+  (default 30) before `CURRENT_DATE`; a second is dated
+  `balance_staleness_threshold_days + 1` before it. Assert both in the same
+  test: the first produces no `warn` entry, the second does. This pins
+  `CURRENT_DATE - balance_date` as the compared quantity — not the row's
+  own `days_since_observed`, which is relative to the spine's last date
+  rather than to today — so an off-by-one cannot silently narrow or widen
+  the 30-day default this spec chose to absorb a monthly statement cycle
+  without over-firing.
 - **The naming rule has a guard.** For every runner in `ALL_REPORTS`, the name
   half of `spec.report_id` equals `spec.view.name`. Requirement 13 is a
   convention until a test enforces it, and the six mismatches this spec removes
@@ -1404,6 +1502,15 @@ guard through that arm alone.
   variant; the second half is a guard on Requirement 2, not a hypothetical.
 - CLI and MCP parity on all three reports, before and after, over the same
   fixture.
+- **Staleness warns, it never fails the release gate.** `moneybin system
+  doctor` against a profile carrying only the entirely-stale-profile fixture
+  above exits `0`. `DoctorReport.failing` (`doctor_service.py:228`), which
+  the CLI's exit code (`cli/commands/system/doctor.py:68`) reads, does not
+  count a `warn` entry. This is the parity guard for keeping
+  `net_worth_stale_balance` at `warn` severity: only Requirement 14's own
+  guard (a NULL total from a wholly unanchored account) may turn the
+  release-gating exit code red, and this must stay true even as
+  `net_worth_stale_balance` gains the affected-account cases above.
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
