@@ -1,0 +1,1 @@
+A bundle export's `manifest.provenance` now names the build that produced it instead of writing `null`, so an artifact can be interpreted against the code that wrote it after it leaves the machine. Report exports carry the same version and revision stamp that `system_status.overview.build` reports.

@@ -546,10 +546,10 @@ Verify against the current `raw_import_log.sql` schema at implementation time. P
 | `docs/features.md` | Add "Google Sheets live sync" capability |
 | `docs/guides/data-import.md` | Cross-reference the new connect-gsheet guide |
 | **`sync` verb rename — co-shipping with this spec** (see "Co-shipping sync rename" below) | |
-| `docs/specs/sync-overview.md` | `sync connect` → `sync link` throughout (CLI table, MCP table, sequence diagrams, error messages, examples). Keep `app.sync_connections` table name unchanged ("connection" is the noun of "link"). |
+| `docs/specs/sync-overview.md` | `sync connect` → `sync link` throughout (CLI table, MCP table, sequence diagrams, error messages, examples). Sync connection health remains server-owned through `GET /institutions`. |
 | `docs/specs/sync-plaid.md` | Same rename pass for plaid-specific copy and error-message text |
 | `src/moneybin/cli/sync.py` (or equivalent) | Rename Typer command `sync connect` → `sync link`. Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning routed through `logging.warning`. |
-| `src/moneybin/mcp/tools/sync.py` (or equivalent) | Consolidate link-session status into `sync_status(session_id=...)`. |
+| `src/moneybin/mcp/tools/sync.py` (or equivalent) | Expose link-session status through `sync_status(session_id=...)`. |
 | `src/moneybin/services/sync_service.py` (or equivalent) | Rename `SyncService.connect()` → `SyncService.link()` and any internal callers |
 | `tests/moneybin/test_cli/test_sync.py` | Update test invocations |
 | `tests/moneybin/test_mcp/test_sync.py` | Update tool fixtures |
@@ -641,7 +641,7 @@ This spec co-ships a rename of the existing `sync-*` surface from `connect` to `
 
 **Rationale.** "Plaid Link" is the dominant industry term-of-art for institution-connection flows (Plaid, YNAB, Mint, every major bank's "link external account"). Using `_link` for the mediated case matches that mental model; using `_connect` for direct OAuth keeps each verb semantically distinct. Per `.claude/rules/agent-experience.md` and the UX/DX/AX bias principle in AGENTS.md: one verb, one meaning, no qualifier needed.
 
-**Scope.** User-facing surface only — CLI verb, MCP tool names, doc copy, error-message text. The `app.sync_connections` storage table name is unchanged ("connection" is the noun form of "link" — the records of established links).
+**Scope.** User-facing surface only — CLI verb, MCP tool names, doc copy, and error-message text. Connection health remains server-owned through `GET /institutions`; the rename adds no local sync connection state.
 
 **Backwards compatibility.** Pre-launch, but `sync-plaid.md` is shipped (M1G Phase 1). Keep `sync connect` as a deprecated alias for one minor release with a deprecation warning. Remove on the next minor release. Same pattern for the MCP tool. Per `.claude/references/design-principles-depth.md` evolving-a-public-contract guidance.
 

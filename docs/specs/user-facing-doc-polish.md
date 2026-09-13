@@ -1,9 +1,23 @@
 # Feature: User-Facing Documentation Polish
 
 ## Status
-in-progress
+implemented
 
-> **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. Remaining work is the M0D and M3B close-out (Requirements 13–14 — `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` reaching `implemented`, plus the brew-install Quick Start flip and demo asset). The spec moves to `implemented` when those land.
+> **Progress note (2026-09-11).** Phase 3 of the 2026-09 public docs pass
+> closed the remaining scope: `docs/guides/investments.md` and
+> `docs/guides/multi-currency.md` were written from captured demo
+> transcripts (family and international personas). Writing them, and the
+> review rounds that followed, surfaced five stale or incomplete output
+> strings in `src/`, all naming a `moneybin refresh run` / bare `moneybin
+> transform` invocation that no longer exists or an incomplete remedy —
+> see Background for the full list — and the generated
+> `docs/reference/cli/investments.md` page was regenerated. With
+> `account-identifiers.md`, `data-pipeline.md`, `system-overview.md`, and
+> the storefront/guide rewrites landed in earlier phases, no scope from
+> [Information architecture (2026-09)](#information-architecture-2026-09)
+> remains open, so the spec moves to `implemented`.
+
+> **Progress note (2026-05-17).** The "now" batch (Requirements 1–12, 15–18) shipped: README rewrite, `CHANGELOG.md`, `docs/guides/threat-model.md`, `docs/guides/database-security.md` polish, `CONTRIBUTING.md` strategy pointer, `pyproject.toml` metadata. At the time of this note, Requirements 13–14 were still open: `docs/architecture.md` distillation gated on `architecture-shared-primitives.md` (M0D), plus the brew-install Quick Start flip and demo asset (M3B). Requirement 13 shipped once M0D closed — `docs/architecture.md` is the real one-page distillation today, not the placeholder this note describes. Requirement 14's demo asset landed as the `moneybin demo` command (see the README's synthetic-data walkthrough); the brew-install Quick Start flip remains M3B packaging work, tracked in [`docs/roadmap.md`](../roadmap.md) rather than this spec — see the 2026-09-11 note above for the current disposition.
 
 > **Progress note (2026-09-02).** A repo-wide pass over every human-facing public doc started; its structure decisions are recorded in [Information architecture (2026-09)](#information-architecture-2026-09) below. The structure, broken commands, one privacy misstatement, and the CLI-invocation guard shipped on `docs/public-docs-structure`. The spec now moves to `implemented` when the remaining scope listed there is delivered.
 
@@ -19,7 +33,15 @@ The tagline `Your finances, understood by AI.` stays as the aspirational vision 
 - [`docs/decisions/009-encryption-key-management.md`](../decisions/009-encryption-key-management.md) — KDF + key-storage decisions referenced from the threat model.
 - Existing user-facing assets that this spec extends: [`README.md`](../../README.md), [`SECURITY.md`](../../SECURITY.md) (already strong, no change), [`CONTRIBUTING.md`](../../CONTRIBUTING.md) (one minor addition), [`docs/guides/database-security.md`](../guides/database-security.md).
 
-This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change is `pyproject.toml` metadata polish (already on the M3B distribution work).
+This spec is purely user-facing documentation work. It does not change product behavior. It does not introduce new schemas, services, MCP tools, or CLI commands. The only "code" change originally scoped was `pyproject.toml` metadata polish (already on the M3B distribution work). Phase 3 (2026-09-11) and its review rounds additionally corrected five output strings surfaced while writing and fact-checking the new guides — counted from `git diff origin/main...HEAD -- src/`:
+
+1. `DoctorService._run_currency_integrity`'s unknown-currency (fail) remedy: bare `` `moneybin transform` `` → `` `moneybin transform apply` ``.
+2. `DoctorService._run_currency_integrity`'s mixed-currency (warn) remedy: renamed `` `moneybin reports balance_drift` `` → `` `moneybin reports balance-drift` ``; replaced "conversion to a single display currency is not built yet" — false, conversion already existed — with the real `profile set home_currency` / `refresh` / `fx set` remedy; then branched that remedy on whether a home currency is already set, since the unconditional wording was redundant and partly inaccurate on a profile that had already chosen one.
+3. `DoctorService._run_dedup_reconciliation`'s remedy: the identical bare-`` `moneybin transform` `` defect as #1, in a check this spec did not originally touch.
+4. `PriceService.list_prices`'s missing-`core.fct_security_prices` warning: `` `moneybin refresh run` `` → `` `moneybin refresh` ``.
+5. `investments prices pull/set/delete`'s post-write hint and failure message (`_report_refresh_failure`, `_echo_refresh_hint`, and their docstrings): the same `` `moneybin refresh run` `` → `` `moneybin refresh` `` correction, five call sites across one command group.
+
+See Testing Strategy for their regression coverage.
 
 ## Requirements
 
@@ -27,37 +49,37 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 1. **Tagline preserved.** The README masthead retains `Your finances, understood by AI.` as the aspirational vision tagline. Honesty and substance follow below it.
 
-2. **Sub-line carries the honesty + substance framing.** The line immediately below the tagline reads (or paraphrases): *The local-first, AI-native financial data platform you actually own. Encrypted by default. Queryable with SQL. Extensible with MCP.* Use "data platform" — not "ledger" (which has Beancount/hledger double-entry connotations MoneyBin's `dim_accounts` + `fct_transactions` star schema doesn't match), not "data warehouse" (technically accurate but tonally cold).
+2. **Sub-line carries the honesty + substance framing.** The line immediately below the tagline reads (or paraphrases): *The local-first, AI-native financial data platform you actually own. Encrypted by default. Queryable with SQL. Extensible with MCP.* Use "data platform" — not "ledger" (which has Beancount/hledger double-entry connotations MoneyBin's `dim_accounts` + `fct_transactions` star schema doesn't match), not "data warehouse" (technically accurate but tonally cold). **Superseded:** the 2026-09 storefront rewrite uses different wording — "A personal finance platform built like a data warehouse" — the opposite tonal call from this requirement's guidance; the current README reflects that later editorial decision, not this exact wording.
 
-3. **Status block names the pre-launch state honestly.** The status paragraph explicitly references M1/M2 (curator state, brew install, first-run wizard) and M3 (Web UI, hosted) — not "coming soon" hand-waves.
+3. **Status block names the pre-launch state honestly.** The status paragraph explicitly references M1/M2 (curator state, brew install, first-run wizard) and M3 (Web UI, hosted) — not "coming soon" hand-waves. **Superseded:** the current README's honesty section ("Should you trust it with your money yet?") carries no milestone codes at all — a later project-wide policy bars milestone codes from user-facing prose — but states the same facts plainly (pre-v1, source-only install, Windows untested, no non-author Plaid validation).
 
-4. **"Why MoneyBin" bullets lead with lineage.** The first bullet is *Lineage you can audit*, framing every number as traceable from `core.fct_transactions` → SQLMesh model → `raw` row → source file. Encryption follows. AI-native + client-agnostic third. Local + hosted choice fourth.
+4. **"Why MoneyBin" bullets lead with lineage.** The first bullet is *Lineage you can audit*, framing every number as traceable from `core.fct_transactions` → SQLMesh model → `raw` row → source file. Encryption follows. AI-native + client-agnostic third. Local + hosted choice fourth. **Superseded:** the 2026-09 storefront rewrite cut the "Why MoneyBin" bulleted section entirely; the README no longer carries a dedicated bullet list.
 
-5. **Quick Start frames the developer install honestly.** A one-line preface acknowledges that today's install path is `git clone` + `uv` (developer install) and that `brew install moneybin` ships in M3B. Active repulsion of personas who can't yet use it (Mark, Casey) is a feature, not a bug.
+5. **Quick Start frames the developer install honestly.** A one-line preface acknowledges that today's install path is `git clone` + `uv` (developer install) and that `brew install moneybin` ships in M3B. Active repulsion of personas who can't yet use it (Mark, Casey) is a feature, not a bug. **Superseded:** the current Quick Start ("Sixty seconds on synthetic data") shows only the `git clone` + `uv` path with no brew/M3B forward-pointer, consistent with the later milestone-code ban — the honesty goal holds; the specific brew-install callout does not.
 
-6. **"Who this is for / not yet for" candor block exists.** A pre-Quick-Start section names today's fits (curator-engineers, MCP developers, self-hosters) and today's not-yet-fits (one-click bank sync, polished mobile, investment tracking, pure envelope budgeting).
+6. **"Who this is for / not yet for" candor block exists.** A pre-Quick-Start section names today's fits (curator-engineers, MCP developers, self-hosters) and today's not-yet-fits (one-click bank sync, polished mobile, investment tracking, pure envelope budgeting). **Superseded (2026-09-11):** the candor block is now the README's "What it is not" section, and it correctly no longer lists investment tracking as a not-yet-fit — the [investments guide](../guides/investments.md) shipped in Phase 3 of the 2026-09 public docs pass. The other three not-yet-fits (one-click bank sync, polished mobile, pure envelope budgeting) still hold.
 
-7. **Comparison table expands beyond the original four.** Era / BankSync, Lunch Money, Wealthfolio added as columns. Rows include encrypted-at-rest, AI/MCP integration, SQL access, license. Describe each alternative accurately; no "first" or "only" claims.
+7. **Comparison table expands beyond the original four.** Era / BankSync, Lunch Money, Wealthfolio added as columns. Rows include encrypted-at-rest, AI/MCP integration, SQL access, license. Describe each alternative accurately; no "first" or "only" claims. **Superseded:** [`docs/comparison.md`](../comparison.md) replaced the table with prose — it explicitly rejects a feature-by-feature grid ("We don't keep a feature-by-feature scorecard of other tools here") in favor of "Where MoneyBin is not the best fit" bullets naming one alternative per mismatch. Of this requirement's four comparators, Lunch Money and Wealthfolio are named on the page; Era and BankSync are not covered at all.
 
-8. **Roadmap section adopts milestone terminology.** The ✅/📐/🗓️ icons stay. A `Milestone` column maps each row to M0–M1 (shipped/ingestion), M2 (analysis), M3 (productization), or post-launch.
+8. **Roadmap section adopts milestone terminology.** The ✅/📐/🗓️ icons stay. A `Milestone` column maps each row to M0–M1 (shipped/ingestion), M2 (analysis), M3 (productization), or post-launch. **Superseded:** the README carries no roadmap section or `Milestone` column; milestone status lives solely in [`docs/roadmap.md`](../roadmap.md), and milestone codes are barred from README prose by the later project-wide policy noted at Requirement 3.
 
-9. **License section explains AGPL with substance.** Replaces the badge-only treatment. Names the four implications (free use, free fork, network-service-must-publish-source, hosted-server-runs-the-same-code). References the Bitwarden / Plausible / Element / Sentry / Ghost peer set.
+9. **License section explains AGPL with substance.** Replaces the badge-only treatment. Names the four implications (free use, free fork, network-service-must-publish-source, hosted-server-runs-the-same-code). References the Bitwarden / Plausible / Element / Sentry / Ghost peer set. **Superseded:** the substantive AGPL explanation lives in [`docs/licensing.md`](../licensing.md); the README's own mention is now a one-line footer pointing to `LICENSE`.
 
-10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. Groups entries by version (or by milestone — to be decided in implementation). Devon checks for this; absence reads as "not serious."
+10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. **Delivered:** entries group by milestone, not semantic version, pre-1.0 — the file's own header states the rationale and links `docs/roadmap.md`'s milestone scheme; new entries now accrete through `changelog.d/` fragments rather than direct edits. Devon checks for this; absence reads as "not serious."
 
 11. **`docs/guides/threat-model.md` exists.** One-page user-facing distillation of [`privacy-data-protection.md`](privacy-data-protection.md): what the encryption protects against (stolen laptop, synced folder, shared machine), what it doesn't (forgotten passphrase + lost recovery codes = data loss; AI vendor data flow when you ask Claude/ChatGPT a question; an attacker with both DB file and live keychain session). References ADR-009 for KDF rationale.
 
 12. **`docs/guides/database-security.md` adds a threat-model summary paragraph.** One-paragraph summary near the top + link to the new threat-model guide + ADR-009 reference + explicit "passphrase loss = data loss" note with the auto-key + `db key show` mitigation pattern.
 
-13. **`docs/architecture.md` placeholder exists, gated on M0D.** A short placeholder file links forward to `architecture-shared-primitives.md` once it lands. The full distillation (one-page user-facing version of the spec) ships in a follow-up PR after M0D closes — this spec doesn't block on that.
+13. **`docs/architecture.md` placeholder exists, gated on M0D.** A short placeholder file links forward to `architecture-shared-primitives.md` once it lands. The full distillation (one-page user-facing version of the spec) ships in a follow-up PR after M0D closes — this spec doesn't block on that. **Delivered:** M0D closed; `docs/architecture.md` is the real one-page distillation today, not the placeholder this requirement describes.
 
-14. **Demo asset placeholder exists, gated on M3B.** Acknowledged in the README's `Documentation` or `Quick Start` section as "demo coming with brew install in M3B." Don't fake it; don't pretend it exists yet.
+14. **Demo asset placeholder exists, gated on M3B.** Acknowledged in the README's `Documentation` or `Quick Start` section as "demo coming with brew install in M3B." Don't fake it; don't pretend it exists yet. **Delivered (superseded):** the demo shipped early as the real `moneybin demo` command (see the README's synthetic-data walkthrough) rather than a placeholder acknowledgment; the asciinema cast originally scoped alongside it was cut (see Out of Scope).
 
-15. **Documentation section links surface the decision log.** README's `Documentation` section adds an explicit link to `docs/decisions/` (ADRs) — most projects bury these; surfacing them is a credibility signal.
+15. **Documentation section links surface the decision log.** README's `Documentation` section adds an explicit link to `docs/decisions/` (ADRs) — most projects bury these; surfacing them is a credibility signal. **Superseded:** the ADR link now surfaces from [`docs/README.md`](../README.md) (the doc index) rather than a dedicated "Documentation" section in the top-level README, which no longer has one.
 
 16. **No false claims of "first" or "only."** Every superlative claim ("the first AI-native…", "the only local-first…") is removed or replaced with a non-superlative conjunction ("local-first AND AI-native AND open-source AND encrypted-by-default" — defensible without claiming primacy).
 
-17. **MCP client list is precise about transport.** "Connect Claude, ChatGPT, Cursor…" stays, but a clarifying note distinguishes local-stdio support today (works for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex CLI/Desktop/IDE, ChatGPT Desktop) from Streamable HTTP support arriving with hosted in M3D + M3H (which unlocks ChatGPT web/mobile and other remote clients).
+17. **MCP client list is precise about transport.** "Connect Claude, ChatGPT, Cursor…" stays, but a clarifying note distinguishes local-stdio support today (works for Claude Desktop, Claude Code, Cursor, Windsurf, VS Code, Gemini CLI, Codex CLI/IDE, ChatGPT Desktop — which has hosted Codex since the standalone Codex desktop app merged into it in July 2026) from Streamable HTTP support arriving with hosted in M3D + M3H (which unlocks ChatGPT web/mobile and other remote clients). **Superseded:** the transport-precision note lives in [`docs/guides/mcp-clients.md`](../guides/mcp-clients.md); the README's own client list is a one-line example with no inline transport caveat.
 
 18. **CONTRIBUTING.md gains a "where the strategy lives" pointer.** One short paragraph noting that `docs/specs/` and `docs/decisions/` are the public planning artifacts; project-internal strategy is private. Helps Sam understand what's open and what isn't.
 
@@ -75,13 +97,13 @@ None. This spec does not introduce or modify any database schemas, migrations, o
 |---|---|---|
 | `CHANGELOG.md` | Keep-A-Changelog format. Backfill from recent PRs (M0 Foundation + M1 Ingestion Core cumulative entries grouped by milestone, then per-PR going forward). | None |
 | `docs/guides/threat-model.md` | One-page user-facing threat model. Pulls from [`privacy-data-protection.md`](privacy-data-protection.md) and ADR-009. | None |
-| `docs/architecture.md` | Placeholder with forward-pointer. Real content ships post-M0D once `architecture-shared-primitives.md` lands. | None for placeholder; M0D for full distillation |
+| `docs/architecture.md` | Placeholder with forward-pointer. Real content ships post-M0D once `architecture-shared-primitives.md` lands. **Delivered:** M0D closed; this is the real one-page distillation, not the placeholder. | None for placeholder; M0D for full distillation |
 
 ### Files to Modify
 
 | File | Change | Dependency |
 |---|---|---|
-| `README.md` | Tagline preserved. Sub-line refreshed. Status block names M1/M2/M3. "Who this is for / not yet for" block added. "Why MoneyBin" bullets reordered (lineage first). Quick Start gets honest preface. Comparison table expanded (Era/BankSync, Lunch Money, Wealthfolio rows). Roadmap table adds `Milestone` column. License section gets substance. Documentation section adds ADR link. | None for most. Quick Start "brew install" line goes from forward-pointer to live instruction at M3B close. |
+| `README.md` | Tagline preserved. Sub-line refreshed. Status block names M1/M2/M3. "Who this is for / not yet for" block added. "Why MoneyBin" bullets reordered (lineage first). Quick Start gets honest preface. Comparison table expanded (Era/BankSync, Lunch Money, Wealthfolio rows). Roadmap table adds `Milestone` column. License section gets substance. Documentation section adds ADR link. **Superseded:** a later 2026-09 storefront rewrite replaced most of this structure — only the tagline and "What it is not" (candor) section survive from this row's list. The Why-bullets and comparison table were cut outright (the latter's replacement, `docs/comparison.md`, is prose, not a table, and covers Lunch Money and Wealthfolio but not Era or BankSync — see Requirement 7); the roadmap section, License section, and Documentation section moved to a dedicated `docs/` page instead (see Requirements 8, 9, 15). | None for most. Quick Start "brew install" line goes from forward-pointer to live instruction at M3B close. |
 | `docs/guides/database-security.md` | Add threat-model summary paragraph + link to `docs/guides/threat-model.md` + ADR-009 link + "passphrase loss = data loss" pattern. | None |
 | `CONTRIBUTING.md` | One paragraph: "where the strategy lives." | None |
 | `pyproject.toml` | Polish `[project]` metadata (author, license, homepage, classifiers, keywords, license-file inclusion) for PyPI publish readiness. | None for polish; PyPI publish workflow itself is M3B distribution-roadmap.md scope. |
@@ -92,7 +114,7 @@ None. This spec does not introduce or modify any database schemas, migrations, o
 - **No superlative claims.** "First," "only," "the best" do not appear in user-facing copy. Replaced by descriptive conjunctions.
 - **Honesty disarms scrutiny.** The "who this isn't for yet" block is load-bearing. It actively repels personas who'd bounce in frustration; it earns trust from those who'd otherwise scrutinize harder.
 - **Milestone terminology in user-facing roadmap.** Public README references milestones directly with their codes (M0 Foundation, M1 Ingestion Core, M2 Analysis & Reports, M3 Productization). Sam/Devon/Priya can plan around named milestones; they can't plan around "soon."
-- **Demo asset and architecture distillation are forward-pointers in this spec.** They land in follow-up work tied to M3B and M0D respectively. This spec doesn't block on either.
+- **Demo asset and architecture distillation were forward-pointers in this spec, both since resolved.** The architecture distillation shipped with M0D (`docs/architecture.md`). The demo asset shipped early as the `moneybin demo` command rather than the asciinema cast originally scoped (cut; see "Out of Scope"). Neither blocked this spec's `implemented` status.
 - **MCP transport clarity over generality.** "Connect Claude, ChatGPT, Cursor" is too broad; the list explicitly distinguishes today's local-stdio coverage from M3D's Streamable HTTP coverage. Devon notices precision and rewards it.
 - **Quality badges must have receipts.** Scenario tests, CI/security checks, privacy/redaction, doctor, and audit/undo are trust signals only if they link to real commands, workflows, or check results. Otherwise omit them.
 - **No archiving of existing material.** Per project convention, implemented specs and existing guides stay where they are. This spec adds and refreshes; it does not move or delete.
@@ -109,20 +131,19 @@ The work splits cleanly into "ship now (no product dependencies)" and "ship at m
 5. `CONTRIBUTING.md` strategy-pointer paragraph.
 6. `pyproject.toml` metadata polish.
 
-**At M0D close (separate PR):**
-7. `docs/architecture.md` becomes the user-facing distillation of `architecture-shared-primitives.md`. Placeholder is replaced with real content.
+**At M0D close (shipped):**
+7. `docs/architecture.md` became the user-facing distillation of `architecture-shared-primitives.md`, replacing the placeholder with real content — done.
 
-**At M3B close (separate PR):**
+**At M3B close (tracked in `docs/roadmap.md`, not this spec):**
 8. README Quick Start flips to brew-install-primary.
-9. Demo asciinema cast or screen-recording asset added to `docs/assets/` and embedded in README.
-10. README adds "demo profile preset" reference (`moneybin demo`).
-11. README/docs add earned quality-gate trust signals with links to doctor, scenario suite, CI/security checks, privacy/redaction behavior, and audit/undo docs where those surfaces exist.
+9. README adds "demo profile preset" reference — shipped early as the `moneybin demo` command, ahead of the rest of M3B.
+10. README/docs add earned quality-gate trust signals with links to doctor, scenario suite, CI/security checks, privacy/redaction behavior, and audit/undo docs where those surfaces exist.
 
-The `now` batch is the bulk of this spec. The `M0D` and `M3B` items are explicitly out-of-scope for the initial implementation PR but tracked here so the spec is the single source of truth for the doc surface.
+The `now` batch and the M0D item above are the bulk of this spec, and both are shipped. The remaining M3B packaging items (brew install, the trust-signal additions) are [`docs/roadmap.md`](../roadmap.md)'s M3B row to close, not a follow-up this spec still owns — see the 2026-09-11 note at the top for the current disposition. The demo asciinema cast or screen-recording asset originally planned alongside item 9 was cut; see "Out of Scope" below.
 
 ## CLI Interface
 
-Not applicable. No CLI changes.
+Not applicable to the spec's original scope: no new commands, flags, or output shapes. Phase 3 (2026-09-11) and its review rounds corrected the wording of five existing outputs — the `investments prices pull/set/delete` command's post-write hint and failure message, `PriceService.list_prices`'s missing-table warning, and `system doctor`'s `currency_integrity` (both its fail and warn detail) and `dedup_reconciliation` advice — see Background for the full enumeration. No argument, flag, or exit-code behavior changed.
 
 ## MCP Interface
 
@@ -139,6 +160,7 @@ This is documentation work; testing is by inspection and review.
 - **Trust-signal audit** — every quality badge or claim links to a real check, command, workflow, or spec; remove anything aspirational.
 - **CHANGELOG accuracy** — entries cross-referenced against `git log --oneline` for the relevant range; PR numbers cited.
 - **Threat model accuracy** — claims in `docs/guides/threat-model.md` cross-checked against [`privacy-data-protection.md`](privacy-data-protection.md) and ADR-009.
+- **Output-string regression tests** — the Phase 3 command-hint corrections are guarded, not just proofread: `tests/moneybin/test_cli/test_investments_prices.py` asserts the corrected `investments prices` hint text and, separately, the absence of the stale spelling (a bare positive match on the fixed string is a substring of the stale one and cannot fail on regression); `tests/moneybin/test_services/test_doctor_service.py` does the same for both corrected `system doctor` checks (`currency_integrity`, `dedup_reconciliation`).
 
 ## Synthetic Data Requirements
 
@@ -149,8 +171,8 @@ None. This spec does not exercise the data pipeline.
 - **`privacy-data-protection.md`** (✅ implemented) — source material for the threat model guide.
 - **ADR-009** (encryption key management, ✅ written) — referenced from the threat model.
 - **No code dependencies.** This work does not require any product change to ship the `now` batch.
-- **`architecture-shared-primitives.md`** (M0D, not yet written) — required only for the *full* `docs/architecture.md` distillation. The placeholder version ships without it.
-- **M3B distribution work** (`brew install`, PyPI publish, demo profile) — required only for the M3B-close batch (Quick Start flip, demo asset). The `now` batch does not block on this.
+- **`architecture-shared-primitives.md`** (M0D) — shipped and `implemented`; the full `docs/architecture.md` distillation it gated is live, replacing the placeholder.
+- **M3B distribution work** (`brew install`, PyPI publish) — the demo profile shipped early as `moneybin demo`; `brew install` and PyPI publish remain open M3B packaging work, tracked in `docs/roadmap.md` rather than this spec.
 
 ## Information architecture (2026-09)
 
@@ -199,14 +221,23 @@ invocation in the public docs against the registered command tree. A line that
 deliberately shows a wrong or absent command carries
 `<!-- cli-invocation-ok: reason -->`.
 
-**Remaining scope.** The structure above, the broken commands, the
+**Delivery history.** The structure above, the broken commands, the
 `categorize assist` privacy statement, shipped-as-planned drift, and the guard
-shipped on `docs/public-docs-structure`; the generated references on
-`docs/generated-references`; `getting-started.md` and the reports guide on
-`docs/getting-started-and-reports-guides`. What's left: `account-identifiers.md`
-and `data-pipeline.md` rewrites;
-`system-overview.md` folded into `docs/architecture.md`; storefront and guide
-rewrites; and the investments and multi-currency guides.
+shipped on `docs/public-docs-structure` (#516, 2026-09-04). That same PR also
+delivered the `account-identifiers.md` and `data-pipeline.md` corrections this
+section originally scoped as a separate "rewrites" item — one PR, not two.
+`system-overview.md` was corrected there too, but not folded into
+`docs/architecture.md` as this section originally planned: the two pages stay
+separate and cross-link each other, `system-overview.md` as the orientation
+map and `docs/architecture.md` as the contract-level distillation. The
+generated references shipped on `docs/generated-references` (#525,
+2026-09-04); `getting-started.md` and the reports guide on
+`docs/getting-started-and-reports-guides` (#542, 2026-09-05); the storefront
+rewrite on `docs/public-docs-structure`'s successor pass, "Position the
+storefront against Finances in ChatGPT by custody" (#572, 2026-09-11); and
+the investments and multi-currency guides in Phase 3 of this pass (2026-09-11,
+see the progress note at the top of this spec). Nothing from this section
+remains open.
 
 **Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
 amendment.

@@ -690,7 +690,7 @@ def test_the_framing_line_shares_the_stream_carrying_the_table(
 ) -> None:
     """Requirement 10: the framing rides stdout, with the result it describes.
 
-    `moneybin reports spending > report.txt` must capture the disclosure along
+    `moneybin reports spending-trend > report.txt` must capture the disclosure along
     with the table. Routing it to stderr would let the redirected file record a
     truncated result with nothing in it saying so, which is the silent
     truncation this requirement forbids arriving by another route.

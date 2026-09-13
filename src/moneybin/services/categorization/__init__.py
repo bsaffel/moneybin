@@ -246,6 +246,7 @@ class CategorizationService:
         subcategory: str | None,
         categorized_by: Literal["user"] = "user",
         actor: str,
+        resolve_transaction_id: bool = True,
     ) -> None:
         """``set_category`` body without txn boundaries (caller owns the transaction)."""
         self._applier.set_category_in_active_txn(
@@ -254,6 +255,7 @@ class CategorizationService:
             subcategory=subcategory,
             categorized_by=categorized_by,
             actor=actor,
+            resolve_transaction_id=resolve_transaction_id,
         )
 
     def apply_review_categorization_in_active_txn(
@@ -599,12 +601,17 @@ class CategorizationService:
         rule_id: str | None = None,
         confidence: float | None = None,
         in_outer_txn: bool = False,
+        resolve_transaction_id: bool = True,
     ) -> WriteOutcome:
         """Insert or replace a categorization, respecting source precedence.
 
         Pass ``in_outer_txn=True`` when the caller already owns a transaction
         (e.g. the auto-rule approve cascade); the repo then joins it instead of
         opening a nested one (DuckDB has no nested transactions).
+
+        ``resolve_transaction_id`` forwards to :meth:`MatchApplier.write_categorization`
+        — see its docstring. A loop caller that bulk-resolved its ids up front
+        via ``resolve_curation_transaction_ids`` passes ``False``.
         """
         return self._applier.write_categorization(
             transaction_id=transaction_id,
@@ -615,6 +622,7 @@ class CategorizationService:
             rule_id=rule_id,
             confidence=confidence,
             in_outer_txn=in_outer_txn,
+            resolve_transaction_id=resolve_transaction_id,
         )
 
     # -- Batch orchestration --

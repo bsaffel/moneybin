@@ -26,6 +26,7 @@ from moneybin.orchestration.refresh import RefreshResult
 from moneybin.repositories import concrete_repo_classes
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.services.account_links_service import AccountLinksService
 from moneybin.services.doctor_service import (
     DoctorReport,
@@ -457,6 +458,34 @@ def test_dedup_reconciliation_fails_when_rows_collapse_without_decision(
     result = _dedup_result(doctor_db, monkeypatch)
     assert result.status == "fail"
     assert result.detail is not None
+
+
+@pytest.mark.unit
+def test_dedup_reconciliation_fail_names_the_transform_that_applies_the_fix(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Mirrors currency_integrity's guard: this fail detail names the same fix.
+
+    `dedup_reconciliation`'s message names `moneybin transform apply` as the
+    remedy for a mismatch caused by data imported since the last transform —
+    the identical stale-command defect `_run_currency_integrity` had, fixed in
+    the same PR. Without this test, only `currency_integrity`'s copy of the
+    fix was guarded against regression.
+    """
+    # 3 imported rows collapse to 2 core rows, no dedup decision explains it.
+    _seed_prep_unioned(doctor_db, row_count=3)
+
+    result = _dedup_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "transform apply" in detail
+    # "transform" alone is a substring of both the fixed text and the stale
+    # bare-`transform` invocation this test guards against, so it cannot tell
+    # the two apart. The stale spelling was the exact substring
+    # "`moneybin transform`:" (backtick, then colon, with no "apply" between)
+    # — assert it directly rather than "transform" alone.
+    assert "`moneybin transform`:" not in detail
 
 
 @pytest.mark.unit
@@ -1481,10 +1510,16 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
         """
         INSERT INTO raw.plaid_investment_transactions (
             investment_transaction_id, account_id, transaction_date, amount,
-            source_file, source_origin
-        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
+    db.execute("""
+        INSERT INTO raw.plaid_investment_transaction_receipts (
+            investment_transaction_id, source_origin, source_file,
+            observation_version, extracted_at
+        ) VALUES ('p1', 'item1', 'sync_fixture', 'plaid_fixture', '2026-01-01')
+    """)
     db.execute(
         """
         INSERT INTO app.account_links (
@@ -1512,6 +1547,37 @@ def test_source_overlap_fails(db: Database, monkeypatch: pytest.MonkeyPatch) -> 
     assert [a.tool for a in result.recovery_actions] == ["import_revert"]
 
 
+def test_source_overlap_detects_holdings_before_bootstrap_transform(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db.execute("""
+        INSERT INTO raw.plaid_investment_holdings (
+            account_id, security_id, quantity, transactions_window_start,
+            source_file, source_origin
+        ) VALUES ('native_holdings', 'native_security', 10, '2026-01-01',
+                  'sync_holdings', 'item_holdings')
+    """)
+    db.execute("""
+        INSERT INTO app.account_links (
+            link_id, account_id, ref_kind, ref_value, source_type, source_origin,
+            status, decided_by, decided_at
+        ) VALUES ('holdings_link', 'ACC_HOLDINGS', 'source_native', 'native_holdings',
+                  'plaid', 'item_holdings', 'accepted', 'user', CURRENT_TIMESTAMP)
+    """)
+    db.execute("""
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_holdings', 'imp_holdings', 'ACC_HOLDINGS', 'buy',
+                  '2026-01-02', 'cli')
+    """)
+    result = _investment_result(db, monkeypatch, "investment_source_overlap")
+    assert result.status == "fail"
+    assert result.affected_ids == ["ACC_HOLDINGS"]
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
+    ).fetchone() == (0,)
+
+
 @pytest.mark.unit
 def test_source_overlap_pass_when_only_one_source(
     db: Database, monkeypatch: pytest.MonkeyPatch
@@ -1520,8 +1586,8 @@ def test_source_overlap_pass_when_only_one_source(
         """
         INSERT INTO raw.plaid_investment_transactions (
             investment_transaction_id, account_id, transaction_date, amount,
-            source_file, source_origin
-        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'sync_1', 'item1')
+            observation_version, source_origin
+        ) VALUES ('p1', 'plaid_acc1', '2026-01-01', 100.00, 'plaid_fixture', 'item1')
         """  # test input, not user data
     )
     result = _investment_result(db, monkeypatch, "investment_source_overlap")
@@ -1596,7 +1662,8 @@ def _create_snapshot_receipts_table(db: Database) -> None:
     db.execute(
         "CREATE TABLE prep.stg_plaid__investment_holdings_snapshots "
         "(source_origin VARCHAR, source_file VARCHAR, holdings_date DATE, "
-        "holdings_count INTEGER, extracted_at TIMESTAMP)"
+        "holdings_count INTEGER, extracted_at TIMESTAMP, "
+        "ingestion_sequence BIGINT DEFAULT nextval('raw.investment_ingestion_sequence'))"
     )
 
 
@@ -2775,6 +2842,50 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
     detail = result.detail or ""
     assert "EUR" in detail
     assert "USD" in detail
+    assert "moneybin profile set home_currency" in detail
+    assert "withhold any combined figure" in detail
+    # A supported pair can still leave a date unfilled (ECB holiday, an
+    # interior gap the coverage check can't see) even after `refresh` runs.
+    assert "an interior gap the coverage check" in detail
+    assert "asking a report for a date the provider did publish" in detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_warn_with_home_currency_set_skips_redundant_advice(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A profile that already chose a home currency needs different advice.
+
+    Telling the user to set what is already set is noise, and claiming every
+    combined figure is withheld is false: `networth`, `large-transactions`, and
+    `balance-drift` already convert into the home currency whenever their rates
+    are on disk. Only the five aggregating reports still sub-total regardless.
+    """
+    doctor_db.execute("""
+        UPDATE core.fct_transactions SET currency_code = 'EUR'
+        WHERE transaction_id = 'T2'
+    """)  # test input, not user data
+    ProfileSettingsRepo(doctor_db).set_home_currency("USD", actor="test")
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "warn"
+    detail = result.detail or ""
+    assert "EUR" in detail
+    assert "USD" in detail
+    # The setting is already USD — telling the user to set it is redundant,
+    # and "withhold any combined figure" is false once conversion can run.
+    assert "moneybin profile set home_currency" not in detail
+    assert "withhold any combined figure" not in detail
+    assert "price into USD" in detail
+    assert "moneybin refresh" in detail
+    assert "moneybin fx set <from> <to> <date> <rate>" in detail
+    # The balance-drift fact holds regardless of home currency — must survive.
+    assert "balance-drift" in detail
+    # A supported pair can still leave a date unfilled (ECB holiday, an
+    # interior gap the coverage check can't see) even after `refresh` runs.
+    assert "an interior gap the coverage check" in detail
+    assert "asking a report for a date the provider did publish" in detail
 
 
 @pytest.mark.unit
@@ -2827,7 +2938,12 @@ def test_currency_integrity_warn_explains_the_withheld_balance_adjustment(
     assert result.status == "warn"
     detail = result.detail or ""
     assert "carried" in detail
-    assert "balance_drift" in detail
+    assert "balance-drift" in detail
+    # `refresh` can never gather a pair the provider does not publish
+    # (run_rate_backfill records it as `unsupported` and stores nothing), so
+    # the remedy must name `fx set` as the only way to fill that pair — not
+    # just point at `refresh` and imply it always resolves the mix.
+    assert "moneybin fx set <from> <to> <date> <rate>" in detail
 
 
 @pytest.mark.unit
@@ -2849,7 +2965,14 @@ def test_currency_integrity_fail_names_the_transform_that_applies_the_fix(
     result = _currency_result(doctor_db, monkeypatch)
 
     assert result.status == "fail"
-    assert "transform" in (result.detail or "")
+    detail = result.detail or ""
+    assert "transform apply" in detail
+    # "transform" alone is a substring of both the fixed text above and the
+    # stale bare-`transform` invocation this test guards against, so it
+    # cannot tell the two apart. The stale spelling was the exact substring
+    # "`moneybin transform`:" (backtick, then colon, with no "apply" between)
+    # — assert it directly rather than "transform" alone.
+    assert "`moneybin transform`:" not in detail
 
 
 @pytest.mark.unit

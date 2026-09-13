@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from pydantic import JsonValue
 
+from moneybin.build_info import get_build_info
 from moneybin.database import Database
 from moneybin.exports.models import (
     DestinationKind,
@@ -28,11 +29,11 @@ from moneybin.exports.models import (
 from moneybin.exports.redaction import apply_export_redaction
 from moneybin.exports.snapshot import (
     ARTIFACT_VERSION,
+    ExportProvenance,
     ExportSubject,
     PreparedColumn,
     PreparedExport,
     PreparedTable,
-    ReportExportProvenance,
     build_bundle_snapshot,
     build_data_dictionary,
     prepared_table_checksum,
@@ -753,6 +754,7 @@ class ExportService:
             ),
         )
         tables = (table,)
+        build = get_build_info()
         snapshot = PreparedExport(
             artifact_version=ARTIFACT_VERSION,
             export_id=None,
@@ -766,7 +768,8 @@ class ExportService:
             redaction_mode="unredacted",
             tables=tables,
             data_dictionary=build_data_dictionary(tables),
-            provenance=ReportExportProvenance(
+            provenance=ExportProvenance(
+                build={"version": build.version, "revision": build.revision},
                 report_id=execution.report_id,
                 receipt=receipt.as_mapping(),
             ),

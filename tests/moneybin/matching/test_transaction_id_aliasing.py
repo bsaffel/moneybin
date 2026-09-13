@@ -28,6 +28,10 @@ import pytest
 from moneybin import error_codes
 from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import (
+    resolve_curation_transaction_id,
+    resolve_curation_transaction_ids,
+)
 from moneybin.matching.persistence import get_match_decision
 from moneybin.metrics.registry import TRANSACTION_CURATION_FORWARDED_TOTAL
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
@@ -38,6 +42,7 @@ from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services.matching_service import MatchingService
 from moneybin.services.mutation_context import operation
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.db_helpers import create_core_tables_raw
 
 _MODEL_FILE = SQLMESH_ROOT / "models" / "prep" / "int_transactions__matched.sql"
 
@@ -1296,3 +1301,160 @@ class TestARepointBlocksUndoOfTheEditItMoved:
         assert detail.undo_blocked_by == [repoint_op]
         assert detail.can_undo is False
         assert _curation_ids(matched_db)["transaction_splits"] == [new_id]
+
+
+class TestResolutionBeforeTheFactViewExists:
+    """A first load precedes the transform that builds ``core.fct_transactions``.
+
+    The catalog lacks the liveness oracle entirely at that point (issue #593),
+    not merely a row within it — the same absence :func:`_heal_stranded_curation`
+    already tolerates. Resolution must pass every id through unchanged rather
+    than raising ``CatalogException`` or ``TRANSACTION_REFERENCE_NOT_FOUND``.
+    """
+
+    @pytest.mark.unit
+    def test_single_id_required_true_passes_through_unchanged(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+
+        assert resolve_curation_transaction_id(db, "plaid_abc123") == "plaid_abc123"
+
+    @pytest.mark.unit
+    def test_single_id_required_false_passes_through_unchanged(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+
+        assert (
+            resolve_curation_transaction_id(db, "plaid_abc123", required=False)
+            == "plaid_abc123"
+        )
+
+    @pytest.mark.unit
+    def test_bulk_resolution_returns_an_identity_map_for_every_id(
+        self, db: Database
+    ) -> None:
+        db.execute("DROP VIEW IF EXISTS core.fct_transactions")
+        ids = ["plaid_abc123", "csv_def456", "ofx_ghi789"]
+
+        assert resolve_curation_transaction_ids(db, ids) == dict(
+            zip(ids, ids, strict=True)
+        )
+
+
+def _insert_manual_transaction(
+    db: Database, *, source_transaction_id: str, transaction_id: str
+) -> None:
+    """Minimal manual-transaction row with the given predicted gold-key id."""
+    db.execute(
+        "INSERT INTO raw.manual_transactions "
+        "(source_transaction_id, import_id, account_id, transaction_date, "
+        "amount, description, created_by, transaction_id) "
+        "VALUES (?, 'imp1', 'a1', DATE '2026-01-01', -5.00, 'Coffee', 'cli', ?)",
+        [source_transaction_id, transaction_id],
+    )
+
+
+def _insert_alias(db: Database, *, old_id: str, new_id: str) -> None:
+    db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES (?, ?, CURRENT_TIMESTAMP)",
+        [old_id, new_id],
+    )
+
+
+class TestDedupedAwayManualIsNotLive:
+    """A manual transaction's raw row never rewrites its predicted id.
+
+    Once a dedup merge supersedes that id (an outgoing
+    ``app.transaction_id_aliases`` edge appears), the raw row must stop
+    reading as live — otherwise :func:`resolve_curation_transaction_id`
+    returns it unchanged before ever consulting the alias table, reproducing
+    issue #538 for every manual transaction that ever gets deduped.
+    """
+
+    @pytest.mark.unit
+    def test_single_id_resolution_forwards_a_deduped_away_manual_id(
+        self, db: Database
+    ) -> None:
+        create_core_tables_raw(db.conn)
+        _insert_manual_transaction(
+            db, source_transaction_id="manual_src1", transaction_id="manual_abc"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_xyz')"
+        )
+        _insert_alias(db, old_id="manual_abc", new_id="csv_xyz")
+
+        assert resolve_curation_transaction_id(db, "manual_abc") == "csv_xyz"
+
+    @pytest.mark.unit
+    def test_bulk_resolution_forwards_a_deduped_away_manual_id(
+        self, db: Database
+    ) -> None:
+        create_core_tables_raw(db.conn)
+        _insert_manual_transaction(
+            db, source_transaction_id="manual_src2", transaction_id="manual_def"
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('csv_uvw')"
+        )
+        _insert_alias(db, old_id="manual_def", new_id="csv_uvw")
+
+        assert resolve_curation_transaction_ids(db, ["manual_def"]) == {
+            "manual_def": "csv_uvw"
+        }
+
+    @pytest.mark.unit
+    def test_a_fresh_unaliased_manual_id_still_reads_as_live(
+        self, db: Database
+    ) -> None:
+        """The manual arm's legitimate case: no alias yet, so it stays untouched."""
+        create_core_tables_raw(db.conn)
+        _insert_manual_transaction(
+            db, source_transaction_id="manual_src3", transaction_id="manual_fresh"
+        )
+
+        assert resolve_curation_transaction_id(db, "manual_fresh") == "manual_fresh"
+
+
+class TestBulkFallbackSharesOneReversedEdgeScan:
+    """The bulk resolver's per-id fallback must not re-run the heavier scan.
+
+    :func:`_reversed_alias_edges` — an audit-log scan the module's own
+    docstring calls "far heavier than a liveness check" — must be computed
+    once for a whole batch of stale ids, not once per id, or the bulk API's
+    entire reason to exist (batching) is defeated for exactly the batch shape
+    it targets: many superseded ids from one stale preview.
+    """
+
+    @pytest.mark.unit
+    def test_two_stale_ids_share_one_audit_log_scan(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        create_core_tables_raw(db.conn)
+        db.execute(
+            "INSERT INTO core.fct_transactions (transaction_id) VALUES ('txn-live')"
+        )
+        _insert_alias(db, old_id="stale-a", new_id="txn-live")
+        _insert_alias(db, old_id="stale-b", new_id="txn-live")
+
+        real_execute = db.execute
+        audit_scan_calls: list[str] = []
+
+        def counting_execute(query: str, params: list[Any] | None = None) -> object:
+            if "audit_log" in query.lower() and "target_table" in query.lower():
+                audit_scan_calls.append(query)
+            return real_execute(query, params)
+
+        monkeypatch.setattr(db, "execute", counting_execute)
+
+        result = resolve_curation_transaction_ids(db, ["stale-a", "stale-b"])
+
+        assert result == {"stale-a": "txn-live", "stale-b": "txn-live"}
+        assert len(audit_scan_calls) == 1, (
+            "Expected exactly 1 reversed-edge scan for 2 stale ids in one "
+            f"batch, got {len(audit_scan_calls)}"
+        )

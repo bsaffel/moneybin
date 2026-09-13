@@ -124,11 +124,6 @@ def investments_add(
     basis: str | None = typer.Option(
         None, "--basis", help="Supplied cost basis (transfer_in only)"
     ),
-    event_group: str | None = typer.Option(
-        None,
-        "--event-group",
-        help="Link this event to an existing economic-event group",
-    ),
     currency: str | None = typer.Option(
         None,
         "--currency",
@@ -161,7 +156,6 @@ def investments_add(
                 fees=_parse_decimal(fees),
                 acquired=_parse_date(acquired),
                 basis=_parse_decimal(basis),
-                event_group_id=event_group,
                 currency_code=currency,
                 description=description,
                 actor="cli",

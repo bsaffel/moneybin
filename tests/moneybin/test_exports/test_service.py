@@ -798,7 +798,7 @@ def test_run_prepares_and_publishes_one_sheets_report(
     request = _request(
         subject_kind="report",
         destination_kind="sheets",
-        report_id="core:spending",
+        report_id="core:spending_trend",
         report_parameters={"months": 3},
     )
 
@@ -830,7 +830,7 @@ def test_run_prepares_and_publishes_one_sheets_report(
 
     prepare.assert_called_once_with(
         profile="personal",
-        report_id="core:spending",
+        report_id="core:spending_trend",
         report_parameters={"months": 3},
         redaction_mode="redacted",
     )
@@ -847,7 +847,7 @@ def test_run_prepares_and_publishes_one_sheets_report(
 @pytest.mark.parametrize(
     "export_request",
     [
-        _request(report_id="core:spending"),
+        _request(report_id="core:spending_trend"),
         _request(report_parameters={"months": 3}),
         _request(subject_kind="report"),
         _request(destination_kind="sheets", format="csv"),

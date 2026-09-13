@@ -4,15 +4,18 @@ from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from moneybin.database import Database
-from moneybin.loaders import import_log
-from moneybin.services.import_service import (
-    ImportService,
-    _ofx_source_accounts,  # pyright: ignore[reportPrivateUsage]
+from moneybin.extractors.ofx.extractor import (
+    OFXExtractor,
+    OFXLoadError,
+    ofx_source_accounts,
 )
+from moneybin.loaders import import_log
+from moneybin.services.import_service import ImportService
 from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 from tests.import_helpers import import_answering_gate
 
@@ -25,7 +28,7 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
         type=None,
         institution=SimpleNamespace(fid="", organization=""),
     )
-    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    [ofx] = ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
     pdf = derive_pdf_account_identity(
         issuer="Bank",
         identifier="ab-12 34",
@@ -41,7 +44,7 @@ def test_ofx_and_pdf_share_normalized_full_number_scope() -> None:
 def test_ofx_source_accounts_never_marks_account_name_as_user_set() -> None:
     """OFX has no account-name element, so this must always read False.
 
-    Direct-wiring proof for the `_ofx_source_accounts` call site: resolver-level
+    Direct-wiring proof for the `ofx_source_accounts` call site: resolver-level
     tests (`test_account_resolver.py`) cover what the gate does with the flag,
     not that this function actually sets it. A regression that silently flipped
     the literal back to `True` would pass every one of those.
@@ -53,7 +56,7 @@ def test_ofx_source_accounts_never_marks_account_name_as_user_set() -> None:
         type=None,
         institution=SimpleNamespace(fid="", organization=""),
     )
-    [ofx] = _ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
+    [ofx] = ofx_source_accounts(SimpleNamespace(accounts=[account]), "bank")
     assert ofx.account_name_is_user_set is False
 
 
@@ -244,6 +247,138 @@ class TestImportOFXBatchLifecycle:
             if h["source_type"] == "ofx" and h["source_file"] == canonical
         ]
         assert len(ofx_for_file) == 2
+
+
+class TestImportOFXMidLoadFailure:
+    """A load() failure partway through must not touch a prior import's rows.
+
+    Regression coverage for the OFXLoadError fix: raw.ofx_institutions and
+    raw.ofx_accounts write with on_conflict="upsert" (INSERT OR REPLACE), and
+    neither table's primary key includes import_id. Importing a second file
+    from an already-known institution therefore re-stamps that institution's
+    existing row with the SECOND import's import_id -- so a cleanup that
+    deletes "this import_id's rows" on failure would delete a row that
+    belongs to the first, already-successful import. The fix instead reports
+    the real partial row count OFXLoadError carries and never deletes.
+    """
+
+    def test_partial_failure_preserves_prior_import_and_reports_real_counts(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        first = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        second = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+        assert first.exists() and second.exists()
+
+        # Both fixtures declare <FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
+        # but different <ACCTID> (1111 vs 4242) -- same institution, distinct
+        # accounts, so the second import is a clean "new account" gate answer
+        # with no merge candidates, and its institution write collides with
+        # the first import's institution row by design.
+        import_answering_gate(ImportService(db), first, refresh=False)
+        institutions_after_first = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK'"
+        ).fetchone()
+        assert institutions_after_first is not None
+        assert institutions_after_first[0] == 1
+
+        # Force the second import to fail once it reaches the transactions
+        # write -- institutions and accounts (which re-stamp the shared
+        # institution row above with this import's import_id) have already
+        # landed by that point.
+        real_ingest = db.ingest_dataframe
+
+        def _fail_on_transactions(table: str, frame: object, **kwargs: object) -> int:
+            if "ofx_transactions" in table:
+                raise RuntimeError("simulated mid-load failure")
+            return real_ingest(table, frame, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "ingest_dataframe", _fail_on_transactions)
+
+        # OFXExtractor.load() wraps the raw RuntimeError in OFXLoadError so it
+        # can carry the partial-progress counts through to _import_ofx.
+        with pytest.raises(OFXLoadError, match="transactions"):
+            import_answering_gate(ImportService(db), second, refresh=False)
+
+        # Regression assertion: the first import's institution row must
+        # survive the second import's failure. Under the deleted-on-failure
+        # behavior this pins against, the row the second import re-stamped
+        # would have been removed here, taking the first import's data with it.
+        institutions_after_failure = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK'"
+        ).fetchone()
+        assert institutions_after_failure is not None
+        assert institutions_after_failure[0] == 1
+
+        # The failed batch must report what it actually wrote (institutions +
+        # accounts survived the failure), never a hardcoded zero that
+        # discards real partial progress. get_import_history() doesn't
+        # project rows_total, so read raw.import_log directly for both.
+        failed = db.execute(
+            "SELECT rows_total, rows_imported FROM raw.import_log "
+            "WHERE source_type = 'ofx' AND status = 'failed'"
+        ).fetchall()
+        assert len(failed) == 1
+        rows_total, rows_imported = failed[0]
+        assert rows_imported > 0
+        assert rows_imported == rows_total
+
+
+class TestImportOFXFailurePhaseMetrics:
+    """`IMPORT_ERRORS_TOTAL` must keep naming the phase that actually failed.
+
+    `OFXExtractor.load()` fuses extraction and the raw-table write behind one
+    `except` in `_import_ofx`, so the phase is no longer readable from the
+    control flow. `OFXLoadError` is what separates them: `load()` raises it only
+    once extraction has succeeded and a table write failed. Without that
+    distinction, a schema rejection that never touches the database would be
+    counted as a write failure, and operational telemetry would point at the
+    wrong subsystem. Both halves are asserted because a one-sided test passes
+    just as well with the label hardcoded.
+    """
+
+    def test_extraction_failure_is_labeled_extract(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.import_service.IMPORT_ERRORS_TOTAL", errors
+        )
+
+        def _fail_extraction(*args: object, **kwargs: object) -> object:
+            # What extract_from_file actually raises for an unparseable file.
+            raise ValueError("Invalid OFX file format: KeyError")
+
+        monkeypatch.setattr(OFXExtractor, "extract_from_file", _fail_extraction)
+
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        with pytest.raises(ValueError, match="Invalid OFX file format"):
+            import_answering_gate(ImportService(db), fixture, refresh=False)
+
+        errors.labels.assert_called_once_with(source_type="ofx", error_type="extract")
+
+    def test_raw_table_write_failure_is_labeled_load(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        errors = MagicMock()
+        monkeypatch.setattr(
+            "moneybin.services.import_service.IMPORT_ERRORS_TOTAL", errors
+        )
+        real_ingest = db.ingest_dataframe
+
+        def _fail_on_transactions(table: str, frame: object, **kwargs: object) -> int:
+            if "ofx_transactions" in table:
+                raise RuntimeError("simulated raw-table write failure")
+            return real_ingest(table, frame, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(db, "ingest_dataframe", _fail_on_transactions)
+
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        with pytest.raises(OFXLoadError, match="transactions"):
+            import_answering_gate(ImportService(db), fixture, refresh=False)
+
+        errors.labels.assert_called_once_with(source_type="ofx", error_type="load")
 
 
 class TestImportOFXAccountResolution:

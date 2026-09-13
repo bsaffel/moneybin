@@ -1128,7 +1128,7 @@ def test_a_generated_source_name_is_not_a_name_match(db: Database) -> None:
     the candidate side to the source side. ``display_name_is_user_set`` is
     left at its default True here -- a real account someone named "Chase
     checking" -- so this isolates ``account_name_is_user_set`` specifically:
-    OFX's ``_ofx_source_accounts`` synthesizes ``account_name`` from
+    OFX's ``ofx_source_accounts`` synthesizes ``account_name`` from
     institution+type text and sets this flag False, and before the flag
     existed that generated string still drove ``match_account`` and produced
     a "name" candidate whenever it happened to collide.
@@ -1699,7 +1699,7 @@ def test_the_reissue_rung_ignores_a_generated_source_name() -> None:
     name), so the guard above already proved that half is not what refuses
     this pair. This is the live-import gap Codex flagged on PR #493: OFX
     synthesizes ``account_name`` from institution+type
-    (``_ofx_source_accounts``, ``account_name_is_user_set=False``), and
+    (``ofx_source_accounts``, ``account_name_is_user_set=False``), and
     before this field existed that generated string could still retype a
     last-four-disagreeing pair as an ``institution_reissue`` candidate just
     because it happened to collide with a real display_name.
