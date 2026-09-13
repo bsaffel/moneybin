@@ -867,6 +867,12 @@ class TestTabularConfirmationFlow:
                 save_format=False,
             )
         assert exc_info.value.outcome.reason == "header_position_ambiguous"
+        # The refusal must carry the actual disputed row, not just the flag
+        # -- a caller ratifying with --confirm has to be able to see it.
+        assert exc_info.value.outcome.header_position_ambiguous_rows == (
+            ("2026-01-01", "42.50", "Coffee"),
+            ("2026-01-02", "10.00", "Tea"),
+        )
 
         result = ImportService(db).import_file(
             csv,
