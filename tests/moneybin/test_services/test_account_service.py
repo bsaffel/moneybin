@@ -281,6 +281,36 @@ class TestPreV060SchemaToleranceOnAccountSettingsWrite:
         assert settings.display_name == "Renamed"
         assert warnings == []
 
+    @pytest.mark.unit
+    def test_settings_update_archive_reports_persisted_state(
+        self, pre_v060_rw_db: Database
+    ) -> None:
+        """archived_at in the response must match what was actually written.
+
+        claude[bot]'s review of PR #596 commit ``036ee53d`` (review body,
+        anchored ``account_service.py:858``, no inline thread -- GitHub
+        rejected that anchor as outside the diff's commentable range): on
+        this exact catalog shape, ``AccountSettingsRepo.set()`` has no
+        ``archived_at`` column to write into and silently drops it, but
+        ``settings_update`` built its returned ``AccountSettings`` from
+        ``dataclasses.replace(current, archived_at=date.today())`` computed
+        BEFORE the write ran -- so the response claimed a stamped date the
+        row never received, and a following read reported ``None``. The
+        prior test in this class (``test_settings_update_succeeds``) only
+        renamed ``display_name`` and never drove an ``archived=True``
+        transition, so nothing caught this.
+        """
+        svc = AccountService(pre_v060_rw_db)
+        settings, warnings = svc.settings_update("acct_a", actor="cli", archived=True)
+        assert warnings == []
+        assert settings.archived is True
+        # Never date.today() -- the write path had no column to persist it into.
+        assert settings.archived_at is None
+
+        reloaded = svc._load_settings("acct_a")
+        assert reloaded is not None
+        assert settings.archived_at == reloaded.archived_at
+
 
 class TestAccountSettingsModel:
     """Tests for AccountSettings dataclass construction and validation."""

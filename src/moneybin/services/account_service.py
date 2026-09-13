@@ -855,20 +855,20 @@ class AccountService:
         if not diff:
             return current, warnings
 
-        updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
+        target = dataclasses.replace(current, **cast(dict[str, Any], diff))
         self._settings_repo.set(
-            account_id=updated.account_id,
-            display_name=updated.display_name,
-            official_name=updated.official_name,
-            last_four=updated.last_four,
-            account_subtype=updated.account_subtype,
-            holder_category=updated.holder_category,
-            currency_code=updated.currency_code,
-            credit_limit=updated.credit_limit,
-            archived=updated.archived,
-            archived_at=updated.archived_at,
-            include_in_net_worth=updated.include_in_net_worth,
-            default_cost_basis_method=updated.default_cost_basis_method,
+            account_id=target.account_id,
+            display_name=target.display_name,
+            official_name=target.official_name,
+            last_four=target.last_four,
+            account_subtype=target.account_subtype,
+            holder_category=target.holder_category,
+            currency_code=target.currency_code,
+            credit_limit=target.credit_limit,
+            archived=target.archived,
+            archived_at=target.archived_at,
+            include_in_net_worth=target.include_in_net_worth,
+            default_cost_basis_method=target.default_cost_basis_method,
             actor=actor,
         )
         logger.info(
@@ -882,7 +882,15 @@ class AccountService:
             restate_fx_accounting(
                 self._db, account_currency_changed="currency_code" in diff
             )
-        return updated, warnings
+        # Re-read rather than return `target`: on a pre-V060 catalog opened
+        # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops
+        # archived_at from the write (its own docstring says so), so `target`
+        # -- built before the write ran -- would claim a date the row never
+        # received. `_load_or_default` is the same catalog-guarded read
+        # `_load_settings` uses elsewhere, so the value this method returns
+        # always matches what the repo actually persisted, never what the
+        # write path silently dropped.
+        return self._load_or_default(account_id), warnings
 
     def resolve(self, query: str, limit: int | None = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.

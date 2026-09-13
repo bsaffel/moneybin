@@ -373,17 +373,69 @@ def test_undo_of_legacy_row_normalizes_archived_at_into_its_own_audit(
     assert undo_result.after_value["archived_at"] == date.today().isoformat()
 
 
-def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
-    """Undoing a legacy archive-undo a second time (redo) must not raise.
+def test_undo_of_legacy_archive_row_preserves_live_archived_at_in_capture(
+    db: Database,
+) -> None:
+    """A migrated catalog's real archived_at must survive into the undo's capture.
 
-    ``_restore_row`` must normalize BOTH the ``before`` and ``locate`` images
-    it derives ``archived_at`` into, not just ``before``: ``BaseRepo.undo_event``
-    emits its own audit row as ``before=locate, after=before`` (Req 4), so a
-    row missing ``archived_at`` on only one side makes the newly emitted undo
-    row asymmetric -- ``after_value`` carries the key while ``before_value``
-    doesn't. Redoing that undo then hits ``_require_capture`` and is wrongly
-    rejected as "not reversible", even though it is a brand-new, fully
-    generated audit row and not a legacy one.
+    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1uiX``, anchored
+    ``account_settings_repo.py:248``). Mirror-image fixture, isolated to a
+    single undo hop: the LIVE ``app.account_settings`` catalog HAS
+    ``archived_at`` (migrated), and the row already carries a real date --
+    standing in for a V060 backfill or any other post-V060 write -- even
+    though the AUDIT ROW being undone is a legacy (pre-V060) capture missing
+    the key from both its images. Per ``_archived_at_supported``'s invariant,
+    the guard must be invisible on a migrated catalog: undoing this legacy
+    event must not clobber that real, recoverable value with a guessed NULL.
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy9", archived=True, archived_at=date(2023, 11, 2))
+
+    # Forward mutation this reverses was the original archive: False -> True.
+    event = _legacy_undo_event(
+        account_id="acct_legacy9", before_archived=False, after_archived=True
+    )
+    undo_result = repo.undo_event(event, actor="cli")
+
+    assert undo_result is not None
+    # The live row is correctly unarchived with archived_at cleared going
+    # forward -- clearing on unarchive is right regardless of catalog state.
+    row = db.conn.execute(
+        "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
+        ["acct_legacy9"],
+    ).fetchone()
+    assert row == (False, None)
+    # But the real pre-undo date must survive in the undo's own before_value
+    # capture -- not be reported as an unrecoverable NULL, which is what a
+    # later redo (undo-of-this-undo) would restore from.
+    assert undo_result.before_value is not None
+    assert undo_result.before_value["archived_at"] == "2023-11-02"
+
+
+def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
+    """Undoing a legacy archive-undo a second time must not lose its date.
+
+    A redo must not raise, and must not destroy a real, recoverable archive
+    date along the way.
+
+    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1uiX``, anchored
+    ``account_settings_repo.py:248``). The live row here already carries a
+    real ``archived_at`` (``2024-03-15``, standing in for a V060 backfill or
+    any other post-V060 write) BEFORE the undo below ever runs -- i.e. the
+    catalog is migrated, even though the audit row being undone is a legacy
+    (pre-V060) capture missing the key entirely. Per ``_archived_at_supported``'s
+    invariant, the guard must be invisible on a migrated catalog: it must not
+    destroy a value the live row actually holds.
+
+    ``_restore_row`` must also normalize BOTH the ``before`` and ``locate``
+    images it derives ``archived_at`` into, not just ``before``:
+    ``BaseRepo.undo_event`` emits its own audit row as
+    ``before=locate, after=before`` (Req 4), so a row missing ``archived_at``
+    on only one side makes the newly emitted undo row asymmetric --
+    ``after_value`` carries the key while ``before_value`` doesn't. Redoing
+    that undo then hits ``_require_capture`` and is wrongly rejected as "not
+    reversible", even though it is a brand-new, fully generated audit row and
+    not a legacy one.
     """
     repo = AccountSettingsRepo(db)
     _set(repo, account_id="acct_legacy5", archived=True, archived_at=date(2024, 3, 15))
@@ -394,6 +446,11 @@ def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
     )
     undo_result = repo.undo_event(event, actor="cli")
     assert undo_result is not None
+    # The first undo (unarchive) correctly clears archived_at going forward,
+    # but must capture the real 2024-03-15 it just overwrote in its own
+    # before_value -- the only place that date survives past this call.
+    assert undo_result.before_value is not None
+    assert undo_result.before_value["archived_at"] == "2024-03-15"
 
     # Undo the undo (redo the archive). Must succeed, not raise UserError.
     redo_result = repo.undo_event(undo_result, actor="cli")
@@ -404,16 +461,14 @@ def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
         ["acct_legacy5"],
     ).fetchone()
     # By the time this redo runs, its own audit row carries an explicit
-    # (if NULL) archived_at on both images -- a full capture per Req 4 -- so
-    # it takes BaseRepo's literal-restore path, not the legacy-derivation
-    # branch (which only fires when the key is absent). The undo one step
-    # back derived NULL for this same reason (before.archived was False
-    # there, i.e. an unarchive), and a literal restore reproduces that NULL
-    # rather than inventing today's date -- correctly reflecting that this
-    # account's real archive date predates archived_at tracking and was
-    # never recoverable, matching the "no guess beats a documented gap" rule
-    # the V060 migration itself follows.
-    assert row == (True, None)
+    # archived_at on both images -- a full capture per Req 4 -- so it takes
+    # BaseRepo's literal-restore path, not the legacy-derivation branch
+    # (which only fires when the key is absent). That literal value is the
+    # real 2024-03-15 captured above, not a guessed NULL -- the account's
+    # real archive date predates archived_at tracking on the AUDIT ROW, but
+    # was never actually lost from the LIVE catalog, so recovering it here is
+    # correct, not a guess.
+    assert row == (True, date(2024, 3, 15))
 
 
 def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(

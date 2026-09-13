@@ -54,6 +54,19 @@ class AccountSettingsRepo(BaseRepo):
         INSERT/ON CONFLICT column lists, and the undo/restore paths below --
         one named concept ("archived_at is optional in this catalog until
         V060 applies"), not independent probes that could drift apart.
+
+        **The invariant every caller of this probe must uphold:** the guard
+        must be invisible on a migrated catalog, and truthful on an
+        unmigrated one. On a catalog that HAS ``archived_at``, nothing this
+        probe gates may change what any caller observes -- every branch it
+        selects must be a pure no-op relative to the un-guarded code path. On
+        a catalog that LACKS it, every surface a caller can read -- the
+        value a service method returns, the MCP response envelope built from
+        it, and the ``before``/``after`` images an undo re-derives -- must
+        report exactly what was persisted, which is ``None``. No surface may
+        ever report a value the write path silently dropped, and no branch
+        gated by this probe may overwrite a value that a migrated catalog
+        actually holds.
         """
         return has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
 
@@ -205,11 +218,18 @@ class AccountSettingsRepo(BaseRepo):
         live transition at all -- it is the ORIGINAL forward event's captured
         post-mutation image, from whenever that historical mutation actually
         happened, so today's date would misdate history rather than recover it.
-        There is no way to recover that image's real date (that is exactly why
-        the key is missing), so it always normalizes to NULL: certain when
-        ``locate.archived`` is False (active implies NULL), and the documented
-        "no guess beats a documented gap" convention V060's own backfill applies
-        when ``locate.archived`` is True with no evidence.
+        The legacy capture itself carries no evidence of that real date (that
+        is exactly why the key is missing from it) -- but the LIVE row, right
+        now, might: V060's own backfill (or any post-V060 write) may have
+        already given this row a real, recoverable ``archived_at`` before this
+        undo ever ran. Per this method's invariant (``_archived_at_supported``'s
+        docstring), the guard must be a no-op on a migrated catalog -- clobbering
+        that live value with a guessed ``NULL`` would violate exactly that.
+        So ``locate["archived_at"]`` is read from the live row IMMEDIATELY
+        BEFORE the ``UPDATE`` below overwrites it, not hardcoded: certain NULL
+        only when the live catalog genuinely holds nothing there (no V060
+        backfill happened, or ``locate.archived`` was already False), and the
+        real value otherwise -- so an undo-of-this-undo (redo) can recover it.
 
         ``_require_capture`` only checks KEY PRESENCE (`set(required) -
         set(image)`), never the value, so a present ``None`` satisfies it
@@ -234,6 +254,18 @@ class AccountSettingsRepo(BaseRepo):
             # _fetch_row would capture on this same catalog.
             return
         where, where_params = self._pk_where(locate)
+        # Read the row's CURRENT archived_at before the UPDATE below
+        # overwrites it -- on a migrated catalog this can be a genuine,
+        # recoverable date (V060's backfill, or any later write), and the
+        # guard must never destroy that (see the docstring above). Only when
+        # the live catalog holds nothing here does this degrade to the same
+        # "no guess beats a documented gap" NULL used elsewhere.
+        live_row = self._db.execute(
+            f"SELECT archived_at FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk
+            f"WHERE {where}",
+            where_params,
+        ).fetchone()
+        live_archived_at = live_row[0] if live_row is not None else None
         derived_at = date.today() if before.get("archived") is True else None
         self._db.execute(
             f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
@@ -243,9 +275,9 @@ class AccountSettingsRepo(BaseRepo):
         before["archived_at"] = (
             derived_at.isoformat() if derived_at is not None else None
         )
-        # locate is a historical snapshot, never "now" -- no real date to
-        # recover, so it always normalizes to NULL rather than guessing.
-        locate["archived_at"] = None
+        locate["archived_at"] = (
+            live_archived_at.isoformat() if live_archived_at is not None else None
+        )
 
     def delete(
         self,
