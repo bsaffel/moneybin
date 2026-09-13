@@ -4473,6 +4473,8 @@ def test_currency_integrity_no_link_recovery_routes_to_reimport_for_file_source(
     re-import instead. Both accounts here default to ``source_type="ofx"``
     (a file import), so the advice must route to re-importing, not syncing.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
     _insert_overlap_account(
@@ -4496,6 +4498,7 @@ def test_currency_integrity_no_link_recovery_routes_to_reimport_for_file_source(
     assert "Re-import the source file for the account" in detail, detail
     assert "moneybin import history" in detail, detail
     assert "moneybin sync pull" not in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4509,6 +4512,8 @@ def test_currency_integrity_no_link_recovery_routes_to_both_for_mixed_sources(
     the default). Neither retry command alone repairs both, so the advice
     must name both rather than silently picking one.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
     _insert_overlap_account(
@@ -4554,6 +4559,8 @@ def test_currency_integrity_no_link_recovery_routes_to_both_for_mixed_sources(
         detail
     )
     assert "re-import the source file for the rest" in detail, detail
+    assert "moneybin import history" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit

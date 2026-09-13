@@ -89,6 +89,7 @@ from moneybin.tables import (
     USER_REPORTS,
     TableRef,
 )
+from moneybin.vocabulary import MEDIATED_SYNC_SOURCE_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -433,8 +434,8 @@ def _no_link_recovery_instruction(source_types: Collection[str]) -> str:
     ``moneybin sync pull`` re-attempts a sync account's resolution; it does
     nothing for a file-imported one, which needs a re-import instead.
     """
-    is_sync = "plaid" in source_types
-    is_file = bool(set(source_types) - {"plaid"})
+    is_sync = bool(set(source_types) & MEDIATED_SYNC_SOURCE_TYPES)
+    is_file = bool(set(source_types) - MEDIATED_SYNC_SOURCE_TYPES)
     if is_sync and is_file:
         return (
             "Re-run `moneybin sync pull` for the sync-sourced account(s), "
@@ -456,46 +457,20 @@ def _currency_assignment_closing(
 ) -> str:
     """The message's final step, converged onto the one sound clearance signal.
 
-    This check's own duplicate-overlap risk is cleared by exactly one
-    thing: this check's own next verdict. Nothing else qualifies, and this
-    message has offered four different wrong proxies for it across as
-    many review rounds:
+    Every branch that offers currency assignment calls this ONE function for
+    its closing sentence, rather than inventing its own per-branch proxy for
+    "safe to assign." The only sound clearance signal is doctor's own next
+    run showing the plain unknown-currency remediation — no overlap, no
+    no-link pair, no pending merge named alongside it. "This check no longer
+    names the account" is not that signal: the account stays in
+    ``affected_ids`` for as long as its currency is NULL, independent of any
+    overlap decision, so that condition is unreachable by anything except
+    the currency assignment itself.
 
-    - A weak-signal ``accounts links run`` sweep returning no candidate —
-      that sweep matches institution/last-four/name, a DIFFERENT signal
-      than the transaction overlap ``_query_duplicate_account_pairs``
-      measures, so "no candidate" is not evidence the overlap cleared
-      (Codex P1, doctor_service.py:3761 on commit 2367a66e).
-    - "The whole report is clean" — unreachable, since this very check
-      cannot pass until the currency is assigned in the first place.
-    - A bucket's blocking note sequenced after the offer instead of
-      before it.
-    - "This check no longer names the account" — ALSO unreachable: the
-      account stays in ``affected_ids`` for as long as its currency is
-      NULL, which is exactly the state assigning a currency is supposed
-      to end. A standalone-relieved pair proves this: the overlap
-      diagnosis disappears, but the account is still named, now by the
-      plain unknown-currency branch (Codex P2, doctor_service.py:420 on
-      commit 48110afd). The sound condition is narrower: the account's
-      *overlap-specific* diagnosis is gone and only the ordinary
-      unknown-currency remediation remains — not that the account has
-      vanished from the report entirely.
-
-    So every branch that would otherwise end by offering currency
-    assignment calls this ONE function for its ending, and gets the
-    IDENTICAL closing sentence — never a per-branch proxy for "safe to
-    assign," always the same instruction to re-run doctor and read its own
-    next verdict. A future bucket only has to be OR'd into the
-    ``no_link_pairs``-style condition below; there is exactly one place
-    left to introduce a fifth variant of this defect, and exactly one
-    place to fix it.
-
-    ``no_link_source_types`` routes the no-link recovery command itself
-    (see ``_no_link_recovery_instruction``): a fixed ``moneybin sync pull``
-    was itself briefly a fifth wrong assumption — Codex found a second door
-    to the same "raw rows, no link" state through a failed file import,
-    for which ``sync pull`` does nothing (doctor_service.py:3959 on commit
-    48110afd).
+    ``no_link_source_types`` routes the no-link recovery command (see
+    ``_no_link_recovery_instruction``) by each stuck account's own source,
+    since a sync retry does nothing for a file-imported account and a
+    re-import does nothing for a sync one.
     """
     if no_link_pairs:
         return (
@@ -3072,24 +3047,16 @@ class DoctorService:
     def _query_account_source_types(self, account_ids: Collection[str]) -> set[str]:
         """Distinct ``source_type`` values among ``account_ids`` — for routing advice, not identity.
 
-        A no-link account's resolver failure has two distinct causes with
-        two distinct fixes, and this is the only way to tell them apart:
-
-        - **Sync (``plaid``)**: ``SyncService.pull`` calls
-          ``_resolve_accounts`` inside a bare ``except Exception`` that only
-          logs, so a resolver failure after the sync's own raw rows already
-          landed leaves the account unlinked. Its own comment says the fix —
-          "a subsequent pull re-resolves idempotently."
-        - **File import (``ofx``, ``tabular``, etc.)**: ``ImportService``'s
-          per-source resolve loop runs in its OWN ``try/except`` AFTER the
-          raw rows are already durably loaded via ``ingest_dataframe``
-          (``import_service.py`` ~2342-2397) — a failure partway through
-          marks the import ``status="failed"`` and re-raises, but the raw
-          account/transaction rows already committed stay put. Same
-          "raw rows, no link" state as the sync case, reached through a
-          different door: ``moneybin sync pull`` does nothing for it, since
-          there is no sync connection to retry — only re-importing the file
-          re-attempts resolution.
+        A no-link account's resolver failure reaches this state through two
+        distinct doors, each needing a different retry: ``SyncService.pull``
+        swallows a resolver exception in a bare ``except Exception`` after
+        its own raw rows already landed, so a later sync pull re-resolves it.
+        ``ImportService``'s per-source resolve loop instead runs in its own
+        ``try/except`` AFTER ``ingest_dataframe`` has already committed the
+        raw rows (``import_service.py`` ~2342-2397); it marks the import
+        failed rather than rolling those rows back, so only a re-import
+        retries it. ``moneybin sync pull`` does nothing for that case, since
+        there is no sync connection to retry.
 
         One query for every candidate account, not one per account.
         """
