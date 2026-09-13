@@ -67,10 +67,13 @@ primary key, so a row records the re-key that happened and is never rewritten:
 after a reversal or a split the edge still names the id the member forwarded to
 *then*, which may since have become a transaction of its own. The curation is
 reconciled; the map is not, and it is the *curation* that every consumer joins
-on. Nothing in the tree resolves a read through this table today, so treat it as
-the audit of past re-keys rather than a current redirect — a consumer that
-wanted one would need a supersession marker the schema does not carry, which is
-a decision about ``app.transaction_id_aliases``' shape, not a local fix.
+on. Nothing in the tree resolves a **read** through this table — every view and
+the doctor's FK invariants still join `core.fct_transactions` directly, so
+treat the map as the audit of past re-keys rather than a current redirect for
+a query. :func:`resolve_curation_transaction_id` is the one exception, and it
+is not a read-time consumer: it runs once, at the moment a curation writer
+accepts a caller-supplied id, precisely so nothing downstream ever needs a
+supersession marker the schema does not carry (issue #538).
 
 Decision history is deliberately *not* forwarded. ``app.categorization_decisions``
 keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
@@ -83,12 +86,13 @@ events that already occurred.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import exception_origin
+from moneybin.errors import UserError, exception_origin
 from moneybin.metrics.registry import (
     TRANSACTION_CURATION_FORWARDED_TOTAL,
     TRANSACTION_CURATION_RESTORED_TOTAL,
@@ -101,6 +105,7 @@ from moneybin.tables import (
     FCT_TRANSACTIONS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    MANUAL_TRANSACTIONS,
     TRANSACTION_CATEGORIES,
     TRANSACTION_ID_ALIASES,
     TRANSACTION_NOTES,
@@ -110,6 +115,287 @@ from moneybin.tables import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A genuine re-key chain runs a handful of hops; this only bounds a
+# pathological or corrupted map so resolution can't loop forever (issue #538).
+_MAX_ALIAS_RESOLUTION_HOPS = 50
+
+# Bounds a single liveness IN(...) list so a large engine backfill can't build
+# a pathological parameter list (issue #538 perf follow-up).
+_LIVENESS_QUERY_CHUNK_SIZE = 5000
+
+
+def resolve_curation_transaction_id(
+    db: Database, transaction_id: str, *, required: bool = True
+) -> str:
+    """Resolve a caller-supplied id to the live id curation must attach to.
+
+    The single write-time resolution seam shared by every curation writer
+    (notes, tags, splits, categories) — issue #538. Tries the id as given
+    first; if it names no row in ``core.fct_transactions`` OR an
+    un-aliased ``raw.manual_transactions`` row (so a manual transaction
+    written moments before its ``refresh_run`` materializes it into
+    ``core.fct_transactions`` never misreads as unresolvable, while one
+    that has since deduped away always falls through to the alias walk
+    below — see :func:`_live_transaction_ids`), walks the append-only
+    ``app.transaction_id_aliases`` forwarding chain to the current
+    canonical id.
+
+    ``required=True`` (default) is for a write that CREATES or CHANGES state
+    (add a note, add/set tags, add/set splits, set a category): it raises
+    ``UserError`` if neither the id nor anything it forwards to names a live
+    transaction, so a caller can never write curation under an id that lands
+    on a row no view joins.
+
+    ``required=False`` is for a write that only REMOVES state (remove tags,
+    clear splits, clear a category): it returns the live id when one is
+    found, exactly like the default, but falls through to ``transaction_id``
+    unchanged — never raises — when resolution fails. A removal against a
+    dead id must stay a safe idempotent no-op (DN2) precisely *because*
+    resolution failed: that is what lets orphan cleanup work at all — curation
+    stranded on an id `_heal_stranded_curation` cannot reach (module
+    docstring, "A second pass heals what the first cannot see") still has to
+    be clearable by hand. Refusing it instead would leave the orphan
+    permanently stuck. A caller must decide ``required`` up front from the
+    shape of its own request (e.g. an empty desired-tags list is a clear, not
+    an add) — never from the realized diff, which would need the resolution
+    outcome to compute in the first place.
+
+    Deliberately NOT mirrored at read time: see the module docstring's
+    "Forward at re-key, never resolve on read" for why one mechanism here
+    is preferable to repeating the walk in every consumer.
+
+    Writing curation for many ids at once (a categorization batch, an
+    annotation batch) should call :func:`resolve_curation_transaction_ids`
+    instead — this single-id path is one ``execute()`` per hop, and calling
+    it once per row in a loop turns a bulk write into O(n) query round trips
+    (measured ~5-10ms each, dominated by per-call overhead rather than table
+    size — issue #538 perf follow-up). Every current bulk caller is a
+    creates-or-changes write (categorization), so the bulk path has no
+    ``required=False`` counterpart yet — add one if a bulk removal caller
+    appears.
+
+    Stops rather than follows an edge :func:`_reversed_alias_edges` marks
+    stale: `matches undo` revives both halves of a merge but leaves the alias
+    row standing (module docstring, "A reversed merge takes the curation
+    back, but not the alias"), so an old id that later dies again must not be
+    walked onto its live former twin — that transaction is no longer "the
+    same transaction" the edge once named. :func:`_heal_stranded_curation`
+    already declines this edge for the same reason; this is the write-time
+    seam's mirror of that guard. The reversed-edge set is computed at most
+    once per call (lazily, on the first non-live hop) rather than per hop —
+    it cannot change mid-resolution, and the query behind it (an audit-log
+    scan plus an ``UndoService`` lookup) is far heavier than a liveness check.
+
+    Absence of the liveness oracle is absence of evidence, not evidence the id
+    is dead: a first load precedes the transform that builds
+    ``core.fct_transactions``, exactly the case :func:`_heal_stranded_curation`
+    already guards with the same :func:`_relations_exist` probe. Passing the
+    id through here (regardless of ``required``) keeps a pre-transform
+    curation write from being refused for a view that simply doesn't exist
+    yet.
+    """
+    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+        logger.debug(
+            f"Curation resolution skipped: liveness oracle absent for {transaction_id}"
+        )
+        return transaction_id
+    return _walk_alias_chain(db, transaction_id, required=required)
+
+
+def _walk_alias_chain(
+    db: Database,
+    transaction_id: str,
+    *,
+    required: bool,
+    reversed_edges: frozenset[str] | None = None,
+) -> str:
+    """The hop/cycle/reversed-edge walk, once the liveness oracle is known present.
+
+    Split out of :func:`resolve_curation_transaction_id` so
+    :func:`resolve_curation_transaction_ids`'s fallback loop can share one
+    ``reversed_edges`` set (and skip re-probing ``_relations_exist``, already
+    known true by the caller) across a whole batch of stale ids instead of
+    recomputing the heavier audit-log scan once per id.
+    """
+    current = transaction_id
+    seen: set[str] = set()
+    for _ in range(_MAX_ALIAS_RESOLUTION_HOPS):
+        if current in seen:
+            break  # defensive: the append-only map should never cycle
+        seen.add(current)
+        if _is_live_transaction(db, current):
+            return current
+        # Lazy and cached: only paid when a hop is actually needed, and only
+        # queried once even if this resolution takes several hops — unless
+        # the caller already threaded one through for the whole batch.
+        if reversed_edges is None:
+            reversed_edges = _reversed_alias_edges(db)
+        if current in reversed_edges:
+            break  # `matches undo` took this re-key back; the edge is stale
+        next_id = _alias_forward_target(db, current)
+        if next_id is None:
+            break
+        current = next_id
+    # The forward walk is exhausted (dead end, stale reversed edge, or cycle)
+    # without finding a live id. Deleting an anchor's source rows can
+    # re-anchor a merge group onto a member that already has an *outgoing*
+    # forward edge (module docstring, "A second pass heals what the first
+    # cannot see") — the caller's id is then live under its predecessor, not
+    # anything it forwards to. :func:`_heal_stranded_curation` already walks
+    # this undirected for existing curation; :func:`_live_predecessor` shares
+    # that same query so a fresh write gets the same coverage. Bounded: a
+    # component with more than one live member is ambiguous and never
+    # resolved — silently picking one would be a wrong write against a live
+    # transaction, never a safe guess.
+    if reversed_edges is None:
+        reversed_edges = _reversed_alias_edges(db)
+    predecessor = _live_predecessor(db, current, reversed_edges)
+    if predecessor is not None:
+        return predecessor
+    if not required:
+        return transaction_id  # orphan cleanup: operate on the id as given
+    raise UserError(
+        "The transaction reference did not match a transaction.",
+        code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
+    )
+
+
+def resolve_curation_transaction_ids(
+    db: Database, transaction_ids: Iterable[str]
+) -> dict[str, str]:
+    """Bulk counterpart to :func:`resolve_curation_transaction_id`.
+
+    One chunked liveness query for the whole batch instead of one
+    ``execute()`` per id — see that function's docstring for why a per-row
+    loop is disqualifying at batch scale. Falls back to the alias-hop walk
+    (:func:`_walk_alias_chain`) only for ids the bulk check didn't find live,
+    which should be rare: every current caller either sources ids fresh from
+    ``core.fct_transactions`` (already live, resolved for free by the bulk
+    check) or is a caller-supplied id from an earlier preview. The fallback
+    set shares one ``reversed_edges`` scan across every stale id in the
+    batch, rather than each one recomputing its own.
+
+    Returns only the ids it could resolve, mapped to their live id — an id
+    this cannot resolve is simply absent from the result rather than raising,
+    so a partial-failure caller (a batch that reports per-item errors) can
+    detect it as a missing key without wrapping every id in a ``try``. A
+    caller that instead wants an unresolvable id in the *input* to hard-fail
+    the whole batch — mirroring the single-id path's raise — checks for a
+    missing key itself and raises the same ``UserError``.
+
+    One probe, not one per id: when the liveness oracle itself is absent
+    (pre-transform DB — see :func:`resolve_curation_transaction_id`), every
+    input id resolves to itself without ever reaching the per-id fallback
+    loop below, so a first-load batch write costs one catalog lookup rather
+    than one per row.
+    """
+    ids = list(dict.fromkeys(transaction_ids))  # de-dup, preserve order
+    if not ids:
+        return {}
+    if not _relations_exist(db, FCT_TRANSACTIONS, MANUAL_TRANSACTIONS):
+        logger.debug(
+            f"Curation resolution skipped: liveness oracle absent for {len(ids)} ids"
+        )
+        return dict(zip(ids, ids, strict=True))
+    live = _live_transaction_ids(db, ids)
+    resolved: dict[str, str] = {tid: tid for tid in ids if tid in live}
+    fallback_ids = [tid for tid in ids if tid not in resolved]
+    if fallback_ids:
+        # Computed once for the whole fallback set, not once per id: the
+        # relations-exist probe is already known true (checked above), and
+        # this audit-log scan is the "far heavier than a liveness check"
+        # cost _walk_alias_chain otherwise pays lazily per single-id call.
+        reversed_edges = _reversed_alias_edges(db)
+        for tid in fallback_ids:
+            try:
+                resolved[tid] = _walk_alias_chain(
+                    db, tid, required=True, reversed_edges=reversed_edges
+                )
+            except UserError:
+                continue  # left unresolved; caller decides what that means
+    return resolved
+
+
+def _live_transaction_ids(db: Database, transaction_ids: Sequence[str]) -> set[str]:
+    """Which of ``transaction_ids`` currently name a live transaction.
+
+    The one definition of liveness (``core.fct_transactions`` OR
+    ``raw.manual_transactions`` minus deduped-away manuals) shared by the
+    single-id and bulk resolvers — :func:`_is_live_transaction` delegates
+    here rather than carrying a second copy of the union, so a future change
+    to what counts as "live" has one place to land. Chunked so a large batch
+    never builds a pathological ``IN (...)`` list.
+
+    The manual arm excludes a row with an outgoing alias edge
+    (``app.transaction_id_aliases.old_transaction_id``): once a manual
+    transaction dedupes into another source, ``core.fct_transactions`` drops
+    its predicted id but the immutable ``raw.manual_transactions`` row keeps
+    it forever (the same discriminator ``doctor_service.py``'s
+    ``_run_orphan_app_state`` names a "Known limitation" for its read-only
+    audit). Counting that stale id as live here — the write-time gate for
+    :func:`resolve_curation_transaction_id` — would return it unchanged
+    before the alias table is ever consulted, reproducing issue #538 for
+    every manual transaction that ever gets deduped. A manual row with no
+    alias yet (freshly created, before ``refresh_run`` materializes it into
+    ``core.fct_transactions``) has no edge to exclude, so that legitimate
+    case is untouched.
+
+    Deliberately not added to the ``_relations_exist`` probe below: the
+    probe already requires ``raw.manual_transactions``, which the same
+    init-time DDL pass creates alongside ``app.transaction_id_aliases``
+    (both listed in ``schema.py``'s ``_NON_PROVIDER_SCHEMA_FILES``). A DB
+    that clears the probe has therefore already had init run, so the alias
+    table exists too — the only relation a first load genuinely precedes is
+    the transform-built ``core.fct_transactions``.
+    """
+    ids = list(transaction_ids)
+    if not ids:
+        return set()
+    live: set[str] = set()
+    for start in range(0, len(ids), _LIVENESS_QUERY_CHUNK_SIZE):
+        chunk = ids[start : start + _LIVENESS_QUERY_CHUNK_SIZE]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = db.execute(
+            f"""
+            SELECT transaction_id FROM {FCT_TRANSACTIONS.full_name}
+             WHERE transaction_id IN ({placeholders})
+            UNION
+            SELECT m.transaction_id FROM {MANUAL_TRANSACTIONS.full_name} AS m
+             WHERE m.transaction_id IN ({placeholders})
+               AND NOT EXISTS (
+                 SELECT 1 FROM {TRANSACTION_ID_ALIASES.full_name} AS a
+                 WHERE a.old_transaction_id = m.transaction_id
+               )
+            """,  # noqa: S608  # TableRef + parameterized IN-list placeholders
+            [*chunk, *chunk],
+        ).fetchall()
+        live.update(str(row[0]) for row in rows)
+    return live
+
+
+def _is_live_transaction(db: Database, transaction_id: str) -> bool:
+    """Whether ``transaction_id`` names a row curation may legitimately attach to.
+
+    Single-id convenience wrapper over :func:`_live_transaction_ids` — see
+    its docstring for the liveness definition (``core.fct_transactions`` OR
+    an un-aliased ``raw.manual_transactions`` row, so a manual entry's
+    predicted id resolves as live in the window before the next
+    ``refresh_run`` materializes it into the fact view, but not once it has
+    deduped away).
+    """
+    return transaction_id in _live_transaction_ids(db, [transaction_id])
+
+
+def _alias_forward_target(db: Database, old_transaction_id: str) -> str | None:
+    """The id ``old_transaction_id`` forwards to, or ``None`` if it never was aliased."""
+    row = db.execute(
+        f"SELECT new_transaction_id FROM {TRANSACTION_ID_ALIASES.full_name} "  # noqa: S608  # TableRef + parameterized value
+        "WHERE old_transaction_id = ?",
+        [old_transaction_id],
+    ).fetchone()
+    return str(row[0]) if row is not None else None
+
 
 _SOURCE_IDENTITY_HASH = (
     "SUBSTRING(SHA256({source_type} || '|' || {source_origin} || '|' || "
@@ -184,27 +470,10 @@ ORDER BY old_id
 """  # noqa: S608  # TableRef constants and code-supplied column expressions only
 
 
-# Curation stranded on an id no view serves, and the live id to move it to.
-#
-# The alias map is walked as an UNDIRECTED graph: a re-anchor can hand an id
-# back, so the live id is as often the stranded id's predecessor as its
-# successor, and only the connected component answers "which ids have ever
-# named this transaction". `UNION` (not `UNION ALL`) in the recursive term is
-# the visited set -- it terminates at the fixpoint, so a cycle cannot hang the
-# walk. `core.fct_transactions` is the liveness oracle deliberately: it is what
-# `app_transaction_categories_fk` anti-joins, so a component this query calls
-# live is one the doctor will too.
-#
-# A component with no live member produces no row here at all (the JOIN drops
-# it), which is the "leave it alone" case; `live_count` distinguishes the other
-# one, where several ids in the component are live and nothing says which the
-# curation belongs to.
-#
-# `{{live_edges}}` drops the edges of re-keys a reversal took back — see
-# :func:`_reversed_alias_edges`. It is a format hole rather than a fixed
-# predicate because the excluded ids arrive as a bind list of unknown length.
-_STRANDED_CURATION_SQL = f"""
-WITH RECURSIVE curated AS (
+# Curation-bearing ids that currently join no live row in core.fct_transactions
+# -- the seed set _heal_stranded_curation resolves in bulk every forwarding pass.
+_STRANDED_CURATION_IDS_SQL = f"""
+WITH curated AS (
   SELECT DISTINCT transaction_id FROM {TRANSACTION_CATEGORIES.full_name}
   UNION
   SELECT DISTINCT transaction_id FROM {TRANSACTION_NOTES.full_name}
@@ -212,16 +481,44 @@ WITH RECURSIVE curated AS (
   SELECT DISTINCT transaction_id FROM {TRANSACTION_TAGS.full_name}
   UNION
   SELECT DISTINCT transaction_id FROM {TRANSACTION_SPLITS.full_name}
-), live AS (
-  -- Materialized once and anti-joined, never correlated: core.fct_transactions
-  -- is the whole merge/dedup/categorization pipeline, and a per-row subquery
-  -- over it is O(N x view). Same reason the doctor's FK invariant does this.
-  SELECT DISTINCT transaction_id FROM {FCT_TRANSACTIONS.full_name}
-), stranded AS (
-  SELECT c.transaction_id
-  FROM curated AS c
-  LEFT JOIN live AS l ON l.transaction_id = c.transaction_id
-  WHERE l.transaction_id IS NULL
+)
+SELECT c.transaction_id
+FROM curated AS c
+LEFT JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.transaction_id
+WHERE l.transaction_id IS NULL
+ORDER BY c.transaction_id
+"""  # noqa: S608  # TableRef constants only
+
+# The live member(s) of each seed id's undirected alias component. Shared by
+# _heal_stranded_curation (seeded from _STRANDED_CURATION_IDS_SQL's result, one
+# call for the whole batch) and _live_predecessor (seeded from one
+# caller-supplied id inside :func:`_walk_alias_chain`) — one query, one
+# definition of the walk, per the coherence rule in
+# .claude/rules/design-principles.md.
+#
+# The alias map is walked as an UNDIRECTED graph: a re-anchor can hand an id
+# back, so the live id is as often a seed's predecessor as its successor, and
+# only the connected component answers "which ids have ever named this
+# transaction" (module docstring, "A second pass heals what the first cannot
+# see"). `UNION` (not `UNION ALL`) in the recursive term is the visited set --
+# it terminates at the fixpoint, so a cycle cannot hang the walk.
+# `core.fct_transactions` is the liveness oracle deliberately: it is what
+# `app_transaction_categories_fk` anti-joins, so a component this query calls
+# live is one the doctor will too.
+#
+# A component with no live member produces no row here at all (the JOIN drops
+# it), which is the "leave it alone" / "still unresolvable" case; `live_count`
+# distinguishes the other one, where several ids in the component are live and
+# nothing says which the seed now means — every caller treats that as
+# unresolved rather than guessing.
+#
+# `{{live_edges}}` drops the edges of re-keys a reversal took back — see
+# :func:`_reversed_alias_edges`. It is a format hole rather than a fixed
+# predicate because the excluded ids arrive as a bind list of unknown length.
+# `{{seed_placeholders}}` is the same kind of hole for the seed list.
+_LIVE_COMPONENT_SQL = f"""
+WITH RECURSIVE seed(transaction_id) AS (
+  VALUES {{seed_placeholders}}
 ), alias_edges AS (
   SELECT old_transaction_id, new_transaction_id
   FROM {TRANSACTION_ID_ALIASES.full_name}
@@ -231,21 +528,21 @@ WITH RECURSIVE curated AS (
   UNION ALL
   SELECT new_transaction_id AS src, old_transaction_id AS dst FROM alias_edges
 ), component AS (
-  SELECT transaction_id AS stranded_id, transaction_id AS member FROM stranded
+  SELECT transaction_id AS seed_id, transaction_id AS member FROM seed
   UNION
-  SELECT c.stranded_id, e.dst
+  SELECT c.seed_id, e.dst
   FROM component AS c
   JOIN edges AS e ON e.src = c.member
 )
 SELECT
-  c.stranded_id,
+  c.seed_id,
   MIN(c.member) AS live_id,
   COUNT(*) AS live_count
 FROM component AS c
-JOIN live AS l ON l.transaction_id = c.member
-GROUP BY c.stranded_id
-ORDER BY c.stranded_id
-"""  # noqa: S608  # TableRef constants only
+JOIN {FCT_TRANSACTIONS.full_name} AS l ON l.transaction_id = c.member
+GROUP BY c.seed_id
+ORDER BY c.seed_id
+"""  # noqa: S608  # TableRef constants + format holes; every value bound as a placeholder
 
 
 #: The audit action every alias row is written under; the anchor `matches undo`
@@ -643,17 +940,52 @@ def _reversed_alias_edges(db: Database) -> frozenset[str]:
     return frozenset(old_id for op in undone for old_id in ids_by_operation[op])
 
 
-def _stranded_curation_query(reversed_ids: tuple[str, ...]) -> tuple[str, list[str]]:
-    """The stranded-curation query with the reversed re-keys' edges removed."""
+def _live_component_query(
+    seed_ids: Sequence[str], reversed_ids: tuple[str, ...]
+) -> tuple[str, list[str]]:
+    """The live-component query for ``seed_ids`` with reversed re-keys' edges removed.
+
+    Bind order matters: the seed placeholders appear first in
+    :data:`_LIVE_COMPONENT_SQL` (the ``seed`` CTE), before the ``live_edges``
+    ``NOT IN`` list (the ``alias_edges`` CTE), so ``params`` must match.
+    """
+    seed_placeholders = ", ".join("(?)" for _ in seed_ids)
     if not reversed_ids:
-        return _STRANDED_CURATION_SQL.format(live_edges="TRUE"), []
+        sql = _LIVE_COMPONENT_SQL.format(
+            seed_placeholders=seed_placeholders, live_edges="TRUE"
+        )
+        return sql, list(seed_ids)
     placeholders = ", ".join("?" for _ in reversed_ids)
-    return (
-        _STRANDED_CURATION_SQL.format(
-            live_edges=f"old_transaction_id NOT IN ({placeholders})"
-        ),
-        list(reversed_ids),
+    sql = _LIVE_COMPONENT_SQL.format(
+        seed_placeholders=seed_placeholders,
+        live_edges=f"old_transaction_id NOT IN ({placeholders})",
     )
+    return sql, [*seed_ids, *reversed_ids]
+
+
+def _live_predecessor(
+    db: Database, transaction_id: str, reversed_edges: frozenset[str]
+) -> str | None:
+    """The unique live member of ``transaction_id``'s undirected alias component.
+
+    Called by :func:`_walk_alias_chain` once its forward walk is exhausted:
+    deleting an anchor's source rows can re-anchor a merge group onto a member
+    that already has an *outgoing* forward edge, so the id a caller holds may
+    be live under a predecessor the forward walk alone would never reach (see
+    :data:`_LIVE_COMPONENT_SQL`). Returns ``None`` both when no live member
+    exists and when more than one does — resolution must never guess which
+    live transaction an ambiguous id now means.
+    """
+    sql, params = _live_component_query(
+        (transaction_id,), tuple(sorted(reversed_edges))
+    )
+    row = db.execute(sql, params).fetchone()
+    if row is None:
+        return None
+    _seed_id, live_id, live_count = row
+    if int(live_count) != 1:
+        return None
+    return str(live_id)
 
 
 def _relations_exist(db: Database, *refs: TableRef) -> bool:
@@ -786,8 +1118,15 @@ def _heal_stranded_curation(
         )
         return 0
 
-    sql, params = _stranded_curation_query(tuple(sorted(_reversed_alias_edges(db))))
+    stranded_ids = [
+        str(row[0]) for row in db.execute(_STRANDED_CURATION_IDS_SQL).fetchall()
+    ]
     forwarded = 0
+    if not stranded_ids:
+        return forwarded
+    sql, params = _live_component_query(
+        stranded_ids, tuple(sorted(_reversed_alias_edges(db)))
+    )
     for stranded_id, live_id, live_count in db.execute(sql, params).fetchall():
         if int(live_count) != 1:
             # Several ids in the component are live, so the transaction the

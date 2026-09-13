@@ -62,9 +62,9 @@ moneybin synthetic generate --persona family --seed 42
 
 # 2. Look at what the reports surface produces against fresh data.
 moneybin --profile bob reports networth
-moneybin --profile bob reports cashflow --from-month 2024-01 --to-month 2024-12 --by category
-moneybin --profile bob reports recurring
-moneybin --profile bob reports spending
+moneybin --profile bob reports cash-flow --from-month 2024-01 --to-month 2024-12 --by category
+moneybin --profile bob reports recurring-subscriptions
+moneybin --profile bob reports spending-trend
 
 # 3. Verify provenance — every row is flagged synthetic.
 moneybin --profile bob db query \
@@ -74,7 +74,7 @@ moneybin --profile bob db query \
 moneybin --profile bob db query "SELECT COUNT(*) FROM synthetic.ground_truth"
 ```
 
-`reports networth` shows balance composition across all generated accounts; `reports cashflow` rolls up monthly inflow, outflow, and net, grouped by account, category, or both; `reports recurring` lists the detected recurring stream (rent, utilities, subscriptions, statement payments). These are the same commands that run against real data — the only difference is the data underneath.
+`reports networth` shows balance composition across all generated accounts; `reports cash-flow` rolls up monthly inflow, outflow, and net, grouped by account, category, or both; `reports recurring-subscriptions` lists the detected recurring stream (rent, utilities, subscriptions, statement payments). These are the same commands that run against real data — the only difference is the data underneath.
 
 To start over with a different seed or year count:
 

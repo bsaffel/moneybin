@@ -1080,6 +1080,168 @@ def test_categorize_items_returns_did_you_mean_on_invalid_category(
     assert "FOOD" in detail["reason"]
 
 
+def test_categorize_items_against_superseded_id_resolves_to_live_transaction(
+    real_db: Database,
+) -> None:
+    """A superseded id supplied by a caller from an earlier preview.
+
+    The guarded write behind ``transactions_categorize_commit`` shares the
+    curation resolution seam (issue #538) — the id must land the category on
+    the live transaction, not the dead one ``upsert_guarded`` would otherwise
+    insert under with no FK to catch it.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-superseded", category="Food & Drink")
+    ])
+    assert result.applied == 1
+    row = real_db.execute(
+        "SELECT transaction_id FROM app.transaction_categories"
+    ).fetchone()
+    assert row == ("txn-live",)
+
+
+def test_categorize_items_against_unresolvable_id_is_a_per_item_error(
+    real_db: Database,
+) -> None:
+    """An unresolvable id fails just that item — the batch keeps going."""
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('ts1', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="never-existed", category="Food & Drink"),
+        CategorizationItem(transaction_id="ts1", category="Food & Drink"),
+    ])
+    assert result.applied == 1
+    assert result.errors == 1
+    assert real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories "
+        "WHERE transaction_id = 'never-existed'"
+    ).fetchone() == (0,)
+
+
+def test_categorize_items_rejects_two_ids_resolving_to_the_same_live_transaction(
+    real_db: Database,
+) -> None:
+    """A batch built from a stale preview can carry both a superseded id and its canonical id.
+
+    Applying both independently would let same-priority writes race (the
+    second silently wins) while both count as applied and merchant/auto-rule
+    side effects double-run — reject the collision instead of letting
+    iteration order decide (issue #538).
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-superseded", category="Food & Drink"),
+        CategorizationItem(transaction_id="txn-live", category="Shopping"),
+    ])
+
+    assert result.applied == 0
+    assert result.errors == 2
+    assert {detail["error"] for detail in result.error_details} == {
+        "resolved_id_collision"
+    }
+    assert real_db.execute(
+        "SELECT COUNT(*) FROM app.transaction_categories WHERE transaction_id = 'txn-live'"
+    ).fetchone() == (0,)
+
+
+def test_categorize_items_verbatim_duplicate_keeps_priority_guard_behavior(
+    real_db: Database,
+) -> None:
+    """A literal duplicate transaction_id is NOT a resolved-id collision.
+
+    Distinct from the aliased-duplicate case above: no alias is involved here,
+    both items name the SAME live id verbatim (e.g. an LLM correcting itself
+    within one batch). Both carry the same source priority (``categorized_by
+    ="ai"``), and ``write_categorization``'s guard permits an equal-priority
+    write to overwrite (its own docstring: "succeeds only if its source
+    priority is <= the existing row's") — so both apply, the second silently
+    winning, exactly as before the resolved-id-collision guard existed. That
+    guard must not key on raw occurrence count, or this shape regresses into
+    a hard rejection that drops both categorizations.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS', 'csv')"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(transaction_id="txn-live", category="Food & Drink"),
+        CategorizationItem(transaction_id="txn-live", category="Shopping"),
+    ])
+
+    assert result.applied == 2
+    assert result.errors == 0
+    assert result.error_details == []
+    row = real_db.execute(
+        "SELECT category FROM app.transaction_categories WHERE transaction_id = 'txn-live'"
+    ).fetchone()
+    assert row == ("Shopping",), "the second same-priority write overwrites the first"
+
+
+def test_categorize_items_against_superseded_id_still_resolves_merchant_and_exemplar(
+    real_db: Database,
+) -> None:
+    """Merchant resolution and exemplar accumulation must key on the resolved id.
+
+    Not the caller's superseded one — otherwise Phase 2's txn_rows lookup
+    misses the row entirely and both silently no-op for exactly the
+    superseded-id case this module resolves ids to support.
+    """
+    real_db.execute(
+        "INSERT INTO core.fct_transactions "
+        "(transaction_id, account_id, transaction_date, amount, description, source_type) "
+        "VALUES ('txn-live', 'a1', DATE '2026-03-01', -3.00, 'STARBUCKS COFFEE', 'csv')"
+    )
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('txn-superseded', 'txn-live', CURRENT_TIMESTAMP)"
+    )
+    svc = CategorizationService(real_db)
+    result = svc.categorize_items([
+        CategorizationItem(
+            transaction_id="txn-superseded",
+            category="Food & Drink",
+            canonical_merchant_name="Starbucks",
+        )
+    ])
+
+    assert result.applied == 1
+    assert result.merchants_created == 1
+    merchant_row = real_db.execute(
+        "SELECT canonical_name, exemplars FROM app.user_merchants "
+        "WHERE canonical_name = 'Starbucks'"
+    ).fetchone()
+    assert merchant_row is not None
+    assert merchant_row[1]  # non-empty exemplar list — proves match_text was found
+
+
 def test_service_auto_review_returns_pending_proposals(real_db: Database) -> None:
     """list_pending_proposals returns proposals recorded via AutoRuleService."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -1321,18 +1483,28 @@ def test_categorize_items_uses_constant_number_of_db_calls(
     result = CategorizationService(db).categorize_items(items)
 
     assert result.applied == 25
-    # The categorize_items merchant-resolution read path must be batched.
-    # Verify a single batched description fetch (WHERE transaction_id IN (...))
-    # ran for the whole input, regardless of N. Per-row fetches inside
-    # _auto_rule recording are a separate concern and are out of scope here.
+    # The categorize_items merchant-resolution read path must be batched, and
+    # so must the shared curation-id liveness resolver it now also runs
+    # (issue #538) — both are O(1) queries against a "transaction_id IN (...)"
+    # list, so distinguish them by their distinct table shapes rather than
+    # asserting one combined count. Per-row fetches inside _auto_rule
+    # recording are a separate concern and are out of scope here.
     batched = [
         q
         for q in select_calls
         if "fct_transactions" in q.lower() and "transaction_id in (" in q.lower()
     ]
-    assert len(batched) == 1, (
-        f"Expected exactly 1 batched description fetch, got {len(batched)}:\n"
-        + "\n".join(batched)
+    liveness_queries = [q for q in batched if "manual_transactions" in q.lower()]
+    description_queries = [
+        q for q in batched if "bridge_merchant_entities" in q.lower()
+    ]
+    assert len(liveness_queries) == 1, (
+        f"Expected exactly 1 batched liveness resolve, got {len(liveness_queries)}:\n"
+        + "\n".join(liveness_queries)
+    )
+    assert len(description_queries) == 1, (
+        "Expected exactly 1 batched description fetch, got "
+        f"{len(description_queries)}:\n" + "\n".join(description_queries)
     )
 
 
@@ -1561,6 +1733,20 @@ def test_categorize_assist_clamps_to_max_batch_size(
 class TestSetCategoryAudit:
     """Audit emission for set_category / clear_category (Req 25-31)."""
 
+    @pytest.fixture(autouse=True)
+    def _live_transaction(self, db: Database) -> None:
+        """Seed the transaction these audit tests categorize.
+
+        They assert on audit rows, not on id resolution, but a curation write
+        now refuses an id that names no transaction (issue #538) — so the id
+        has to exist for the audit assertions to be reachable at all.
+        """
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, amount, transaction_date) "
+            "VALUES ('T1', -5, '2026-05-01')"
+        )
+
     @pytest.mark.unit
     def test_set_category_emits_audit_event(self, db: Database) -> None:
         svc = CategorizationService(db)
@@ -1618,8 +1804,30 @@ class TestSetCategoryAudit:
 
     @pytest.mark.unit
     def test_clear_category_noop_when_absent_emits_no_event(self, db: Database) -> None:
+        """A live transaction with no category clears silently, emitting no event.
+
+        Uses a transaction that exists: this pins the *absent category* no-op,
+        distinct from an id naming no transaction at all — see
+        ``test_clear_category_against_unknown_id_stays_a_noop``.
+        """
         svc = CategorizationService(db)
-        svc.clear_category("T-missing", actor="cli")
+        svc.clear_category("T1", actor="cli")
+        cnt = db.conn.execute(
+            "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.clear'"
+        ).fetchone()
+        assert cnt is not None and cnt[0] == 0
+
+    @pytest.mark.unit
+    def test_clear_category_against_unknown_id_stays_a_noop(self, db: Database) -> None:
+        """Clearing never refuses for liveness (add-vs-remove asymmetry, issue #538).
+
+        ``clear_category`` only deletes state, so an id naming no transaction
+        stays the idempotent no-op it always was — refusing here would block
+        orphan cleanup of curation stranded on a dead id (see
+        ``resolve_curation_transaction_id``'s ``required=False`` docstring).
+        """
+        svc = CategorizationService(db)
+        svc.clear_category("T-missing", actor="cli")  # must not raise
         cnt = db.conn.execute(
             "SELECT COUNT(*) FROM app.audit_log WHERE action = 'category.clear'"
         ).fetchone()
@@ -2884,6 +3092,24 @@ def _insert_plaid_txn(
     )
 
 
+def _seed_gold_transaction(db: Database, transaction_id: str) -> None:
+    """Seed the minimal core.fct_transactions row a categorization write needs.
+
+    The write-time curation seam (issue #538) requires ``transaction_id`` to
+    name a live transaction before ``write_categorizations`` will accept it.
+    ``_insert_plaid_txn`` only seeds the prep-layer PFC-code fixtures the
+    categorizer reads to decide *what* to write — a test whose categorizer
+    call is expected to actually write (``n == 1``, not filtered out by
+    confidence or precedence) also needs this row, mirroring the
+    ``core.fct_transactions`` row that same gold id always has in production.
+    """
+    db.execute(
+        "INSERT INTO core.fct_transactions (transaction_id, amount, transaction_date) "
+        "VALUES (?, -10.00, '2026-01-01')",
+        [transaction_id],
+    )
+
+
 def _seed_bridge_mapping(
     db: Database,
     *,
@@ -2950,6 +3176,7 @@ class TestApplyPlaidCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
 
         n = apply_plaid_categories(db)
 
@@ -2993,6 +3220,7 @@ class TestApplyPlaidCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t2")
 
         n = apply_plaid_categories(db)
 
@@ -3023,6 +3251,7 @@ class TestApplyPlaidCategories:
             plaid_category="TRANSPORTATION",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t3")
 
         n = apply_plaid_categories(db)
 
@@ -3139,6 +3368,7 @@ class TestImproveAiCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         _seed_ai_category(db, "t1", category="Shopping")  # priority 7
 
         n = CategorizationService(db).improve_ai_categories()
@@ -3226,6 +3456,7 @@ class TestImproveAiCategories:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         _seed_ai_category(
             db, "t1", category="Shopping", merchant_id="mrc_existing01"
         )  # priority 7, carries a resolved merchant_id
@@ -3307,6 +3538,7 @@ class TestPlaidCategorizerObservability:
             plaid_category="FOOD_AND_DRINK",
             category_confidence="HIGH",
         )
+        _seed_gold_transaction(db, "t1")
         before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
             source_type="plaid", trigger="sweep"
         )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals

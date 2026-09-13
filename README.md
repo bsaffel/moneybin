@@ -140,7 +140,7 @@ uv run moneybin profile create personal
 uv run moneybin profile switch personal                 # demo left itself active
 uv run moneybin import files ~/Downloads/checking.qfx   # OFX / QFX / QBO
 uv run moneybin import files ~/Downloads/history.csv    # CSV / Excel / Parquet
-uv run moneybin reports spending
+uv run moneybin reports spending-trend
 ```
 
 Imports are idempotent — re-import an overlapping month and source IDs plus
