@@ -26,6 +26,7 @@ from moneybin.services.account_resolution_types import (
 )
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.import_service import mask_embedded_account_number
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -2479,7 +2480,7 @@ class DoctorService:
                 f"decisions but observed {observed_absorbed} "
                 f"(raw_total={raw_total}, core_count={core_count}). "
                 "If you imported data since the last transform, this is expected "
-                "until you re-run `moneybin transform`: staging counts new rows "
+                "until you re-run `moneybin transform apply`: staging counts new rows "
                 "(and pending, not-yet-accepted matches) immediately, but core only "
                 "reflects them after a transform. A mismatch that persists after a "
                 "fresh transform indicates a dedup leak or an un-applied decision."
@@ -3141,7 +3142,7 @@ class DoctorService:
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
                     "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-                    "then `moneybin transform`: the setting is app state, and "
+                    "then `moneybin transform apply`: the setting is app state, and "
                     "core.* only picks it up on the next transform, so this check "
                     "keeps failing until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
@@ -3160,18 +3161,60 @@ class DoctorService:
                 ],
             )
         if len(currencies) > 1:
+            # A home currency already set doesn't mean this warning is wrong —
+            # the five aggregating reports still sub-total regardless — but it
+            # does mean two of this detail's claims are: telling the user to
+            # set what is already set, and asserting every combined figure is
+            # withheld when the three converting reports (networth,
+            # large-transactions, balance-drift) already produce one whenever
+            # their rates are on disk. Read the setting rather than guessing.
+            home_currency = (
+                ProfileSettingsService(self._db).get_settings().home_currency
+            )
+            if home_currency is None:
+                remedy = (
+                    "Reports sub-total each currency separately and withhold "
+                    "any combined figure. A transaction denominated "
+                    "differently from its account is also left out of that "
+                    "account's carried daily balance — it cannot be added "
+                    "without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance-drift`. "
+                    "To read the converting reports in one currency, set a "
+                    "home currency with `moneybin profile set home_currency "
+                    "<ISO>` and run `moneybin refresh` to gather rates — for "
+                    "a pair the provider does not publish, `moneybin fx set "
+                    "<from> <to> <date> <rate>` is the only way to fill it. "
+                    "A supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact date, "
+                    "or asking a report for a date the provider did publish, "
+                    "is the fix."
+                )
+            else:
+                remedy = (
+                    f"The five reports that aggregate per currency still "
+                    f"sub-total separately; `networth`, `large-transactions`, "
+                    f"and `balance-drift` price into {home_currency} whenever "
+                    "every rate they need is on disk. A transaction "
+                    "denominated differently from its account is also left "
+                    "out of that account's carried daily balance — it cannot "
+                    "be added without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance-drift`. "
+                    "`moneybin refresh` gathers a missing rate; for a pair "
+                    "the provider does not publish, `moneybin fx set <from> "
+                    "<to> <date> <rate>` is the only way to fill it. A "
+                    "supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact "
+                    "date, or asking a report for a date the provider did "
+                    "publish, is the fix."
+                )
             return InvariantResult(
                 name=name,
                 status="warn",
                 detail=(
                     f"This profile holds {len(currencies)} currencies "
-                    f"({', '.join(currencies)}). Reports sub-total each currency "
-                    "separately and withhold any combined figure. A transaction "
-                    "denominated differently from its account is also left out of "
-                    "that account's carried daily balance — it cannot be added "
-                    "without a rate — and shows up as the account's "
-                    "reconciliation drift in `moneybin reports balance_drift`. "
-                    "Conversion to a single display currency is not built yet."
+                    f"({', '.join(currencies)}). {remedy}"
                 ),
                 affected_ids=[],
             )

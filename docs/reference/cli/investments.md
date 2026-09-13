@@ -236,7 +236,7 @@ review rather than bound to a guess — a ticker is not an identifier, so the
 same symbol can name a different security at the provider.
 
 Closes land in raw.security_prices; holdings value from core. Pass --refresh
-to rebuild the models in the same command, or run 'moneybin refresh run'
+to rebuild the models in the same command, or run 'moneybin refresh'
 afterwards.
 
 Usage: `moneybin investments prices pull [OPTIONS]`
@@ -268,7 +268,7 @@ mark only values a holding quoted in the same currency, so a fixed default
 would write successfully and value nothing for any non-USD position.
 
 The mark lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh run' afterwards.
+the models in the same command, or run 'moneybin refresh' afterwards.
 
 Usage: `moneybin investments prices set [OPTIONS] SECURITY PRICE_DATE PRICE`
 
@@ -299,7 +299,7 @@ mark is unreachable once written. Removing one is permanent — the audit log
 records it, but the previous value is not restored by re-running anything.
 
 The removal lands in app; holdings value from core. Pass --refresh to rebuild
-the models in the same command, or run 'moneybin refresh run' afterwards.
+the models in the same command, or run 'moneybin refresh' afterwards.
 
 Usage: `moneybin investments prices delete [OPTIONS] SECURITY PRICE_DATE`
 

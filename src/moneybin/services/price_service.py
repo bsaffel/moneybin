@@ -834,7 +834,7 @@ class PriceService:
             ).fetchall()
         except duckdb.CatalogException:
             logger.warning(
-                "core.fct_security_prices is absent — run 'moneybin refresh run'"
+                "core.fct_security_prices is absent — run 'moneybin refresh'"
             )
             return PricesResult(security_id=security_id, rows=())
         return PricesResult(
