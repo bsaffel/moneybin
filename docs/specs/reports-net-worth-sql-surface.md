@@ -806,8 +806,8 @@ not.
 
 **Two different date rules govern two different paths here, and they must
 not be confused.** The rule above governs the *unranged* read: the view's own
-arm, evaluated fresh on every query with no bound parameters, dated at
-`COALESCE(MAX(balance_date) FROM core.fct_balances_daily, CURRENT_DATE)`. A
+arm, evaluated fresh on every query with no bound parameters, dated by the
+spine-maximum rule stated above in this section, not restated here. A
 specific historical range with no balance-spine rows in it for one of these
 accounts is a different path entirely — it inherits `reports.net_worth`'s own
 *runner* fallback (§Data Model's `synthesis_date` rule), applied once per
