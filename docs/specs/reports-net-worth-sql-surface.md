@@ -364,8 +364,7 @@ to.
 **One canonical `account_id` can carry more than one Plaid `source_origin`
 — a relink is the common cause — so the universe is `account_id`s, never
 `(account_id, source_origin)` pairs, and the view reduces to that grain
-before it is exposed rather than emitting one row per pair** (review
-thread `3999126859`). Emitting per-pair would let one account carry
+before it is exposed rather than emitting one row per pair.** Emitting per-pair would let one account carry
 several rows at a declared `account_id` grain, and would let an old
 item's definitive-zero receipt stand unreduced beside a newer item's
 position or missing receipt. For a given `account_id`, its **mapped
@@ -380,15 +379,14 @@ derivation below — and the per-origin results reduce to one row per
 then FALSE, then NULL — each rule's condition read only once every
 earlier rule has failed to match, so a relinked account whose mapped
 origins could satisfy two rules at once never leaves it to a reader to
-guess which one wins** (review threads `4000344932`, `4000359368`; the
-invariant applied — a confirmed position is a positive observation and
-always outranks a sibling's silence, so it is checked, and wins, first):
+guess which one wins** — the invariant applied: a confirmed position is a
+positive observation and always outranks a sibling's silence, so it is
+checked, and wins, first:
 
 1. **`has_position = TRUE`** if **any** mapped origin resolves `TRUE`
    (nonzero position or value evidence, below) — **type-agnostic**: an
    origin's own `account_type` never gates this rule, because a positive
-   reading needs no license from the invariant, only an observation
-   (review threads `4000344929`, `4000359363`). One item's confirmed
+   reading needs no license from the invariant, only an observation. One item's confirmed
    position outranks a sibling item's silence, zero, *or absence*; a
    relink does not erase a position the surviving item still reports,
    whichever of those three states the sibling is in.
@@ -430,7 +428,7 @@ exists to prevent.
 
 **The account-type filter is a correction to an earlier round of this
 section, which enumerated the universe from every account sharing the
-item's `source_origin` regardless of type** (review thread `3998969096`).
+item's `source_origin` regardless of type.**
 `_load_holdings_snapshots` writes one receipt per Plaid *item*, not per
 account — its own docstring calls it "Record that each item's holdings were
 fetched" (`src/moneybin/extractors/plaid/extractor.py:805-840`) — and one
@@ -451,7 +449,7 @@ the holdings product describes it at all.
 
 **This round refines that correction rather than reverting it, and the
 earlier concern is exactly what the negative-inference half above still
-prevents** (review threads `4000344929`, `4000359363`). The prior round's
+prevents.** The prior round's
 fix was type-symmetric: it excluded a non-investment account from this
 relation *entirely*, in both directions at once. That is a stronger
 reading of the invariant than the invariant requires. A checking account
@@ -529,7 +527,7 @@ of what the other column says.
 
 **Publishing only `TRUE` accounts was tried in an earlier round of this
 file, and that narrowing is the direct cause of the defect the zero-snapshot
-override below could not observe** (review thread `3998915317`). Restricting
+override below could not observe.** Restricting
 the relation to accounts with nonzero evidence, enumerated straight from the
 holdings rows rather than from the account universe below, was enough to
 correctly hold a liquidated account out of the *positive*-evidence reading
@@ -582,7 +580,7 @@ sums open LOTS, which a closed position simply has none of.
 
 **It carries its own `CLASSIFICATION` entry in
 `src/moneybin/privacy/taxonomy.py`, one line per published column — all
-three of them, not `account_id` alone** (review thread `3999126863`):
+three of them, not `account_id` alone:**
 `tests/moneybin/test_privacy/test_classification_registry_coverage.py`
 reads the live catalog and requires a class for every `core.*` column, so
 an entry naming only one of the view's three columns fails that gate on
@@ -625,8 +623,10 @@ than as independently stated bullets a reader must sequence themselves
 (§above); the zero-snapshot override, below, requires a *positive* zero
 and stops at `has_position = FALSE`, never firing on `NULL` or on absence
 (§"The boundary is drawn at the receipt, not at the row," below); and a
-zero net cash effect, below, is decisive only when no synthetic bootstrap
-row could be the reason it reached zero (§"Cash held," below).
+zero net cash effect on `core.fct_investment_transactions` is never
+decisive at all, regardless of what produced it, so the cash arm reads
+existentially instead (§"Cash held is not a dimension of
+`override_applies`," below).
 
 **Evidence of holding value has four sources, and `reports.net_worth`'s
 `kind VIEW` reads all four directly — no runner involved.**
@@ -686,8 +686,7 @@ with no accepted binding"
 predicate keyed on `security_id` nullability therefore reads an unbound buy
 or sell — a synced security trade whose provider security has no accepted
 `app.security_links` row — as cash evidence, exactly the defect an earlier
-round of this section carried into the override below (review thread
-`3999020022`). `quantity` has no such overlap:
+round of this section carried into the override below. `quantity` has no such overlap:
 `prep.stg_plaid__investment_transactions` sets `ledger_quantity` NULL only
 for the closed, non-security set of mapped types (dividend, interest,
 capital_gain_distribution, deposit, withdrawal, fee, return_of_capital,
@@ -701,11 +700,12 @@ branch: "Signed units: + acquire, − dispose, NULL cash-only"
 cash-only event; `quantity IS NOT NULL` is a security-position event, bound
 or unbound.**
 
-**The state space the override's predicate is derived from — enumerated
+**The state space `override_applies` is derived from — enumerated
 once here, and referenced everywhere else that depends on it, instead of
 patched again the next time a case is found the last revision missed.**
-Four dimensions decide whether an investment account's ledger evidence
-still counts toward Requirement 14's candidate set:
+Three dimensions decide whether the *security-position* arm specifically
+still counts toward Requirement 14's candidate set — cash is not one of
+them, and the paragraph after the table says why:
 
 - **Securities held**, from the newest receipt
   (`core.dim_holdings_broker_reported.has_position`): `TRUE` (nonzero
@@ -716,27 +716,6 @@ still counts toward Requirement 14's candidate set:
   negative reading had no successful newest pull, or because the account
   carries no `investment`-typed origin and no positive evidence of its
   own (§"The account-type filter," above).
-- **Cash held**, from `core.fct_investment_transactions`: the account's
-  **net cash effect**, `SUM(amount)` over *every* row on that ledger —
-  security-linked and cash-only alike, never gated on `quantity` — nonzero
-  or *decisively* zero (including no rows at all). This is a source
-  distinct from securities held: `has_position` is the broker's claim
-  about positions, and cannot speak to cash the same pull never reports.
-  **"Decisively" excludes a zero that a synthetic opening-lot bootstrap
-  row could be the reason for** (review threads `4000344924`,
-  `4000359362` — the invariant applied): a bootstrap row
-  (`subtype = 'opening_bootstrap'`, `prep.stg_plaid__opening_lots.sql`)
-  synthesizes its `amount` from cost basis rather than observing one —
-  "these rows carry no Plaid amount" per that model's own comment
-  (`stg_plaid__opening_lots.sql:27-30`) — so a real in-window sale of a
-  bootstrapped position, credited at exactly the bootstrap's synthesized
-  cost, nets `SUM(amount)` to zero while the account's real sale proceeds
-  go unobserved by any balance. That is cumulative ledger *movement*
-  canceling to zero, not a positive observation that cash on hand is
-  zero; a zero sum with a contributing bootstrap row (`amount IS NOT
-  NULL`, so it genuinely participated in the sum) is therefore
-  inconclusive, below, exactly like every other inconclusive reading the
-  invariant names.
 - **Temporal order**, only meaningful when a security-position row
   (`quantity IS NOT NULL`, per the discriminator above) exists at all:
   the receipt's own `as_of` compared against `MAX(trade_date)` over the
@@ -753,24 +732,18 @@ still counts toward Requirement 14's candidate set:
   precondition is that at least one mapped origin is eligible for a
   negative reading (`account_type = 'investment'`) and missing from
   `newest_snapshot`; this is a precondition for the *absent* state, not a
-  fifth independent axis, and it is direction-gated exactly as the
+  fourth independent axis, and it is direction-gated exactly as the
   universe above is (§"The account-type filter," above).
 
-| Securities held | Security-position row exists? | Temporal order | Net cash effect | Override fires? | Investment-ledger candidacy |
-|---|---|---|---|---|---|
-| `TRUE` | — | — | — | Never | Candidate — security-position arm (existential) |
-| `NULL` | — | — | — | Never | Candidate — ordinary existential rule, either arm |
-| *absent* | — | — | — | Never | Candidate — ordinary existential rule, either arm |
-| `FALSE` | No | vacuous | Zero, no bootstrap row | Fires (nothing to cancel) | Not a candidate |
-| `FALSE` | No | vacuous | Zero, bootstrap row contributes | Fires (nothing to cancel) | Candidate — cash arm (inconclusive zero, below) |
-| `FALSE` | No | vacuous | Nonzero | Fires, cancels nothing (no security-position row exists) | Candidate — cash arm |
-| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero, no bootstrap row | Fires | Not a candidate |
-| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero, bootstrap row contributes | Fires — cancels the security-position arm only | Candidate — cash arm (inconclusive zero, below) |
-| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Nonzero | Fires — cancels the security-position arm only | Candidate — cash arm (buy-then-sell, proceeds retained) |
-| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Zero | Does not fire — day-grain equality is inconclusive | Candidate — security-position arm survives (the receipt cannot prove it was pulled after that day's trade); the bootstrap distinction changes nothing here, since candidacy already holds through the surviving security-position arm |
-| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
-| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates); the bootstrap distinction changes nothing here, for the same reason |
-| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
+| Securities held | Security-position row exists? | Temporal order | Override fires? | Security-position arm survives? |
+|---|---|---|---|---|
+| `TRUE` | — | — | Never | — (candidate on its own terms, existential) |
+| `NULL` | — | — | Never | — (candidate on its own terms, existential) |
+| *absent* | — | — | Never | — (nothing to evaluate) |
+| `FALSE` | No | vacuous | Fires (nothing to cancel) | No security-position row to survive |
+| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Fires — cancels the security-position arm | No |
+| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Does not fire — day-grain equality is inconclusive | Yes — the receipt cannot prove it was pulled after that day's trade |
+| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Does not fire — condition (2) below fails | Yes — a later unbound buy or transfer-in the receipt predates |
 
 **The predicate is a direct reading of this table, not a row added by
 hand later.** The override fires — `override_applies` — exactly when:
@@ -797,85 +770,109 @@ instead, `NOT EXISTS (...)` resolves the vacuous case on its own,
 independent of any comparison against `as_of`, so the surviving
 comparison only has to get the non-vacuous rows right: strict `>` is
 what keeps *same-day* out of the firing set together with *stale*,
-closing review thread `3999126866` without disturbing the vacuous case
-the `NOT EXISTS` disjunct now resolves on its own, regardless of how the
-comparison is written.
+without disturbing the vacuous case the `NOT EXISTS` disjunct resolves on
+its own, regardless of how the comparison is written.
 
-**The cash arm's own zero has the same "positive observation only"
-requirement, and the account's standing on the investment ledger states
-it directly rather than leaving `SUM(amount) = 0` to read as decisive by
-default** (review threads `4000344924`, `4000359362` — the invariant
-applied, in a different formula than `override_applies` above: a zero
-sum a bootstrap row could have produced is inconclusive, so it must not
-by itself clear the account, exactly as `NULL` and *absent* already
-don't in the security-position arm):
+**Cash held is not a dimension of `override_applies` at all — no zero sum
+`core.fct_investment_transactions` can produce is a positive observation
+of zero cash, so the override has nothing on the cash side it is ever
+entitled to cancel.** `has_position` is the broker's claim about
+*positions*; it cannot speak to cash the same pull never reports. A
+zero `SUM(amount)` only says the *recorded* rows net to zero — it says
+nothing about cash the account held before its first recorded row, so it
+can never stand in for a real balance observation. Two shapes reach the
+identical zero: a synthetic opening-lot bootstrap row
+(`subtype = 'opening_bootstrap'`, `prep.stg_plaid__opening_lots.sql`)
+synthesizes its `amount` from cost basis rather than observing one —
+"these rows carry no Plaid amount" per that model's own comment
+(`stg_plaid__opening_lots.sql:27-30`) — so a real in-window sale of a
+bootstrapped position, credited at exactly the bootstrap's synthesized
+cost, nets `SUM(amount)` to zero while the account's real sale proceeds
+go unobserved by any balance; and, with no bootstrap row involved at all,
+an ordinary buy funded from cash this ledger never recorded a deposit
+for, later sold at exactly that cost, reaches the same `SUM(amount) = 0`
+while the same unobserved proceeds sit unrecorded. Both are cumulative
+ledger *movement* canceling to zero, never a positive observation that
+cash on hand is zero, and the invariant draws no line between them:
+"a sum whose zero cannot be told apart from a canceled synthetic entry ...
+leaves the account a candidate" says nothing about *why* the sum reached
+zero. So the cash arm reads existentially instead — any row on
+`core.fct_investment_transactions` for the account, cash-only or
+security-linked, is candidate evidence, full stop:
 
 ```
 candidate_via_investment_ledger :=
-  ( SUM(amount) <> 0                                  -- cash arm: nonzero net effect
-    OR EXISTS (a row WHERE subtype = 'opening_bootstrap'
-               AND amount IS NOT NULL)                -- cash arm: a bootstrap-tainted zero is inconclusive, not decisive
-  )
-  OR (EXISTS a row WHERE quantity IS NOT NULL          -- security-position arm
+  EXISTS (a row WHERE account_id = ...)                -- cash arm: any recorded ledger
+                                                         -- activity; no net-zero sum is
+                                                         -- decisive (see above)
+  OR (EXISTS a row WHERE quantity IS NOT NULL           -- security-position arm
       AND NOT override_applies)
 ```
 
-The two arms read overlapping rows through two different aggregates, and
-`override_applies` reaches only the second. Canceling a row's standing as
+The security-position arm stays in the predicate for what it states on
+its own terms — whether the account's *security* evidence, specifically,
+still stands after the override — even though every row it can see is
+already counted by the cash arm above; the two arms are no longer
+independent routes to the same yes/no answer, but the security arm's own
+finer-grained "does the position survive" reading remains meaningful
+context a caller may still want. Canceling a row's standing as
 security-position evidence does not, and cannot by this construction,
-remove its contribution to `SUM(amount)` — the fix for the defect below.
-It never cancels any `core.fct_transactions` row either: that ledger is
-out of the override's scope entirely, not merely undercounted by it (§
-below).
+remove its contribution to the cash arm's existential test. It never
+cancels any `core.fct_transactions` row either: that ledger is out of
+the override's scope entirely, matching the same rule — read
+existentially, closed only through Requirement 9's `archived_at`
+eligibility once the account is actually closed, never through a
+snapshot a cash ledger has no equivalent of (§"The other evidence
+carries no equivalent defect," below).
 
-This corrects three defects across as many earlier rounds of this section,
-each one a predicate patched to fix the case in front of it rather than
-derived from the table above. Round one read the override as canceling
-"historical transaction evidence on either ledger" with no restriction to
-security-position rows at all (review thread `3998969090`). Round two
-restricted it correctly in principle but keyed the restriction on
-`security_id` instead of `quantity`, misreading an unbound buy or sell as
-cash evidence (review thread `3999020022`, the discriminator above).
-Round three keyed the cash arm on row *selection* — preserve `quantity IS
-NULL` rows, drop `quantity IS NOT NULL` rows from consideration entirely —
-which cancels a sell row's own cash credit along with its position
-evidence whenever the sale's proceeds are the account's only cash
-evidence: `core.fct_investment_transactions.amount` is the signed cash
-effect on *every* row regardless of `quantity`
+**This closes the cash arm permanently, the same way `core.fct_transactions`
+already closes, and it is worth naming the tradeoff that follows: an
+investment account with any recorded ledger activity — however old, and
+regardless of how its position was eventually settled — stays a net-worth
+candidate until it is archived or a real balance observation clears it.
+An unclearable `fail` on a correctly-liquidated, genuinely-zero-cash
+account is the accepted cost of never silently dropping one that still
+holds unobserved cash;** the zero-snapshot override exists specifically
+because that same tradeoff, applied to the *security*-position arm with
+no balance-anchor equivalent available either, was judged not worth
+paying there once a broker snapshot could positively confirm zero
+positions (§"The zero-snapshot override," above) — the cash arm has no
+comparable positive-zero signal to confirm against, so it does not get
+the same relief.
+
+This corrects a further defect beyond the three below: reading the cash
+arm's decisive-zero test as bootstrap-specific was itself only a partial
+fix, narrower than the invariant it was meant to apply. An earlier round
+of this section excluded a bootstrap-tainted zero from counting as
+decisive but still treated an ordinary, fully-recorded zero as decisive
+proof of no cash — exactly the gap the concrete counter-example above
+closes.
+
+This also corrects three defects across as many earlier rounds of this
+section, each one a predicate patched to fix the case in front of it
+rather than derived from the table above. Round one read the override as
+canceling "historical transaction evidence on either ledger" with no
+restriction to security-position rows at all. Round two restricted it
+correctly in principle but keyed the restriction on `security_id` instead
+of `quantity`, misreading an unbound buy or sell as cash evidence (the
+discriminator above). Round three keyed the cash arm on row *selection* —
+preserve `quantity IS NULL` rows, drop `quantity IS NOT NULL` rows from
+consideration entirely — which cancels a sell row's own cash credit along
+with its position evidence whenever the sale's proceeds are the account's
+only cash evidence: `core.fct_investment_transactions.amount` is the
+signed cash effect on *every* row regardless of `quantity`
 (`fct_investment_transactions.sql:110`, "Signed cash effect: − out (buy),
 + in (sell/dividend)"), so a sell that liquidates the account's last
 security still credits cash on the very row the security-position arm is
-entitled to cancel (review thread `3999065574`). An investment account
-that sells its last security but retains the sale proceeds, or later
-receives a cash-only dividend or deposit, still resolves `has_position =
-FALSE` — it holds no security — but its net cash effect is nonzero, so it
-still holds cash: `docs/specs/investments-overview.md:283` independently
-states that an investment account may hold uninvested cash with no
-security row. Reading the cash arm as an aggregate over every row, rather
-than as a filtered subset of rows, is what keeps the fourth round from
-becoming a rerun of the third on the next liquidation shape: the security
-and cash arms now differ in which *aggregate* they compute, never in
-which *rows* are visible to each.
-
-**A further defect, found this round, sits in the cash arm's own
-aggregate rather than in `override_applies` — the same invariant, a
-different formula** (review threads `4000344924`, `4000359362`).
-`SUM(amount) <> 0` measures cumulative ledger *movement*, not cash
-actually on hand, and a synthetic opening-lot bootstrap row
-(`subtype = 'opening_bootstrap'`,
-`prep.stg_plaid__opening_lots.sql`) synthesizes its `amount` from cost
-basis rather than observing one — its own comment states plainly that
-"these rows carry no Plaid amount" (`stg_plaid__opening_lots.sql:27-30`).
-A real in-window sale of a bootstrapped position, credited at exactly the
-bootstrap's synthesized cost, therefore nets `SUM(amount)` to zero while
-the account actually holds the sale's real, unobserved proceeds —
-cumulative movement canceling to zero is not a positive observation that
-cash on hand is zero, and reading it as one is exactly the failure the
-invariant rules out. The fix reads `SUM(amount) = 0` as decisive only
-when no bootstrap row (`amount IS NOT NULL`, so it genuinely participated
-in the sum) contributed to it; when one did, the zero is inconclusive and
-the cash arm stays a candidate absent a real balance anchor
-(`candidate_via_investment_ledger`, above).
+entitled to cancel. An investment account that sells its last security
+but retains the sale proceeds, or later receives a cash-only dividend or
+deposit, still resolves `has_position = FALSE` — it holds no security —
+but still carries a row on this ledger, so it still holds cash:
+`docs/specs/investments-overview.md:283` independently states that an
+investment account may hold uninvested cash with no security row. Reading
+the cash arm existentially, rather than as a filtered subset of rows, is
+what keeps a later round from becoming a rerun of the third on the next
+liquidation shape.
 
 **The temporal precondition is not a correction to an earlier round of
 this section — no earlier round considered it at all — but a gap this
@@ -890,13 +887,12 @@ lot against it (§"Evidence of holding value has four sources," above), so
 the security-position arm above is this shape's only source of evidence.
 The temporal comparison in the predicate above is what withholds the
 override until the receipt has actually had the chance to observe every
-security-position event it would otherwise cancel — the fix for review
-thread `3999065577`.
+security-position event it would otherwise cancel.
 
 **Day-grain equality is inconclusive, not current — a further refinement
 of the same temporal comparison, not a correction to the round above: the
 precondition existed, and this narrows what it accepts as "the receipt
-has had the chance to observe" the trade** (review thread `3999126866`).
+has had the chance to observe" the trade.**
 `as_of` is the receipt's `extracted_at::DATE` and `trade_date` is itself
 a `DATE`, so the comparison in the predicate above operates at day grain
 only — it cannot recover whether a receipt was pulled before or after a
@@ -915,7 +911,7 @@ same-day pair as inconclusive.
 
 **The boundary is drawn at the receipt, not at the row — a correction to an
 earlier round of this section, which drew it at the row and reintroduced the
-exact failure the override exists to prevent** (review thread `3998915318`).
+exact failure the override exists to prevent.**
 The override fires on `has_position = FALSE` and nowhere else: not on
 `has_position = NULL` (a receipt exists but is inconclusive for this
 account), and not on the account's total absence from `core.dim_holdings_broker_reported`
@@ -954,14 +950,16 @@ removed from the candidate set the same way every other account is —
 through Requirement 9's own date-scoped `archived_at` eligibility once the
 account is actually closed — not through a zero-snapshot override a cash
 ledger has no equivalent of. `core.fct_investment_transactions`'s own cash
-arm — its net cash effect, `SUM(amount)` over every row on that ledger — is
-protected the same way and for the same reason: the newest holdings
-snapshot carries nothing that speaks to cash, on any row, whether that row
-is also security-linked or not. Only that ledger's security-position arm
-(the existence of a `quantity IS NOT NULL` row) falls inside the override's
-scope, and even there only when the receipt is current per the temporal
-precondition above; `core.dim_holdings_broker_reported` is the source of
-the override itself, not a second place the defect could hide.
+arm — any row on that ledger, cash-only or security-linked — is protected
+the same way and for the same reason: the newest holdings snapshot carries
+nothing that speaks to cash, on any row, whether that row is also
+security-linked or not, so no zero sum it could produce ever licenses
+canceling this arm. Only that ledger's security-position arm (the
+existence of a `quantity IS NOT NULL` row *surviving the override*) falls
+inside the override's scope, and even there only when the receipt is
+current per the temporal precondition above; `core.dim_holdings_broker_reported`
+is the source of the override itself, not a second place the defect could
+hide.
 
 **What the two transaction-activity arms catch together, and what they
 still miss.** Both ledgers carry their own transaction date, but the guard
@@ -971,20 +969,25 @@ holdings signal, not a second pattern beside it. This is what makes a
 tabular import with no balance column, a Plaid account whose
 `current_balance` or `account_type` never resolved, a manual account with
 postings and no assertion, and an investment account with a dividend, a
-fee, or retained proceeds after its last security sale (via the net cash
-effect above, whether the credit lands on a separate cash-only row or on
-the sell row itself) all surface as unanchored rather than silently absent
-— every one of them has a row on one ledger or the other even though
+fee, or retained proceeds after its last security sale (via the cash arm
+above, whether the credit lands on a separate cash-only row or on the sell
+row itself) all surface as unanchored rather than silently absent — every
+one of them has a row on one ledger or the other even though
 `core.fct_balances` has none, and the cash arm is never in the
-zero-snapshot override's scope, so a nonzero net cash effect surfaces even
-on an account whose security-position arm alone would have been
-overridden. **The converse case — a fully-disposed position whose newest
-broker snapshot reports the same definitive zero, with a net cash effect
-of exactly zero — is deliberately absent from that list, because it is the
-one shape the override *does* reach**, and correctly does not surface: the
-account's only evidence was the disposed security's own buy/sell history,
-exactly what the override exists to stop from qualifying forever (§Data
-Model, "The zero-snapshot override," above).
+zero-snapshot override's scope, so *any* recorded ledger activity surfaces
+even on an account whose security-position arm alone would have been
+overridden. **A fully-disposed position whose newest broker snapshot
+reports the same definitive zero, with a net cash effect of exactly zero,
+is not a converse case any more: it surfaces too, through the cash arm,
+for the same reason every other net-zero investment-ledger account does
+(§"Cash held is not a dimension of `override_applies`," above).** The
+override still reaches this account's *security*-position arm — the
+zero-snapshot override does exactly what §"The zero-snapshot override,"
+above, describes — but the cash arm's own existential test never depended
+on the security arm surviving, so the account stays a candidate on the
+cash arm's terms alone. This is the accepted tradeoff named above: an
+`archived_at` transition, or a genuine balance observation, is what clears
+such an account, never a definitive-zero position snapshot.
 
 **A second converse case — a receipt whose `as_of` predates, or falls on
 the same day as, a later unbound buy or transfer-in — is also
@@ -1220,12 +1223,11 @@ not one rule per shape of range:
   `archived_at_floor` is NULL, so `synthesis_date = effective_to`;
   `effective_from` unset or no later than it, so the row is emitted, dated at
   `effective_to`, exactly as before this rule was stated.
-- **A future-only lower bound with no upper bound** (a prior round, comment
-  `3998057569`'s sibling on `3998057567`): `to_date` unset resolves
-  `effective_to` to `CURRENT_DATE`, so `synthesis_date = CURRENT_DATE`; the
-  supplied `from_date` is later than `CURRENT_DATE`, so the lower-edge test
-  fails and no row is emitted — the out-of-window row that thread flagged no
-  longer synthesizes.
+- **A future-only lower bound with no upper bound** (a prior round): `to_date`
+  unset resolves `effective_to` to `CURRENT_DATE`, so
+  `synthesis_date = CURRENT_DATE`; the supplied `from_date` is later than
+  `CURRENT_DATE`, so the lower-edge test fails and no row is emitted — the
+  out-of-window row a prior round flagged no longer synthesizes.
 - **A single-day window that is itself in the future**
   (`from_date == to_date`, both after today — a harder variant than the
   reported one, since even the emitted date can no longer coincide with
@@ -1238,8 +1240,7 @@ not one rule per shape of range:
 - **An inverted range** (`from_date > to_date`, both given) never reaches
   this fallback at all — the validation above rejects it before
   `effective_from`/`effective_to` are computed.
-- **An eligible candidate archived partway through the window** (this thread,
-  comment `3998387459`): a no-spine range that starts before the candidate's
+- **An eligible candidate archived partway through the window**: a no-spine range that starts before the candidate's
   `archived_at` and ends after it. The candidate still satisfies the
   eligible-candidate predicate (`archived_at >= effective_from`), so
   `archived_at_floor` equals that `archived_at` — earlier than `effective_to`
@@ -1321,16 +1322,21 @@ account_name          VARCHAR        -- dim_accounts.display_name
 currency_code         VARCHAR        -- The account's own denomination; NULL is the unknown segment
 home_currency_code    VARCHAR        -- app.profile_settings.home_currency
 account_type          VARCHAR        -- depository / credit / loan / investment / other
-balance_date          DATE           -- Grain
-rate_published_date   DATE           -- The day the rate applied here was actually published
 is_observed           BOOLEAN        -- FALSE means carried forward
 observation_source    VARCHAR        -- ofx / tabular / assertion / plaid; NULL when interpolated
-days_since_observed   INTEGER        -- 0 on an observed day
 rate_source           VARCHAR        -- override / provider / identity; NULL when unpriced
+balance_date          DATE           -- Grain
+rate_published_date   DATE           -- The day the rate applied here was actually published
+days_since_observed   INTEGER        -- 0 on an observed day
 reconciliation_delta  DECIMAL(18,2)  -- Observed minus transaction-derived; NULL on interpolated days
 account_balance       DECIMAL(18,2)  -- In currency_code
 account_balance_home  DECIMAL(18,2)  -- In home_currency_code; NULL when the pair is unpriced
 ```
+
+`is_observed`, `observation_source`, and `rate_source` are `DataClass.TXN_TYPE`
+dimensions (`src/moneybin/privacy/taxonomy.py`), so Rule B
+(`.claude/rules/column-ordering.md`) places them before the date block, not
+after it.
 
 `days_since_observed` reuses the name and meaning already established by
 [`asset-tracking.md`](asset-tracking.md) and implemented by
@@ -1481,8 +1487,8 @@ that is the right reading for a genuinely open-below *range* — reads an
 unranged read's absent lower bound as unbounded history rather than "no
 range at all," and readmits exactly the candidate this fix excludes, dated
 at its own `archived_at` in place of the single date the unranged contract
-(`:2236`, below) actually owes the read. That was the defect (comment
-`3998860437`).
+(`:2236`, below) actually owes the read. That was the defect this round
+corrects.
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
 invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
@@ -1614,12 +1620,17 @@ only a spine built from the unresolved provider rows does that.
 ```
 from_currency         VARCHAR        -- Grain. ISO 4217, upper
 to_currency           VARCHAR        -- Grain
+rate_source           VARCHAR        -- override / provider / identity
+rate                  DECIMAL(18,8)  -- Multiply a from_currency amount by this
+days_since_published  INTEGER        -- effective_date - published_date; 0 on a publication day
 effective_date        DATE           -- Grain. The calendar day this rate is applied ON
 published_date        DATE           -- The day the provider priced it (= fct_exchange_rates.rate_date)
-rate                  DECIMAL(18,8)  -- Multiply a from_currency amount by this
-rate_source           VARCHAR        -- override / provider / identity
-days_since_published  INTEGER        -- effective_date - published_date; 0 on a publication day
 ```
+
+Rule A (`.claude/rules/column-ordering.md`) orders `core` and `prep` columns
+ids → strings → numerics → booleans → dates → timestamps, so the string
+`rate_source` and the numeric columns precede the date pair rather than
+following them.
 
 **`effective_date` and `rate_date` are deliberately different names for
 different things.** `raw.exchange_rates.rate_date` is the publication day, and
@@ -1955,13 +1966,21 @@ report ids and the commands derived from them.
 | `core:net_worth_currencies` | `reports.net_worth_currencies` | `moneybin reports net-worth-currencies` | currency × day |
 | `core:net_worth_accounts` | `reports.net_worth_accounts` | `moneybin reports net-worth-accounts` | account × day |
 
-Each takes the same optional `from_date` / `to_date` / `interval`. **The
+Each takes the same optional `from_date` / `to_date`. `interval` is
+`core:net_worth`'s alone — it is not a parameter of the other two. **The
 snapshot-versus-history split does not survive.** It was an artifact of how the
 two reports were built, not a real distinction: every rung is a daily series,
 and "now" is `WHERE balance_date = MAX(balance_date)`. `core:networth_history`
 is therefore retired — it is `core:net_worth` with a range — and
 `change_abs` / `change_pct` become runner-computed columns on `core:net_worth`
-when one is given.
+when `interval` is given, bucketing that single day-grain series
+(week-over-week, month-over-month) the same way `networth_history` did.
+`core:net_worth_accounts` and `core:net_worth_currencies` stay daily at every
+grain they carry (`account_id`/`currency_code` × `balance_date`); nothing in
+this spec defines what "weekly" or "monthly" would mean for an
+account-or-currency-level series, so `interval` is out of scope for them
+rather than an implicit no-op or an inconsistent bucketing an implementer
+would otherwise have to invent.
 
 Two consequences worth stating plainly:
 
@@ -2242,13 +2261,16 @@ LIMIT 12"` — which is the point of the change.
 One asymmetry to close while here: `--interval` is a bare `str` with no `Choice`
 constraint (`src/moneybin/cli/commands/reports/networth.py:130-132`), so a bad
 value fails at the framework's `Literal` check rather than as a Typer usage
-error.
+error. `--interval` stays a `net-worth`-only flag, per §"The three net-worth
+reports" above — `net-worth-currencies` and `net-worth-accounts` do not
+declare it.
 
 ## MCP Interface
 
 Three reports, listed in §Report allocation, each reached as
-`reports(report_id=..., parameters=...)` with `from_date`, `to_date`, and
-`interval` optional on all three. Changes an existing caller sees:
+`reports(report_id=..., parameters=...)` with `from_date` and `to_date`
+optional on all three; `interval` is optional on `core:net_worth` only, per
+§"The three net-worth reports" above. Changes an existing caller sees:
 
 - **`core:networth` becomes `core:net_worth`**, answers at the day grain in the
   home currency, and no longer returns account rows. The per-account breakdown
@@ -2357,7 +2379,7 @@ AGENTS.md's AX bias both point at.
   eligible-candidate predicate, but the runner dates the synthesized row at
   the candidate's own `archived_at` (`archived_at_floor`), never at
   `effective_to`. This pins `archived_at_floor` in the general
-  `synthesis_date` rule (§Data Model) — the regression this thread (comment `3998387459`)
+  `synthesis_date` rule (§Data Model) — the regression an earlier round
   found: dating the row past a counted candidate's own eligible window would
   report it unanchored on a date Requirement 9 already excludes it from.
 - **Staleness invariant: entirely stale profile.** A persona whose every
@@ -2464,8 +2486,8 @@ only for the third scenario's wholly-unanchored persona, where the spine is
 empty and the rule's fallback applies.
 
 **An eighth case pins the account-rung anti-join directly** — the regression
-guard for the defect this thread (comment `3998757935`) found in an earlier
-round of this section. The first scenario's mixed persona, queried over a
+guard for a defect found in an earlier round of this section. The first
+scenario's mixed persona, queried over a
 historical range that includes `core.fct_balances_daily`'s own spine maximum: the
 eligible unanchored candidate's view-arm row (dated at that maximum,
 §`reports.net_worth_accounts`) already satisfies the range, so the account
@@ -2479,8 +2501,8 @@ is evaluated per candidate, never gated on the whole filtered result being
 empty, which a range containing other accounts' rows never is.
 
 **A ninth case pins the anti-join's unranged eligibility date** — the
-regression guard for the defect this thread (comment `3998860437`) found in
-the per-candidate anti-join above. The same first-scenario mixed persona,
+regression guard for a defect found in the per-candidate anti-join above.
+The same first-scenario mixed persona,
 with its eligible unanchored candidate additionally archived before
 `core.fct_balances_daily`'s own spine maximum, queried with no range at
 all: the candidate does not appear in the result at any date — never at the
@@ -2496,22 +2518,23 @@ the candidate's `archived_at` still synthesizes its row there, dated at
 `archived_at_floor` exactly as the eighth case already pins — proving the
 fix is scoped to the unranged path and does not regress the ranged one.
 
-**A tenth case pins the cash arm's bootstrap caveat directly** — the
-regression guard for reading a bootstrap-tainted zero as decisive
-(review threads `4000344924`, `4000359362`). A persona investment
+**A tenth case pins the cash arm's general zero-decisiveness rule
+directly** — the regression guard for reading any net-investment-ledger
+zero as decisive, bootstrap-tainted or not. A persona investment
 account whose only priced position is a pre-window opening-lot bootstrap
 (`subtype = 'opening_bootstrap'`), sold in full, in-window, at exactly
-its synthesized cost basis, so `SUM(amount)` on
-`core.fct_investment_transactions` nets to zero even though the sale's
-real proceeds were never observed on any balance — paired with a
-definitive-zero newest holdings snapshot in either liquidation shape and
-no other ledger row for the account: asserted to drive `net_worth` to
-NULL with an unanchored-account count that includes the account, never
-to a decisive-zero reading that drops it. Paired against the existing
-decisively-zero, two-ordinary-row liquidation fixture (§Tier 3), which
-correctly does not surface, so the two together prove the predicate
-discriminates on whether a bootstrap row contributed to the zero, not on
-the zero's mere presence.
+its synthesized cost basis, so the ledger's `SUM(amount)` nets to zero
+even though the sale's real proceeds were never observed on any balance —
+paired with a definitive-zero newest holdings snapshot in either
+liquidation shape and no other ledger row for the account: asserted to
+drive `net_worth` to NULL with an unanchored-account count that includes
+the account, never to a decisive-zero reading that drops it. Paired
+against the same-shaped fixture with an ordinary, fully-recorded
+buy-then-sell pair instead of a bootstrap row (§Tier 3, "still fails for
+a broker-reported definitive zero when the investment ledger nets to
+zero"), which fails identically, so the two together prove the predicate
+never discriminates on how the zero was reached, only on whether the
+ledger carries any row at all.
 
 ### Tier 3 — Integration
 
@@ -2548,39 +2571,38 @@ the zero's mere presence.
   unrestricted `account_balance IS NULL` scan produces once the
   `balance_date = CURRENT_DATE` filter that caused the opposite false
   negative was dropped.
-- **The unanchored-account guard does not fail for a broker-reported
-  definitive zero, in either shape the zero-snapshot override covers
-  (§Data Model).** `moneybin system doctor` against a persona whose only
-  account is a liquidated investment account, its broker connection staying
-  live and — realistically, not by omission —
+- **The unanchored-account guard still fails for a broker-reported
+  definitive zero when the investment ledger nets to zero — the cash
+  arm's general rule (§Data Model, "Cash held is not a dimension of
+  `override_applies`").** `moneybin system doctor` against a persona whose
+  only account is a liquidated investment account, its broker connection
+  staying live and — realistically, not by omission —
   `core.fct_investment_transactions` carrying the account's real
   buy-then-sell history ending in that disposal, **sold at cost so the
-  pair's net cash effect is decisively zero** — not merely absent, which is
-  what distinguishes this fixture from the cash-arm-aggregate case below —
-  tested twice against the same persona shape: **zero-quantity row**, where
-  the newest snapshot still carries a holdings row for the account
-  reporting `quantity = 0` and no institution value; and **empty receipt**,
-  where the newest snapshot's receipt exists but carries no holdings row
-  for the account at all — the no-row form the boundary correction in
-  §Data Model addresses. The account has no balance observation of any
-  kind in either case. Both exit `0` with
-  no `fail` entry naming that account. An earlier round of this fixture
-  instead left the investment ledger empty, which made the zero-quantity-row
-  case pass for the wrong reason: an account with no transaction history at
-  all was never going to reach the transaction-activity arm in the first
-  place, override or not, so the case proved nothing about liquidation. This
-  is the regression guard for the zero-snapshot override's full boundary,
-  both shapes together — a row-presence reading of the holdings snapshot in
-  either shape, or a candidate set that let the buy/sell history stand
-  regardless of the current zero position, would each independently place
-  the account back in the candidate set, NULL the profile total, and fail
-  this check with no user action able to clear it, because neither the
-  broker's snapshot receipt nor the historical ledger ever stops naming the
-  account. Pair both with the existing "does fail the release gate" case
-  above using the *same* fixture shape but a nonzero reported quantity, so
-  the three together prove the predicate discriminates on the account's own
-  evidence rather than on receipt presence alone.
-- **The unanchored-account guard does not fail for a broker-reported
+  pair's net cash effect is exactly zero**, tested twice against the same
+  persona shape: **zero-quantity row**, where the newest snapshot still
+  carries a holdings row for the account reporting `quantity = 0` and no
+  institution value; and **empty receipt**, where the newest snapshot's
+  receipt exists but carries no holdings row for the account at all — the
+  no-row form the boundary correction in §Data Model addresses. The
+  account has no balance observation of any kind in either case. Both
+  exit `1`, with `net_worth_unanchored_accounts` at `fail` and
+  `affected_ids` naming the account. An earlier round of this fixture
+  instead read this same net-zero, fully-recorded sum as decisive proof of
+  zero cash and exited `0` in both shapes — the exact failure this fixture
+  now guards against: the buy itself proves the account held real cash at
+  some point that no balance observation ever confirmed was later zero,
+  so a fully-recorded round trip is no more decisive than a
+  bootstrap-tainted one. This is the regression guard for the cash arm's
+  boundary in both liquidation shapes together — a row-presence reading of
+  the holdings snapshot in either shape correctly keeps the security arm
+  overridden, but the cash arm's own existential test still names the
+  account regardless. Pair both with the existing "does fail the release
+  gate" case above using the *same* fixture shape but a nonzero reported
+  quantity, so the three together prove the predicate never discriminates
+  on the account's own zero-versus-nonzero sum, only on whether the ledger
+  carries any row at all.
+- **The unanchored-account guard still fails for a broker-reported
   definitive zero when the only ledger evidence is an unbound security
   position — the discriminator's own boundary (§Data Model).** `moneybin
   system doctor` against a persona whose only account is the same liquidated
@@ -2589,17 +2611,20 @@ the zero's mere presence.
   `core.fct_investment_transactions` history is a single buy or sell that
   carries no accepted `app.security_links` binding: `security_id IS NULL`
   on that row, `quantity` is not. The account has no balance observation of
-  any kind. Exits `0` with no `fail` entry naming that account. This is the
-  regression guard for the discriminator itself, not for the override's
-  scope rule: a `security_id`-keyed predicate reads this row's NULL
-  `security_id` as cash evidence, the override is barred from cancelling
-  cash evidence, and the account would then stay an unclearable candidate
-  forever — exactly the failure Codex flagged in review (finding
-  `3999020022`). The `quantity`-keyed predicate correctly reads the row as
-  security evidence (`quantity IS NOT NULL`), which the override is
-  entitled to cancel, so the account resolves the same way a bound
-  liquidation does. Pair with the two zero-quantity-row and empty-receipt
-  "does not fail" cases above, which cover a *bound* liquidation's history;
+  any kind. Exits `1`, with `net_worth_unanchored_accounts` at `fail` and
+  `affected_ids` naming the account — the cash arm alone already accounts
+  for this outcome, since the row exists regardless of how it is
+  classified. This is the regression guard for the discriminator itself,
+  which still governs a narrower question the cash arm does not decide:
+  whether the *security-position* arm specifically is entitled to survive
+  the override. A `security_id`-keyed predicate would read this row's NULL
+  `security_id` as cash evidence and bar the override from ever touching
+  it; the `quantity`-keyed predicate correctly reads the row as security
+  evidence, so the override is entitled to cancel that arm's own
+  standing — a distinction that no longer changes whether the account
+  clears (it does not, while any row remains on this ledger), but still
+  changes what a caller reading `has_position`/`as_of` directly would see.
+  Pair with the case above, which covers a *bound* liquidation's history;
   this one covers the *unbound* shape the discriminator itself exists to
   get right.
 - **The unanchored-account guard still fails for an investment account
@@ -2616,10 +2641,14 @@ the zero's mere presence.
   account. This is the regression guard for the override's own scope rule:
   a definitive zero-*position* snapshot must not cancel a cash-only row's
   evidence, so the account stays a candidate even though its security-linked
-  rows alone would have been overridden. Pair with the "does not fail" case
-  above using the identical liquidation fixture minus this one cash-only
-  row, so the two together prove the override discriminates on `quantity`,
-  not on the account's presence in the investment ledger generally.
+  rows alone would have been overridden. This fixture adds one row beyond
+  what the cash arm's general rule already fails on with no cash-only row
+  at all (§Tier 3, "still fails for a broker-reported definitive zero when
+  the investment ledger nets to zero") — it exists to guard a narrower
+  regression than the cash arm's own existential test: a predicate that let
+  the override reach past the security-position arm and cancel this
+  cash-only row's evidence too, rather than staying scoped to the arm the
+  override actually cancels.
 - **The unanchored-account guard judges a depository account on its own
   evidence, never a sibling brokerage's snapshot — the receipt-scope
   correction (§Data Model, `core.dim_holdings_broker_reported`).**
@@ -2638,30 +2667,29 @@ the zero's mere presence.
   account the holdings product never covered.
 - **The unanchored-account guard still fails when the sale that liquidates
   the position is itself the account's only cash evidence — the cash arm's
-  aggregate boundary (§Data Model, `SUM(amount)`, review thread
-  `3999065574`).** `moneybin system doctor` against a persona whose only
-  account is the same liquidated investment account as above — live broker
-  connection, a definitive-zero newest snapshot in either shape — but with
-  `core.fct_investment_transactions` carrying only the buy-then-sell pair
-  itself, sold at a gain so the pair's amounts do not net to zero, and no
-  separate cash-only row of any kind. The account still has no balance
-  observation of any kind. Exits `1`, with `net_worth_unanchored_accounts`
-  at `fail` and `affected_ids` naming the account. This is the regression
-  guard for computing the cash arm as `SUM(amount)` over every row rather
-  than as a filtered subset of `quantity IS NULL` rows: a predicate that
-  drops every `quantity IS NOT NULL` row from the cash sum discards the
-  sell row's own credit along with the position it also carries, and this
-  fixture has no other row to fall back on, so the earlier predicate
-  silently contributed zero for it. Pair with the "does not fail" case
-  above, whose buy-then-sell pair is sold at cost and nets to exactly
-  zero, and with the cash-evidence-boundary case above, whose credit lands
-  on a separate `quantity IS NULL` row instead of the sell row itself — the
-  three together prove the predicate reads the ledger's arithmetic, never
-  a row's shape.
+  aggregate boundary (§Data Model).** `moneybin system doctor` against a
+  persona whose only account is the same liquidated investment account as
+  above — live broker connection, a definitive-zero newest snapshot in
+  either shape — but with `core.fct_investment_transactions` carrying only
+  the buy-then-sell pair itself, sold at a gain so the pair's amounts do
+  not net to zero, and no separate cash-only row of any kind. The account
+  still has no balance observation of any kind. Exits `1`, with
+  `net_worth_unanchored_accounts` at `fail` and `affected_ids` naming the
+  account. This is the regression guard for computing the cash arm
+  existentially over every row rather than as a filtered subset of
+  `quantity IS NULL` rows: a predicate that drops every `quantity IS NOT
+  NULL` row from consideration discards the sell row's own credit along
+  with the position it also carries, and this fixture has no other row to
+  fall back on, so the earlier predicate silently contributed zero for it.
+  Pair with the "still fails for a broker-reported definitive zero when the
+  investment ledger nets to zero" case above, whose buy-then-sell pair is
+  sold at cost and nets to exactly zero, and with the cash-evidence-boundary
+  case above, whose credit lands on a separate `quantity IS NULL` row
+  instead of the sell row itself — the three together prove the predicate
+  reads the ledger's rows, never their arithmetic or their shape.
 - **The unanchored-account guard still fails when a synthetic bootstrap
-  row is what makes the liquidating sale net to zero — the cash arm's
-  bootstrap boundary (§Data Model, `SUM(amount)`, review threads
-  `4000344924`, `4000359362`).** `moneybin system doctor` against a
+  row is what makes the liquidating sale net to zero — one instance of the
+  same general rule (§Data Model).** `moneybin system doctor` against a
   persona whose only account is a liquidated investment account — live
   broker connection, a definitive-zero newest snapshot in either shape —
   whose entire `core.fct_investment_transactions` history is a synthetic
@@ -2670,20 +2698,18 @@ the zero's mere presence.
   that cost, so the pair's net cash effect is zero. The account has no
   balance observation of any kind. Exits `1`, with
   `net_worth_unanchored_accounts` at `fail` and `affected_ids` naming the
-  account. This is the regression guard for reading a bootstrap-tainted
-  zero as inconclusive rather than decisive: the bootstrap row's `amount`
-  is synthesized from cost basis, never observed
-  (`prep.stg_plaid__opening_lots.sql:27-30`), so a zero sum it
-  participates in proves the ledger's *movement* canceled, not that the
-  account's cash is actually zero — the account's real sale proceeds go
-  unobserved by any balance. Pair with the "does not fail for a
-  broker-reported definitive zero" case above, whose buy-then-sell pair
-  is two ordinary, fully-observed rows and correctly nets to a decisive
-  zero, so the two together prove the predicate discriminates on whether
-  a bootstrap row contributed to the zero, not on the sum's value alone.
+  account. This is the regression guard for the cash arm's rule applying
+  uniformly regardless of what produced the zero: the bootstrap row's
+  `amount` is synthesized from cost basis, never observed
+  (`prep.stg_plaid__opening_lots.sql:27-30`), but an ordinary,
+  fully-recorded zero — proven by the "still fails for a broker-reported
+  definitive zero when the investment ledger nets to zero" case above —
+  fails the exact same way for the exact same reason, so together the two
+  prove the predicate never discriminates on how the zero was reached, only
+  on whether the ledger carries any row at all.
 - **The unanchored-account guard still fails for a definitive-zero receipt
   that predates a later unbound buy — the override's temporal precondition
-  (§Data Model, review thread `3999065577`).** `moneybin system doctor`
+  (§Data Model).** `moneybin system doctor`
   against a persona whose only account is the same liquidated investment
   account's item, but with one more `core.fct_investment_transactions` row
   after the definitive-zero snapshot's own `as_of`: an unbound buy or
@@ -2756,12 +2782,12 @@ multi-currency, and sixteen for `M2B.3`:
   carries no balance observation of any kind, and
   `core.fct_investment_transactions` carries its real buy-then-sell history
   ending in that disposal, **sold at cost so the pair's net cash effect is
-  decisively zero** — not an empty ledger, which would prove nothing about
+  exactly zero** — not an empty ledger, which would prove nothing about
   the override this fixture exists to exercise, and not a nonzero net cash
   effect, which the cash-arm-aggregate fixture below distinguishes it from.
-  Added to the same persona; the fixture the Tier 3 "does not fail for a
-  broker-reported definitive zero" case reads for its zero-quantity-row
-  half.
+  Added to the same persona; the fixture the Tier 3 "still fails for a
+  broker-reported definitive zero when the investment ledger nets to zero"
+  case reads for its zero-quantity-row half.
 - For `M2B.3`'s empty-receipt liquidation shape — the no-row twin of the
   fixture above, and the common case in practice: the same fully-liquidated
   persona account, broker connection live, but with its newest snapshot
@@ -2769,9 +2795,9 @@ multi-currency, and sixteen for `M2B.3`:
   reporting `quantity = 0`. The account still carries no balance observation
   of any kind, and `core.fct_investment_transactions` still carries its real
   buy-then-sell history ending in the disposal, sold at cost for the same
-  reason as above. Added to the same persona; the fixture the Tier 3 "does
-  not fail for a broker-reported definitive zero" case reads for its
-  empty-receipt half.
+  reason as above. Added to the same persona; the fixture the Tier 3 "still
+  fails for a broker-reported definitive zero when the investment ledger
+  nets to zero" case reads for its empty-receipt half.
 - For `M2B.3`'s discriminator boundary — the unbound-security shape: the
   same fully-liquidated persona account — live broker connection, a
   definitive-zero newest snapshot in either shape above — but with its
@@ -2980,7 +3006,20 @@ approved as a footnote rather than reviewed on its own terms.
   path, and the `app.*` semantic it would change is not yet locked. Until the
   rework lands, a user who round-trips an archive gets a wrong net-worth
   history for the archived interval.
-- **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
+- **A reversible-setting change is not reflected until the next `moneybin
+  transform`.** `core.dim_accounts` is `kind FULL`
+  (`src/moneybin/sqlmesh/models/core/dim_accounts.sql`) — refreshed only by an
+  explicit transform run, not on every `app.account_settings` write.
+  `accounts set --exclude`, archive, and unarchive all write `app.*` directly
+  with no call that rebuilds `dim_accounts`, so both `net_worth_unanchored_accounts`
+  (`fail`) and `net_worth_stale_balance` (`warn`) read the account's
+  pre-change eligibility until the next transform — inherited from the
+  already-shipped `reports.net_worth` filter this spec did not introduce, but
+  now wired to a release-gating exit code for the first time. Closing it
+  means reading eligibility from a live relation instead of a materialized
+  one, which is a bigger change than this beta's scope; until then, a
+  settings change that should flip an account's eligibility needs a
+  `moneybin transform` before `moneybin system doctor` reflects it. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
 - **`net_contribution`** — separating "grew from deposits" from "grew from
