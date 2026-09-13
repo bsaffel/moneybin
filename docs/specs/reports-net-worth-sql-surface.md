@@ -128,7 +128,9 @@ this spec's to close.
    see §Key Decision 5. **This requirement has a prerequisite that is not this
    spec's to build** — retiring the archive cascade in `AccountService`, without
    which `archived_at` preserves nothing. See §`app.account_settings` and
-   §Prerequisites.
+   §Prerequisites. **A single `archived_at` cutoff cannot represent an
+   archive → unarchive → re-include round trip** — see §Out of Scope for the
+   interval it reports wrongly and why the fix is deferred.
 
     **Inherited from the prerequisite: a set of accounts this requirement has
     to decide.** `V060` backfills `archived_at` but deliberately leaves
@@ -2651,6 +2653,29 @@ approved as a footnote rather than reviewed on its own terms.
   guessing risks NULLing every profile that has one for no evidence-backed
   reason. It goes silently absent, unchanged from today — the residual gap
   stated at Requirement 14's qualifier rather than a case this guard closes.
+- **Reactivation after an archive is not represented — one cutoff cannot hold
+  two transitions.** An account that is archived, later unarchived, and then
+  explicitly re-included (`unarchive()` does not restore
+  `include_in_net_worth` on its own — see §Prerequisites) passes through
+  three lifecycle states: active, archived, active again. Requirement 9
+  represents eligibility with a single `archived_at DATE`, cleared back to
+  `NULL` on unarchive, and its predicate (`archived_at IS NULL OR
+  balance_date <= archived_at`) reads a cleared cutoff as "never archived."
+  So once the round trip completes, every balance dated during the interval
+  the account was archived is retroactively restored into net worth — this
+  ships with history overstated for exactly that interval, not the interval
+  before or after it. The alternative — leaving `archived_at` stamped through
+  `unarchive()` — trades that failure for the opposite one, excluding every
+  balance dated after reactivation instead; neither single cutoff represents
+  both transitions correctly. The durable fix is dated eligibility intervals,
+  or an equivalent archive/unarchive lifecycle history, replacing the single
+  cutoff. That rework is deferred to before the launch trigger
+  (`.claude/rules/design-principles.md`'s pre-launch posture: M3E hosted
+  launch, or the first tagged release adopted by a non-author user), not to
+  `M2B.3` — an archive→unarchive round trip is not this beta's critical
+  path, and the `app.*` semantic it would change is not yet locked. Until the
+  rework lands, a user who round-trips an archive gets a wrong net-worth
+  history for the archived interval.
 - **Return metrics** — TWR, IRR, MWR. These are transaction-replay problems,
   not aggregations over any balance grain however fine. No rung of this ladder
   reaches them, and none should grow a column that pretends to.
