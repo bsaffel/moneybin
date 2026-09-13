@@ -481,6 +481,39 @@ def test_pull_flags_manual_plaid_overlap(
     assert result.investment_source_overlap_accounts == [canonical_account_id]
 
 
+def test_holdings_only_pull_flags_manual_overlap(
+    db: Database,
+    loader: PlaidExtractor,
+    mock_investments_client: MagicMock,
+    investments_sync_data: SyncDataResponse,
+) -> None:
+    holdings_only = investments_sync_data.model_copy(
+        update={"investment_transactions": []}
+    )
+    mock_investments_client.get_data.return_value = holdings_only
+    service = SyncService(client=mock_investments_client, db=db, loader=loader)
+    service.pull(refresh=False)
+    link = db.execute("""
+        SELECT account_id FROM app.account_links
+        WHERE status = 'accepted' AND ref_kind = 'source_native'
+          AND source_type = 'plaid' AND ref_value = 'acc_1'
+    """).fetchone()
+    assert link is not None
+    db.execute(
+        """
+        INSERT INTO raw.manual_investment_transactions (
+            source_transaction_id, import_id, account_id, type, trade_date, created_by
+        ) VALUES ('manual_holdings', 'imp_holdings', ?, 'buy', '2026-07-01', 'cli')
+    """,
+        [link[0]],
+    )
+    assert db.execute(
+        "SELECT COUNT(*) FROM raw.plaid_investment_transactions"
+    ).fetchone() == (0,)
+    result = service.pull(refresh=False)
+    assert result.investment_source_overlap_accounts == [link[0]]
+
+
 @pytest.mark.usefixtures("mock_sync_refresh")
 def test_link_new_institution_auto_pulls(
     mock_client: MagicMock,

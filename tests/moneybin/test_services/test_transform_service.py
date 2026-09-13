@@ -1062,7 +1062,6 @@ def test_freshness_pending_after_a_manual_investment_event_is_recorded(
         fees=None,
         acquired=None,
         basis=None,
-        event_group_id=None,
         currency_code="USD",
         description="buy aapl",
         actor="cli",
@@ -1075,7 +1074,7 @@ def test_freshness_pending_after_a_manual_investment_event_is_recorded(
 def test_pending_scan_set_covers_every_raw_table_the_transforms_read(
     db: Database,
 ) -> None:
-    """The scan set must equal the raw tables SQLMesh models actually read.
+    """Every model input has a direct scan or an atomically published receipt.
 
     Set equality both ways, not a count and not a subset. A raw table wired
     into a model but absent here is data whose arrival ``pending`` cannot
@@ -1084,10 +1083,15 @@ def test_pending_scan_set_covers_every_raw_table_the_transforms_read(
     """
     from moneybin.services.transform_service import (
         _RAW_LANDING_COLUMNS,  # pyright: ignore[reportPrivateUsage]  # the guarded list
+        _RAW_RECEIPT_COVERAGE,  # pyright: ignore[reportPrivateUsage]  # the guarded receipt mapping
     )
     from moneybin.sqlmesh_registry import raw_tables_read_by_models
 
-    assert set(_RAW_LANDING_COLUMNS) == set(raw_tables_read_by_models())
+    assert set(_RAW_RECEIPT_COVERAGE.values()) <= set(_RAW_LANDING_COLUMNS)
+    assert set(_RAW_LANDING_COLUMNS).isdisjoint(_RAW_RECEIPT_COVERAGE)
+    assert set(_RAW_LANDING_COLUMNS) | set(_RAW_RECEIPT_COVERAGE) == set(
+        raw_tables_read_by_models()
+    )
 
 
 def test_symbolic_model_kinds_match_sqlmesh() -> None:

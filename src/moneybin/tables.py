@@ -123,6 +123,9 @@ LOT_SELECTIONS = TableRef("app", "lot_selections")
 MANUAL_INVESTMENT_TRANSACTIONS = TableRef("raw", "manual_investment_transactions")
 PLAID_SECURITIES = TableRef("raw", "plaid_securities")
 PLAID_INVESTMENT_TRANSACTIONS = TableRef("raw", "plaid_investment_transactions")
+PLAID_INVESTMENT_TRANSACTION_RECEIPTS = TableRef(
+    "raw", "plaid_investment_transaction_receipts"
+)
 PLAID_INVESTMENT_HOLDINGS = TableRef("raw", "plaid_investment_holdings")
 PLAID_INVESTMENT_HOLDING_LOTS = TableRef("raw", "plaid_investment_holding_lots")
 PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS = TableRef(
@@ -149,6 +152,15 @@ EXCHANGE_RATE_OVERRIDES = TableRef("app", "exchange_rate_overrides")
 BRIDGE_CURRENCY_CONVERSIONS = TableRef("core", "bridge_currency_conversions")
 FCT_CURRENCY_LOTS = TableRef("core", "fct_currency_lots")
 FCT_REALIZED_FX_GAINS = TableRef("core", "fct_realized_fx_gains")
+# The rate spine (reports-net-worth-sql-surface.md §Rate models). Internal for
+# now, same as the three tables above: nothing in reports.* joins it yet (that
+# lands with the report rungs this spec's spine feeds), so there is no
+# schema-catalog example query to write. Promote to audience="interface"
+# alongside that work.
+STG_EXCHANGE_RATES = TableRef("prep", "stg_exchange_rates")
+FCT_EXCHANGE_RATES = TableRef("core", "fct_exchange_rates")
+FCT_EXCHANGE_RATES_DAILY = TableRef("core", "fct_exchange_rates_daily")
+FCT_EXCHANGE_RATES_EFFECTIVE = TableRef("core", "fct_exchange_rates_effective")
 
 # -- Seed tables (materialized by SQLMesh from CSV) --
 SEED_CATEGORIES = TableRef("seeds", "categories")
@@ -180,6 +192,7 @@ STG_PLAID_INVESTMENT_TRANSACTIONS = TableRef(
     "prep", "stg_plaid__investment_transactions"
 )
 STG_PLAID_INVESTMENT_HOLDINGS = TableRef("prep", "stg_plaid__investment_holdings")
+INT_MANUAL_INVESTMENT_IDENTITY = TableRef("prep", "int_manual__investment_identity")
 STG_PLAID_OPENING_LOT_REVIEW = TableRef("prep", "stg_plaid__opening_lot_review")
 
 # -- Meta schema (cross-source provenance + lineage) --

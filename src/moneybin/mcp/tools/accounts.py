@@ -644,6 +644,11 @@ def _account_link_binding(
             "decision_id": decision_id,
             "action": "accept",
             "target_account_id": target_account_id,
+            "lot_selections_before": [
+                list(row) for row in impact.lot_selections_before
+            ],
+            "lot_selections_after": [list(row) for row in impact.lot_selections_after],
+            "manual_identity": [list(row) for row in impact.manual_identity],
         },
         resolved_ids=(
             impact.provisional_account_id,

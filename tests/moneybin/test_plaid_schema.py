@@ -17,6 +17,7 @@ def test_raw_plaid_tables_exist(db: Database) -> None:
         "plaid_investment_holding_lots",
         "plaid_investment_holdings",
         "plaid_investment_holdings_snapshots",
+        "plaid_investment_transaction_receipts",
         "plaid_investment_transactions",
         "plaid_securities",
         "plaid_transactions",

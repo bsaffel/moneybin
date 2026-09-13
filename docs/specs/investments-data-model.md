@@ -574,8 +574,12 @@ carrying a group identifier, with basis derived from the exchange ratio:
 This describes the ledger representation and pre-M1J.7 Source-group provenance,
 not a compound shape the M1J.7 matcher supports. After slice 1, CLI and MCP
 cannot author a two-security action until a future interface can submit and
-validate the complete compound event atomically. Existing grouped rows retain
-their Source group as provenance and remain atomic but match-ineligible.
+validate the complete compound event atomically. Only a complete validated
+supported legacy reinvest becomes an atomic comparison event. Every other shared
+legacy group retains its Raw rows and Source group strings unchanged, projects
+each row separately, and marks every member match-ineligible without salvaging a
+subset. A lone unused hint remains a normal singleton. Recognition of complete
+unsupported compounds awaits an accepted evidence and completeness contract.
 
 - **Merger / share-class conversion**: `transfer_out` of the old security +
   `transfer_in` of the new, basis carried via `--basis`, holding period via
@@ -930,8 +934,8 @@ Per `surface-design.md` — one tool per operation shape, no polymorphic `*_set`
 
 **`investments_record`** — Shape 3 (discrete batch event). Record one or more investment
 events; resolves securities, reports unresolved refs in `error_details`. The
-shipped surface accepts `subtype` and `event_group_id` per event; M1J.7 removes
-the caller-authored grouping input. A `reinvest` event expands to the acquisition
+surface accepts `subtype` per event; M1J.7 slice 1 removes the former
+caller-authored `event_group_id` input. A `reinvest` event expands to the acquisition
 and income row pair exactly like the CLI convenience and receives an internally
 minted Source group (same outcomes, per functional parity). The batch is
 **atomic**: all events are validated and resolved before any write, then written

@@ -890,7 +890,6 @@ class InvestmentService:
         fees: Decimal | None,
         acquired: date | None,
         basis: Decimal | None,
-        event_group_id: str | None,
         currency_code: str | None,
         description: str | None,
         actor: str,
@@ -946,7 +945,6 @@ class InvestmentService:
             fees=fees,
             acquired=acquired,
             basis=basis,
-            event_group_id=event_group_id,
             currency_code=currency_code,
             description=description,
             created_by=created_by,
@@ -991,6 +989,11 @@ class InvestmentService:
         groups: list[tuple[str, list[dict[str, object]]]] = []
         error_details: list[dict[str, str]] = []
         for index, ev in enumerate(events):
+            if "event_group_id" in ev:
+                raise UserError(
+                    "Caller-authored event grouping is unavailable; submit one reinvest event.",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                )
             type_ = ev["type_"]
             security_ref = ev["security_ref"]
             # HARD: taxonomy/sign/subtype/presence + account resolution.
@@ -1025,7 +1028,6 @@ class InvestmentService:
                 fees=ev["fees"],
                 acquired=ev["acquired"],
                 basis=ev["basis"],
-                event_group_id=ev["event_group_id"],
                 currency_code=_blank_to_none(ev["currency_code"]),
                 description=ev["description"],
                 created_by=created_by,
@@ -1146,7 +1148,6 @@ class InvestmentService:
         fees: Decimal | None,
         acquired: date | None,
         basis: Decimal | None,
-        event_group_id: str | None,
         currency_code: str | None,
         description: str | None,
         created_by: str,
@@ -1185,7 +1186,7 @@ class InvestmentService:
 
         if type_ == "reinvest":
             # Share a minted event_group_id across the acquisition + income legs.
-            group_id = event_group_id or uuid.uuid4().hex[:12]
+            group_id = uuid.uuid4().hex[:12]
             income_type = _REINVEST_INCOME_TYPE[subtype or "dividend"]
             acquisition = base_row(
                 row_type="reinvest",
@@ -1226,7 +1227,7 @@ class InvestmentService:
                     row_price=None,
                     row_amount=None,
                     row_fees=None,
-                    row_group_id=event_group_id,
+                    row_group_id=None,
                     row_oad=None,
                 )
             ]
@@ -1242,7 +1243,7 @@ class InvestmentService:
                     row_price=price,
                     row_amount=row_amount,
                     row_fees=fees,
-                    row_group_id=event_group_id,
+                    row_group_id=None,
                     row_oad=acquired,
                 )
             ]
@@ -1255,7 +1256,7 @@ class InvestmentService:
                 row_price=price,
                 row_amount=amount,
                 row_fees=fees,
-                row_group_id=event_group_id,
+                row_group_id=None,
                 row_oad=acquired,
             )
         ]
@@ -1352,7 +1353,7 @@ class InvestmentService:
                 actor=actor,
             )
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             import_log.finalize_import(
                 self._db,
@@ -1429,7 +1430,7 @@ class InvestmentService:
                 actor=actor,
             )
             self._db.commit()
-        except Exception:
+        except BaseException:
             self._db.rollback()
             import_log.finalize_import(
                 self._db,

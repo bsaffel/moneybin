@@ -1,7 +1,7 @@
 # Investment Event Matching
 
-> Last updated: 2026-09-05
-> Status: ready
+> Last updated: 2026-09-09
+> Status: in-progress
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
 > Owns: source-neutral matching of whole investment events, review decisions,
@@ -37,8 +37,9 @@ review-first launch posture:
 4. Matching is atomic at each adapter-validated Source-event boundary. MoneyBin
    never accepts only part of such an event. M1J.7's only match-eligible compound
    Source shape is reinvest; supported `transfer_in` and `transfer_out`
-   observations remain one-leg events. Retained legacy manual compounds are
-   atomic but match-ineligible.
+   observations remain one-leg events. Shared legacy manual groups without a
+   validated complete reinvest shape remain separately projected and wholly
+   match-ineligible.
 5. Every candidate remains pending until a person accepts or rejects it in the
    first production release. The engine may label a candidate `auto_eligible`
    for measurement, but that label has no mutation authority.
@@ -194,14 +195,13 @@ event and MoneyBin mints its opaque Source group reference internally. Every
 other supported manual entry is a singleton. A future manual compound shape
 must arrive as one atomic, structurally validated event; reusing a string across
 calls never appends a leg. Pre-M1J.7 group strings are untrusted migration hints:
-only a complete supported shape becomes match-eligible. Rows sharing a legacy
-group that represents a complete but unsupported multi-row action, such as a
-merger or spin-off, remain one atomic Source event for migration and projection
-but are ineligible for any Proposal. If the shared group is incomplete or
-structurally ambiguous, its rows remain separate ledger events, retain the
-original string as provenance, and are all match-ineligible rather than becoming
-ordinary transfer candidates. A lone row with an unused legacy string remains a
-normal singleton because there is no recorded multi-row relationship to sever.
+only a complete validated supported reinvest becomes an atomic comparison event.
+Every other shared legacy group is structurally unverified: preserve all Raw
+rows and group strings, project the rows separately, and mark every member
+match-ineligible. Never salvage an eligible subset of a shared group. A lone
+unused hint remains an ordinary singleton subject to normal eligibility gates.
+Recognition of complete unsupported manual compounds is deferred until an
+accepted contract defines the necessary evidence and completeness predicate.
 
 The Plaid comparison adapter constructs a two-leg reinvest Source event only
 when exactly one normalized `reinvest` acquisition and one income observation
@@ -342,6 +342,14 @@ aggregator split semantics, so a Plaid split cannot enter a matching Proposal in
 this increment.
 
 ### Candidate bands
+
+The slice-1 SQL foundation blocks unrelated Account, Security, effective-currency,
+and type-specific date neighborhoods before calculating pair evidence. A Plaid
+Account requires exactly one accepted source-native route; a dimension row under
+the native fallback key does not ratify identity. Ledger fallback behavior stays
+separate. Candidate eligibility requires compatible normalized leg types and
+complete correspondence of both events: blocking one reinvest income leg cannot
+leave its acquisition leg eligible as a partial event.
 
 Candidates are evaluated in descending confidence:
 
@@ -508,6 +516,34 @@ Account and Security ids, the relevant accepted Link or merge decision
 generation, and any canonical Account currency used for effective currency.
 Broad entity `updated_at` values are excluded so display-only edits do not stale
 a Proposal. Planning and acceptance recompute the dependency tuple.
+
+Slice 1 preserves existing audited Account and Security identity operations and
+their necessary ledger and lot effects; its exclusion concerns new investment-
+match decisions, membership, assignment, and matching-driven Golden selection.
+At upgrade, manual Raw values freeze exactly as stored, without restoring older
+audit images or claiming recovered historical revisions. Accepted manual
+Security Links use `manual_investment_transaction_id` keyed by native
+`source_transaction_id`; absence restores the entry-time or cutover assignment.
+Account routing follows current accepted equivalent merge decisions to a unique
+existing terminal; divergent routes, cycles, and missing terminals stay
+unresolved. No partial split or unlink surface is added.
+
+Supported historical security-only Raw repoint operations remain undoable through
+validated Link inverses, never Raw restoration. The complete operation must have
+full before/after captures differing only in Security, valid source identities,
+unique routes, safe later-operation dependencies across Raw and Link targets,
+and complete dependent-curation mapping. Unsupported or unprovable recovery
+refuses atomically through the existing recovery contract. Redo reverses the
+actual Link inverses without a second logical Raw mutation audit.
+
+Account and Security route publication requires complete lot-selection preflight
+and audited remapping in the same transaction, or refusal before writes. A
+second merge before refresh cannot rely on stale Core as proof of an empty
+selection set. Historical Account routes becoming effective at upgrade receive
+the same preflight; insufficient materialized evidence with affected selections
+causes V061 to refuse transactionally, preserving its affected Raw observations,
+routes, selections, and audit state. Earlier successfully applied migrations
+remain committed and recorded.
 
 Canonical identity operations never rewrite Raw observations after M1J.7. An
 audited equivalence merge changes Link or alias routing and forwards the prior
@@ -1225,31 +1261,25 @@ rollback. A later refresh retries the rebuild from the same durable membership.
 
 ## Visible-collision guard and promotion
 
-The existing MB-97 safety boundary is a visible-collision guard, not
-account-level withholding. When manual and aggregator investment histories
-coexist for one Account, SyncService emits the review-surfaced warning and
-system doctor reports the overlap. Core, lots, gains, and reports still include
-both histories, so they remain explicitly untrusted for that Account until the
-person selects one history. M1J.7 materialization alone does not remove the
-warning or make the remaining unmatched history trustworthy.
+When manual and aggregator investment histories coexist for one Account,
+SyncService warns and system doctor reports the overlap. The account-level
+holdings withholding shipped in #541 remains active with its existing
+opening-bootstrap exclusion and unchanged withheld figures. Slice #526 expands
+the warning and doctor evidence to include Plaid holdings/bootstrap observations
+as well as transaction observations. Detection and withholding have distinct
+predicates: broader detection does not broaden withholding. M1J.7
+materialization alone does not remove this safety boundary or make remaining
+unmatched history trustworthy.
 
 During initial rollout, a pending Proposal, including one with
 `is_competing=true`, or a stale, unsupported, or otherwise ambiguous event risk
 keeps that warning active. Accepting one Match does not establish that every
 remaining row is safe.
 
-The shipped overlap detector currently observes Plaid investment transactions,
-but bootstrap opening lots can also enter Core from Plaid holdings. That is an
-unclosed guard gap: M1J.7 slice 1 must expand SyncService and system doctor
-overlap evidence to cover both transaction observations and holdings/bootstrap
-evidence before later slices may rely on the warning. This design PR does not
-claim that expansion is implemented.
-
 Replacing or narrowing the visible-collision guard is a separate promotion
 decision after real-data evidence. It must define the exact state and read
 semantics and prove which unmatched rows can be trusted without double-counting.
-Account-level withholding is not part of the current guard or this initial
-matcher delivery.
+Accepting one investment Match does not clear the shipped holdings withholding.
 
 Automatic acceptance is also a separate promotion. The first release may
 record which Proposals would have been auto-eligible so first-decision review
@@ -1257,6 +1287,10 @@ quality can be measured as one input to that later decision without granting
 them mutation authority.
 
 ## Observability
+
+Slice 1 reuses the existing sync investment-record counter for committed
+transaction receipts; replay contributes no new receipt count. Its comparison
+views emit no planner or decision metrics because this slice creates neither.
 
 Metrics use bounded, non-sensitive labels and are added to
 `src/moneybin/metrics/registry.py`:
@@ -1301,7 +1335,7 @@ fixtures and expected Golden-ledger outcomes.
 | Corrections | Delivered Plaid revisions follow the singleton-versus-reviewed lifecycle; when a correction splits a Source event held by a stale accepted Match, its reconstructed current events may support replacement planning but remain reserved from standalone projection, so old and new revisions never project together; Plaid cancellation/retraction produces no candidate because its native relationship is unavailable; a generic comparison-adapter fixture proves validated native or remembered reversal relationships while fuzzy-only similarity is rejected; after evidence or identity changes, replacement or reversal atomically releases reservations and installs current successor membership or blocks rather than restoring obsolete rows; reversal remains available when event shape or semantic correspondence changed by minting new standalone ids where required, leaving the retired combined Match id terminal rather than ambiguously forwarding it; manual correction is unavailable in M1J.7 |
 | Revisions | Identical aggregator re-delivery reuses a version and per-job receipt while preserving its first-ingestion sequence; A→B→A content reuses the immutable A revision but a new receipt makes A current while retaining B in history, including when two jobs share an extraction timestamp; a changed observation version with unchanged stable native identities, unique partner, and semantic roles preserves the Source-event key and Golden ids while updating exact membership provenance, but a changed Native reference does not; a revision that loses uniqueness, becomes incomplete, or changes partner retires the affected prior membership and normally registers the rebuilt singleton or pair without reusing a changed semantic-leg id; changed accepted or multi-source evidence stales without silently changing Golden fields |
 | Opening lots | The retained first holdings snapshot is chosen independently for each `(source_account_key, source_origin)` by `(extracted_at ASC, ingestion_sequence ASC)`, so two pulls with the same extraction timestamp cannot rotate `first_snapshot_source_file` and an account first appearing in a later pull is not joined to an earlier file that lacks it; a reconstruction key survives an evidence revision with stable Golden and lot ids when canonical Account, Security, and acquisition inputs are unchanged; changed exact inputs advance revision and provenance; a correction to an accepted Match leaves gap quantity and basis on its last-reviewed transaction revisions until replacement acceptance or reversal; a canonical identity rekey remaps complete selections through audit; a vanished key retires; an impossible stored selection keeps dependent output non-current |
-| Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; a complete pre-M1J.7 manual merger, spin-off, or other unsupported compound group remains atomic but match-ineligible, while every member of an incomplete or ambiguous shared group remains separately projectable but match-ineligible so no legacy relationship is partially consolidated; a lone unused hint remains singleton provenance |
+| Manual grouping | Public caller-authored grouping is unavailable; reinvest grouping is minted and validated atomically; only a complete validated supported legacy reinvest becomes an atomic comparison event; every other shared legacy group remains separately projected and wholly match-ineligible with unchanged Raw and group provenance; a lone unused hint remains a normal singleton |
 | Identity | Unresolved or contradictory account, security, or effective currency identities remain ineligible; every active membership stores exact bound Account, Security, effective-currency, and dependency-generation values that Golden projection reads instead of live Raw routing; omitted source currency inherits the canonical account currency; an equivalence merge activates a dependency-only successor binding with stable Golden ids and projection freshness before the route is visible; an Account-currency correction does likewise for affected unreviewed projection while an accepted or multi-source Match retains reviewed bindings and stales; before a non-equivalent rebind, unlink, or split becomes visible, pending and accepted or multi-source Matches stale while a structurally unchanged standalone membership advances with stable Golden ids and a now-unresolved or structurally changed standalone retires; Raw remains unchanged |
 | Identity migration | Pre-M1J.7 source-group references and source-derived transaction ids remain provenance while every event and semantic leg receives a new Golden id; consolidation-retired post-M1J.7 event and leg ids forward through the two derived Core views, ids retired without a successor return a terminal `retired` status and null active id, and undo reactivates prior ids only through new successor memberships rebound to current exact revisions and canonical dependencies; complete lot selections repoint through unambiguous semantic-leg correspondence while incomplete or ambiguous mappings block atomically; unresolved or ambiguous current bindings block undo |
 | Splits | Normalized contract fixtures pass for supported comparison adapters; Plaid split candidates stay disabled |
@@ -1409,10 +1443,10 @@ fixtures and expected Golden-ledger outcomes.
   nor an ambiguous multi-successor id forward.
 - Manual grouping tests proving caller-authored grouping is absent from public
   inputs, reinvest grouping is system-minted and atomic, and invalid
-  pre-M1J.7 group hints do not become partially matchable observations. Complete
-  unsupported legacy compounds remain atomic but match-ineligible; every member
-  of an incomplete or ambiguous shared group remains match-ineligible, while a
-  lone unused hint stays a normal singleton.
+  pre-M1J.7 group hints do not become partially matchable observations. Only a
+  complete validated supported reinvest becomes an atomic comparison event;
+  every other shared legacy group remains separately projected and wholly
+  match-ineligible, while a lone unused hint stays a normal singleton.
 - SQLMesh tests for comparison views, Golden projection, provenance, and stable
   identities.
 - Field-provenance tests proving explicit curation wins, present values outrank
