@@ -175,17 +175,20 @@ this spec's to close.
     check that Defect 4 deferred — see §"`moneybin system doctor`: balance
     staleness" for its full specification.
 
-    **The guard applies at both grains it can reach, not only the one that
-    aggregates.** `reports.net_worth_accounts` reads the same
-    `core.fct_balances_daily` spine as `reports.net_worth`, so an eligible
-    unanchored account would otherwise produce no row there either — the
-    identical silent-zero failure this requirement exists to close, one
+    **The guard applies at the aggregate and per-account grains, deliberately
+    not at the per-currency one.** `reports.net_worth_accounts` reads the
+    same `core.fct_balances_daily` spine as `reports.net_worth`, so an
+    eligible unanchored account would otherwise produce no row there either —
+    the identical silent-zero failure this requirement exists to close, one
     rung down, where it is arguably worse: that rung is the one that answers
     "which accounts do I have," so an account vanishing from it is a more
     direct breach of the accuracy guarantee than a wrong aggregate is. The
     account rung's own signal is a row, not a count — see
     §`reports.net_worth_accounts` for why the finer grain needs no count of
-    its own.
+    its own. `reports.net_worth_currencies` carries the same failure in
+    principle — see §Out of Scope for why closing it there is real design
+    work rather than a copy of either arm above, and is deferred rather than
+    folded into this pass.
 
     **The qualifier, and why one is needed.** "No balance observation" alone
     is not sufficient to flag an account. An account with no balance, no
@@ -561,7 +564,7 @@ applies to every ordinary row, extended to the one row that has no
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
 accounts satisfying the eligible-candidate predicate stated once, above, at
-`:541-542` — not restated here, so the two cannot drift apart the way an
+`:544-545` — not restated here, so the two cannot drift apart the way an
 earlier round of this spec let them — NULL, and therefore unbounded, when
 none of them carry an `archived_at` at all. Then:
 
@@ -736,7 +739,7 @@ core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
 `core.dim_accounts.currency_code` rather than going NULL: that column is the
-account's own denomination, per this rung's own column comment at `:705`,
+account's own denomination, per this rung's own column comment at `:708`,
 independent of whether a balance was ever observed, so a Plaid account with
 a populated `iso_currency_code` but no balance, or a manual/tabular account
 with a configured or source-derived currency, still carries its known
@@ -1181,9 +1184,20 @@ describing when it said "an eligible account ... must not contribute zero in
 silence," stated at the same level of detail as the staleness check above.
 
 `net_worth_unanchored_accounts` reads `reports.net_worth_accounts` for
-`balance_date = CURRENT_DATE AND account_balance IS NULL` — exactly the
-synthesized-row signal §`reports.net_worth_accounts` states above, never a
-NULL-total read off `reports.net_worth`'s own aggregate rung. The account
+`account_balance IS NULL` alone, with **no `balance_date` filter** — never a
+NULL-total read off `reports.net_worth`'s own aggregate rung, and never
+scoped to `CURRENT_DATE`. Every ordinary row populates `account_balance`
+(the column's own comment at `:718`, "In currency_code," carries no NULL
+case); the synthesized-row arm is the only source of a NULL there, so the
+bare predicate identifies it regardless of what date
+§`reports.net_worth_accounts` dates that row at — that date is stated once,
+where the row is produced, and is not restated here. A mixed profile whose
+newest anchored balance predates today dates its synthesized row at the
+balance spine's own maximum, not at `CURRENT_DATE`
+(§`reports.net_worth_accounts`'s dating rule); filtering this check on
+`balance_date = CURRENT_DATE` in addition to `account_balance IS NULL`
+would silently exclude exactly that mixed profile, the ordinary case this
+`fail`-severity check exists to catch. The account
 rung is the one relation in this spec that names the affected accounts by
 id; `reports.net_worth`'s `unanchored_account_count` is a number with
 nothing to attach `affected_ids` to, while several existing `fail`
@@ -1365,8 +1379,9 @@ invariant exists to flag.
   Only a historical range with no balance-spine rows in it still needs the
   runner (`net_worth.py`); see §Data Model.
 - `src/moneybin/sqlmesh/models/reports/net_worth_accounts.sql` — **`M2B.3`**
-  adds the identical second `UNION ALL` arm, one row per eligible unanchored
-  account rather than one aggregate row, per §`reports.net_worth_accounts`.
+  adds the same shape of second `UNION ALL` arm, one row per eligible
+  unanchored account rather than one aggregate row and dated by this rung's
+  own rule rather than `net_worth.sql`'s, per §`reports.net_worth_accounts`.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -1375,6 +1390,12 @@ invariant exists to flag.
 - `src/moneybin/sqlmesh/models/core/dim_accounts.sql` — resolve `archived_at`
   alongside `archived`. Two column comments there still name the retired
   `agg_net_worth` model (`:362-363`); correct them while in the file.
+- `src/moneybin/privacy/taxonomy.py` — a `CLASSIFICATION` entry for
+  `archived_at` in both `("app", "account_settings")` and
+  `("core", "dim_accounts")` — the two bullets directly above add a live
+  column to each. Without both entries, classification-completeness tests
+  reject the new columns and strict report-class derivation cannot resolve
+  the `archived_at` predicates Requirement 9's eligibility filter adds.
 - `src/moneybin/services/doctor_service.py` — the
   `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
   severity, flagging an account the V060 backfill left ambiguous with no
@@ -1427,7 +1448,9 @@ invariant exists to flag.
   per-candidate synthesized-row fallback for a historical range with no
   balance-spine rows in it, one row per eligible unanchored account dated
   independently rather than one row for the whole result. The guard's own
-  NULL-column arm and `CURRENT_DATE` `UNION ALL` arm live in
+  NULL-column arm and its synthesized-row `UNION ALL` arm — dated per
+  §`reports.net_worth_accounts`'s own rule, not unconditionally at
+  `CURRENT_DATE` the way `net_worth.sql`'s arm above is — live in
   `net_worth_accounts.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
@@ -1728,11 +1751,15 @@ guard through that arm alone.
 
 The first, second, third, and seventh scenarios above also assert
 `reports.net_worth_accounts`'s own signal for the same fixture: the
-eligible unanchored account appears as a row (never absent), dated
-`CURRENT_DATE` for the wholly-unanchored persona, with `account_balance` and
-`account_balance_home` NULL and `is_observed = FALSE` — never zero rows for
-that account on that rung, which is the failure §`reports.net_worth_accounts`
-states this addition closes.
+eligible unanchored account appears as a row (never absent), with
+`account_balance` and `account_balance_home` NULL and `is_observed = FALSE`
+— never zero rows for that account on that rung, which is the failure
+§`reports.net_worth_accounts` states this addition closes. Its
+`balance_date` follows that rung's own dating rule stated once there, not
+restated here: the balance spine's own maximum for the first, second, and
+seventh scenarios' mixed anchored/unanchored profiles, and `CURRENT_DATE`
+only for the third scenario's wholly-unanchored persona, where the spine is
+empty and the rule's fallback applies.
 
 ### Tier 3 — Integration
 
@@ -1926,3 +1953,27 @@ approved as a footnote rather than reviewed on its own terms.
   investments ledger.
 - **Balance forecasting** — unchanged from M2B.1.
 - **Arbitrary display-currency conversion in SQL** — Key Decision 7.
+- **The unanchored-account guard on `reports.net_worth_currencies`** —
+  Requirement 14 closes the aggregate and per-account grains, not this one.
+  The gap is real, not hypothetical: an eligible unanchored account whose own
+  `currency_code` has no other anchored account in the whole profile
+  contributes nothing to any row of this rung, with no count or NULL to say
+  so — the same silent-zero failure the other two grains now close, and,
+  unlike the zero-evidence-account gap above, one with a known cause rather
+  than an unknowable one. Closing it is not a copy of either existing arm:
+  this rung's rows already aggregate several accounts per currency, the way
+  `reports.net_worth`'s day-grain rows aggregate every account, so a
+  currency-day row could carry a correlated `unanchored_account_count`
+  grouped by `core.dim_accounts.currency_code` (an account whose own
+  currency is itself unresolved falling into this rung's existing
+  NULL-is-unknown segment, per its own grain comment) the way
+  `reports.net_worth`'s per-row count already does. But a currency held by
+  no anchored account at all still needs its own synthesized row, and that
+  row would collapse `MAX(balance_date)` across the *whole* rung exactly the
+  way `reports.net_worth_accounts`'s did before its own fix
+  (§`reports.net_worth_accounts`), because this rung's rows are one per
+  currency rather than the single global row `reports.net_worth`'s own arm
+  produces. A correct extension therefore reuses
+  `reports.net_worth_accounts`'s synthesis-date rule at a third grouping key
+  — real design and test work, not a mechanical repeat — and is deferred to
+  its own change rather than folded into this pass silently.
