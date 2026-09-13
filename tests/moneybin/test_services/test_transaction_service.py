@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -174,6 +175,34 @@ class TestAnnotationBatches:
         assert [outcome.changed for outcome in result.outcomes] == [True, True]
         assert service.list_notes("MISSING") == []
         assert service.list_tags("MISSING") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_clears_existing_orphan_splits(
+        self, transaction_db: Database
+    ) -> None:
+        """``SplitsSet`` with an empty desired list stays permissive on a dead id.
+
+        Mirrors ``test_apply_annotations_clears_existing_orphan_note_and_tags``
+        for splits: the add-vs-remove asymmetry applies uniformly across every
+        curation kind the batch surface carries.
+        """
+        transaction_db.conn.execute(
+            """
+            INSERT INTO app.transaction_splits
+                (split_id, transaction_id, amount, ord, created_by)
+            VALUES ('orphan_split', 'MISSING', -5.00, 0, 'test')
+            """
+        )
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="MISSING", splits=[])],
+            actor="mcp",
+            operation_id="op_orphan_cleanup_splits",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert service.list_splits("MISSING") == []
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -1850,6 +1879,55 @@ class TestManualEntry:
         assert "category.set" in actions
 
     @pytest.mark.unit
+    def test_create_manual_batch_categorization_skips_transaction_id_resolution(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Categorizing a fresh manual batch must not resolve ids it just minted.
+
+        Each entry's ``transaction_id`` is the predicted gold key this same
+        call derived moments earlier (see ``ManualEntryRawResult``'s
+        docstring) — it cannot possibly be aliased yet, so resolving it again
+        per row would cost up to ``_MANUAL_BATCH_MAX`` individual
+        catalog+liveness round trips for zero benefit.
+        """
+        self._seed_account(transaction_db)
+        service = TransactionService(transaction_db)
+
+        real_execute = transaction_db.execute
+        liveness_queries: list[str] = []
+
+        def counting_execute(query: str, params: list[Any] | None = None) -> object:
+            if (
+                "manual_transactions" in query.lower()
+                and "transaction_id in (" in query.lower()
+            ):
+                liveness_queries.append(query)
+            return real_execute(query, params)
+
+        monkeypatch.setattr(transaction_db, "execute", counting_execute)
+
+        result = service.create_manual_batch(
+            [
+                self._entry(category="Food & Drink", subcategory="Coffee Shops"),
+                self._entry(category="Shopping", amount=Decimal("-20.00")),
+                self._entry(category="Food & Drink", amount=Decimal("-30.00")),
+            ],
+            actor="cli",
+        )
+
+        assert len(liveness_queries) == 0, (
+            "Expected zero transaction-id resolution queries for freshly-"
+            f"minted manual ids, got {len(liveness_queries)}"
+        )
+        placeholders = ", ".join("?" for _ in result.results)
+        cat_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_categories "  # noqa: S608  # test-built placeholders, not user input
+            f"WHERE transaction_id IN ({placeholders})",
+            [r.transaction_id for r in result.results],
+        ).fetchone()
+        assert cat_count == (3,)
+
+    @pytest.mark.unit
     def test_create_manual_batch_without_category_writes_no_categorization(
         self, transaction_db: Database
     ) -> None:
@@ -1963,3 +2041,421 @@ class TestManualEntry:
         service = TransactionService(transaction_db)
         with pytest.raises(ValueError, match=r"entries\[0\]\.currency_code"):
             service.create_manual_batch([self._entry(currency_code="usd")], actor="cli")
+
+
+class TestCurationTransactionIdResolution:
+    """Curation writes resolve a superseded transaction_id (issue #538).
+
+    ``transaction_db`` seeds ``core.fct_transactions`` with a live 'T1'; each
+    test additionally aliases 'T1_OLD' -> 'T1' in ``app.transaction_id_aliases``
+    to model a dedup merge that re-keyed the canonical id after a caller had
+    already been handed the old one.
+    """
+
+    @pytest.fixture()
+    def superseded_db(self, transaction_db: Database) -> Database:
+        transaction_db.conn.execute(
+            "INSERT INTO app.transaction_id_aliases "
+            "(old_transaction_id, new_transaction_id, created_at) "
+            "VALUES ('T1_OLD', 'T1', CURRENT_TIMESTAMP)"
+        )
+        return transaction_db
+
+    @staticmethod
+    def _reachable_via_fct(
+        db: Database, *, table: str, id_column: str, id_value: str
+    ) -> bool:
+        """Whether a curation row is reachable by the doctor's own anti-join.
+
+        Same shape as the FK invariants: ``core.fct_transactions`` joined on
+        ``transaction_id``.
+        """
+        row = db.conn.execute(
+            f"SELECT 1 FROM {table} c "  # noqa: S608  # test-only table name from a fixed allowlist
+            "JOIN core.fct_transactions t ON t.transaction_id = c.transaction_id "
+            f"WHERE c.{id_column} = ?",
+            [id_value],
+        ).fetchone()
+        return row is not None
+
+    @pytest.mark.unit
+    def test_add_note_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        note = service.add_note("T1_OLD", "resolved note", actor="test")
+        assert note.transaction_id == "T1"
+        assert self._reachable_via_fct(
+            superseded_db,
+            table="app.transaction_notes",
+            id_column="note_id",
+            id_value=note.note_id,
+        )
+
+    @pytest.mark.unit
+    def test_add_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        added = service.add_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert added == ["roadtrip"]
+        assert service.list_tags("T1") == ["roadtrip"]
+        assert service.list_tags("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_add_split_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        split = service.add_split(
+            "T1_OLD", Decimal("-50.00"), note="half", actor="test"
+        )
+        assert split.transaction_id == "T1"
+        assert self._reachable_via_fct(
+            superseded_db,
+            table="app.transaction_splits",
+            id_column="split_id",
+            id_value=split.split_id,
+        )
+
+    @pytest.mark.unit
+    def test_remove_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_tags("T1", ["roadtrip"], actor="test")
+        removed = service.remove_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert removed == ["roadtrip"]
+        assert service.list_tags("T1") == []
+
+    @pytest.mark.unit
+    def test_set_tags_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.set_tags("T1_OLD", ["roadtrip"], actor="test")
+        assert result == ["roadtrip"]
+        assert service.list_tags("T1") == ["roadtrip"]
+
+    @pytest.mark.unit
+    def test_clear_splits_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), note="half", actor="test")
+        service.clear_splits("T1_OLD", actor="test")
+        assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_set_splits_against_superseded_id_resolves_to_live_transaction(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.set_splits(
+            "T1_OLD", [{"amount": Decimal("-50.00")}], actor="test"
+        )
+        assert [split.transaction_id for split in result] == ["T1"]
+        assert [split.transaction_id for split in service.list_splits("T1")] == ["T1"]
+
+    @pytest.mark.unit
+    def test_add_note_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """An unresolvable id is refused, never silently written as an orphan.
+
+        No ``core.fct_transactions`` row, no alias — issue #538 acceptance
+        criterion 2.
+        """
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.add_note("NEVER_EXISTED", "x", actor="test")
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+        assert service.list_notes("NEVER_EXISTED") == []
+        orphan_count = transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM app.transaction_notes"
+        ).fetchone()
+        assert orphan_count == (0,)
+
+    @pytest.mark.unit
+    def test_remove_tags_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """A pure removal never refuses for liveness (add-vs-remove asymmetry).
+
+        ``remove_tags`` only deletes state, so it must stay the idempotent
+        no-op (DN2) it always was — refusing here would block the exact
+        orphan cleanup this id shape exists for: curation stranded on an id
+        no healing pass can reach (see ``resolve_curation_transaction_id``'s
+        ``required=False`` docstring).
+        """
+        service = TransactionService(transaction_db)
+        removed = service.remove_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
+        assert removed == []
+
+    @pytest.mark.unit
+    def test_clear_splits_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """A pure removal never refuses for liveness (add-vs-remove asymmetry).
+
+        ``clear_splits`` only deletes state, so an unknown id stays the
+        idempotent no-op (DN2) it always was.
+        """
+        service = TransactionService(transaction_db)
+        service.clear_splits("NEVER_EXISTED", actor="test")  # must not raise
+
+    @pytest.mark.unit
+    def test_set_tags_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """A non-empty ``set_tags`` can add state, so it still refuses.
+
+        Distinguishes ``set_tags`` from ``remove_tags``: the same granular
+        writer resolves strictly when the desired list is non-empty (it can
+        create a row) and permissively when it is empty (a pure clear) — see
+        the sibling clear test below.
+        """
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.set_tags("NEVER_EXISTED", ["roadtrip"], actor="test")
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_set_tags_clear_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """``set_tags`` with an empty desired list is a pure clear — permissive."""
+        service = TransactionService(transaction_db)
+        result = service.set_tags("NEVER_EXISTED", [], actor="test")
+        assert result == []
+
+    @pytest.mark.unit
+    def test_set_splits_against_unresolvable_id_raises_user_error(
+        self, transaction_db: Database
+    ) -> None:
+        """A non-empty ``set_splits`` can add state, so it still refuses."""
+        service = TransactionService(transaction_db)
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            service.set_splits(
+                "NEVER_EXISTED", [{"amount": Decimal("-50.00")}], actor="test"
+            )
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_set_splits_clear_against_unresolvable_id_stays_a_noop(
+        self, transaction_db: Database
+    ) -> None:
+        """``set_splits`` with an empty desired list is a pure clear — permissive."""
+        service = TransactionService(transaction_db)
+        result = service.set_splits("NEVER_EXISTED", [], actor="test")
+        assert result == []
+
+    # -- apply_annotations (transactions_annotate) shares the same seam ------
+    #
+    # Coverage that the coarse batch pipeline behind the `transactions_annotate`
+    # MCP tool resolves a superseded id exactly like the granular writers above
+    # — the seam previously covered only add_note/add_tags/add_split/set_category
+    # via their own direct methods, leaving the batch path unresolved.
+
+    @pytest.mark.unit
+    def test_apply_annotations_note_add_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id="T1_OLD", text="resolved")],
+            actor="mcp",
+            operation_id="op_note_superseded",
+        )
+        notes = service.list_notes("T1")
+        assert [note.text for note in notes] == ["resolved"]
+        assert result.outcomes[0].target_ids == (notes[0].note_id,)
+        assert service.list_notes("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_tags_set_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.apply_annotations(
+            [TagsSet(kind="tags_set", transaction_id="T1_OLD", tags=["roadtrip"])],
+            actor="mcp",
+            operation_id="op_tags_superseded",
+        )
+        assert service.list_tags("T1") == ["roadtrip"]
+        assert service.list_tags("T1_OLD") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_splits_set_against_superseded_id_resolves_to_live(
+        self, superseded_db: Database
+    ) -> None:
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), actor="test")
+        service.apply_annotations(
+            [SplitsSet(kind="splits_set", transaction_id="T1_OLD", splits=[])],
+            actor="mcp",
+            operation_id="op_splits_superseded",
+        )
+        assert service.list_splits("T1") == []
+
+    @pytest.mark.unit
+    def test_apply_annotations_binding_names_the_resolved_id(
+        self, superseded_db: Database
+    ) -> None:
+        """The confirmation binding names the live id, never the caller's dead one.
+
+        A superseded id is visible in no view, so binding a confirmation on it
+        (instead of the live transaction the write will actually land on)
+        would confirm a target the reader cannot look up.
+        """
+        service = TransactionService(superseded_db)
+        plan = service.preview_annotations([
+            NoteAdd(kind="note_add", transaction_id="T1_OLD", text="x")
+        ])
+        assert plan.items[0].target_ids == ("T1",)
+
+    @pytest.mark.unit
+    def test_apply_annotations_tags_set_permissive_clear_skips_amount_lookup(
+        self, transaction_db: Database
+    ) -> None:
+        """TagsSet(tags=[]) on a fully-dead id with nothing to remove stays a no-op.
+
+        Even paired in a batch with another item that does change state.
+        Before this fix, ``_prepare_annotation``'s ``TagsSet`` branch called
+        ``_annotation_transaction_amount`` whenever ``request.tags`` OR
+        nothing was left to remove — so a fully-dead id with no existing
+        tags (both empty) still hit the amount lookup and raised
+        ``transaction_reference_not_found``, aborting the whole batch
+        including the unrelated ``NoteAdd``. Mirrors the ``SplitsSet``
+        branch, which already skips the lookup entirely when
+        ``request.splits`` is empty.
+        """
+        service = TransactionService(transaction_db)
+
+        result = service.apply_annotations(
+            [
+                NoteAdd(kind="note_add", transaction_id="T1", text="trip"),
+                TagsSet(kind="tags_set", transaction_id="NEVER_EXISTED", tags=[]),
+            ],
+            actor="mcp",
+            operation_id="op_dead_tags_clear_noop",
+        )
+
+        assert [outcome.changed for outcome in result.outcomes] == [True, False]
+        assert service.list_notes("T1")[0].text == "trip"
+
+    @pytest.mark.unit
+    def test_apply_annotations_rejects_splits_set_collision_across_alias(
+        self, superseded_db: Database
+    ) -> None:
+        """Two SplitsSet clears resolving to one live transaction must collide.
+
+        Different raw ids must collide, not silently apply in sequence.
+        ``SplitsSet`` has no secondary resolved-id check like ``TagsSet``'s
+        ``_PreparedTagsSet`` branch, so it depends entirely on
+        ``_reject_composed_annotations`` keying its overlap check on the
+        RESOLVED id rather than the caller's raw ``transaction_id`` — 'T1_OLD'
+        and 'T1' name the same live transaction via the alias.
+        """
+        service = TransactionService(superseded_db)
+        service.add_split("T1", Decimal("-50.00"), actor="test")
+
+        with pytest.raises(UserError) as exc:
+            service.apply_annotations(
+                [
+                    SplitsSet(kind="splits_set", transaction_id="T1_OLD", splits=[]),
+                    SplitsSet(kind="splits_set", transaction_id="T1", splits=[]),
+                ],
+                actor="mcp",
+                operation_id="op_splits_alias_collision",
+            )
+
+        assert exc.value.code == "mutation_invalid_input"
+        assert len(service.list_splits("T1")) == 1
+
+    @pytest.mark.unit
+    def test_apply_annotations_note_add_against_a_freshly_created_manual_id(
+        self, transaction_db: Database
+    ) -> None:
+        """A note added moments after ``transactions_create`` must not be refused.
+
+        Before the next ``refresh_run`` materializes the manual row into
+        ``core.fct_transactions``, ``resolve_curation_transaction_id`` already
+        treats the un-aliased manual row as live -- but the amount lookup
+        right after it used to query ``core.fct_transactions`` only, so it
+        disagreed with the resolver that just accepted the same id and
+        refused. The granular ``add_note`` writer never hit this (it never
+        needs the amount), so the coarse ``transactions_annotate`` path must
+        match it rather than carry its own, stricter definition of liveness.
+        """
+        transaction_db.conn.execute(
+            "INSERT INTO core.dim_accounts (account_id) VALUES ('A1')"
+        )
+        service = TransactionService(transaction_db)
+        batch = service.create_manual_batch(
+            [
+                {
+                    "account_id": "A1",
+                    "amount": Decimal("-12.34"),
+                    "transaction_date": "2026-04-15",
+                    "description": "Coffee Shop",
+                }
+            ],
+            actor="cli",
+        )
+        manual_id = batch.results[0].transaction_id
+        assert transaction_db.conn.execute(
+            "SELECT COUNT(*) FROM core.fct_transactions WHERE transaction_id = ?",
+            [manual_id],
+        ).fetchone() == (0,), "not yet materialized -- the case under test"
+
+        result = service.apply_annotations(
+            [NoteAdd(kind="note_add", transaction_id=manual_id, text="pending review")],
+            actor="mcp",
+            operation_id="op_manual_note",
+        )
+
+        assert result.outcomes[0].changed is True
+        assert [note.text for note in service.list_notes(manual_id)] == [
+            "pending review"
+        ]
+
+    @pytest.mark.unit
+    def test_preview_annotations_bulk_resolves_transaction_ids_once_per_batch(
+        self, transaction_db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A batch of many NoteAdd requests must cost one bulk liveness query.
+
+        Before this fix, ``_prepare_annotation`` called the single-id resolver
+        once per transaction-addressed request, so a full batch (``requests``
+        capped at ``settings.mcp.max_items``) cost up to N catalog+liveness
+        round trips — doubled again by the MCP commit path re-running preflight
+        before it writes. ``resolve_curation_transaction_ids`` collapses that
+        into one chunked query per preview pass.
+        """
+        service = TransactionService(transaction_db)
+
+        real_execute = transaction_db.execute
+        liveness_queries: list[str] = []
+
+        def counting_execute(query: str, params: list[Any] | None = None) -> object:
+            if (
+                "manual_transactions" in query.lower()
+                and "transaction_id in (" in query.lower()
+            ):
+                liveness_queries.append(query)
+            return real_execute(query, params)
+
+        monkeypatch.setattr(transaction_db, "execute", counting_execute)
+
+        requests = [
+            NoteAdd(kind="note_add", transaction_id="T1", text=f"note {i}")
+            for i in range(5)
+        ]
+        plan = service.preview_annotations(requests)
+
+        assert len(plan.items) == 5
+        assert len(liveness_queries) == 1, (
+            f"Expected exactly 1 bulk liveness query for 5 requests in one "
+            f"batch, got {len(liveness_queries)}"
+        )

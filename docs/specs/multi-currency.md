@@ -203,7 +203,7 @@ Numbered, testable. Tagged by phase.
    groups by `currency_code`; `reports.balance_drift` projects it without regrouping
    (asserted and computed balances are the same account's, so the comparison is
    single-currency by construction). Two consumers re-aggregate the segmented views
-   and had to segment too: the `core:cashflow` runner (`currency_code` is in
+   and had to segment too: the `core:cash_flow` runner (`currency_code` is in
    `select_cols`/`group_cols` unconditionally, for every `by` value) and
    `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
@@ -358,7 +358,7 @@ Numbered, testable. Tagged by phase.
    any report path that would violate Requirement 5.
    **Implemented 2026-07-25** as the `currency_integrity` invariant: **fail** on any
    unknown-currency account/transaction/balance (with the `accounts set --currency`
-   fix in the detail, the `moneybin transform` that makes it take effect in `core.*`,
+   fix in the detail, the `moneybin transform apply` that makes it take effect in `core.*`,
    and the affected ids attached), **warn** on two or more known
    currencies with nothing unknown — naming both consequences a user would
    otherwise read as a bug: reports sub-total per currency, and a transaction

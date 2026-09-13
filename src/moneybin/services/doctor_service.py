@@ -15,6 +15,7 @@ from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, exception_origin
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
+from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
     PROFILE_CURRENCIES,
@@ -26,6 +27,7 @@ from moneybin.services.account_resolution_types import (
 )
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.import_service import mask_embedded_account_number
+from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (
     SECURITY_TYPE_STALENESS_DAYS,
@@ -55,11 +57,9 @@ from moneybin.tables import (
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
     LOT_SELECTIONS,
-    MANUAL_INVESTMENT_TRANSACTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
     PDF_FORMATS,
-    PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
@@ -158,7 +158,7 @@ newest_snapshot AS (
             source_file,
             ROW_NUMBER() OVER (
                 PARTITION BY source_origin
-                ORDER BY extracted_at DESC, source_file DESC
+                ORDER BY extracted_at DESC, ingestion_sequence DESC
             ) AS snapshot_rank
         FROM {STG_PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name}
     )
@@ -1063,42 +1063,10 @@ class DoctorService:
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
     def _run_investment_source_overlap(self) -> InvariantResult:
-        """Accounts carrying BOTH manual and Plaid investment history.
-
-        ``fail``, not ``warn``: every position in such an account is derived
-        from two interleaved ledgers, so lots double-count and cost basis
-        mixes two accountings — numbers nobody should read. Investment dedup
-        across sources is a future matching child, unlike transactions which
-        already have ``prep.int_transactions__matched``, so nothing the
-        pipeline can re-run resolves it; one of the two feeds has to go.
-
-        ``core.dim_holdings`` already withholds every figure for these
-        positions (``valuation_status = 'source_overlap'``). This check is what
-        says so out loud and blocks the release gate, and it reads the RAW
-        tables rather than the ledger so it still fires before a first
-        transform — the point at which the withhold does not yet exist.
-
-        Reverting the imported batch is the only remedy MoneyBin can run
-        today. Disconnecting the connector is a remote operation that leaves
-        every row it already pulled — the rows this very query reads — so it
-        stops the feed growing without clearing the check. The recipe says so
-        rather than offering it (``audits/recipes/investment_source_overlap``).
-        """
+        """Detect transaction or holdings overlap before any transform runs."""
         name = "investment_source_overlap"
         try:
-            rows = self._db.execute(
-                f"""
-                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
-                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
-                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
-                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
-                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
-                  AND al.ref_value = p.account_id
-                JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
-                  ON m.account_id = COALESCE(al.account_id, p.account_id)
-                ORDER BY account_id
-                """  # TableRef constants
-            ).fetchall()
+            accounts = investment_source_overlap(self._db)
         except Exception as e:  # raw tables absent on fresh DBs
             return InvariantResult(
                 name=name,
@@ -1106,23 +1074,22 @@ class DoctorService:
                 detail=f"raw tables unavailable: {e}",
                 affected_ids=[],
             )
-        if rows:
+        if accounts:
             return InvariantResult(
                 name=name,
                 status="fail",
                 detail=(
-                    f"{len(rows)} account(s) have both manual and Plaid "
-                    "investment rows — the two ledgers interleave, so lots and "
-                    "gains double-count and cost basis mixes two accountings; "
-                    "core.dim_holdings withholds every figure for these "
-                    "positions (valuation_status 'source_overlap') until one "
-                    "source is left. Revert the redundant import batch to "
+                    f"{len(accounts)} account(s) have manual investment history "
+                    "alongside Plaid transactions or holdings. Review overlapping "
+                    "history before relying on lots or gains. Holdings withholding "
+                    "for mixed transaction ledgers remains active; opening-bootstrap "
+                    "rows do not trigger it. Revert the redundant import batch to "
                     "clear it; disconnecting the connector stops future pulls "
                     "but keeps the rows already pulled, so it does not "
                     "(investment dedup across sources is a future matching "
                     "child)"
                 ),
-                affected_ids=[str(r[0]) for r in rows],
+                affected_ids=accounts,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
@@ -2479,7 +2446,7 @@ class DoctorService:
                 f"decisions but observed {observed_absorbed} "
                 f"(raw_total={raw_total}, core_count={core_count}). "
                 "If you imported data since the last transform, this is expected "
-                "until you re-run `moneybin transform`: staging counts new rows "
+                "until you re-run `moneybin transform apply`: staging counts new rows "
                 "(and pending, not-yet-accepted matches) immediately, but core only "
                 "reflects them after a transform. A mismatch that persists after a "
                 "fresh transform indicates a dedup leak or an un-applied decision."
@@ -3141,7 +3108,7 @@ class DoctorService:
                     f"{', '.join(parts)} have an unknown currency. Their amounts "
                     "are segmented out of every total until you assign one — "
                     "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-                    "then `moneybin transform`: the setting is app state, and "
+                    "then `moneybin transform apply`: the setting is app state, and "
                     "core.* only picks it up on the next transform, so this check "
                     "keeps failing until you re-run one. "
                     "MoneyBin never guesses a currency, because a wrong guess "
@@ -3160,18 +3127,60 @@ class DoctorService:
                 ],
             )
         if len(currencies) > 1:
+            # A home currency already set doesn't mean this warning is wrong —
+            # the five aggregating reports still sub-total regardless — but it
+            # does mean two of this detail's claims are: telling the user to
+            # set what is already set, and asserting every combined figure is
+            # withheld when the three converting reports (networth,
+            # large-transactions, balance-drift) already produce one whenever
+            # their rates are on disk. Read the setting rather than guessing.
+            home_currency = (
+                ProfileSettingsService(self._db).get_settings().home_currency
+            )
+            if home_currency is None:
+                remedy = (
+                    "Reports sub-total each currency separately and withhold "
+                    "any combined figure. A transaction denominated "
+                    "differently from its account is also left out of that "
+                    "account's carried daily balance — it cannot be added "
+                    "without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance-drift`. "
+                    "To read the converting reports in one currency, set a "
+                    "home currency with `moneybin profile set home_currency "
+                    "<ISO>` and run `moneybin refresh` to gather rates — for "
+                    "a pair the provider does not publish, `moneybin fx set "
+                    "<from> <to> <date> <rate>` is the only way to fill it. "
+                    "A supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact date, "
+                    "or asking a report for a date the provider did publish, "
+                    "is the fix."
+                )
+            else:
+                remedy = (
+                    f"The five reports that aggregate per currency still "
+                    f"sub-total separately; `networth`, `large-transactions`, "
+                    f"and `balance-drift` price into {home_currency} whenever "
+                    "every rate they need is on disk. A transaction "
+                    "denominated differently from its account is also left "
+                    "out of that account's carried daily balance — it cannot "
+                    "be added without a rate — and shows up as the account's "
+                    "reconciliation drift in `moneybin reports balance-drift`. "
+                    "`moneybin refresh` gathers a missing rate; for a pair "
+                    "the provider does not publish, `moneybin fx set <from> "
+                    "<to> <date> <rate>` is the only way to fill it. A "
+                    "supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact "
+                    "date, or asking a report for a date the provider did "
+                    "publish, is the fix."
+                )
             return InvariantResult(
                 name=name,
                 status="warn",
                 detail=(
                     f"This profile holds {len(currencies)} currencies "
-                    f"({', '.join(currencies)}). Reports sub-total each currency "
-                    "separately and withhold any combined figure. A transaction "
-                    "denominated differently from its account is also left out of "
-                    "that account's carried daily balance — it cannot be added "
-                    "without a rate — and shows up as the account's "
-                    "reconciliation drift in `moneybin reports balance_drift`. "
-                    "Conversion to a single display currency is not built yet."
+                    f"({', '.join(currencies)}). {remedy}"
                 ),
                 affected_ids=[],
             )

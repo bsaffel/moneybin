@@ -141,7 +141,6 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
         fees=None,
         acquired=None,
         basis=None,
-        event_group_id=None,
         currency_code="USD",
         description=None,
         actor="cli",

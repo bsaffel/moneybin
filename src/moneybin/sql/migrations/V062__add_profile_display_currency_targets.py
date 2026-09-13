@@ -1,4 +1,4 @@
-"""V060: persist the currencies a profile explicitly reads reports in.
+"""V062: persist the currencies a profile explicitly reads reports in.
 
 DuckDB rejects ``ADD COLUMN ... NOT NULL DEFAULT`` together. Follow V033's
 add/default → commit → tighten sequence so existing rows receive the empty
@@ -34,7 +34,7 @@ def migrate(conn: object) -> None:
     ).fetchone()
     needs_tighten = False
     if row is None:
-        logger.debug("V060: ADD COLUMN app.profile_settings.display_currency_targets")
+        logger.debug("V062: ADD COLUMN app.profile_settings.display_currency_targets")
         conn.execute(  # type: ignore[union-attr]
             "ALTER TABLE app.profile_settings "
             "ADD COLUMN display_currency_targets VARCHAR[] DEFAULT []"
@@ -50,7 +50,7 @@ def migrate(conn: object) -> None:
         sync_classification_comments(conn)  # type: ignore[arg-type]
     elif row[0]:
         logger.debug(
-            "V060: backfilling nullable app.profile_settings.display_currency_targets"
+            "V062: backfilling nullable app.profile_settings.display_currency_targets"
         )
         conn.execute(  # type: ignore[union-attr]
             "UPDATE app.profile_settings "
@@ -62,7 +62,7 @@ def migrate(conn: object) -> None:
         conn.execute("COMMIT")  # type: ignore[union-attr]
         conn.execute("BEGIN TRANSACTION")  # type: ignore[union-attr]
         logger.debug(
-            "V060: ALTER COLUMN app.profile_settings.display_currency_targets SET NOT NULL"
+            "V062: ALTER COLUMN app.profile_settings.display_currency_targets SET NOT NULL"
         )
         conn.execute(  # type: ignore[union-attr]
             "ALTER TABLE app.profile_settings "

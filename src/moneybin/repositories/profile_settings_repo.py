@@ -75,7 +75,7 @@ class ProfileSettingsRepo(BaseRepo):
     def get_display_currency_targets(self) -> tuple[str, ...]:
         """Return the profile's explicit report-currency targets, if any.
 
-        A V060-upgraded database may be read before a write-mode open applies
+        A V062-upgraded database may be read before a write-mode open applies
         the migration, just as V044's table can be absent on an older profile.
         Targets are optional, so that state reads as the empty default.
         """

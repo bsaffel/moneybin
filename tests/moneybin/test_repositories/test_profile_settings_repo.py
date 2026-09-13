@@ -53,10 +53,10 @@ def test_display_currency_targets_start_empty_and_round_trip_normalized(
     assert repo.get_display_currency_targets() == ("EUR", "GBP")
 
 
-def test_pre_v060_schema_keeps_home_currency_readable_and_targets_empty(
+def test_pre_v062_schema_keeps_home_currency_readable_and_targets_empty(
     db: Database, repo: ProfileSettingsRepo
 ) -> None:
-    """Read-only callers can inspect a pre-V060 profile before migration runs."""
+    """Read-only callers can inspect a pre-V062 profile before migration runs."""
     repo.set_home_currency("EUR", actor="cli")
     db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
 

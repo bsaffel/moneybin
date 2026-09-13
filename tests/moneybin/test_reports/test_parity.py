@@ -50,22 +50,22 @@ from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 REPORTS_APP = reports_commands.app
 
 _EXPECTED_CLI = {
-    "cashflow",
-    "spending",
-    "recurring",
-    "merchants",
+    "cash-flow",
+    "spending-trend",
+    "recurring-subscriptions",
+    "merchant-activity",
     "large-transactions",
     "balance-drift",
 }
 _EXPECTED_CATALOG_CLI = {
     "core:balance_drift": "balance-drift",
-    "core:cashflow": "cashflow",
+    "core:cash_flow": "cash-flow",
     "core:large_transactions": "large-transactions",
-    "core:merchants": "merchants",
+    "core:merchant_activity": "merchant-activity",
     "core:networth": "networth",
     "core:networth_history": "networth-history",
-    "core:recurring": "recurring",
-    "core:spending": "spending",
+    "core:recurring_subscriptions": "recurring-subscriptions",
+    "core:spending_trend": "spending-trend",
 }
 #: R5's tier-spanning catalog/runner plus the CLI-only lifecycle verbs. These
 #: share the group namespace with the generated per-report commands, so a report

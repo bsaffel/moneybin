@@ -75,8 +75,8 @@ _COLUMNS = (
     OutputColumn("amount", "Signed money amount.", DataClass.TXN_AMOUNT),
 )
 _SPEC = ServiceReportSpec(
-    report_id="core:spending",
-    name="spending",
+    report_id="core:spending_trend",
+    name="spending_trend",
     description="Monthly spending totals.",
     parameters=(
         ParamSpec(
@@ -99,11 +99,11 @@ _SPEC = ServiceReportSpec(
     columns=_COLUMNS,
     semantics=_SEMANTICS,
     classes={column.name: column.data_class for column in _COLUMNS},
-    examples=('reports(report_id="core:spending")',),
+    examples=('reports(report_id="core:spending_trend")',),
     executor=MagicMock(),
 )
 _CATALOG_RESULT = CatalogReportResult(
-    report_id="core:spending",
+    report_id="core:spending_trend",
     parameters=MappingProxyType({
         "from_month": "2026-07",
         "categories": MappingProxyType({"food": ("groceries", "dining")}),
@@ -134,7 +134,7 @@ def test_catalog_entry_includes_complete_static_metadata() -> None:
 
     assert isinstance(payload, ReportCatalogPayload)
     entry = payload.reports[0]
-    assert entry.report_id == "core:spending"
+    assert entry.report_id == "core:spending_trend"
     assert entry.description == "Monthly spending totals."
     assert entry.parameter_schema == {
         "additionalProperties": False,
@@ -156,7 +156,7 @@ def test_catalog_entry_includes_complete_static_metadata() -> None:
         "from_month": "txn_date",
         "category": "category",
     }
-    assert entry.examples == ['reports(report_id="core:spending")']
+    assert entry.examples == ['reports(report_id="core:spending_trend")']
     assert [(column.name, column.description) for column in entry.columns] == [
         ("date", "Calendar date."),
         ("amount", "Signed money amount."),
@@ -195,8 +195,8 @@ def test_catalog_entry_rejects_output_class_mismatch() -> None:
 
     with pytest.raises(ValidationError, match="columns and output_classes"):
         ReportCatalogEntry(
-            report_id="core:spending",
-            name="spending",
+            report_id="core:spending_trend",
+            name="spending_trend",
             tier="builtin",
             description="Monthly spending totals.",
             parameter_schema={},
@@ -219,8 +219,8 @@ def test_catalog_entry_rejects_duplicate_output_columns() -> None:
 
     with pytest.raises(ValidationError, match="duplicate output column"):
         ReportCatalogEntry(
-            report_id="core:spending",
-            name="spending",
+            report_id="core:spending_trend",
+            name="spending_trend",
             tier="builtin",
             description="Monthly spending totals.",
             parameter_schema={},
@@ -248,7 +248,7 @@ def test_result_repeats_semantics_provenance_and_runtime_classification() -> Non
 
     assert isinstance(payload, ReportResultPayload)
     assert payload.kind == "result"
-    assert payload.report_id == "core:spending"
+    assert payload.report_id == "core:spending_trend"
     assert payload.semantics.provenance == ("reports.spending",)
     assert [(column.name, column.data_class) for column in payload.columns] == [
         ("date", "txn_date"),

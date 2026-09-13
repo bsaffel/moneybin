@@ -8,8 +8,8 @@ SELECT
   t.source_type,
   t.source_origin,
   t.import_id,
-  t.account_id, /* Already canonical: manual entry resolves the account interactively at entry time (identifiers.md Guard 2) */
-  t.security_id, /* Already canonical: resolved at entry; NULL for cash-only events */
+  i.account_id,
+  i.security_id,
   t.security_ref,
   t.type,
   t.subtype,
@@ -27,3 +27,5 @@ SELECT
   t.created_by,
   t.investment_transaction_id
 FROM raw.manual_investment_transactions AS t
+LEFT JOIN prep.int_manual__investment_identity AS i
+  ON i.source_transaction_id = t.source_transaction_id
