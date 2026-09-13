@@ -1004,6 +1004,9 @@ def _import_preview_tabular(
             rows_in_file=read_result.rows_in_file,
             header_row_looks_like_data=read_result.header_row_looks_like_data,
             header_position_ambiguous=read_result.header_position_ambiguous,
+            header_position_ambiguous_rows=[
+                list(row) for row in read_result.header_position_ambiguous_rows
+            ],
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).

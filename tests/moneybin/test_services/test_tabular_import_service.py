@@ -1091,32 +1091,29 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
-    def test_matched_format_native_date_bad_override_refuses_not_zero_rows(
+    def test_matched_format_native_date_override_reformats_and_imports(
         self, db: Database, tmp_path: Path
     ) -> None:
         """A non-ISO --date-format override on a matched native-date file.
 
-        Must refuse cleanly, not silently import zero rows as success.
+        Must reformat the native cells into the override's own shape and
+        import cleanly — not refuse, and not silently import zero rows.
 
-        Codex finding — the PR's original failure mode returning through a
-        different path. A saved format matches this file by name; the
-        native-date column gets normalized to ISO text
-        (normalize_excel_date_columns_before_mapping); _validate_date_format_
-        override then validated the ALREADY-EFFECTIVE "%Y-%m-%d" parser
-        against that ISO text (always parses), but the later "Apply CLI
-        overrides" block replaced resolved.date_format with the caller's
-        UNVALIDATED "%m/%d/%Y" — which cannot read "2026-01-01" — right
-        before transform_dataframe. transform_dataframe rejects unparseable
-        rows one at a time rather than raising, so the import reported
-        success with rows_loaded == 0, no error, no warning. Fixed by
-        validating final_date_format (== date_format_override or
-        resolved.date_format, computed once and reused, never
-        recomputed) — the exact value that reaches transform_dataframe.
+        Round 12: normalize_excel_date_columns_before_mapping now re-renders
+        every mapped column's native cells into the declared format
+        (cell-by-cell) instead of flipping the format to ISO, so a saved/
+        overridden non-ISO format like "%m/%d/%Y" is exactly as valid
+        against a native-typed column as it always was against a text one —
+        there is no "flip" left for a caller-declared bare format to be
+        wrong about. (An earlier PR revision flipped the format instead,
+        which made this exact override incorrectly refuse — see git history
+        for that superseded behavior; a real format/data mismatch is still
+        covered by test_a_date_format_override_that_cannot_read_the_column_
+        is_refused and its sibling, both CSV-based and unaffected by this
+        Excel-only normalization step.)
         """
         import openpyxl
 
-        from moneybin import error_codes
-        from moneybin.errors import UserError
         from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
         from moneybin.services.import_service import ImportService
 
@@ -1151,17 +1148,28 @@ class TestTabularConfirmationFlow:
             actor="test",
         )
 
-        with pytest.raises(UserError) as exc_info:
-            ImportService(db).import_file(
-                xlsx,
-                account_name="test",
-                refresh=False,
-                confirm=True,
-                format_name="native_date_fixture",
-                date_format="%m/%d/%Y",
-                save_format=False,
-            )
-        assert exc_info.value.code == error_codes.IMPORT_INVALID_DATE_FORMAT
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="native_date_fixture",
+            date_format="%m/%d/%Y",
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        transaction_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT transaction_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert transaction_dates == [
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 2),
+        ]
 
     def test_matched_format_two_native_date_columns_populates_post_date(
         self, db: Database, tmp_path: Path

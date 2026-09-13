@@ -12,6 +12,7 @@ invoked only when a confirm decision is needed.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -404,7 +405,18 @@ def header_row_consumed_recovery_mcp() -> str:
     )
 
 
-def header_position_ambiguous_recovery(file_path: str) -> str:
+def _format_disputed_rows(disputed_rows: Sequence[Sequence[str]]) -> str:
+    """Render disputed row(s) as one readable clause, or "" when none given."""
+    if not disputed_rows:
+        return ""
+    return (
+        " Disputed row(s): " + "; ".join(", ".join(row) for row in disputed_rows) + "."
+    )
+
+
+def header_position_ambiguous_recovery(
+    file_path: str, disputed_rows: Sequence[Sequence[str]] = ()
+) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
     UNLIKE `header_row_consumed_recovery`, this names a command that actually
@@ -413,12 +425,21 @@ def header_position_ambiguous_recovery(file_path: str) -> str:
     the import proceeds. Names the other honest option too — if the row
     above the header is a real transaction, not a balance summary, the fix
     is in the source file, and no flag changes that.
+
+    `disputed_rows` (round 12, Codex P1 / claude CONSIDER) is the actual row
+    content behind the ambiguity, from `ReadResult.header_position_
+    ambiguous_rows` — a confirm asking "is this a transaction?" without
+    showing the row in question is functionally silent even though a
+    warning appeared (design-principles.md, "Magic stays visible"). Omitted
+    (the default) at call sites that don't have it yet — the row is missing
+    evidence, not a lie, so the recovery still names the correct commands.
     """
     import shlex
 
     quoted = shlex.quote(file_path)
     return (
-        "A row before the detected header also reads as a transaction. If "
+        "A row before the detected header also reads as a transaction."
+        f"{_format_disputed_rows(disputed_rows)} If "
         "it is a balance summary or similar preamble, the detected header is "
         "correct — re-run with `moneybin import files "
         f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
@@ -434,12 +455,45 @@ def header_position_ambiguous_recovery_mcp() -> str:
     Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`, this
     one has a command to offer, because confirming the SAME preview ratifies
     the detected header position rather than restaging an unconfirmable plan.
+    The disputed row's own content lives in `data.header_position_ambiguous_
+    rows` (round 12) rather than inlined here — the same reason `data.sample_
+    values` isn't inlined into this text either.
     """
     return (
-        "A row before the detected header also reads as a transaction. If "
-        "it is a balance summary or similar preamble, the detected header is "
+        "A row before the detected header also reads as a transaction — see "
+        "data.header_position_ambiguous_rows for the disputed row(s). If it "
+        "is a balance summary or similar preamble, the detected header is "
         "correct — call import_confirm(preview_id=...) to proceed. If it is "
         "a real transaction, correct the source file and preview it again."
+    )
+
+
+def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
+    """The dismissible recovery for header_position_ambiguous, inbox lifecycle.
+
+    UNLIKE `header_position_ambiguous_recovery` (CLI direct import), this
+    deliberately omits `import files ... --confirm`: that command never
+    calls `archive_confirmed_file`, so recommending it for a file the inbox
+    already moved to `pending/` would complete the import while leaving the
+    source and its sidecar there — the next inbox sync reprocesses a
+    finished item and duplicates every transaction it just loaded. `import
+    confirm --accept` both ratifies and archives, and needs no second
+    command mentioned.
+
+    The one recovery string for this lifecycle context — round 12 (Codex
+    P2) found `import_inbox.py`'s drain summary printing the generic
+    low-tier "--accept would be rejected" text for this reason (routed on
+    tier, not reason), contradicting this exact sidecar recovery. Both
+    `inbox_service.py` (the persisted sidecar) and `import_inbox.py` (the
+    drain's own immediate summary) call this one function now, instead of
+    each hand-writing the command.
+    """
+    import shlex
+
+    quoted = shlex.quote(file_path)
+    return (
+        f"moneybin import confirm {quoted} --accept (ratifies the detected "
+        "header position and archives this file)"
     )
 
 

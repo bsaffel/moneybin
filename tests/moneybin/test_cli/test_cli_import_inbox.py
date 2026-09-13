@@ -227,6 +227,46 @@ def test_inbox_drain_low_tier_mapping_hint_omits_accept(
     assert "fuzzy.csv --accept" not in result.stderr
 
 
+def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """header_position_ambiguous must recommend --accept despite tier="low".
+
+    Codex P2, round 12: _gate_header_position_ambiguous always packs this
+    reason with tier="low" (Confidence(score=0.0, tier="low", ...) —
+    import_service.py), so before this fix the generic low-tier branch
+    claimed "--accept would be rejected" — exactly backwards, since
+    --accept is the recovery this reason's own gate ratifies on, and the
+    one the persisted sidecar (inbox_service.py) already recommends. Must
+    also NOT recommend `import files ... --confirm`: that command never
+    archives the pending file, so the next inbox sync would reprocess it
+    and duplicate every transaction just loaded.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "data_before_header.csv",
+                "channel": "tabular",
+                "tier": "low",
+                "score": 0.0,
+                "reason": "header_position_ambiguous",
+                "moved_to": "pending/2026-05/data_before_header.csv",
+                "sidecar": "pending/2026-05/data_before_header.csv.pending.yml",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "data_before_header.csv --accept" in result.stderr
+    assert "would be rejected" not in result.stderr
+    assert "--mapping" not in result.stderr
+    assert "import files" not in result.stderr
+
+
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
     """--output json emits a JSON envelope with sync payload."""
     patch_inbox.sync.return_value = InboxSyncResult(

@@ -313,6 +313,11 @@ class ImportPreviewPayload:
     ``sample_values`` carries raw file content that may include PII
     (merchant names, description text); annotated as DESCRIPTION (MEDIUM)
     so the middleware applies the appropriate consent gate.
+    ``header_position_ambiguous_rows`` is raw file content the same way —
+    the actual disputed row(s) ``header_position_ambiguous`` names, so a
+    confirm asking "is this a transaction?" shows the row in question
+    instead of just the fact that one exists (design-principles.md, "Magic
+    stays visible").
     """
 
     file: Annotated[str, DataClass.RECORD_ID]
@@ -335,6 +340,9 @@ class ImportPreviewPayload:
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
     header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
+    header_position_ambiguous_rows: Annotated[
+        list[list[str]], DataClass.DESCRIPTION
+    ] = field(default_factory=list)
 
 
 @row_set(NO_ROW_SET)
@@ -364,6 +372,9 @@ class ImportTabularPreviewCoarsePayload(BaseModel):
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
     header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
+    header_position_ambiguous_rows: Annotated[
+        list[list[str]], DataClass.DESCRIPTION
+    ] = Field(default_factory=list)
 
 
 @row_set("rows")

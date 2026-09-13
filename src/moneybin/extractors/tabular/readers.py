@@ -74,6 +74,15 @@ class ReadResult:
     an unrecoverable loss. Always False for an explicit skip_rows (nothing
     to detect) and for the headerless outcome (no header was picked at
     all)."""
+    header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
+    """The actual disputed row(s) behind ``header_position_ambiguous`` — the
+    earlier row(s) ``_classify_header_rows`` found reading as data, as raw
+    (stripped, non-empty) cell strings. A confirm that names an inference
+    without showing the evidence it's ratifying is functionally a silent
+    action (design-principles.md, "Magic stays visible") — this is what
+    lets a preview or CLI warning show the caller the actual row, not just
+    the fact that one exists. Always empty when
+    ``header_position_ambiguous`` is False."""
     excel_native_date_columns: frozenset[str] | None = None
     """Excel-only. Column names openpyxl reports as natively date/datetime
     typed (see ``_excel_native_date_columns``) — a property of the file,
@@ -209,12 +218,15 @@ def _read_text(
     explicit_skip = skip_rows is not None
     resolved_has_header = True
     preamble_looks_like_data = False
+    ambiguous_rows: tuple[tuple[str, ...], ...] = ()
     if skip_rows is None:
-        skip_rows, resolved_has_header, preamble_looks_like_data = _detect_header(
-            path,
-            encoding,
-            delimiter,
-            source_bytes=source_bytes,
+        skip_rows, resolved_has_header, preamble_looks_like_data, ambiguous_rows = (
+            _detect_header(
+                path,
+                encoding,
+                delimiter,
+                source_bytes=source_bytes,
+            )
         )
     elif has_header is not None:
         resolved_has_header = has_header
@@ -262,6 +274,7 @@ def _read_text(
         has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
         header_position_ambiguous=preamble_looks_like_data,
+        header_position_ambiguous_rows=ambiguous_rows,
     )
 
 
@@ -271,7 +284,7 @@ def _detect_header(
     delimiter: str,
     *,
     source_bytes: bytes | None = None,
-) -> tuple[int, bool, bool]:
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
     """Locate the header row, or determine the file is headerless.
 
     Samples the first 30 content lines, splits each on ``delimiter``, and
@@ -285,8 +298,8 @@ def _detect_header(
         source_bytes: Already materialized source object to inspect.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data)`` — see
-        ``_classify_header_rows``.
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
+        — see ``_classify_header_rows``.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
     lines = [
@@ -306,7 +319,9 @@ def _detect_header(
     return _classify_header_rows(rows)
 
 
-def _classify_header_rows(rows: list[list[str]]) -> tuple[int, bool, bool]:
+def _classify_header_rows(
+    rows: list[list[str]],
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
     """Locate the header row, or determine the sampled rows are headerless.
 
     Shared by every tabular reader — CSV/TSV/pipe/semicolon (``_detect_header``
@@ -342,21 +357,23 @@ def _classify_header_rows(rows: list[list[str]]) -> tuple[int, bool, bool]:
             checks below), not by the caller filtering it out beforehand.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data)`` — rows to skip
-        before the header (or before the first data row when headerless),
-        whether a header row is present, and a red flag for the header-found
-        outcome: whether a data-like row precedes the chosen header. That
-        preceding row might be a genuine one- or two-line balance summary
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
+        — rows to skip before the header (or before the first data row when
+        headerless), whether a header row is present, a red flag for the
+        header-found outcome (whether a data-like row precedes the chosen
+        header), and that row's own cells (empty when the flag is False).
+        The flagged row might be a genuine one- or two-line balance summary
         (the intended preamble-skip case, see the docstring above) — or it
         might be a real transaction silently discarded as "preamble" because
         a later, unrelated row happens to read as labels. This classifier
-        cannot tell those apart, so it reports the ambiguity rather than
-        picking a silent winner; callers fold it into
-        ``ReadResult.header_row_looks_like_data`` so the caller surfaces a
-        confirmation instead of trusting the guess. Always ``False`` for the
-        headerless outcome and the empty-input default — a genuinely
-        headerless file only ever loses trailing rows (already reported via
-        ``rows_skipped_trailing``), never leading ones.
+        cannot tell those apart, so it reports the ambiguity — and the
+        actual disputed cells, so a caller can show the evidence rather than
+        just the fact — instead of picking a silent winner; callers fold the
+        flag into ``ReadResult.header_position_ambiguous`` so the caller
+        surfaces a confirmation instead of trusting the guess. Always
+        ``False``/empty for the headerless outcome and the empty-input
+        default — a genuinely headerless file only ever loses trailing rows
+        (already reported via ``rows_skipped_trailing``), never leading ones.
     """
     # Two passes (see docstring): find a label row followed by data, else fall
     # back to the first data row as headerless.
@@ -378,15 +395,17 @@ def _classify_header_rows(rows: list[list[str]]) -> tuple[int, bool, bool]:
             # follow check it would win header detection and the rows above it
             # would be skipped as preamble.
             if any(_looks_like_data_row(later) for _, later in qualifying[idx + 1 :]):
-                preamble_looks_like_data = any(
-                    _looks_like_data_row(earlier) for _, earlier in qualifying[:idx]
+                ambiguous_rows = tuple(
+                    tuple(earlier)
+                    for _, earlier in qualifying[:idx]
+                    if _looks_like_data_row(earlier)
                 )
-                return i, True, preamble_looks_like_data
+                return i, True, bool(ambiguous_rows), ambiguous_rows
     for i, non_empty in qualifying:
         if _looks_like_data_row(non_empty):
-            return i, False, False
+            return i, False, False, ()
 
-    return 0, True, False
+    return 0, True, False, ()
 
 
 def _row_looks_like_data_at(
@@ -634,61 +653,61 @@ def normalize_excel_date_columns(
     detection needs a recognized shape to identify or validate a native-date
     column at all, by name alias or by scanning unclaimed columns).
 
-    Two selection strategies, chosen by whether openpyxl could type the
-    file (see ``_excel_native_date_columns``):
+    Three selection strategies:
 
-    - ``native_date_columns`` given (a frozenset — openpyxl opened the file
-      and reported which columns are natively date/datetime-typed):
-      normalizes exactly those columns, intersected with ``columns`` when
-      given. Deterministic — no shape inference, so a ``Description``/
-      ``Memo`` column that happens to render like a date is never touched
-      (it was never *typed* as one), and one dirty value in a genuinely
-      native-date column never voids the rest of it (the column's identity
-      came from its cell types, not from measuring its rendered text).
-    - ``native_date_columns`` is ``None`` (openpyxl could not open the
-      container at all — legacy ``.xls``, the one case a native-type probe
-      is unavailable): falls back to a tolerant-MAJORITY text-shape
-      heuristic — a column qualifies when more than half of its non-null
-      values match the anchored midnight pattern, matching the
-      dirty-minority tolerance ``_parse_dates``/``_validate_date_format_
-      override`` already apply elsewhere in this pipeline (a dirty prefix
-      must not refuse a file whose remaining rows parse). The per-cell
-      ``str.replace`` only ever rewrites values that actually match the
-      pattern, so a qualifying column's non-matching minority passes
-      through unchanged rather than being coerced.
+    - ``columns`` given (a caller already knows which columns are mapped
+      date fields — see ``mapped_date_columns``): every one of them
+      qualifies, full stop. A mapped date column is a date column by
+      construction, so a native/text mix within it is irrelevant — unlike
+      the two shape-guessing strategies below, this one needs no evidence,
+      because the caller already supplied the answer. ``native_date_columns``
+      is ignored in this mode.
+    - ``columns`` is ``None`` and ``native_date_columns`` given (a
+      frozenset — openpyxl opened the file and reported which columns are
+      natively date/datetime-typed): normalizes exactly those columns.
+      Deterministic — no shape inference, so a ``Description``/``Memo``
+      column that happens to render like a date is never touched (it was
+      never *typed* as one).
+    - Both ``None`` (openpyxl could not open the container at all — legacy
+      ``.xls``, the one case a native-type probe is unavailable): falls
+      back to a tolerant-MAJORITY text-shape heuristic — a column qualifies
+      when more than half of its non-null values match the anchored
+      midnight pattern, matching the dirty-minority tolerance
+      ``_parse_dates``/``_validate_date_format_override`` already apply
+      elsewhere in this pipeline (a dirty prefix must not refuse a file
+      whose remaining rows parse).
+
+    In every strategy, the per-cell ``str.replace`` only ever rewrites
+    values that actually match the anchored midnight pattern, so a
+    qualifying column's non-matching cells (dirty minority, or genuine text
+    in some other shape) pass through unchanged rather than being coerced.
 
     Args:
         df: DataFrame to normalize.
-        columns: Restrict the candidate set to these column names — pass
-            the already-known ``transaction_date`` mapping (a saved/matched
-            format's or a reviewed plan's) so an unrelated column is never
-            touched even incidentally. ``None`` (the auto-detect case,
-            where no mapping exists yet) considers every qualifying string
-            column, matching ``map_columns``'s own need to find the date
-            column before it is known.
-        native_date_columns: See above.
+        columns: The caller's own known date-typed columns (see
+            ``mapped_date_columns``) — every match rewrites regardless of
+            shape. ``None`` (the auto-detect case, where no mapping exists
+            yet) considers every qualifying string column via
+            ``native_date_columns`` or the shape fallback, matching
+            ``map_columns``'s own need to find the date column before it
+            is known.
+        native_date_columns: See above. Ignored when ``columns`` is given.
 
     Returns:
         The possibly-rewritten DataFrame, and the frozenset of column names
-        actually rewritten (empty if none) — the caller needs this to know
-        whether a persisted date format must be overridden to match the
-        rewrite it just caused (see
-        ``normalize_excel_date_columns_before_mapping``).
+        actually rewritten (empty if none).
     """
-    if native_date_columns is not None:
-        candidates = columns if columns is not None else df.select(cs.string()).columns
-        date_cols = [
-            col
-            for col in candidates
-            if col in native_date_columns and col in df.columns
-        ]
+    if columns is not None:
+        date_cols = [col for col in columns if col in df.columns]
+    elif native_date_columns is not None:
+        candidates = df.select(cs.string()).columns
+        date_cols = [col for col in candidates if col in native_date_columns]
     else:
-        candidates = columns if columns is not None else df.select(cs.string()).columns
+        candidates = df.select(cs.string()).columns
         date_cols = [
             col
             for col in candidates
-            if col in df.columns
-            and (non_null := df[col].drop_nulls()).len() > 0
+            if (non_null := df[col].drop_nulls()).len() > 0
             and non_null.str.contains(_EXCEL_MIDNIGHT_DATETIME_RE.pattern).sum() * 2
             > non_null.len()
         ]
@@ -698,6 +717,39 @@ def normalize_excel_date_columns(
         pl.col(date_cols).str.replace(_EXCEL_MIDNIGHT_DATETIME_RE.pattern, "${1}")
     )
     return normalized, frozenset(date_cols)
+
+
+# A cell already collapsed to a bare date by normalize_excel_date_columns
+# (or genuine text already in that shape) — the only shape
+# _reformat_iso_dates_to reformats; anything else (dirty text, a real
+# timestamp) passes through untouched.
+_ISO_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _reformat_iso_dates_to(
+    df: pl.DataFrame, columns: list[str], target_format: str
+) -> pl.DataFrame:
+    """Re-render every bare-ISO-shaped cell in ``columns`` into ``target_format``.
+
+    The second half of the two-step sequence
+    ``normalize_excel_date_columns_before_mapping`` runs on a mapped date
+    column: collapse a native cell to ISO, then re-render it into the
+    format the caller actually declared — so the declared format never has
+    to change (no "flip"), and a column the collapse step never touched
+    (already correct text) is left alone by this step too, since it isn't
+    bare-ISO-shaped.
+    """
+    for column in columns:
+        if column not in df.columns:
+            continue
+        reformatted = [
+            datetime.datetime.strptime(value, "%Y-%m-%d").strftime(target_format)
+            if value is not None and _ISO_DATE_ONLY_RE.match(value)
+            else value
+            for value in df[column].to_list()
+        ]
+        df = df.with_columns(pl.Series(column, reformatted, dtype=pl.Utf8))
+    return df
 
 
 def date_format_has_time_component(
@@ -729,9 +781,10 @@ def date_format_has_time_component(
     check: ``date_column`` is ``None`` or absent from ``df.columns`` — the
     first-contact case where the caller supplied ``--date-format`` without
     ``--mapping transaction_date=<column>`` to say which column it governs
-    (see ``normalize_excel_date_columns_before_mapping``'s ``else``
-    branch), so there is genuinely no raw text to read yet.
-    ``pl.read_excel(infer_schema_length=0)`` renders a native Excel
+    (see ``normalize_excel_date_columns_before_mapping``'s auto-detect
+    branch, this function's only caller — ``date_column`` is always
+    ``None`` there in practice), so there is genuinely no raw text to read
+    yet. ``pl.read_excel(infer_schema_length=0)`` renders a native Excel
     date/datetime cell as Python's ``str(datetime)`` — a midnight-suffixed
     timestamp (``"2026-01-01 00:00:00"``; see ``_excel_cell_text``'s
     docstring) absent a real time-of-day — so that stays a faithful
@@ -803,63 +856,52 @@ def normalize_excel_date_columns_before_mapping(
     naming destination fields by hand, so a third date-typed field would
     only need to be added there.
 
-    No-op for non-Excel file types. Skips normalization entirely when
-    ``date_format`` declares a time component — see
-    ``date_format_has_time_component`` and ``normalize_excel_date_columns``
-    for why. Otherwise normalizes, scoped to ``date_column`` when the caller
-    already knows the mapping (a saved/matched format or a reviewed plan);
-    ``None`` normalizes broadly, matching what ``map_columns``'s own
-    content-based discovery needs when no mapping exists yet.
+    No-op for non-Excel file types. When the mapping is still unknown (no
+    ``date_column``), this is a pure auto-detect scan — see
+    ``date_format_has_time_component`` for why a declared time-bearing
+    format short-circuits it, and ``mapping_result.date_format`` (detected
+    AFTER this call, from the now-normalized text) for what actually
+    governs downstream in that case.
 
-    ``additional_date_columns`` (``post_date``) is normalized ONLY when
-    ``date_column`` (``transaction_date``) itself is rewritten, never on its
-    own: transform_dataframe parses every date-typed field under the same
-    shared ``date_format`` (transforms.py), which is declared for
-    ``transaction_date``. Flipping it because ``post_date`` alone turned out
-    to be a native column would leave a still-raw, still-differently-shaped
-    ``transaction_date`` unable to parse under a format it never asked for —
-    trading a silently-NULL ``post_date`` for outright rejected rows, a
-    worse failure. So ``transaction_date``'s own rewrite decision gates
-    both.
+    Once the mapping is known, EVERY mapped date column (``date_column``
+    plus ``additional_date_columns`` — ``transaction_date`` and
+    ``post_date``, see ``mapped_date_columns``) normalizes the same way,
+    regardless of its own native/text mix: a native cell collapses to ISO,
+    then — when ``date_format`` is known — re-renders into that declared
+    shape. The declared format therefore never has to change to
+    accommodate a rewrite; every mapped column ends up in the ONE
+    representation ``transform_dataframe`` already parses every date-typed
+    field under (transforms.py). ``date_format_has_time_component`` is not
+    consulted here: collapsing a native cell to ISO and then re-rendering
+    it into any declared format — time-bearing or not — reproduces
+    whatever raw text that format actually expects, so there is nothing
+    left for a skip to protect.
+
+    When ``date_format`` is unknown, cells stay in bare ISO — the shape
+    ``map_columns``'s own detection will scan next — applied to every
+    mapped column alike, so two differently-typed sibling columns can't
+    desync from each other before a format is even chosen.
 
     Returns:
-        ``(possibly-rewritten df, effective_date_format)``. ``date_format``
-        passes through unchanged UNLESS ``date_column`` was itself rewritten
-        — a persisted/reviewed format was written for the column's
-        *pre-rewrite* text, so the parser must follow the rewrite this step
-        just made, not the format that no longer matches what's in the
-        column. These two outcomes are mutually exclusive: a time-bearing
-        ``date_format`` always skips normalization (returned above), so a
-        column is never both rewritten and still expected to parse under
-        its original format.
+        ``(possibly-rewritten df, date_format)`` — the input format,
+        unchanged.
     """
     if file_type != "excel":
         return df, date_format
-    if date_format_has_time_component(date_format, df=df, date_column=date_column):
-        return df, date_format
-    if date_column is None:
-        # Auto-detect: no known mapping yet, so scan every qualifying
-        # column. mapping_result.date_format (detected AFTER this call)
-        # governs downstream instead of this function's own return value —
-        # see the auto-detect branch note in import_service.py.
+    mapped_columns = ([date_column] if date_column else []) + list(
+        additional_date_columns or []
+    )
+    if not mapped_columns:
+        if date_format_has_time_component(date_format, df=df, date_column=date_column):
+            return df, date_format
         normalized, _ = normalize_excel_date_columns(
-            df, columns=None, native_date_columns=native_date_columns
+            df, native_date_columns=native_date_columns
         )
         return normalized, date_format
-    primary_normalized, primary_rewritten = normalize_excel_date_columns(
-        df, columns=[date_column], native_date_columns=native_date_columns
-    )
-    if date_column not in primary_rewritten or not additional_date_columns:
-        effective_date_format = (
-            "%Y-%m-%d" if date_column in primary_rewritten else date_format
-        )
-        return primary_normalized, effective_date_format
-    fully_normalized, _ = normalize_excel_date_columns(
-        primary_normalized,
-        columns=additional_date_columns,
-        native_date_columns=native_date_columns,
-    )
-    return fully_normalized, "%Y-%m-%d"
+    normalized, _ = normalize_excel_date_columns(df, columns=mapped_columns)
+    if date_format is not None:
+        normalized = _reformat_iso_dates_to(normalized, mapped_columns, date_format)
+    return normalized, date_format
 
 
 def _excel_cell_text(value: object) -> str:
@@ -1172,7 +1214,7 @@ def _classify_excel_headerless_via_fastexcel(
     *,
     sheet_name: str | None,
     source_bytes: bytes | None,
-) -> tuple[int, bool, bool]:
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
     """Classify header/headerless via a raw fastexcel/calamine read.
 
     Used whenever openpyxl can't answer this classification question itself
@@ -1190,16 +1232,17 @@ def _classify_excel_headerless_via_fastexcel(
     use — never silently substituting a different one.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data)`` — see
-        ``_classify_header_rows``. Falls back to ``(0, True, False)`` — the
-        historical pre-detection default — only when fastexcel itself can't
-        read this container either (``fastexcel.FastExcelError``); the real
-        read further down then gets the chance to raise the actual, clean
-        error. A caller-supplied sheet name that doesn't exist raises its
-        own ``ValueError`` from ``pl.read_excel`` (already classified by
-        ``handle_cli_errors``) rather than ``FastExcelError``, so that error
-        propagates out of this function uncaught instead of being swallowed
-        into a misleading ``(0, True, False)`` fallback.
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
+        — see ``_classify_header_rows``. Falls back to
+        ``(0, True, False, ())`` — the historical pre-detection default —
+        only when fastexcel itself can't read this container either
+        (``fastexcel.FastExcelError``); the real read further down then
+        gets the chance to raise the actual, clean error. A caller-supplied
+        sheet name that doesn't exist raises its own ``ValueError`` from
+        ``pl.read_excel`` (already classified by ``handle_cli_errors``)
+        rather than ``FastExcelError``, so that error propagates out of
+        this function uncaught instead of being swallowed into a misleading
+        fallback.
     """
     import fastexcel
 
@@ -1233,7 +1276,7 @@ def _classify_excel_headerless_via_fastexcel(
         ]
         return _classify_header_rows(sample_rows)
     except fastexcel.FastExcelError:
-        return 0, True, False
+        return 0, True, False, ()
 
 
 def _read_excel(
@@ -1302,6 +1345,7 @@ def _read_excel(
     explicit_skip = skip_rows is not None
     resolved_has_header = True
     preamble_looks_like_data = False
+    ambiguous_rows: tuple[tuple[str, ...], ...] = ()
     if skip_rows is None:
         # sheet_used is None here only when the lookup above already proved
         # openpyxl can't open this container at all (legacy .xls) — asking
@@ -1315,7 +1359,7 @@ def _read_excel(
         # classification signal at all — MB-449 for exactly the one file
         # variant this reader's own openpyxl-fallback tests exist to cover.
         if sheet_used is None:
-            skip_rows, resolved_has_header, preamble_looks_like_data = (
+            skip_rows, resolved_has_header, preamble_looks_like_data, ambiguous_rows = (
                 _classify_excel_headerless_via_fastexcel(
                     path, sheet_name=None, source_bytes=source_bytes
                 )
@@ -1325,9 +1369,12 @@ def _read_excel(
                 sample_rows = _excel_sample_rows(
                     path, sheet_used, source_bytes=source_bytes
                 )
-                skip_rows, resolved_has_header, preamble_looks_like_data = (
-                    _classify_header_rows(sample_rows)
-                )
+                (
+                    skip_rows,
+                    resolved_has_header,
+                    preamble_looks_like_data,
+                    ambiguous_rows,
+                ) = _classify_header_rows(sample_rows)
             except (InvalidFileException, zipfile.BadZipFile, KeyError):
                 # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
                 # legacy binary .xls. This sampling call is new: pre-PR,
@@ -1366,10 +1413,13 @@ def _read_excel(
                 # fastexcel.FastExcelError, so it propagates out of the
                 # helper uncaught instead of being swallowed into a
                 # misleading "headered" fallback.
-                skip_rows, resolved_has_header, preamble_looks_like_data = (
-                    _classify_excel_headerless_via_fastexcel(
-                        path, sheet_name=sheet_used, source_bytes=source_bytes
-                    )
+                (
+                    skip_rows,
+                    resolved_has_header,
+                    preamble_looks_like_data,
+                    ambiguous_rows,
+                ) = _classify_excel_headerless_via_fastexcel(
+                    path, sheet_name=sheet_used, source_bytes=source_bytes
                 )
     elif has_header is not None:
         resolved_has_header = has_header
@@ -1464,6 +1514,7 @@ def _read_excel(
         has_header=resolved_has_header,
         header_row_looks_like_data=header_row_looks_like_data,
         header_position_ambiguous=preamble_looks_like_data,
+        header_position_ambiguous_rows=ambiguous_rows,
         excel_native_date_columns=native_date_columns,
     )
 

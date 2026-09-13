@@ -850,6 +850,44 @@ async def test_import_preview_coarse_keeps_header_position_warning_with_real_pre
     assert header_position_ambiguous_recovery_mcp() in response.actions
 
 
+async def test_import_preview_coarse_discloses_the_disputed_rows(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The preview must show the actual disputed row(s), not just the flag.
+
+    Round 12 (claude CONSIDER / Codex P1): a confirm that asks "is this a
+    transaction?" without showing the row it's asking about is functionally
+    silent even though a warning appeared (design-principles.md, "Magic
+    stays visible"). ``data.header_position_ambiguous_rows`` carries the
+    actual cells, through the same DataClass.DESCRIPTION path
+    ``sample_values`` already uses -- no new disclosure class.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee\n"
+        "2026-01-02,10.00,Tea\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    assert response.data.header_position_ambiguous is True
+    assert response.data.header_position_ambiguous_rows == [
+        ["2026-01-01", "42.50", "Coffee"],
+        ["2026-01-02", "10.00", "Tea"],
+    ]
+    # Same classification path as sample_values (DataClass.DESCRIPTION),
+    # confirming the field is actually wired into the sensitivity/consent
+    # machinery rather than a plain, unclassified str list.
+    assert response.summary.sensitivity == "medium"
+
+
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     mcp_db: object,
     tmp_path: Path,

@@ -533,6 +533,10 @@ class TestPreview:
         register (it lives on `import files` / `import confirm`). Reusing
         the shared ``header_position_ambiguous_recovery`` helper names the
         commands that actually clear the gate.
+
+        Round 12 (claude CONSIDER / Codex P1): also pins that this warning
+        now shows the actual disputed row(s) — the evidence behind the
+        ambiguity, not just the fact of it — matching the MCP preview.
         """
         import logging
 
@@ -553,7 +557,10 @@ class TestPreview:
             result = runner.invoke(app, ["preview", str(csv_file)])
 
         assert result.exit_code == 0
-        expected = header_position_ambiguous_recovery(str(csv_file))
+        expected = header_position_ambiguous_recovery(
+            str(csv_file),
+            [["2026-01-01", "42.50", "Coffee"], ["2026-01-02", "10.00", "Tea"]],
+        )
         assert any(expected in r.message for r in caplog.records), caplog.text
 
     def test_preview_maps_native_date_excel_column_correctly(

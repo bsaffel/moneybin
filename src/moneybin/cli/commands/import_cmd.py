@@ -2724,12 +2724,18 @@ def import_preview(
             # header position unblocks it. `import preview` has no --confirm
             # option of its own — use the shared helper, which names the
             # commands that actually clear this gate (`import files
-            # --confirm` / `import confirm --accept`).
+            # --confirm` / `import confirm --accept`). Passes the actual
+            # disputed row(s) (round 12, Codex P1 / claude CONSIDER) so this
+            # warning shows the evidence it's asking about, not just the
+            # fact that some row is in dispute.
             from moneybin.services.import_confirmation import (
                 header_position_ambiguous_recovery,
             )
 
-            logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
+            recovery = header_position_ambiguous_recovery(
+                str(source), read_result.header_position_ambiguous_rows
+            )
+            logger.warning(f"⚠️  {recovery}")
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
         if matched_format:

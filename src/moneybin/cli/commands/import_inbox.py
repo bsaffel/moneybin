@@ -134,6 +134,26 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                         f"       candidate: {format_account_candidate(c)}",
                         err=True,
                     )
+        elif reason == "header_position_ambiguous":
+            # Routed on the reason, not the tier (Codex P2, round 12):
+            # _gate_header_position_ambiguous always packs tier="low" for
+            # this reason (Confidence(score=0.0, tier="low", ...) —
+            # import_service.py), so the generic low-tier branch below
+            # printed "--accept would be rejected" — exactly backwards, since
+            # --accept is the recovery this reason's own gate ratifies on.
+            # The sidecar variant, not the general CLI/MCP one: this file is
+            # already in pending/, so the same lifecycle constraint the
+            # persisted sidecar's own recovery text observes applies here
+            # too (see header_position_ambiguous_recovery_sidecar's
+            # docstring) — one recovery string for both surfaces now.
+            from moneybin.services.import_confirmation import (
+                header_position_ambiguous_recovery_sidecar,
+            )
+
+            typer.echo(
+                f"   {header_position_ambiguous_recovery_sidecar(str(moved_to))}",
+                err=True,
+            )
         elif tier != "low":
             typer.echo(
                 f"   Run 'moneybin import confirm {moved_to} --accept' to ratify "
