@@ -6,8 +6,8 @@ accepted provider ref onto the survivor, migrate ``app.lot_selections`` (whose
 provisional catalog row — all in ONE transaction. An unremappable selection
 blocks the merge rather than silently downgrading a specific-ID election to FIFO.
 
-Core tables don't exist in a unit-test DB (SQLMesh owns them), so the two the
-remap reads are fabricated here.
+Core tables do not exist in a unit-test DB, so fixtures provide complete ledger
+inputs for the selection replay and materialized lot identities for the remap.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.cost_basis import compute_lot_id
+from moneybin.investments.identity import manual_identity_sql
 from moneybin.metrics.registry import SECURITY_LINK_REVIEW_PENDING
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -34,28 +35,19 @@ from moneybin.services.security_links_service import (
     SecurityLinksService,
 )
 from moneybin.services.undo_service import UndoService
+from tests.moneybin.db_helpers import (
+    CORE_FCT_INVESTMENT_LOTS_DDL,
+    CORE_FCT_INVESTMENT_TRANSACTIONS_DDL,
+)
 
 _REF_VALUE = "sec_1"
 _REF_KIND = "plaid_security_id"
 
 
-def _create_core_tables(db: Database) -> None:
+def create_core_tables(db: Database) -> None:
     db.execute("CREATE SCHEMA IF NOT EXISTS core")
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS core.fct_investment_lots (
-            lot_id VARCHAR, account_id VARCHAR, security_id VARCHAR,
-            acquisition_date DATE, source_transaction_id VARCHAR
-        )
-        """
-    )
-    db.execute(
-        """
-        CREATE TABLE IF NOT EXISTS core.fct_investment_transactions (
-            investment_transaction_id VARCHAR, security_id VARCHAR
-        )
-        """
-    )
+    db.execute(CORE_FCT_INVESTMENT_LOTS_DDL)
+    db.execute(CORE_FCT_INVESTMENT_TRANSACTIONS_DDL)
 
 
 def _mint(db: Database, *, name: str, created_by: str) -> str:
@@ -70,7 +62,7 @@ def _mint(db: Database, *, name: str, created_by: str) -> str:
     return event.target_id
 
 
-def _add_lot(
+def add_lot(
     db: Database,
     *,
     security_id: str,
@@ -82,20 +74,28 @@ def _add_lot(
         account_id, security_id, acquisition_date, source_transaction_id
     )
     db.execute(
-        "INSERT INTO core.fct_investment_lots VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO core.fct_investment_lots (lot_id, account_id, security_id, acquisition_date, source_transaction_id) VALUES (?, ?, ?, ?, ?)",
         [lot_id, account_id, security_id, acquisition_date, source_transaction_id],
+    )
+    db.execute(
+        """INSERT INTO core.fct_investment_transactions
+        (investment_transaction_id, account_id, security_id, trade_date, type, quantity, amount, currency_code)
+        VALUES (?, ?, ?, ?, 'buy', 100, -10000, 'USD')""",
+        [source_transaction_id, account_id, security_id, acquisition_date],
     )
     return lot_id
 
 
-def _add_disposal(db: Database, txn_id: str, security_id: str) -> None:
+def add_disposal(db: Database, txn_id: str, security_id: str) -> None:
     db.execute(
-        "INSERT INTO core.fct_investment_transactions VALUES (?, ?)",
+        """INSERT INTO core.fct_investment_transactions
+        (investment_transaction_id, security_id, account_id, trade_date, type, quantity, amount, currency_code)
+        VALUES (?, ?, 'acc_1', DATE '2024-06-01', 'sell', -10, 1000, 'USD')""",
         [txn_id, security_id],
     )
 
 
-def _add_manual_event(
+def add_manual_event(
     db: Database, *, security_id: str, source_transaction_id: str = "manual_buy"
 ) -> str:
     """Hand-record an off-platform buy against ``security_id``.
@@ -108,10 +108,18 @@ def _add_manual_event(
         """
         INSERT INTO raw.manual_investment_transactions (
             source_transaction_id, import_id, account_id, security_id,
-            security_ref, type, trade_date, quantity, price, amount, created_by
+            security_ref, type, trade_date, quantity, price, amount, created_by,
+            investment_transaction_id
         ) VALUES (?, 'imp_1', 'acc_1', ?, 'VTI', 'buy', DATE '2024-05-01',
-                  10, 100, -1000, 'cli')
+                  10, 100, -1000, 'cli', ?)
         """,
+        [source_transaction_id, security_id, source_transaction_id],
+    )
+    create_core_tables(db)
+    db.execute(
+        """INSERT INTO core.fct_investment_transactions
+        (investment_transaction_id, account_id, security_id, type, trade_date, quantity, price, amount, currency_code)
+        VALUES (?, 'acc_1', ?, 'buy', DATE '2024-05-01', 10, 100, -1000, 'USD')""",
         [source_transaction_id, security_id],
     )
     return source_transaction_id
@@ -121,7 +129,7 @@ def _manual_security_id(
     db: Database, source_transaction_id: str = "manual_buy"
 ) -> str | None:
     row = db.execute(
-        "SELECT security_id FROM raw.manual_investment_transactions "
+        f"SELECT security_id FROM ({manual_identity_sql()}) AS identity "  # noqa: S608  # fixed repository query
         "WHERE source_transaction_id = ?",
         [source_transaction_id],
     ).fetchone()
@@ -150,7 +158,7 @@ def _security_exists(db: Database, security_id: str) -> bool:
 @pytest.fixture
 def merge_setup(db: Database) -> dict[str, str]:
     """Provisional (plaid-minted) security bound to ``sec_1``, proposed to merge."""
-    _create_core_tables(db)
+    create_core_tables(db)
     survivor = _mint(db, name="Vanguard Total Stock Market ETF", created_by="user")
     provisional = _mint(db, name="Vanguard Total Stock Mkt ETF", created_by="plaid")
     SecurityLinksRepo(db).insert(
@@ -199,14 +207,14 @@ def test_accept_impact_counts_every_row_the_merge_will_mutate(
         candidate_security_id=sibling_target,
         actor="system",
     )
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],
         actor="cli",
     )
-    _add_manual_event(db, security_id=provisional)
+    add_manual_event(db, security_id=provisional)
     _mark(db, provisional)
 
     impact = SecurityLinksService(db).accept_impact(
@@ -317,12 +325,19 @@ def test_accept_repoints_every_accepted_ref(
     assert orphaned is not None and orphaned[0] == 0
 
 
+@pytest.mark.parametrize("disposal_type", ["sell", "transfer_out"])
 def test_accept_migrates_lot_selection(
-    db: Database, merge_setup: dict[str, str]
+    db: Database, merge_setup: dict[str, str], disposal_type: str
 ) -> None:
     provisional = merge_setup["provisional"]
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
+    db.execute(
+        """UPDATE core.fct_investment_transactions
+        SET type = ?, amount = CASE WHEN ? = 'transfer_out' THEN NULL ELSE amount END
+        WHERE investment_transaction_id = 'itx_sell'""",
+        [disposal_type, disposal_type],
+    )
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],
@@ -353,8 +368,8 @@ def test_accept_merge_is_fully_undoable(
     just that each repo's ``undo_event`` works in isolation.
     """
     provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],
@@ -383,36 +398,28 @@ def test_accept_merge_is_fully_undoable(
     ]
 
 
-def test_accept_sums_quantities_when_selections_collapse_onto_one_lot(
+def test_accept_refuses_colliding_acquisition_identities(
     db: Database, merge_setup: dict[str, str]
 ) -> None:
-    """Two selections that re-hash onto the SAME post-merge lot_id sum, not crash.
-
-    Reachable if a future opening-lot bootstrap mints a ``source_transaction_id``
-    that collides across securities in the same account+date (Task 15 forward
-    risk): the survivor already holds a lot at the exact ``(account_id,
-    acquisition_date, source_transaction_id)`` triple the provisional's lot
-    remaps onto. Writing both as separate rows would violate the
-    ``(investment_transaction_id, lot_id)`` primary key.
-    """
+    """Duplicate acquisition ledger identities cannot prove a complete lot map."""
     provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
-    prov_lot = _add_lot(db, security_id=provisional, source_transaction_id="itx_dup")
-    surv_lot = _add_lot(db, security_id=survivor, source_transaction_id="itx_dup")
+    prov_lot = add_lot(db, security_id=provisional, source_transaction_id="itx_dup")
+    surv_lot = add_lot(db, security_id=survivor, source_transaction_id="itx_dup")
     assert compute_lot_id("acc_1", survivor, date(2024, 3, 1), "itx_dup") == surv_lot
-    _add_disposal(db, "itx_sell", provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(prov_lot, Decimal("3")), (surv_lot, Decimal("4"))],
         actor="cli",
     )
 
-    SecurityLinksService(db).accept_merge(
-        merge_setup["decision_id"], into=merge_setup["survivor"]
-    )
-
-    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
-        (surv_lot, Decimal("7"))
-    ]
+    before = LotSelectionsRepo(db).list_for_disposal("itx_sell")
+    with pytest.raises(UserError, match="selection"):
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == before
+    assert _accepted_binding(db) == provisional
 
 
 def test_accept_preserves_untouched_selections_in_a_migrated_disposal(
@@ -424,11 +431,11 @@ def test_accept_preserves_untouched_selections_in_a_migrated_disposal(
     with only the remapped rows would silently drop the others.
     """
     provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
-    prov_lot = _add_lot(db, security_id=provisional)
-    surv_lot = _add_lot(
+    prov_lot = add_lot(db, security_id=provisional)
+    surv_lot = add_lot(
         db, security_id=survivor, source_transaction_id="itx_buy_survivor"
     )
-    _add_disposal(db, "itx_sell", provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(prov_lot, Decimal("5")), (surv_lot, Decimal("2"))],
@@ -485,8 +492,8 @@ def test_accept_audit_chain_shares_one_parent(
 ) -> None:
     """Every child write carries the decision-update's audit id as parent."""
     provisional = merge_setup["provisional"]
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],
@@ -524,18 +531,63 @@ def test_accept_audit_chain_shares_one_parent(
 # ------------------------------------------------- manual-ledger cascade
 
 
+def test_manual_merge_routes_identity_without_changing_source_observation(
+    db: Database, merge_setup: dict[str, str]
+) -> None:
+    add_manual_event(db, security_id=merge_setup["provisional"])
+    before = db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+    with operation() as merge_op:
+        SecurityLinksService(db).accept_merge(
+            merge_setup["decision_id"], into=merge_setup["survivor"]
+        )
+    assert (
+        db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        == before
+    )
+    assert (
+        _accepted_binding(
+            db,
+            "manual_buy",
+            ref_kind="manual_investment_transaction_id",
+            source_type="manual",
+        )
+        == merge_setup["survivor"]
+    )
+    undo = UndoService(db).undo(merge_op, actor="cli")
+    assert (
+        db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        == before
+    )
+    assert (
+        _accepted_binding(
+            db,
+            "manual_buy",
+            ref_kind="manual_investment_transaction_id",
+            source_type="manual",
+        )
+        is None
+    )
+    UndoService(db).undo(undo.undo_operation_id, actor="cli")
+    assert (
+        db.execute("SELECT * FROM raw.manual_investment_transactions").fetchall()
+        == before
+    )
+    assert (
+        _accepted_binding(
+            db,
+            "manual_buy",
+            ref_kind="manual_investment_transaction_id",
+            source_type="manual",
+        )
+        == merge_setup["survivor"]
+    )
+
+
 def test_accept_repoints_manual_ledger_rows_onto_survivor(
     db: Database, merge_setup: dict[str, str]
 ) -> None:
-    """A manual event on the provisional must move to the survivor, not be orphaned.
-
-    ``raw.manual_investment_transactions`` stores a *resolved* ``security_id``
-    and the staging view carries it verbatim — no link-table indirection — so
-    the link repoint does not move it. Deleting the provisional catalog row
-    while a manual event still points at it splits the instrument's lots and
-    cost basis across a live security and a dead one.
-    """
-    _add_manual_event(db, security_id=merge_setup["provisional"])
+    """A manual observation resolves to the survivor through its accepted Link."""
+    add_manual_event(db, security_id=merge_setup["provisional"])
 
     SecurityLinksService(db).accept_merge(
         merge_setup["decision_id"], into=merge_setup["survivor"]
@@ -548,7 +600,7 @@ def test_manual_repoint_undoes_with_the_rest_of_the_merge(
     db: Database, merge_setup: dict[str, str]
 ) -> None:
     """The manual repoint rides the merge's operation_id — a partial undo is a defect."""
-    _add_manual_event(db, security_id=merge_setup["provisional"])
+    add_manual_event(db, security_id=merge_setup["provisional"])
 
     with operation() as op:
         SecurityLinksService(db).accept_merge(
@@ -566,7 +618,7 @@ def test_accept_leaves_manual_rows_on_other_securities_alone(
 ) -> None:
     """Only rows referencing the provisional move — a repoint is not a table sweep."""
     other = _mint(db, name="Apple Inc.", created_by="user")
-    _add_manual_event(db, security_id=other, source_transaction_id="manual_other")
+    add_manual_event(db, security_id=other, source_transaction_id="manual_other")
 
     SecurityLinksService(db).accept_merge(
         merge_setup["decision_id"], into=merge_setup["survivor"]
@@ -589,14 +641,14 @@ def test_undo_of_a_merge_is_itself_undoable(
     state does not — the redo must not trip on it.
     """
     provisional, survivor = merge_setup["provisional"], merge_setup["survivor"]
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],
         actor="cli",
     )
-    _add_manual_event(db, security_id=provisional)
+    add_manual_event(db, security_id=provisional)
 
     with operation() as op:
         SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=survivor)
@@ -621,7 +673,7 @@ def test_undo_of_a_merge_is_itself_undoable(
 def test_unremappable_selection_blocks_merge(
     db: Database, merge_setup: dict[str, str]
 ) -> None:
-    _add_disposal(db, "itx_sell", merge_setup["provisional"])
+    add_disposal(db, "itx_sell", merge_setup["provisional"])
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[("lot_gone000000", Decimal("5"))],
@@ -652,8 +704,8 @@ def test_selection_on_a_third_securitys_lot_blocks_merge(
     lands in the survivor's pool, so the election would silently become FIFO.
     """
     third = _mint(db, name="Some Other Fund", created_by="user")
-    foreign_lot = _add_lot(db, security_id=third)
-    _add_disposal(db, "itx_sell", merge_setup["provisional"])
+    foreign_lot = add_lot(db, security_id=third)
+    add_disposal(db, "itx_sell", merge_setup["provisional"])
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(foreign_lot, Decimal("5"))],
@@ -767,7 +819,7 @@ def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
     row", but only at step 7 of the cascade (after four writes already ran).
     This check moves the refusal ahead of the first write.
     """
-    _create_core_tables(db)
+    create_core_tables(db)
     survivor = _mint(db, name="Vanguard Total Stock Market ETF", created_by="user")
     user_bound = _mint(db, name="My Custom Security", created_by="user")
     SecurityLinksRepo(db).insert(
@@ -951,8 +1003,8 @@ def test_accept_rolls_back_entirely_on_any_write_failure(
 ) -> None:
     """A merge either fully applies or leaves nothing behind — never a half-merge."""
     provisional = merge_setup["provisional"]
-    old_lot = _add_lot(db, security_id=provisional)
-    _add_disposal(db, "itx_sell", provisional)
+    old_lot = add_lot(db, security_id=provisional)
+    add_disposal(db, "itx_sell", provisional)
     LotSelectionsRepo(db).set_for_disposal(
         investment_transaction_id="itx_sell",
         selections=[(old_lot, Decimal("5"))],

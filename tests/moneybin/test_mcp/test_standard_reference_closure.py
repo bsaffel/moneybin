@@ -297,7 +297,8 @@ async def test_report_catalog_examples_use_executable_standard_calls() -> None:
     database_context = MagicMock()
     database_context.__enter__.return_value = MagicMock(spec=Database)
     with patch(
-        "moneybin.mcp.tools.reports.get_database", return_value=database_context
+        "moneybin.reports._framework.catalog.get_database",
+        return_value=database_context,
     ):
         response = await reports()
 

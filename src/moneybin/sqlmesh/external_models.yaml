@@ -1,4 +1,19 @@
 # Raw/app declarations are guarded by tests/moneybin/test_external_models.py.
+- name: '"moneybin"."app"."account_link_decisions"'
+  columns:
+    decision_id: TEXT
+    provisional_account_id: TEXT
+    candidate_account_id: TEXT
+    confidence_score: DECIMAL(5, 4)
+    match_signals: JSON
+    status: TEXT
+    decided_by: TEXT
+    match_reason: TEXT
+    provisional_display_name: TEXT
+    candidate_display_name: TEXT
+    decided_at: TIMESTAMPNTZ
+    reversed_at: TIMESTAMPNTZ
+    reversed_by: TEXT
 - name: '"moneybin"."app"."account_links"'
   columns:
     link_id: TEXT
@@ -26,6 +41,22 @@
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."audit_log"'
+  columns:
+    audit_id: TEXT
+    occurred_at: TIMESTAMPNTZ
+    actor: TEXT
+    action: TEXT
+    target_schema: TEXT
+    target_table: TEXT
+    target_id: TEXT
+    before_value: JSON
+    after_value: JSON
+    parent_audit_id: TEXT
+    context_json: JSON
+    operation_id: TEXT
+    is_undo: BOOLEAN
+    undoes_operation_id: TEXT
 - name: '"moneybin"."app"."balance_assertions"'
   columns:
     account_id: TEXT
@@ -361,6 +392,16 @@
     source_type: TEXT
     extracted_at: TIMESTAMPNTZ
     loaded_at: TIMESTAMPNTZ
+    ingestion_sequence: BIGINT
+- name: '"moneybin"."raw"."plaid_investment_transaction_receipts"'
+  columns:
+    investment_transaction_id: TEXT
+    source_origin: TEXT
+    source_file: TEXT
+    observation_version: TEXT
+    ingestion_sequence: BIGINT
+    extracted_at: TIMESTAMPNTZ
+    loaded_at: TIMESTAMPNTZ
 - name: '"moneybin"."raw"."plaid_investment_transactions"'
   columns:
     investment_transaction_id: TEXT
@@ -377,11 +418,9 @@
     unofficial_currency_code: TEXT
     investment_transaction_type: TEXT
     investment_transaction_subtype: TEXT
-    source_file: TEXT
+    observation_version: TEXT
     source_type: TEXT
     source_origin: TEXT
-    extracted_at: TIMESTAMPNTZ
-    loaded_at: TIMESTAMPNTZ
 - name: '"moneybin"."raw"."plaid_securities"'
   columns:
     security_id: TEXT
