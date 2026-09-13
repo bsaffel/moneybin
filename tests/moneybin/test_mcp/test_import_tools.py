@@ -810,6 +810,58 @@ async def test_import_preview_coarse_maps_native_date_excel_column_correctly(
     assert response.data.mapping.get("description") != "Col1"
 
 
+async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A caller-supplied transaction_date mapping must scope normalization.
+
+    Review finding (Codex P2 / claude[bot]): ``_import_preview_tabular`` used
+    to call ``normalize_excel_date_columns_before_mapping`` with
+    ``date_column=None`` regardless of a caller-supplied ``mapping``,
+    normalizing every native-date column it finds instead of just the one
+    the caller named. ``Memo`` here is a SECOND, genuinely native-date Excel
+    column (a spreadsheet tool auto-typed it, unrelated to the transaction
+    date) that maps to the ``memo`` destination by header alias. With the
+    mapped ``transaction_date`` column correctly scoped, ``Memo`` must stay
+    untouched — still the raw "<date> 00:00:00" text fastexcel renders for a
+    native date cell — because only the mapped date column may be rewritten.
+    An unscoped normalization would truncate ``Memo`` too, and the confirm/
+    replay path (which always scopes to ``ReviewedTabularPlan.field_
+    mapping``'s actual ``transaction_date``) would NOT re-truncate it,
+    so the caller would import a different ``memo`` value than the one
+    this preview showed them.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Amount", "Description", "Memo"])
+    ws.append([date(2026, 1, 1), -4.50, "Coffee", date(2026, 1, 15)])
+    ws.append([date(2026, 1, 2), 100.00, "Salary", date(2026, 1, 16)])
+    xlsx = tmp_path / "second_native_date_column.xlsx"
+    wb.save(xlsx)
+
+    response = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"transaction_date": "Date"}
+    )
+
+    assert response.error is None, response.error
+    assert response.data.mapping.get("transaction_date") == "Date"
+    assert response.data.mapping.get("memo") == "Memo"
+    assert response.data.sample_values["transaction_date"] == [
+        "2026-01-01",
+        "2026-01-02",
+    ]
+    assert response.data.sample_values["memo"] == [
+        "2026-01-15 00:00:00",
+        "2026-01-16 00:00:00",
+    ]
+
+
 @pytest.mark.parametrize(
     ("suffix", "limit_field"),
     [

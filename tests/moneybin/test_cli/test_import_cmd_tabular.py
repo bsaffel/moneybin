@@ -556,6 +556,46 @@ class TestPreview:
         assert "transaction_date ← Col1" in result.output
         assert "description ← Col1" not in result.output
 
+    def test_preview_override_scopes_native_date_normalization(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller --override transaction_date=<col> must scope normalization.
+
+        Review finding (same shape as the MCP `_import_preview_tabular` fix,
+        not itself flagged by either reviewer): first-contact `import
+        preview` (no saved/matched format) never passed `date_column` to
+        `normalize_excel_date_columns_before_mapping`, so an unrelated
+        second native-date column ("Memo", auto-typed by some spreadsheet
+        tool) got normalized too whenever a broad scan found it — even
+        though the caller named the actual date column via `--override`.
+        The printed sample table must show Memo's raw "<date> 00:00:00"
+        text untouched, since only the overridden transaction_date column
+        may be rewritten.
+        """
+        from datetime import date
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description", "Memo"])
+        ws.append([date(2026, 1, 1), -4.50, "Coffee", date(2026, 1, 15)])
+        path = tmp_path / "second_native_date_column.xlsx"
+        wb.save(path)
+
+        result = runner.invoke(
+            app,
+            ["preview", str(path), "--override", "transaction_date=Date"],
+        )
+
+        assert result.exit_code == 0
+        assert "transaction_date ← Date" in result.output
+        # Memo's raw native-date text must survive untouched — proof that
+        # normalization was scoped to the overridden transaction_date column
+        # rather than sweeping in every native-date column it can find.
+        assert "2026-01-15 00:00:00" in result.output
+
     def test_permission_error_is_classified_not_raw(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
