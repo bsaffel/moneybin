@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database, sqlmesh_context
+from moneybin.investments.observation_versions import observation_version
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.repositories.security_links_repo import SecurityLinksRepo
 from moneybin.services.doctor_service import DoctorService
@@ -173,7 +174,25 @@ def _raw_investment_txn(db: Database, **overrides: object) -> None:
         "extracted_at": "2026-07-08 12:00:00",
     }
     row.update(overrides)
-    _insert(db, "raw.plaid_investment_transactions", row)
+    source_file = row.pop("source_file")
+    extracted_at = row.pop("extracted_at")
+    loaded_at = row.pop("loaded_at", extracted_at)
+    version = observation_version("plaid", row)
+    _insert(
+        db, "raw.plaid_investment_transactions", {**row, "observation_version": version}
+    )
+    _insert(
+        db,
+        "raw.plaid_investment_transaction_receipts",
+        {
+            "investment_transaction_id": row["investment_transaction_id"],
+            "source_origin": row["source_origin"],
+            "source_file": source_file,
+            "observation_version": version,
+            "extracted_at": extracted_at,
+            "loaded_at": loaded_at,
+        },
+    )
 
 
 def _manual_investment_txn(db: Database, **overrides: object) -> None:

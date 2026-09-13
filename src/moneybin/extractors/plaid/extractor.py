@@ -32,6 +32,7 @@ from moneybin.connectors.sync_models import (
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, ProviderSource, SyncResponse
 from moneybin.extractors.plaid.config import PlaidProviderConfig
+from moneybin.investments.observation_versions import observation_version
 from moneybin.metrics.registry import (
     INVESTMENT_AMOUNT_DRIFT_ROWS_TOTAL,
     PRICE_ROWS_WRITTEN_TOTAL,
@@ -43,6 +44,7 @@ from moneybin.tables import (
     PLAID_INVESTMENT_HOLDING_LOTS,
     PLAID_INVESTMENT_HOLDINGS,
     PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS,
+    PLAID_INVESTMENT_TRANSACTION_RECEIPTS,
     PLAID_INVESTMENT_TRANSACTIONS,
     PLAID_SECURITIES,
     PLAID_TRANSACTIONS,
@@ -724,14 +726,37 @@ class PlaidExtractor:
             ],
             schema=_INVESTMENT_TRANSACTIONS_SCHEMA,
         )
-        self.db.ingest_dataframe(
-            PLAID_INVESTMENT_TRANSACTIONS.full_name, df, on_conflict="upsert"
-        )
+        revisions = df.drop("source_file", "extracted_at", "loaded_at")
+        versions = [observation_version("plaid", row) for row in revisions.to_dicts()]
+        revisions = revisions.with_columns(pl.Series("observation_version", versions))
+        receipts = df.select(
+            "investment_transaction_id",
+            "source_origin",
+            "source_file",
+            "extracted_at",
+            "loaded_at",
+        ).with_columns(pl.Series("observation_version", versions))
+        self.db.begin()
+        try:
+            self.db.ingest_dataframe(
+                PLAID_INVESTMENT_TRANSACTIONS.full_name,
+                revisions,
+                on_conflict="ignore",
+            )
+            written = self.db.ingest_dataframe(
+                PLAID_INVESTMENT_TRANSACTION_RECEIPTS.full_name,
+                receipts,
+                on_conflict="ignore",
+            )
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(
             table="plaid_investment_transactions"
-        ).inc(len(df))
-        logger.info(f"Loaded {len(df)} Plaid investment transactions")
-        return len(df)
+        ).inc(written)
+        logger.info(f"Recorded {written} Plaid investment transaction receipts")
+        return written
 
     def _load_investment_holdings(
         self,
@@ -867,14 +892,14 @@ class PlaidExtractor:
             ],
             schema=_INVESTMENT_HOLDINGS_SNAPSHOTS_SCHEMA,
         )
-        self.db.ingest_dataframe(
-            PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="upsert"
+        written = self.db.ingest_dataframe(
+            PLAID_INVESTMENT_HOLDINGS_SNAPSHOTS.full_name, df, on_conflict="ignore"
         )
         SYNC_INVESTMENTS_RECORDS_LOADED.labels(
             table="plaid_investment_holdings_snapshots"
-        ).inc(len(df))
-        logger.info(f"Recorded {len(df)} Plaid holdings-snapshot receipt(s)")
-        return len(df)
+        ).inc(written)
+        logger.info(f"Recorded {written} Plaid holdings-snapshot receipt(s)")
+        return written
 
     def _warn_amount_drift(self, transactions: list[SyncInvestmentTransaction]) -> None:
         """Count buy/sell rows failing |amount| ~ |q*p| under BOTH fee conventions.

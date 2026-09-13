@@ -18,7 +18,7 @@ from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
-from moneybin.tables import SECURITY_LINKS, TableRef
+from moneybin.tables import MANUAL_INVESTMENT_TRANSACTIONS, SECURITY_LINKS, TableRef
 
 _SECURITY_LINKS_COLUMNS = (
     "link_id",
@@ -70,6 +70,47 @@ class SecurityLinksRepo(BaseRepo):
                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
             )
 
+    def list_manual_links_for_import(self, import_id: str) -> tuple[str, ...]:
+        """Accepted routes whose immutable observations belong to this batch."""
+        rows = self._db.execute(
+            f"""
+            SELECT links.link_id FROM {SECURITY_LINKS.full_name} AS links
+            JOIN {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS observations
+              ON observations.source_transaction_id = links.ref_value
+            WHERE observations.import_id = ? AND links.source_type = 'manual'
+              AND links.ref_kind = 'manual_investment_transaction_id'
+              AND links.status = 'accepted'
+            ORDER BY links.link_id
+            """,  # noqa: S608  # TableRef constants and parameterized import id
+            [import_id],
+        ).fetchall()
+        return tuple(str(row[0]) for row in rows)
+
+    def _guard_manual_observation(self, row: dict[str, Any]) -> None:
+        """An audited undo cannot restore a route after irreversible Raw deletion."""
+        if (
+            row.get("status") != "accepted"
+            or row.get("source_type") != "manual"
+            or row.get("ref_kind") != "manual_investment_transaction_id"
+        ):
+            return
+        observation = self._db.execute(
+            f"SELECT 1 FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} "  # noqa: S608  # TableRef and parameterized source id
+            "WHERE source_transaction_id = ?",
+            [row["ref_value"]],
+        ).fetchone()
+        if observation is None:
+            raise UserError(
+                "Cannot restore a manual Security Link whose source observation "
+                "no longer exists.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+
+    def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
+        """Validate the observation before undo restores an accepted route."""
+        self._guard_manual_observation(before)
+        super()._restore_row(before=before, locate=locate)
+
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Re-validate uniqueness before an undo re-inserts an accepted row.
 
@@ -83,6 +124,7 @@ class SecurityLinksRepo(BaseRepo):
         replays in reverse without transiting a two-accepted state — which is
         why :meth:`repoint` emits its audit rows in mutation order (see there).
         """
+        self._guard_manual_observation(row)
         if row.get("status") == "accepted":
             self._guard_uniqueness(
                 ref_kind=row["ref_kind"],
@@ -124,6 +166,7 @@ class SecurityLinksRepo(BaseRepo):
         status: str = "accepted",
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Insert a new security-link binding + paired audit. ``target_id`` is ``link_id``.
 
@@ -161,6 +204,8 @@ class SecurityLinksRepo(BaseRepo):
                 after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                is_undo=undoes_operation_id is not None,
+                undoes_operation_id=undoes_operation_id,
             )
 
     def repoint(
@@ -172,6 +217,7 @@ class SecurityLinksRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        undoes_operation_id: str | None = None,
     ) -> AuditEvent:
         """Re-point an accepted link onto a different canonical security_id (merge primitive).
 
@@ -212,6 +258,8 @@ class SecurityLinksRepo(BaseRepo):
                 after=self._serialize_for_audit(after_reversal),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                is_undo=undoes_operation_id is not None,
+                undoes_operation_id=undoes_operation_id,
             )
             self.insert(
                 link_id=uuid.uuid4().hex[:12],
@@ -233,6 +281,7 @@ class SecurityLinksRepo(BaseRepo):
                 status="accepted",
                 parent_audit_id=parent_audit_id,
                 in_outer_txn=True,
+                undoes_operation_id=undoes_operation_id,
             )
             return event
 

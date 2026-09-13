@@ -517,7 +517,7 @@ The error code vocabulary is owned by the server. As providers are added, new er
 | Server unreachable | Network or server down | Retry with exponential backoff (3 attempts). Clear error: "Cannot reach moneybin-sync at {url}." |
 | Sync job timeout | Polling exceeded max wait | Log `job_id` for manual recovery. "Sync job {id} timed out — run `moneybin sync status` to check." |
 | Load failure | DuckDB write error during load | Roll back partial load (transaction). No raw data corruption. |
-| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh run`) independently. |
+| Transform failure | `sqlmesh run` error after load | Raw data is safely loaded. User can re-run `moneybin transform apply` (or `moneybin refresh`) independently. |
 
 ### Partial success handling
 

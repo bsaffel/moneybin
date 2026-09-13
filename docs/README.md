@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-11 -->
 # MoneyBin Documentation
 
 Every page, ordered by what you are trying to do. Guides are how-tos, reference pages are lookup material, [`specs/`](specs/) holds design records, and [`decisions/`](decisions/) holds ADRs.
@@ -46,6 +46,8 @@ Working with data that is already loaded — categorizing it, understanding the 
 - **[Data model](reference/data-model.md)** — Every table you can read — `core.*`, `reports.*`, `app.*`, `meta.*`, `seeds.*` — with grain, key columns, and meaning.
 - **[Data sources](reference/data-sources.md)** — Every supported import format and integration, what it preserves, where it lands.
 - **[Account matching](reference/account-matching.md)** — How records from different sources resolve to one canonical account: the identity signals used, where each comes from per format, and when MoneyBin asks you to confirm.
+- **[Investments](guides/investments.md)** — The investment ledger, tax lots, cost-basis methods, realized gain/loss, and the price feeds that value a position, walked through with real transcripts.
+- **[Multi-currency](guides/multi-currency.md)** — Where a row's currency comes from, how a mixed-currency profile reports, and pricing reports into one home currency at read time.
 
 ## Operate and deploy
 

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-11 -->
 # Reports
 
 Nine built-in reports answer the standing questions — what am I worth, where
@@ -501,6 +501,8 @@ user_report.delete report_id=user:r6ebf7dcd4ba6 outcome=removed
 `reports set` also renames (`--name`), re-describes, and replaces the SQL or the parameters, re-deriving the privacy classes when it does. `--restore` unarchives. A delete is audited; `system audit undo` brings the report back.
 
 ## One display currency
+
+See the [multi-currency guide](multi-currency.md) for where a row's currency comes from and what a mixed-currency profile reads like before it has a home currency set.
 
 `--display-currency EUR` — `display_currency` on the MCP tool — prices a report into one currency at read time. Omit the flag and the target is the profile's home currency (`profile set home_currency EUR`): a profile that has set one gets the three converting reports named below priced into it whenever the rates are on disk, and falls back quietly when they are not. A profile with no home currency, which is how every profile starts, reads each row in its own currency, and so does any report that cannot convert: the five that aggregate per currency always, the mixed-unit realized-FX report always, and the three converting ones whenever a rate is missing. Nothing converted is ever stored — the original amount and currency stay in every table — and because `home_currency` takes an ISO code and has no unset, the unconverted read on a home-currency profile is `moneybin sql query` over the view: `reports.net_worth`, `reports.large_transactions`, or `reports.balance_drift`. Rates come from `moneybin refresh`, which caches the rates your own rows imply into the home currency; a target with no stored rates falls back, and the report says so instead of guessing:
 

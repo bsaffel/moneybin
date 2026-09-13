@@ -6,7 +6,8 @@
    the missing evidence: consumers derive "the newest snapshot for this item" from HERE (core.dim_holdings, system doctor), so an
    item that reported nothing produces an empty newest snapshot rather than a stale one, and an item that never reported produces
    no snapshot at all. Invariant: every (source_origin, source_file) in raw.plaid_investment_holdings has a row here.
-   Idempotent — re-loading the same job replaces its own row. */
+   Idempotent — re-loading the same job reuses its receipt and preserves its original ingestion sequence. */
+CREATE SEQUENCE IF NOT EXISTS raw.investment_ingestion_sequence;
 CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
     source_origin VARCHAR NOT NULL,           -- Plaid item_id; the item that reported (part of the PK)
     source_file VARCHAR NOT NULL,             -- Logical identifier: sync_{job_id}; the SNAPSHOT identity (part of the PK), same as the holdings rows it accounts for
@@ -19,5 +20,6 @@ CREATE TABLE IF NOT EXISTS raw.plaid_investment_holdings_snapshots (
         DEFAULT CURRENT_TIMESTAMP,
     loaded_at TIMESTAMP                       -- When this record was inserted into the local database
         DEFAULT CURRENT_TIMESTAMP,
+    ingestion_sequence BIGINT NOT NULL DEFAULT nextval('raw.investment_ingestion_sequence'), -- Local first-ingestion ordering, preserved on replay
     PRIMARY KEY (source_origin, source_file)
 );

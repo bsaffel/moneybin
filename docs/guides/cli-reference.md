@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-11 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -394,7 +394,7 @@ The per-account cost-basis default is a field on `accounts set
 --default-cost-basis-method`; the per-security override is `investments
 securities set --method`.
 
-**Related guides:** [`investments-data-model.md`](../specs/investments-data-model.md), [`sync-plaid-investments.md`](../specs/sync-plaid-investments.md).
+**Related guides:** [`investments.md`](investments.md), [`investments-data-model.md`](../specs/investments-data-model.md), [`sync-plaid-investments.md`](../specs/sync-plaid-investments.md).
 
 ### `fx`
 
@@ -415,7 +415,7 @@ day's own. `fx set` writes `app.exchange_rate_overrides` with a paired
 audit-log row; `fx delete` is the only way to withdraw one, since `set` can
 only change the number.
 
-**Related guides:** [`multi-currency.md`](../specs/multi-currency.md).
+**Related guides:** [`multi-currency.md` (guide)](multi-currency.md), [`multi-currency.md` (spec, `docs/specs/`)](../specs/multi-currency.md).
 
 ## Reports
 
