@@ -254,7 +254,13 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
                 "reason": "header_position_ambiguous",
                 "moved_to": "pending/2026-05/data_before_header.csv",
                 "sidecar": "pending/2026-05/data_before_header.csv.pending.yml",
-                "header_position_ambiguous_rows": [["2026-01-01", "42.50", "Coffee"]],
+                "header_position_ambiguous_rows": [
+                    {
+                        "transaction_date": "2026-01-01",
+                        "amount": "42.50",
+                        "description": "Coffee",
+                    }
+                ],
             }
         ],
     )
@@ -268,7 +274,11 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
     assert "import files" not in result.stderr
     # The disputed row is live drain-summary data, not part of the
     # row-free persisted sidecar — the drain must still show it.
-    assert "2026-01-01, 42.50, Coffee" in result.stderr
+    # Already allowlisted (disputed_row_fields) by the time it reaches
+    # here, so the rendering is dest=value pairs, not raw positional cells.
+    assert (
+        "transaction_date=2026-01-01, amount=42.50, description=Coffee" in result.stderr
+    )
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:

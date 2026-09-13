@@ -81,7 +81,7 @@ class TestCSVReader:
             "utf-8",
             ",",
             source_bytes=materialized,
-        ) == (1, True, False, ())
+        ) == (1, True, False, (), ())
         assert _row_looks_like_data_at(
             path,
             "utf-8",

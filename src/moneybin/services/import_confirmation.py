@@ -12,13 +12,13 @@ invoked only when a confirm decision is needed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence, Tier
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
-from moneybin.log_sanitizer import mask_pii_shaped
+from moneybin.extractors.tabular.readers import DATE_TYPED_TABULAR_FIELDS
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
@@ -216,22 +216,84 @@ class ConfirmationRequired:
     # caller who never previewed still gets to see the disputed row before
     # deciding whether to ratify. Empty for every other reason.
     header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
+    # The header row's own FULL positional cells from the same physical
+    # sample — see ReadResult.header_position_ambiguous_header_cells.
+    # Position-aligned with header_position_ambiguous_rows; required to
+    # resolve a disputed cell's column identity in disputed_row_fields().
+    header_position_ambiguous_header_cells: tuple[str, ...] = ()
 
 
-def mask_disputed_rows(
+# The only destination fields a disputed row may ever show — exactly the
+# cells that answer "is this a transaction or a balance summary?" (a date,
+# an amount, or the description), never an account/identifier field. Named
+# from the same canonical sources map_columns itself uses, not memory:
+# DATE_TYPED_TABULAR_FIELDS is raw_tabular_transactions.sql's own date
+# columns, and the amount/description names are FIELD_ALIASES's own keys
+# (column_mapper.py's _score_column_for_field uses the identical four).
+# identifiers.md "Account identifiers" closes the list of surfaces allowed
+# to leak a short/alphanumeric key past mask_pii_shaped's digit-run shape —
+# this PR does not add one, so an unmapped or non-allowed cell is OMITTED
+# here, never masked and shown.
+_DISPUTED_ROW_ALLOWED_FIELDS: frozenset[str] = frozenset(DATE_TYPED_TABULAR_FIELDS) | {
+    "amount",
+    "debit_amount",
+    "credit_amount",
+    "description",
+}
+
+
+def disputed_row_fields(
     rows: Sequence[Sequence[str]],
-) -> list[list[str]]:
-    """Mask each cell of the header_position_ambiguous disputed row(s).
+    header_cells: Sequence[str],
+    field_mapping: Mapping[str, str],
+) -> list[dict[str, str]]:
+    """Project each disputed row onto only the cells that answer the confirm.
 
-    The one place this masking is named: every surface that shows these
-    rows (confirmation_payload_dict, the inbox drain's live summary, the
-    MCP preview payload, the CLI's echo_disputed_rows) calls this instead
-    of repeating the comprehension and the rationale. Uses mask_pii_shaped
-    — the same value-shape masker the agent-safe SQL surface (sql_query)
-    applies to raw/prep — because an account number can appear in a
-    disputed row same as any other cell.
+    The one builder: every surface that shows a header_position_ambiguous
+    disputed row (confirmation_payload_dict, the inbox drain's live
+    summary, the MCP preview payload, the CLI's echo_disputed_rows) calls
+    this instead of repeating the selection. Pass the PROPOSED mapping when
+    only one exists yet (first-contact confirm); the final mapping once
+    resolved.
+
+    A cell is shown only when its column identity is known — the SAME
+    physical position in ``header_cells`` names a column that appears
+    EXACTLY ONCE there (a blank header cell or a name repeated elsewhere in
+    the header means identity can't be established) — AND that column maps
+    to an allowed field (``_DISPUTED_ROW_ALLOWED_FIELDS``: the date fields,
+    the amount fields including the split debit/credit variants, and
+    description). Every other cell is OMITTED, not masked: any shape-based
+    masker (mask_pii_shaped included) has a short/alphanumeric-key hole
+    (identifiers.md "Account identifiers"), so an account-shaped cell in an
+    unmapped or non-allowed column must never reach a surface at all. A row
+    whose length doesn't match ``header_cells`` has no reliable column
+    alignment at any position, so the WHOLE row is omitted (``{}``).
     """
-    return [[mask_pii_shaped(cell)[0] for cell in row] for row in rows]
+    if not header_cells:
+        return [{} for _ in rows]
+    name_counts: dict[str, int] = {}
+    for cell in header_cells:
+        if cell.strip():
+            name_counts[cell] = name_counts.get(cell, 0) + 1
+    dest_by_column = {
+        column: dest
+        for dest, column in field_mapping.items()
+        if dest in _DISPUTED_ROW_ALLOWED_FIELDS
+    }
+    dest_by_position: dict[int, str] = {}
+    for i, cell in enumerate(header_cells):
+        if not cell.strip() or name_counts.get(cell, 0) > 1:
+            continue
+        dest = dest_by_column.get(cell)
+        if dest is not None:
+            dest_by_position[i] = dest
+
+    return [
+        {}
+        if len(row) != len(header_cells)
+        else {dest: row[i] for i, dest in dest_by_position.items()}
+        for row in rows
+    ]
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
@@ -290,10 +352,14 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "sign_evidence": sign_evidence,
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
-        # Masked: this dict feeds both the CLI recovery renderer and MCP's
-        # confirmation_required envelope.
-        "header_position_ambiguous_rows": mask_disputed_rows(
-            outcome.header_position_ambiguous_rows
+        # Allowlisted to date/amount/description cells only: this dict feeds
+        # both the CLI recovery renderer and MCP's confirmation_required
+        # envelope. proposed_mapping is the PROPOSED mapping — the only one
+        # that exists at this first-contact confirm point.
+        "header_position_ambiguous_rows": disputed_row_fields(
+            outcome.header_position_ambiguous_rows,
+            outcome.header_position_ambiguous_header_cells,
+            proposed_mapping,
         ),
     }
 

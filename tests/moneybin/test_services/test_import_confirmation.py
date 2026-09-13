@@ -18,6 +18,7 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     Resolved,
     SignConventionProposal,
+    disputed_row_fields,
     resolve_or_confirm,
     unreadable_date_recovery,
     validate_partial_mapping,
@@ -212,6 +213,176 @@ class TestConfirmationPayloadDict:
         ]
         assert payload["bridge_payload"] is None
         assert payload["proposed_mapping"] == {}
+
+    def test_projects_disputed_rows_through_the_proposed_mapping(self) -> None:
+        """confirmation_payload_dict must allowlist via disputed_row_fields.
+
+        Wiring test for the F fix: the raw positional
+        ``header_position_ambiguous_rows``/``_header_cells`` on the outcome
+        must be projected through ``disputed_row_fields`` using the
+        PROPOSED mapping before reaching the payload dict — an unmapped,
+        account-shaped cell (``ACCT-XY9Z``) must never appear.
+        """
+        from moneybin.services.import_confirmation import confirmation_payload_dict
+
+        c = Confidence(score=0.0, tier="low", flagged=(), missing_required=())
+        p = ProposedMapping(
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sample_values={},
+            unmapped_columns=(),
+        )
+        out = ConfirmationRequired(
+            channel="tabular",
+            confidence=c,
+            proposed=p,
+            reason="header_position_ambiguous",
+            header_position_ambiguous_rows=(
+                ("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z"),
+            ),
+            header_position_ambiguous_header_cells=(
+                "Date",
+                "Amount",
+                "Description",
+                "AccountNumber",
+            ),
+        )
+        d = confirmation_payload_dict(out)
+        disputed_rows = d["header_position_ambiguous_rows"]
+        assert disputed_rows == [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "42.50",
+                "description": "Coffee",
+            }
+        ]
+        assert isinstance(disputed_rows, list)
+        for row in disputed_rows:
+            assert isinstance(row, dict)
+            assert "ACCT-XY9Z" not in row.values()
+
+
+class TestDisputedRowFields:
+    """disputed_row_fields: the allowlist-and-omit projection (round 17, F).
+
+    Any shape-based masker (mask_pii_shaped included) has an irreducible
+    short/alphanumeric-key hole, and identifiers.md's "Account identifiers"
+    section closes the list of surfaces allowed to leak such a key. So the
+    fix here is narrowing WHAT is shown (an allowlist of destination
+    fields resolved by position), never a stronger masker on what leaks
+    through.
+    """
+
+    _HEADER = ("Date", "Amount", "Description", "AccountNumber")
+    _MAPPING = {
+        "transaction_date": "Date",
+        "amount": "Amount",
+        "description": "Description",
+    }
+
+    def test_allowed_fields_shown_unmapped_column_omitted(self) -> None:
+        rows = [("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z")]
+        result = disputed_row_fields(rows, self._HEADER, self._MAPPING)
+        assert result == [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "42.50",
+                "description": "Coffee",
+            }
+        ]
+
+    def test_short_numeric_key_in_unmapped_column_also_omitted(self) -> None:
+        """A 4-digit key defeats mask_pii_shaped's digit-run backstop.
+
+        The allowlist design doesn't care about the cell's shape at all --
+        it never even inspects the value -- so a masker-defeating short key
+        is omitted for the same reason ACCT-XY9Z is: unmapped column.
+        """
+        rows = [("2026-01-02", "10.00", "Tea", "1234")]
+        result = disputed_row_fields(rows, self._HEADER, self._MAPPING)
+        assert result == [
+            {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"}
+        ]
+        assert "1234" not in result[0].values()
+
+    def test_blank_header_cell_is_omitted(self) -> None:
+        header = ("Date", "", "Description")
+        mapping = {
+            "transaction_date": "Date",
+            "amount": "",
+            "description": "Description",
+        }
+        rows = [("2026-01-01", "42.50", "Coffee")]
+        result = disputed_row_fields(rows, header, mapping)
+        # Position 1's header cell is blank -- identity unknown -- omitted
+        # even though the mapping technically points amount at "".
+        assert result == [{"transaction_date": "2026-01-01", "description": "Coffee"}]
+
+    def test_duplicated_header_name_is_omitted(self) -> None:
+        # Two columns both named "Amount" -- identity ambiguous at both
+        # positions, so neither is shown even though one maps to "amount".
+        header = ("Date", "Amount", "Amount")
+        mapping = {"transaction_date": "Date", "amount": "Amount"}
+        rows = [("2026-01-01", "42.50", "-4.75")]
+        result = disputed_row_fields(rows, header, mapping)
+        assert result == [{"transaction_date": "2026-01-01"}]
+
+    def test_length_mismatched_row_is_fully_omitted(self) -> None:
+        # One extra cell versus the header -- no reliable positional
+        # alignment anywhere in this row, so the WHOLE row is dropped.
+        rows = [("2026-01-01", "42.50", "Coffee", "extra")]
+        result = disputed_row_fields(rows, self._HEADER[:3], self._MAPPING)
+        assert result == [{}]
+
+    def test_empty_header_cells_omits_every_row(self) -> None:
+        rows = [("2026-01-01", "42.50", "Coffee")]
+        result = disputed_row_fields(rows, (), self._MAPPING)
+        assert result == [{}]
+
+    def test_no_rows_returns_empty_list(self) -> None:
+        assert disputed_row_fields([], self._HEADER, self._MAPPING) == []
+
+    def test_mutation_unmapped_cells_passing_through_would_be_caught(self) -> None:
+        """Prove the allowlist filter, not just the happy path, is load-bearing.
+
+        Simulates the mutation "drop the dest_by_column allowlist filter and
+        map every header cell verbatim" by hand-deriving what THAT buggy
+        behavior would produce, and asserting the real function does NOT
+        produce it -- i.e. this test would go red under that mutation.
+        """
+        rows = [("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z")]
+        result = disputed_row_fields(rows, self._HEADER, self._MAPPING)
+        buggy_pass_through = {
+            "Date": "2026-01-01",
+            "Amount": "42.50",
+            "Description": "Coffee",
+            "AccountNumber": "ACCT-XY9Z",
+        }
+        assert result[0] != buggy_pass_through
+        assert "ACCT-XY9Z" not in result[0].values()
+
+    def test_mutation_dropping_length_check_would_be_caught(self) -> None:
+        """Prove the length-mismatch guard, not just alignment, is load-bearing.
+
+        Simulates the mutation "drop the len(row) != len(header_cells)
+        guard and zip anyway" by hand-deriving what that buggy zip would
+        produce for a longer row, and asserting the real function instead
+        omits the whole row.
+        """
+        rows = [("2026-01-01", "42.50", "Coffee", "extra", "ACCT-XY9Z")]
+        header = self._HEADER  # 4 cells; row has 5 -- length mismatch.
+        result = disputed_row_fields(rows, header, self._MAPPING)
+        assert result == [{}]
+        # A buggy zip-without-length-check would still surface the
+        # allowed fields (misaligned or not) instead of omitting the row.
+        buggy_zip_result = {
+            dest: rows[0][i]
+            for i, dest in enumerate(("transaction_date", "amount", "description"))
+        }
+        assert result[0] != buggy_zip_result
 
 
 class TestSignConventionProposal:

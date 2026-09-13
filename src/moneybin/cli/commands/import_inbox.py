@@ -69,7 +69,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # because one wrong-account recovery hint is hard enough to keep correct.
     from moneybin.cli.commands.import_cmd import (
         echo_accounts_created,
-        echo_disputed_rows,
+        echo_disputed_row_fields,
         format_account_candidate,
     )
 
@@ -144,9 +144,14 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                 header_position_ambiguous_recovery_sidecar,
             )
 
+            # Already allowlisted (disputed_row_fields) where the pending
+            # entry was built — the sidecar/entry never carries raw cells,
+            # so there is nothing left to re-select here, only to render.
             raw_rows: Any = item.get("header_position_ambiguous_rows")
-            echo_disputed_rows(
-                cast("list[list[str]]", raw_rows) if isinstance(raw_rows, list) else []
+            echo_disputed_row_fields(
+                cast("list[dict[str, str]]", raw_rows)
+                if isinstance(raw_rows, list)
+                else []
             )
             typer.echo(
                 f"   {header_position_ambiguous_recovery_sidecar(str(moved_to))}",

@@ -833,6 +833,82 @@ class TestSyncFailure:
         assert loaded["reason"] == "account_confirmation"
         assert any("--account-binding" in a for a in loaded["actions"])
 
+    def test_pending_entry_allowlists_header_position_ambiguous_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live pending entry projects disputed rows via disputed_row_fields.
+
+        Sixth surface (inbox summary) of the F fix: an unmapped,
+        account-shaped cell (``ACCT-XY9Z``) must never reach the envelope
+        the CLI/JSON drain renders, and only the date/amount/description
+        cells the PROPOSED mapping resolves may appear.
+        """
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.services import inbox_service as mod
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        class FakeImportService:
+            def __init__(self, db: object) -> None:
+                pass
+
+            def import_file(self, path: str, **kwargs: object) -> object:
+                raise ImportConfirmationRequiredError(
+                    ConfirmationRequired(
+                        channel="tabular",
+                        confidence=Confidence(
+                            score=0.0, tier="low", flagged=(), missing_required=()
+                        ),
+                        proposed=ProposedMapping(
+                            field_mapping={
+                                "transaction_date": "Date",
+                                "amount": "Amount",
+                                "description": "Description",
+                            },
+                            sample_values={},
+                            unmapped_columns=(),
+                        ),
+                        reason="header_position_ambiguous",
+                        header_position_ambiguous_rows=(
+                            ("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z"),
+                        ),
+                        header_position_ambiguous_header_cells=(
+                            "Date",
+                            "Amount",
+                            "Description",
+                            "AccountNumber",
+                        ),
+                    )
+                )
+
+        monkeypatch.setattr(mod, "ImportService", FakeImportService)
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        (svc.inbox_dir / "ambiguous.csv").write_text(
+            "2026-01-01,42.50,Coffee,ACCT-XY9Z\nDate,Amount,Description,AccountNumber\n"
+        )
+
+        result = svc.sync(year_month="2026-05")
+
+        assert len(result.pending) == 1
+        disputed = result.pending[0]["header_position_ambiguous_rows"]
+        assert disputed == [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "42.50",
+                "description": "Coffee",
+            }
+        ]
+        assert isinstance(disputed, list)
+        for row in disputed:
+            assert isinstance(row, dict)
+            assert "ACCT-XY9Z" not in row.values()
+
     def test_pending_entry_carries_account_proposals_in_envelope(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

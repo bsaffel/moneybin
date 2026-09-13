@@ -989,23 +989,45 @@ def _accounts_created_payload(
     ]
 
 
-def echo_disputed_rows(rows: Sequence[Sequence[str]]) -> None:
+def echo_disputed_rows(
+    rows: Sequence[Sequence[str]],
+    header_cells: Sequence[str],
+    field_mapping: Mapping[str, str],
+) -> None:
     """Show the row(s) behind a header_position_ambiguous confirm.
 
-    Same routing as ``echo_accounts_created``: row content is file data, not
-    static text, so it goes through ``typer.echo(err=True)`` rather than the
-    log pipeline — ``log_to_file`` defaults to True. Masks unconditionally
-    (cli.md: "never assume CLI users are 'trusted enough to skip
-    redaction'") via ``mask_disputed_rows``, so a caller can never forget it
-    by passing an already-masked row (idempotent) or a raw one.
+    Selects via ``disputed_row_fields`` (date/amount/description cells
+    only — every other cell omitted, never printed) then renders via
+    ``echo_disputed_row_fields``. Pass the PROPOSED mapping when only one
+    exists yet (first-contact confirm). The inbox sidecar replay path
+    (``import_inbox.py``) already has the ALLOWLISTED shape persisted — it
+    calls ``echo_disputed_row_fields`` directly rather than re-selecting
+    from raw rows it no longer has.
     """
     if not rows:
         return
-    from moneybin.services.import_confirmation import mask_disputed_rows
+    from moneybin.services.import_confirmation import disputed_row_fields
 
+    echo_disputed_row_fields(disputed_row_fields(rows, header_cells, field_mapping))
+
+
+def echo_disputed_row_fields(fields_by_row: Sequence[Mapping[str, str]]) -> None:
+    """Render an already-allowlisted disputed-row projection.
+
+    Same routing as ``echo_accounts_created``: row content is file data, not
+    static text, so it goes through ``typer.echo(err=True)`` rather than the
+    log pipeline — ``log_to_file`` defaults to True. Names a row with
+    nothing displayable explicitly, rather than printing a blank line.
+    """
+    if not fields_by_row:
+        return
     typer.echo("   Disputed row(s):", err=True)
-    for row in mask_disputed_rows(rows):
-        typer.echo(f"     {', '.join(row)}", err=True)
+    for fields in fields_by_row:
+        if not fields:
+            typer.echo("     (no displayable fields)", err=True)
+            continue
+        rendered = ", ".join(f"{dest}={value}" for dest, value in fields.items())
+        typer.echo(f"     {rendered}", err=True)
 
 
 def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
@@ -1734,7 +1756,15 @@ def _render_confirmation_prompt(
     typer.echo(f"   Reason: {outcome.reason}")
     # No-op for every reason but header_position_ambiguous, whose evidence
     # this is: a caller ratifying with --confirm must see the disputed row.
-    echo_disputed_rows(outcome.header_position_ambiguous_rows)
+    # Only a ProposedMapping proposal names a field_mapping to resolve
+    # column identity against; every other proposal shape omits every cell.
+    echo_disputed_rows(
+        outcome.header_position_ambiguous_rows,
+        outcome.header_position_ambiguous_header_cells,
+        outcome.proposed.field_mapping
+        if isinstance(outcome.proposed, ProposedMapping)
+        else {},
+    )
     if outcome.error_message:
         typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
 
@@ -2015,6 +2045,7 @@ def import_confirm_command(
 
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        ProposedMapping,
         header_position_ambiguous_recovery,
         header_row_consumed_recovery,
         unreadable_date_recovery,
@@ -2181,7 +2212,13 @@ def import_confirm_command(
             logger.error(
                 "❌ A row before the detected header looks like a transaction."
             )
-            echo_disputed_rows(outcome.header_position_ambiguous_rows)
+            echo_disputed_rows(
+                outcome.header_position_ambiguous_rows,
+                outcome.header_position_ambiguous_header_cells,
+                outcome.proposed.field_mapping
+                if isinstance(outcome.proposed, ProposedMapping)
+                else {},
+            )
             logger.info(f"💡 {header_position_ambiguous_recovery(str(file_path))}")
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
@@ -2733,13 +2770,15 @@ def import_preview(
             # --confirm` / `import confirm --accept`). The recovery text
             # stays static (safe for the log pipeline); the disputed row's
             # own content goes through echo_disputed_rows, stderr-only, so
-            # this warning's evidence never reaches a log file.
+            # this warning's evidence never reaches a log file. The row
+            # itself is echoed further down, once the mapping resolves —
+            # echo_disputed_rows needs a field_mapping to resolve column
+            # identity, and neither branch below has committed to one yet.
             from moneybin.services.import_confirmation import (
                 header_position_ambiguous_recovery,
             )
 
             logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
-            echo_disputed_rows(read_result.header_position_ambiguous_rows)
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
         final_field_mapping: dict[str, str]
@@ -2795,6 +2834,13 @@ def import_preview(
                 typer.echo(f"Number format: {mapping_result.number_format}")
             final_field_mapping = mapping_result.field_mapping
             final_effective_date_format = mapping_result.date_format
+
+        if read_result.header_position_ambiguous:
+            echo_disputed_rows(
+                read_result.header_position_ambiguous_rows,
+                read_result.header_position_ambiguous_header_cells,
+                final_field_mapping,
+            )
 
         # The ONLY render of df — exactly once, against the FINAL mapping,
         # whether a column got there via matched_format/--override or

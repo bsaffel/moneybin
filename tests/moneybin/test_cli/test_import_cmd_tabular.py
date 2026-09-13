@@ -534,7 +534,8 @@ class TestPreview:
         the shared ``header_position_ambiguous_recovery`` helper names the
         commands that actually clear the gate. The helper's own text stays
         row-free (it can reach the log pipeline); the disputed row(s) go
-        through ``echo_disputed_rows`` on stderr only, never a log record.
+        through ``echo_disputed_rows`` (allowlisted via ``disputed_row_
+        fields``) on stderr only, never a log record.
         """
         import logging
 
@@ -557,12 +558,22 @@ class TestPreview:
         assert result.exit_code == 0
         expected = header_position_ambiguous_recovery(str(csv_file))
         assert any(expected in r.message for r in caplog.records), caplog.text
-        # The disputed rows appear in the CLI's stderr-mixed output...
-        assert "2026-01-01, 42.50, Coffee" in result.output
-        assert "2026-01-02, 10.00, Tea" in result.output
+        # The disputed rows appear in the CLI's stderr-mixed output, already
+        # allowlisted to dest=value pairs (disputed_row_fields) rather than
+        # raw positional cells...
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
         # ...and in no log record — a row can carry an account number, and
         # log_to_file defaults to True.
-        assert not any("2026-01-01, 42.50, Coffee" in r.message for r in caplog.records)
+        assert not any(
+            "transaction_date=2026-01-01" in r.message for r in caplog.records
+        )
 
     def test_preview_maps_native_date_excel_column_correctly(
         self, tmp_path: Path

@@ -107,7 +107,7 @@ from moneybin.protocol.pagination import (
     validate_keyset_shape,
 )
 from moneybin.services.import_confirmation import (
-    mask_disputed_rows,
+    disputed_row_fields,
     sign_convention_effect,
 )
 from moneybin.services.refresh_outcome import RefreshStepOutcome
@@ -858,7 +858,6 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
-        DATE_TYPED_TABULAR_FIELDS,
         normalize_excel_date_columns_after_mapping,
         normalize_excel_date_columns_for_detection,
         read_file,
@@ -921,15 +920,25 @@ def _import_preview_tabular(
             c for c in read_result.df.columns if c not in field_mapping.values()
         ]
 
-    # Every caller-visible sample comes from read_result.df under the FINAL
-    # field_mapping — never mapping_result.sample_values, which map_columns
-    # computed from detection_df: detection_df renders every string column
-    # for format detection, so a native column mapped to a non-date field
-    # (a Memo mapped to memo) would otherwise show a rendering the real
-    # import never reproduces for it. Correct as-is for every non-date-typed
-    # field regardless of override state, since read_result.df is still
-    # untouched here; the date-typed fields are refreshed again below,
-    # after the one real render.
+    # The ONLY render of read_result.df — exactly once, against the FINAL
+    # mapping, whether a column got there via the caller's own `mapping`
+    # override or map_columns's own alias detection. No --date-format
+    # parameter exists on this preview path, so the detector's own
+    # mapping_result.date_format is always the effective one. field_mapping
+    # and mapping_result.date_format are both already final here, before
+    # anything below reads the frame's date-column text.
+    read_result.df = normalize_excel_date_columns_after_mapping(
+        read_result.df,
+        file_type=format_info.file_type,
+        field_mapping=field_mapping,
+        date_format=mapping_result.date_format,
+    )
+    # Every caller-visible sample comes from the just-rendered frame under
+    # the FINAL field_mapping — never mapping_result.sample_values, which
+    # map_columns computed from detection_df: detection_df renders every
+    # string column for format detection, so a native column mapped to a
+    # non-date field (a Memo mapped to memo) would otherwise show a
+    # rendering the real import never reproduces for it.
     sample_values = collect_field_samples(read_result.df, field_mapping)
 
     if mapping:
@@ -961,31 +970,6 @@ def _import_preview_tabular(
             t_med=bands.t_med,
         )
 
-    # The ONLY render of read_result.df — exactly once, against the FINAL
-    # mapping, whether a column got there via the caller's own `mapping`
-    # override or map_columns's own alias detection. No --date-format
-    # parameter exists on this preview path, so the detector's own
-    # mapping_result.date_format is always the effective one.
-    read_result.df = normalize_excel_date_columns_after_mapping(
-        read_result.df,
-        file_type=format_info.file_type,
-        field_mapping=field_mapping,
-        date_format=mapping_result.date_format,
-    )
-    # Keep previewed samples for the date-typed destinations in sync with
-    # what actually imports, rather than showing pre-render native text for
-    # a column the render above just rewrote.
-    sample_values.update(
-        collect_field_samples(
-            read_result.df,
-            {
-                dest: field_mapping[dest]
-                for dest in DATE_TYPED_TABULAR_FIELDS
-                if dest in field_mapping
-            },
-        )
-    )
-
     return build_envelope(
         data=ImportPreviewPayload(
             file=path.name,
@@ -1013,9 +997,13 @@ def _import_preview_tabular(
             header_position_ambiguous=read_result.header_position_ambiguous,
             # DataClass.DESCRIPTION drives sensitivity-tier classification only
             # (privacy/redaction.py's _TRANSFORMS maps it to _passthrough), not
-            # value masking — so this field needs its own masking pass.
-            header_position_ambiguous_rows=mask_disputed_rows(
-                read_result.header_position_ambiguous_rows
+            # value masking — so this field needs its own selection pass.
+            # field_mapping is the FINAL mapping here (the render above
+            # already used it), so the disputed row reflects what imports.
+            header_position_ambiguous_rows=disputed_row_fields(
+                read_result.header_position_ambiguous_rows,
+                read_result.header_position_ambiguous_header_cells,
+                field_mapping,
             ),
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps

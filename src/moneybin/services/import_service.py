@@ -920,6 +920,9 @@ def _gate_header_position_ambiguous(
                 # ratified), so read_result is the live detection this
                 # refusal describes.
                 header_position_ambiguous_rows=read_result.header_position_ambiguous_rows,
+                header_position_ambiguous_header_cells=(
+                    read_result.header_position_ambiguous_header_cells
+                ),
             )
         )
     # Ratified: proceed with the detected header position, but stay visible
@@ -3385,23 +3388,18 @@ class ImportService:
             # overridden confirmation below — a counter the CLI path applies
             # immediately, so a later refusal cannot take it back.
             #
-            # Validated against a RENDER copy, never detection_df:
-            # detection_df only normalizes what map_columns/format
-            # detection needed and can still leave a column this override
-            # was never told about — e.g. a native transaction_date the
-            # caller didn't name via --mapping — in raw midnight text no
-            # declared format is meant to parse, refusing a file the real
-            # render converts fine. Skipped entirely when there's nothing to
-            # validate, matching this validation's own no-op guard.
+            # Validated against proposed_samples_df, never detection_df:
+            # whenever an override is present, that render is already built
+            # from this same df/field_mapping/date_format_override (the
+            # `or` above resolves to date_format_override either way), so
+            # this reads the identical rendered text instead of rebuilding
+            # it. Skipped entirely when there's nothing to validate,
+            # matching this validation's own no-op guard.
             if date_format_override is not None:
-                validation_df = normalize_excel_date_columns_after_mapping(
-                    df,
-                    file_type=format_info.file_type,
-                    field_mapping=mapping_result.field_mapping,
-                    date_format=date_format_override,
-                )
                 _validate_date_format_override(
-                    validation_df, mapping_result.field_mapping, date_format_override
+                    proposed_samples_df,
+                    mapping_result.field_mapping,
+                    date_format_override,
                 )
             date_format_effective = date_format_override or mapping_result.date_format
             if date_format_effective is None:
@@ -3453,6 +3451,11 @@ class ImportService:
                         # carry the same evidence the preview would show.
                         header_position_ambiguous_rows=(
                             read_result.header_position_ambiguous_rows
+                            if _unreadable_date_ambiguous_header
+                            else ()
+                        ),
+                        header_position_ambiguous_header_cells=(
+                            read_result.header_position_ambiguous_header_cells
                             if _unreadable_date_ambiguous_header
                             else ()
                         ),
@@ -3538,6 +3541,11 @@ class ImportService:
                         # precedence rule as the unreadable-date raise above.
                         header_position_ambiguous_rows=(
                             read_result.header_position_ambiguous_rows
+                            if _first_contact_ambiguous_header
+                            else ()
+                        ),
+                        header_position_ambiguous_header_cells=(
+                            read_result.header_position_ambiguous_header_cells
                             if _first_contact_ambiguous_header
                             else ()
                         ),

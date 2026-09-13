@@ -200,7 +200,6 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
                 "Amount": ["-4.75"],
             }),
             "rows_in_file": 2,
-            "excel_native_date_columns": None,
         },
     )()
 
@@ -266,7 +265,6 @@ def test_a_missing_required_field_outranks_an_unreadable_date(
             "df": pl.DataFrame({"Date": ["not-a-date"], "Description": ["Coffee"]}),
             "rows_in_file": 2,
             "header_row_looks_like_data": False,
-            "excel_native_date_columns": None,
         },
     )()
 
@@ -341,7 +339,6 @@ def test_a_declined_reviewed_plan_keeps_the_preview_s_flagged_evidence(
                 "Amount": ["-4.75"],
             }),
             "rows_in_file": 2,
-            "excel_native_date_columns": None,
         },
     )()
 
@@ -917,6 +914,15 @@ class TestTabularConfirmationFlow:
         assert exc_info.value.outcome.header_position_ambiguous_rows == (
             ("2026-01-01", "42.50", "Coffee"),
             ("2026-01-02", "10.00", "Tea"),
+        )
+        # And the header row's own full positional cells, from the same
+        # physical sample -- disputed_row_fields resolves column identity
+        # by position against these, never against the (possibly
+        # column-dropped) df.columns.
+        assert exc_info.value.outcome.header_position_ambiguous_header_cells == (
+            "Date",
+            "Amount",
+            "Description",
         )
 
         result = ImportService(db).import_file(

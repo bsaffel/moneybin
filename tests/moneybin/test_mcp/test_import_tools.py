@@ -860,9 +860,10 @@ async def test_import_preview_coarse_discloses_the_disputed_rows(
     A confirm that asks "is this a transaction?" without showing the row
     it's asking about is functionally silent even though a warning appeared
     (design-principles.md, "Magic stays visible").
-    ``data.header_position_ambiguous_rows`` carries the actual cells,
-    through the same DataClass.DESCRIPTION path ``sample_values`` already
-    uses -- no new disclosure class.
+    ``data.header_position_ambiguous_rows`` carries the actual cells for
+    every column whose identity is known AND whose destination field is on
+    the allowlist (``disputed_row_fields`` in import_confirmation.py) --
+    here, all three: transaction_date, amount, description.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     csv = tmp_path / "data_before_header.csv"
@@ -879,8 +880,8 @@ async def test_import_preview_coarse_discloses_the_disputed_rows(
     assert response.error is None, response.error
     assert response.data.header_position_ambiguous is True
     assert response.data.header_position_ambiguous_rows == [
-        ["2026-01-01", "42.50", "Coffee"],
-        ["2026-01-02", "10.00", "Tea"],
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
     ]
     # Same classification path as sample_values (DataClass.DESCRIPTION),
     # confirming the field is actually wired into the sensitivity/consent
@@ -888,26 +889,31 @@ async def test_import_preview_coarse_discloses_the_disputed_rows(
     assert response.summary.sensitivity == "medium"
 
 
-async def test_import_preview_coarse_masks_disputed_row_account_numbers(
+async def test_import_preview_coarse_omits_unmapped_disputed_row_cells(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """An account-number-shaped cell in a disputed row must come back masked.
+    """A cell in a column with no allowlisted destination must be OMITTED.
 
-    ``DataClass.DESCRIPTION`` drives sensitivity-tier classification only
-    (privacy/redaction.py's ``_TRANSFORMS`` maps it to ``_passthrough``), not
-    value masking, so ``header_position_ambiguous_rows`` needs its own
-    masking pass -- ``mask_pii_shaped``, the same value-shape masker the
-    agent-safe SQL surface applies to ``raw``/``prep``.
+    Any shape-based masker has an irreducible hole -- a short or
+    alphanumeric account key (``ACCT-XY9Z``, ``1234``) defeats
+    ``mask_pii_shaped``, and identifiers.md's "Account identifiers" section
+    closes the list of surfaces allowed to leak such keys. The fix is a
+    destination-field allowlist, not a stronger masker: a disputed row shows
+    ONLY cells mapped to transaction_date/post_date/amount/debit_amount/
+    credit_amount/description; every other cell is omitted entirely, never
+    shown masked or otherwise. Here, ``AccountNumber`` has no allowlisted
+    destination, so its account-shaped values never reach the response --
+    not raw, not masked.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     csv = tmp_path / "data_before_header.csv"
     csv.write_text(
-        "2026-01-01,42.50,1234567890123456\n"
-        "2026-01-02,10.00,Tea\n"
-        "Date,Amount,Description\n"
-        "2026-01-03,5.00,Snack\n",
+        "2026-01-01,42.50,Coffee,ACCT-XY9Z\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
         encoding="utf-8",
     )
 
@@ -915,12 +921,15 @@ async def test_import_preview_coarse_masks_disputed_row_account_numbers(
 
     assert response.error is None, response.error
     disputed = response.data.header_position_ambiguous_rows
-    assert disputed[0][0] == "2026-01-01"
-    assert disputed[0][1] == "42.50"
-    # The 16-digit cell is masked (account-number-shaped), never returned raw.
-    assert disputed[0][2] != "1234567890123456"
-    assert "1234567890123456" not in disputed[0][2]
-    assert disputed[0][2].endswith("3456")
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    # The account-shaped cells never made it into the response at all --
+    # neither raw nor masked.
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
 
 
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
@@ -930,22 +939,23 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
 ) -> None:
     """A caller-supplied transaction_date mapping must scope normalization.
 
-    ``_import_preview_tabular`` must not call
-    ``normalize_excel_date_columns_for_detection`` with
-    ``date_column=None`` regardless of a caller-supplied ``mapping`` —
-    that would normalize every native-date column it finds instead of just
-    the one
-    the caller named. ``Memo`` here is a SECOND, genuinely native-date Excel
-    column (a spreadsheet tool auto-typed it, unrelated to the transaction
-    date) that maps to the ``memo`` destination by header alias. With the
-    mapped ``transaction_date`` column correctly scoped, ``Memo`` must stay
-    untouched — still the raw "<date> 00:00:00" text fastexcel renders for a
-    native date cell — because only the mapped date column may be rewritten.
-    An unscoped normalization would truncate ``Memo`` too, and the confirm/
-    replay path (which always scopes to ``ReviewedTabularPlan.field_
-    mapping``'s actual ``transaction_date``) would NOT re-truncate it,
-    so the caller would import a different ``memo`` value than the one
-    this preview showed them.
+    ``_import_preview_tabular``'s one render
+    (``normalize_excel_date_columns_after_mapping``) only rewrites the
+    columns ``mapped_date_columns(field_mapping)`` names — i.e. whichever
+    columns the FINAL mapping assigns to ``transaction_date``/``post_date``
+    — never every native-date-shaped column it can find. ``Memo`` here is a
+    SECOND, genuinely native-date Excel column (a spreadsheet tool
+    auto-typed it, unrelated to the transaction date) that maps to the
+    ``memo`` destination by header alias, which is not one of those two
+    date-typed fields. With the mapped ``transaction_date`` column
+    correctly scoped, ``Memo`` must stay untouched — still the raw
+    "<date> 00:00:00" text fastexcel renders for a native date cell —
+    because only the mapped date column(s) may be rewritten. An unscoped
+    normalization would truncate ``Memo`` too, and the confirm/replay path
+    (which always scopes to ``ReviewedTabularPlan.field_mapping``'s actual
+    ``transaction_date``) would NOT re-truncate it, so the caller would
+    import a different ``memo`` value than the one this preview showed
+    them.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     import openpyxl

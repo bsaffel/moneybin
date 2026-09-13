@@ -76,13 +76,21 @@ class ReadResult:
     all)."""
     header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
     """The actual disputed row(s) behind ``header_position_ambiguous`` — the
-    earlier row(s) ``_classify_header_rows`` found reading as data, as raw
-    (stripped, non-empty) cell strings. A confirm that names an inference
-    without showing the evidence it's ratifying is functionally a silent
-    action (design-principles.md, "Magic stays visible") — this is what
-    lets a preview or CLI warning show the caller the actual row, not just
-    the fact that one exists. Always empty when
-    ``header_position_ambiguous`` is False."""
+    earlier row(s) ``_classify_header_rows`` found reading as data, as FULL
+    positional (unstripped, blanks included) cell tuples — cell ``i`` names
+    the same physical column as ``header_position_ambiguous_header_cells[i]``.
+    A confirm that names an inference without showing the evidence it's
+    ratifying is functionally a silent action (design-principles.md, "Magic
+    stays visible") — this is what lets a preview or CLI warning show the
+    caller the actual row, not just the fact that one exists. Always empty
+    when ``header_position_ambiguous`` is False."""
+    header_position_ambiguous_header_cells: tuple[str, ...] = ()
+    """The chosen header row's own FULL positional cells, from the SAME
+    physical sample as ``header_position_ambiguous_rows`` — lets a caller
+    resolve a disputed cell's column identity by POSITION rather than
+    guessing against ``df.columns`` (a dropped blank column, or a fastexcel
+    ``__UNNAMED__`` rename, would misalign a positional guess there). Always
+    empty when ``header_position_ambiguous`` is False."""
 
     @property
     def rows_in_file(self) -> int:
@@ -210,14 +218,19 @@ def _read_text(
     resolved_has_header = True
     preamble_looks_like_data = False
     ambiguous_rows: tuple[tuple[str, ...], ...] = ()
+    header_cells: tuple[str, ...] = ()
     if skip_rows is None:
-        skip_rows, resolved_has_header, preamble_looks_like_data, ambiguous_rows = (
-            _detect_header(
-                path,
-                encoding,
-                delimiter,
-                source_bytes=source_bytes,
-            )
+        (
+            skip_rows,
+            resolved_has_header,
+            preamble_looks_like_data,
+            ambiguous_rows,
+            header_cells,
+        ) = _detect_header(
+            path,
+            encoding,
+            delimiter,
+            source_bytes=source_bytes,
         )
     elif has_header is not None:
         resolved_has_header = has_header
@@ -266,6 +279,7 @@ def _read_text(
         header_row_looks_like_data=header_row_looks_like_data,
         header_position_ambiguous=preamble_looks_like_data,
         header_position_ambiguous_rows=ambiguous_rows,
+        header_position_ambiguous_header_cells=header_cells,
     )
 
 
@@ -275,7 +289,7 @@ def _detect_header(
     delimiter: str,
     *,
     source_bytes: bytes | None = None,
-) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Locate the header row, or determine the file is headerless.
 
     Samples the first 30 content lines, splits each on ``delimiter``, and
@@ -289,8 +303,8 @@ def _detect_header(
         source_bytes: Already materialized source object to inspect.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
-        — see ``_classify_header_rows``.
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows,
+        header_cells)`` — see ``_classify_header_rows``.
     """
     enc = encoding if encoding != "utf-8-sig" else "utf-8"
     lines = [
@@ -312,7 +326,7 @@ def _detect_header(
 
 def _classify_header_rows(
     rows: list[list[str]],
-) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Locate the header row, or determine the sampled rows are headerless.
 
     Shared by every tabular reader — CSV/TSV/pipe/semicolon (``_detect_header``
@@ -348,26 +362,36 @@ def _classify_header_rows(
             checks below), not by the caller filtering it out beforehand.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
-        — rows to skip before the header (or before the first data row when
-        headerless), whether a header row is present, a red flag for the
-        header-found outcome (whether a data-like row precedes the chosen
-        header), and that row's own cells (empty when the flag is False).
-        The flagged row might be a genuine one- or two-line balance summary
-        (the intended preamble-skip case, see the docstring above) — or it
-        might be a real transaction silently discarded as "preamble" because
-        a later, unrelated row happens to read as labels. This classifier
-        cannot tell those apart, so it reports the ambiguity — and the
-        actual disputed cells, so a caller can show the evidence rather than
-        just the fact — instead of picking a silent winner; callers fold the
-        flag into ``ReadResult.header_position_ambiguous`` so the caller
-        surfaces a confirmation instead of trusting the guess. Always
-        ``False``/empty for the headerless outcome and the empty-input
-        default — a genuinely headerless file only ever loses trailing rows
-        (already reported via ``rows_skipped_trailing``), never leading ones.
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows,
+        header_cells)`` — rows to skip before the header (or before the
+        first data row when headerless), whether a header row is present, a
+        red flag for the header-found outcome (whether a data-like row
+        precedes the chosen header), that row's own FULL positional cells
+        (empty when the flag is False), and the chosen header row's own
+        FULL positional cells from the SAME sample (also empty when the
+        flag is False). ``ambiguous_rows[j][i]`` and ``header_cells[i]``
+        name the same physical column — neither is stripped of blank
+        cells, so a caller can align a disputed cell to a column name
+        without guessing against the (possibly column-dropped) final
+        DataFrame. The flagged row might be a genuine one- or two-line
+        balance summary (the intended preamble-skip case, see the
+        docstring above) — or it might be a real transaction silently
+        discarded as "preamble" because a later, unrelated row happens to
+        read as labels. This classifier cannot tell those apart, so it
+        reports the ambiguity — and the actual disputed cells, so a caller
+        can show the evidence rather than just the fact — instead of
+        picking a silent winner; callers fold the flag into
+        ``ReadResult.header_position_ambiguous`` so the caller surfaces a
+        confirmation instead of trusting the guess. Always ``False``/empty
+        for the headerless outcome and the empty-input default — a
+        genuinely headerless file only ever loses trailing rows (already
+        reported via ``rows_skipped_trailing``), never leading ones.
     """
     # Two passes (see docstring): find a label row followed by data, else fall
-    # back to the first data row as headerless.
+    # back to the first data row as headerless. `non_empty` (stripped, blanks
+    # dropped) only ever feeds the header/data-row SCORING heuristics below —
+    # `ambiguous_rows`/`header_cells` are built from `rows[i]` (the full,
+    # position-preserving physical row) so a caller can align cells by index.
     qualifying: list[tuple[int, list[str]]] = []
     for i, parts in enumerate(rows):
         if len(parts) < 2:
@@ -387,16 +411,17 @@ def _classify_header_rows(
             # would be skipped as preamble.
             if any(_looks_like_data_row(later) for _, later in qualifying[idx + 1 :]):
                 ambiguous_rows = tuple(
-                    tuple(earlier)
-                    for _, earlier in qualifying[:idx]
+                    tuple(rows[earlier_i])
+                    for earlier_i, earlier in qualifying[:idx]
                     if _looks_like_data_row(earlier)
                 )
-                return i, True, bool(ambiguous_rows), ambiguous_rows
+                header_cells = tuple(rows[i]) if ambiguous_rows else ()
+                return i, True, bool(ambiguous_rows), ambiguous_rows, header_cells
     for i, non_empty in qualifying:
         if _looks_like_data_row(non_empty):
-            return i, False, False, ()
+            return i, False, False, (), ()
 
-    return 0, True, False, ()
+    return 0, True, False, (), ()
 
 
 def _row_looks_like_data_at(
@@ -872,7 +897,7 @@ def _classify_excel_headerless_via_fastexcel(
     *,
     sheet_name: str | None,
     source_bytes: bytes | None,
-) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...]]:
+) -> tuple[int, bool, bool, tuple[tuple[str, ...], ...], tuple[str, ...]]:
     """Classify header/headerless via a raw fastexcel/calamine read.
 
     Used whenever openpyxl can't answer this classification question itself
@@ -890,9 +915,9 @@ def _classify_excel_headerless_via_fastexcel(
     use — never silently substituting a different one.
 
     Returns:
-        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows)``
-        — see ``_classify_header_rows``. Falls back to
-        ``(0, True, False, ())`` — the historical pre-detection default —
+        ``(skip_rows, has_header, preamble_looks_like_data, ambiguous_rows,
+        header_cells)`` — see ``_classify_header_rows``. Falls back to
+        ``(0, True, False, (), ())`` — the historical pre-detection default —
         only when fastexcel itself can't read this container either
         (``fastexcel.FastExcelError``); the real read further down then
         gets the chance to raise the actual, clean error. A caller-supplied
@@ -934,7 +959,7 @@ def _classify_excel_headerless_via_fastexcel(
         ]
         return _classify_header_rows(sample_rows)
     except fastexcel.FastExcelError:
-        return 0, True, False, ()
+        return 0, True, False, (), ()
 
 
 def _read_excel(
@@ -1003,6 +1028,7 @@ def _read_excel(
     resolved_has_header = True
     preamble_looks_like_data = False
     ambiguous_rows: tuple[tuple[str, ...], ...] = ()
+    header_cells: tuple[str, ...] = ()
     if skip_rows is None:
         # sheet_used is None here only when the lookup above already proved
         # openpyxl can't open this container at all (legacy .xls) — asking
@@ -1016,10 +1042,14 @@ def _read_excel(
         # classification signal at all — MB-449 for exactly the one file
         # variant this reader's own openpyxl-fallback tests exist to cover.
         if sheet_used is None:
-            skip_rows, resolved_has_header, preamble_looks_like_data, ambiguous_rows = (
-                _classify_excel_headerless_via_fastexcel(
-                    path, sheet_name=None, source_bytes=source_bytes
-                )
+            (
+                skip_rows,
+                resolved_has_header,
+                preamble_looks_like_data,
+                ambiguous_rows,
+                header_cells,
+            ) = _classify_excel_headerless_via_fastexcel(
+                path, sheet_name=None, source_bytes=source_bytes
             )
         else:
             try:
@@ -1031,6 +1061,7 @@ def _read_excel(
                     resolved_has_header,
                     preamble_looks_like_data,
                     ambiguous_rows,
+                    header_cells,
                 ) = _classify_header_rows(sample_rows)
             except _openpyxl_sheet_access_errors():
                 # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
@@ -1075,6 +1106,7 @@ def _read_excel(
                     resolved_has_header,
                     preamble_looks_like_data,
                     ambiguous_rows,
+                    header_cells,
                 ) = _classify_excel_headerless_via_fastexcel(
                     path, sheet_name=sheet_used, source_bytes=source_bytes
                 )
@@ -1149,6 +1181,7 @@ def _read_excel(
         header_row_looks_like_data=header_row_looks_like_data,
         header_position_ambiguous=preamble_looks_like_data,
         header_position_ambiguous_rows=ambiguous_rows,
+        header_position_ambiguous_header_cells=header_cells,
     )
 
 

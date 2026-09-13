@@ -815,12 +815,17 @@ class InboxService:
         entry["channel"] = outcome_obj.channel
         # The live drain summary, not the persisted sidecar (which stays
         # row-free) — carries the disputed row so import_inbox.py's text and
-        # JSON renderers can show it, masked.
+        # JSON renderers can show it, allowlisted to the date/amount/
+        # description cells that answer "is this a transaction?" via the
+        # PROPOSED mapping (the only one that exists at this first-contact
+        # point).
         if outcome_obj.header_position_ambiguous_rows:
-            from moneybin.services.import_confirmation import mask_disputed_rows
+            from moneybin.services.import_confirmation import disputed_row_fields
 
-            entry["header_position_ambiguous_rows"] = mask_disputed_rows(
-                outcome_obj.header_position_ambiguous_rows
+            entry["header_position_ambiguous_rows"] = disputed_row_fields(
+                outcome_obj.header_position_ambiguous_rows,
+                outcome_obj.header_position_ambiguous_header_cells,
+                proposed_mapping,
             )
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
