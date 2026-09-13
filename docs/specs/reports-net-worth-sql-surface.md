@@ -343,18 +343,58 @@ have the view read *that*.
 
 **`core.dim_holdings_broker_reported`** — a new `kind VIEW` in `core`,
 sitting beside `dim_holdings.sql` in `src/moneybin/sqlmesh/models/core/`,
-grain `account_id`. Its account universe is every `(account_id,
-source_origin)` pair `prep.stg_plaid__accounts` reports **whose own
-`account_type` column resolves to `investment`** (the seed-normalized value
+grain `account_id`. Its account universe is every `account_id`
+`prep.stg_plaid__accounts` reports **whose own `account_type` column
+resolves to `investment`** (the seed-normalized value
 `seeds.account_type_map` writes there; Plaid's `INVESTMENT` and `BROKERAGE`
-aliases both resolve to it — `src/moneybin/sqlmesh/models/seeds/account_type_map.csv`)
-and whose `source_origin` (the Plaid item) also appears in `dim_holdings.sql`'s
-own `newest_snapshot` CTE — the identical receipt-scoped join against
-`prep.stg_plaid__investment_holdings_snapshots`, never the retained rows of
-`prep.stg_plaid__investment_holdings` directly. An account whose item never
-appears in `newest_snapshot` — the item has no successful newest pull at all
-— is **not published here**; that absence is itself a state, read by an
-outer join downstream rather than by a value (state 3, below).
+aliases both resolve to it — `src/moneybin/sqlmesh/models/seeds/account_type_map.csv`).
+
+**One canonical `account_id` can carry more than one Plaid `source_origin`
+— a relink is the common cause — so the universe is `account_id`s, never
+`(account_id, source_origin)` pairs, and the view reduces to that grain
+before it is exposed rather than emitting one row per pair** (review
+thread `3999126859`). Emitting per-pair would let one account carry
+several rows at a declared `account_id` grain, and would let an old
+item's definitive-zero receipt stand unreduced beside a newer item's
+position or missing receipt. For a given `account_id`, its **mapped
+origins** are every distinct `source_origin` `prep.stg_plaid__accounts`
+reports for it. Each mapped origin is evaluated exactly as a
+single-origin account would be — scoped to that origin's own row in
+`dim_holdings.sql`'s `newest_snapshot` CTE, per the `has_position`/`as_of`
+derivation below — and the per-origin results reduce to one row per
+`account_id`:
+
+- **`has_position = TRUE`** if **any** mapped origin resolves `TRUE`
+  (nonzero position or value evidence, below). One item's confirmed
+  position outranks a sibling item's silence or zero; a relink does not
+  erase a position the surviving item still reports.
+- **`has_position = FALSE`** only when **every** mapped origin that
+  appears in `newest_snapshot` resolves `FALSE`, and no mapped origin is
+  absent from `newest_snapshot` (next bullet) — an account is a
+  definitive zero only when every item that speaks for it says so.
+- **Absent — not published at all** — if **any** mapped origin has no
+  successful newest pull, i.e. is missing from `newest_snapshot`
+  entirely. This is the same absence described below for a single-origin
+  account (state 3), extended across an account's mapped origins rather
+  than invented as a second concept: an inconclusive-by-absence origin
+  must never license an override on another origin's say-so, so the
+  whole account falls out of this relation and is read by the outer join
+  downstream instead of by a value.
+- **`has_position = NULL`** otherwise — every mapped origin is present in
+  `newest_snapshot`, none resolves `TRUE`, and at least one resolves
+  `NULL`.
+
+**`as_of` is the MIN, not the MAX, of the contributing origins' own
+`as_of`.** Each receipt is definitive only for its own item as of its own
+observation; a newer receipt for item B says nothing about item A still
+being empty as of that later date, so taking the MAX would backdate an
+older item's zero to an observation it never made. MIN is the
+conservative direction: a smaller `as_of` makes the zero-snapshot
+override below (§ below) harder to satisfy, which fails toward retaining
+transaction evidence rather than canceling it — the same posture this
+section states elsewhere, that an unclearable `fail` on a
+correctly-liquidated position is worse than the silent zero the override
+exists to prevent.
 
 **The account-type filter is a correction to an earlier round of this
 section, which enumerated the universe from every account sharing the
@@ -376,33 +416,36 @@ here, it never resolves to any `has_position` value at all, and stays
 subject to the ordinary candidate-evidence rule (Requirement 14) like any
 other account the holdings product does not describe.
 
-For every published account, the view LEFT JOINs
-`prep.stg_plaid__investment_holdings`, scoped to that account's newest
-snapshot (`source_origin` and `source_file` both), and publishes one
-nullable column, `has_position`, over the joined rows' own `quantity` and
-`institution_value` (never `cost_basis` — the raw table's own column comment
-marks it "reconciliation reference ONLY — never overwrites ledger-derived
-basis", `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`),
-plus one non-nullable column, `as_of` — the receipt's own `extracted_at::DATE`,
-carried straight from `newest_snapshot` (the same CTE `dim_holdings.sql:75-105`
-already computes for this identical receipt-scoped join, `extracted_at` itself
-sourced there at `:95`). `has_position` says what the receipt observed;
-`as_of` says when — the zero-snapshot override below needs both, because a
-definitive zero is only current evidence against ledger events it was taken
-after.
+For every mapped origin of a published account, the view LEFT JOINs
+`prep.stg_plaid__investment_holdings`, scoped to that origin's newest
+snapshot (`source_origin` and `source_file` both), and derives one
+nullable per-origin `has_position` value over the joined rows' own
+`quantity` and `institution_value` (never `cost_basis` — the raw table's
+own column comment marks it "reconciliation reference ONLY — never
+overwrites ledger-derived basis",
+`src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`),
+plus one non-nullable per-origin `as_of` — the receipt's own
+`extracted_at::DATE`, carried straight from `newest_snapshot` (the same
+CTE `dim_holdings.sql:75-105` already computes for this identical
+receipt-scoped join, `extracted_at` itself sourced there at `:95`). The
+reduction above (grain `account_id`, above) folds these per-origin values
+into the view's own published `has_position`/`as_of` columns.
+`has_position` says what the receipt observed; `as_of` says when — the
+zero-snapshot override below needs both, because a definitive zero is
+only current evidence against ledger events it was taken after.
 
 - **`TRUE` — nonzero position or value evidence.** At least one row for the
-  account in that newest snapshot satisfies `quantity <> 0 OR
+  account in that origin's newest snapshot satisfies `quantity <> 0 OR
   institution_value <> 0`. Row PRESENCE in the newest snapshot is not by
   itself evidence of a position: the raw/staging layer legitimately carries a
   snapshot row reporting `quantity = 0, cost_basis = 0` — exercised today by
   `tests/moneybin/test_stg_plaid_investments.py:1903-1904` — so the predicate
   reads the row's own figures, not merely that a row exists.
-- **`FALSE` — a definitive zero.** The account's item did successfully pull,
-  and the account holds nothing per that pull — either because the account
-  has **no rows at all** in the newest snapshot (the no-row form: a receipt
-  exists for the item, but this account's own holdings are absent from it),
-  or because every row it does have is *decisive* on `quantity` or
+- **`FALSE` — a definitive zero.** That origin did successfully pull, and
+  the account holds nothing per that pull — either because the account
+  has **no rows at all** in that origin's newest snapshot (the no-row form:
+  a receipt exists for the item, but this account's own holdings are absent
+  from it), or because every row it does have is *decisive* on `quantity` or
   `institution_value` (not NULL on both) and none is nonzero.
 - **`NULL` — inconclusive.** A receipt exists and the account has rows in
   it, but every one is NULL on both `quantity` and `institution_value`: no
@@ -471,11 +514,28 @@ This is the established pattern for the receipt-scoped read, not a new one:
 this way over the sibling holdings table; the new relation adds the
 account-universe LEFT JOIN the second shape requires and the nonzero-evidence
 filter that `dim_holdings.sql`'s own `positions` CTE never needs, because it
-sums open LOTS, which a closed position simply has none of. It carries its
-own `CLASSIFICATION` entry in `src/moneybin/privacy/taxonomy.py` —
-`account_id` as `DataClass.RECORD_ID`, matching `("core",
-"dim_holdings")`'s own — so the read has ground truth to derive against
-instead of needing an exception.
+sums open LOTS, which a closed position simply has none of.
+
+**It carries its own `CLASSIFICATION` entry in
+`src/moneybin/privacy/taxonomy.py`, one line per published column — all
+three of them, not `account_id` alone** (review thread `3999126863`):
+`tests/moneybin/test_privacy/test_classification_registry_coverage.py`
+reads the live catalog and requires a class for every `core.*` column, so
+an entry naming only one of the view's three columns fails that gate on
+implementation.
+
+- `account_id` → `DataClass.RECORD_ID`, matching `("core",
+  "dim_holdings")`'s own entry (`taxonomy.py:797`).
+- `has_position` → `DataClass.TXN_TYPE` — every boolean flag in the
+  taxonomy takes this class; the closest analogue is `fct_investment_lots.is_open`
+  (`taxonomy.py:901`).
+- `as_of` → `DataClass.TIMESTAMP_OBSERVABILITY`, matching
+  `dim_holdings.provider_reported_as_of` in the same entry
+  (`taxonomy.py:830`) and `dim_holdings.price_date`'s identical reasoning
+  just above it (`taxonomy.py:814`).
+
+So the read has ground truth to derive against instead of needing an
+exception.
 
 **Evidence of holding value has four sources, and `reports.net_worth`'s
 `kind VIEW` reads all four directly — no runner involved.**
@@ -513,12 +573,14 @@ on a correctly-liquidated position is worse than the silent zero this guard
 exists to prevent. The override fires on exactly two conditions, both read
 from relations already established above rather than restated here: (1) the
 account has a row in `core.dim_holdings_broker_reported` with `has_position
-= FALSE`, and (2) that row's own `as_of` is at least as recent as the latest
-security-position event it would cancel. Condition (1) alone is direct,
-current evidence there is no *security* to see; condition (2) is what stops
-that evidence from outranking a security-position event the receipt never
-had the chance to observe — a definitive zero taken before a later unbound
-buy says nothing about a purchase it predates. §the state-space table below
+= FALSE`, and (2) that row's own `as_of` is strictly more recent than the
+latest security-position event it would cancel — same-day is not "more
+recent," per the day-grain-equality refinement below. Condition (1) alone
+is direct, current evidence there is no *security* to see; condition (2)
+is what stops that evidence from outranking a security-position event the
+receipt never had the chance to prove it followed — a definitive zero
+taken before, or on the same day as, a later unbound buy says nothing
+about a purchase it cannot be shown to postdate. §the state-space table below
 enumerates every combination of the dimensions that decide this and derives
 both conditions, plus the override's cancellation scope, as one predicate
 rather than as a growing list of exceptions.
@@ -569,8 +631,13 @@ still counts toward Requirement 14's candidate set:
 - **Temporal order**, only meaningful when a security-position row
   (`quantity IS NOT NULL`, per the discriminator above) exists at all:
   the receipt's own `as_of` compared against `MAX(trade_date)` over the
-  account's security-position rows — *current* (`as_of` on or after that
-  maximum) or *stale* (`as_of` before it). Vacuously current when no
+  account's security-position rows — *current* (`as_of` strictly after
+  that maximum), *same-day* (`as_of` equal to it), or *stale* (`as_of`
+  strictly before it). `as_of` is a receipt's `extracted_at::DATE` and
+  `trade_date` is itself a `DATE`, so the comparison is day-grain only;
+  *same-day* is its own value rather than folded into *current* because
+  day-grain equality cannot say whether the receipt was pulled before or
+  after that day's trade (§ below). Vacuously current when no
   security-position row exists, since there is then nothing later for the
   receipt to have missed.
 - **Account coverage** — already scoped above (`account_type =
@@ -584,25 +651,42 @@ still counts toward Requirement 14's candidate set:
 | *absent* | — | — | — | Never | Candidate — ordinary existential rule, either arm |
 | `FALSE` | No | vacuous | Zero | Fires (nothing to cancel) | Not a candidate |
 | `FALSE` | No | vacuous | Nonzero | Fires, cancels nothing (no security-position row exists) | Candidate — cash arm |
-| `FALSE` | Yes | current | Zero | Fires | Not a candidate |
-| `FALSE` | Yes | current | Nonzero | Fires — cancels the security-position arm only | Candidate — cash arm (buy-then-sell, proceeds retained) |
-| `FALSE` | Yes | stale | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates) |
-| `FALSE` | Yes | stale | Nonzero | Does not fire | Candidate — both arms |
+| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Zero | Fires | Not a candidate |
+| `FALSE` | Yes | current (`as_of` > `MAX(trade_date)`) | Nonzero | Fires — cancels the security-position arm only | Candidate — cash arm (buy-then-sell, proceeds retained) |
+| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Zero | Does not fire — day-grain equality is inconclusive | Candidate — security-position arm survives (the receipt cannot prove it was pulled after that day's trade) |
+| `FALSE` | Yes | same-day (`as_of` = `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
+| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates) |
+| `FALSE` | Yes | stale (`as_of` < `MAX(trade_date)`) | Nonzero | Does not fire | Candidate — both arms |
 
-**The predicate is a direct reading of this table, not a sixth row added
-by hand later.** The override fires — `override_applies` — exactly when:
+**The predicate is a direct reading of this table, not a row added by
+hand later.** The override fires — `override_applies` — exactly when:
 
 ```
 override_applies :=
   has_position = FALSE
-  AND as_of >= COALESCE(MAX(trade_date) FILTER (WHERE quantity IS NOT NULL), as_of)
+  AND (
+    NOT EXISTS (a row WHERE quantity IS NOT NULL)
+    OR as_of > MAX(trade_date) FILTER (WHERE quantity IS NOT NULL)
+  )
 ```
 
-`COALESCE(..., as_of)` is what makes the vacuous rows above resolve
-correctly: with no security-position row, the comparison falls back to
-`as_of >= as_of`, trivially true, so `override_applies` tracks
-`has_position = FALSE` alone in that case — there being nothing to be
-stale against. The account's standing on the investment ledger is then:
+The vacuous case is its own disjunct rather than a `COALESCE` fallback
+folded into the comparison, and that split is load-bearing, not
+cosmetic. An earlier form of this predicate wrote
+`as_of >= COALESCE(MAX(trade_date) FILTER (WHERE quantity IS NOT NULL),
+as_of)`. The naive fix for same-day equality is swapping that `>=` for a
+strict `>` in place, and that swap silently breaks the vacuous case:
+`as_of > as_of` is false where `as_of >= as_of` was true, so every
+account with no security-position row at all would stop overriding —
+a new defect in the same predicate, next round. Written as two disjuncts
+instead, `NOT EXISTS (...)` resolves the vacuous case on its own,
+independent of any comparison against `as_of`, so the surviving
+comparison only has to get the non-vacuous rows right: strict `>` is
+what keeps *same-day* out of the firing set together with *stale*,
+closing review thread `3999126866` without disturbing the vacuous case
+the `NOT EXISTS` disjunct now resolves on its own, regardless of how the
+comparison is written. The account's standing on the investment ledger
+is then:
 
 ```
 candidate_via_investment_ledger :=
@@ -659,10 +743,30 @@ would cancel the one arm that can see that later trade at all: because an
 unbound buy has no `security_id`, `core.dim_holdings` cannot aggregate a
 lot against it (§"Evidence of holding value has four sources," above), so
 the security-position arm above is this shape's only source of evidence.
-`as_of >= COALESCE(MAX(trade_date) FILTER (WHERE quantity IS NOT NULL),
-as_of)` in the predicate above is what withholds the override until the
-receipt has actually had the chance to observe every security-position
-event it would otherwise cancel — the fix for review thread `3999065577`.
+The temporal comparison in the predicate above is what withholds the
+override until the receipt has actually had the chance to observe every
+security-position event it would otherwise cancel — the fix for review
+thread `3999065577`.
+
+**Day-grain equality is inconclusive, not current — a further refinement
+of the same temporal comparison, not a correction to the round above: the
+precondition existed, and this narrows what it accepts as "the receipt
+has had the chance to observe" the trade** (review thread `3999126866`).
+`as_of` is the receipt's `extracted_at::DATE` and `trade_date` is itself
+a `DATE`, so the comparison in the predicate above operates at day grain
+only — it cannot recover whether a receipt was pulled before or after a
+trade recorded on the same calendar day. Reading `as_of` on the trade
+date as *current* (the original `>=` form) let a zero snapshot pulled in
+the morning cancel an unbound buy made that same afternoon — the only
+evidence that position exists — on evidence that in fact predates the
+trade it cancels. The predicate above therefore requires strict `>`:
+same-day is read as inconclusive, the same disposition as *stale*, and
+the security-position arm survives until a receipt dated on a *later*
+calendar day confirms the zero. Were a trustworthy trade timestamp (not
+merely a date) ever available on `core.fct_investment_transactions`, the
+fix would be to compare it against the receipt's own timestamp instead
+of a date, recovering intra-day order rather than treating every
+same-day pair as inconclusive.
 
 **The boundary is drawn at the receipt, not at the row — a correction to an
 earlier round of this section, which drew it at the row and reintroduced the
@@ -737,15 +841,16 @@ account's only evidence was the disposed security's own buy/sell history,
 exactly what the override exists to stop from qualifying forever (§Data
 Model, "The zero-snapshot override," above).
 
-**A second converse case — a receipt whose `as_of` predates a later
-unbound buy or transfer-in — is also deliberately absent from the
-surfaces-as-unanchored list above, but for the opposite reason: it is
-never overridden in the first place.** The security-position arm's
-existential check still applies to it (§ state-space table, the `stale`
-rows), so it surfaces through the ordinary transaction arm exactly as an
-open position would, with no need for the cash arm or a separate
-cash-only row to rescue it. `core.dim_holdings` cannot see it either,
-because an unbound buy has no `security_id` for `core.fct_investment_lots`
+**A second converse case — a receipt whose `as_of` predates, or falls on
+the same day as, a later unbound buy or transfer-in — is also
+deliberately absent from the surfaces-as-unanchored list above, but for
+the opposite reason: it is never overridden in the first place.** The
+security-position arm's existential check still applies to it (§
+state-space table, the `stale` and `same-day` rows), so it surfaces
+through the ordinary transaction arm exactly as an open position would,
+with no need for the cash arm or a separate cash-only row to rescue it.
+`core.dim_holdings` cannot see it either, because an unbound buy has no
+`security_id` for `core.fct_investment_lots`
 to aggregate against (§"Evidence of holding value has four sources,"
 above) — the security-position arm is this shape's only source of
 evidence, which is exactly why the temporal precondition has to hold it
@@ -2396,7 +2501,7 @@ fix is scoped to the unranged path and does not regress the ranged one.
   later than the receipt. The account still has no balance observation of
   any kind. Exits `1`, with `net_worth_unanchored_accounts` at `fail` and
   `affected_ids` naming the account. This is the regression guard for the
-  `as_of >= MAX(trade_date)` precondition: without it, an unconditional
+  `as_of > MAX(trade_date)` precondition: without it, an unconditional
   override would suppress this later buy's own security-position evidence,
   and because the buy is unbound, `core.dim_holdings` cannot emit the
   resulting open position either (§"Evidence of holding value has four
