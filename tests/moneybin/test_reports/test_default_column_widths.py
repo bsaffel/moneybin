@@ -107,9 +107,11 @@ _ENUM_VOCABULARIES: Mapping[tuple[str, str], Sequence[str]] = {
     ("core:realized_fx", "coverage_status"): REALIZED_FX_COVERAGE,
 }
 
-# This explicit exception keeps canonical warehouse names coherent; the
-# five-column default exceeds the ordinary 80-character target by only three.
-_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 83}
+# This explicit exception keeps canonical warehouse names coherent, and its
+# sixth column — acquisition_date — is what lets a narrow reader tell apart
+# the several rows one multi-lot disposal produces, which otherwise share
+# every other default column but gain_loss.
+_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 102}
 
 #: Parameter vocabularies that change a report's default column set. Only a
 #: report declaring a *callable* default needs an entry; the guard below fails

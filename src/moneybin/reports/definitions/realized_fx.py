@@ -282,6 +282,7 @@ from moneybin.tables import REPORTS_REALIZED_FX
         "currency_code",
         "home_currency",
         "coverage_status",
+        "acquisition_date",
         "disposal_date",
         "gain_loss",
     ),
