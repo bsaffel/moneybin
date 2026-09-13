@@ -23,7 +23,7 @@ value depends on the channel and on what the caller pinned:
 project it as `COALESCE(links.account_id, a.account_id)`, each annotated
 *"canonical via the import-time resolver link; source-native only if
 unresolved"* — `stg_ofx__accounts.sql:25`, `stg_tabular__accounts.sql:7`,
-`stg_plaid__accounts.sql:29` and six more. `core.dim_accounts` is built from
+`stg_plaid__accounts.sql:51` and six more. `core.dim_accounts` is built from
 those models, so an account with **no resolver link** — exactly what
 `accounts links run` exists to backfill — surfaces its source-native key
 through `account_id`, a `RECORD_ID` field that every surface prints readably.
@@ -33,9 +33,10 @@ On OFX that is a real `<ACCTID>`.
 `AccountResolver.propose()` finds no account to adopt (`is_new=True`) it returns
 a preview `uuid.uuid4().hex[:12]` that its own docstring calls "NOT written
 anywhere" (`account_resolver.py:672-673`, preview mint at `:708`) — `resolve()`
-mints a *different* real id when the import commits (`:577`, `:584`, `:612`).
-Retaining one as a later reference resolves to nothing. It is display-only, and
-only for the life of the proposal.
+mints a *different* real id when the import commits (`:577`, `:584` — the
+`force_standalone` and candidate-pass mint sites). Retaining one as a later
+reference resolves to nothing. It is display-only, and only for the life of
+the proposal.
 
 This is why `proposal_ref` exists, and why it — not `account_id` — is the
 referent to put in front of a user or an agent.
