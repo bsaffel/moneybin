@@ -3400,13 +3400,18 @@ class ImportService:
         # metrics below, because a refusal must not first record a silent
         # format reuse.
         #
-        # The flag is computed only for an explicit skip_rows on every reader
-        # (CSV and Excel alike — both share _classify_header_rows, and
-        # auto-detection never picks a data-looking row as the header), so it
-        # can only be true when a saved or built-in format supplied the skip —
-        # the `elif matched_format:` branch, which asserts confidence="high"
-        # and would otherwise commit. The reviewed-plan branch refuses earlier
-        # with the same reason.
+        # The flag is true whenever a reader (CSV and Excel alike — both
+        # share _classify_header_rows) suspects a real transaction was
+        # consumed rather than loaded: either an explicit skip_rows landed on
+        # a row that itself parses as data (only reachable when a saved or
+        # built-in format supplied the skip — the `elif matched_format:`
+        # branch, which asserts confidence="high" and would otherwise
+        # commit), or auto-detection picked a header-like row with a
+        # data-like row before it — an ambiguity auto-detection cannot
+        # resolve on its own (see _classify_header_rows's docstring), so it
+        # surfaces here on EVERY branch, including first-contact and a
+        # matched_format whose skip_rows is unset. The reviewed-plan branch
+        # refuses earlier with the same reason.
         #
         # No caller input clears it: a mapping override cannot un-consume a
         # header row, and resolve_or_confirm honours an Override at every tier

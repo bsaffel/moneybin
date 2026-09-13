@@ -733,6 +733,95 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
+    def test_data_rows_before_an_auto_detected_header_refuse_not_silently_drop(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Auto-detection must not silently discard real leading transactions.
+
+        Codex finding: ``_classify_header_rows``'s pass 1 scans for a
+        header-like row followed by data, with no check that no EARLIER
+        qualifying row already looked like data. A file shaped
+        data/data/header/data (two real transactions, then a row that
+        happens to read as labels, then one more transaction) made pass 1
+        pick the header-like row at index 2 and skip_rows=2 — silently
+        discarding the two real transactions above it as "preamble", with
+        no signal raised (``header_row_looks_like_data`` was computed only
+        for an explicit skip_rows, so it stayed False here).
+
+        This shape is genuinely ambiguous — the classifier cannot tell "two
+        real transactions before a coincidentally header-like row" from "an
+        opening/closing-balance summary line before the real header" (see
+        test_summary_row_above_header_not_headerless in test_readers.py,
+        which intentionally keeps that second case silent). The fix folds
+        the ambiguity into header_row_looks_like_data so BOTH cases now
+        raise ImportConfirmationRequiredError instead of picking a silent
+        winner — converting silent data loss into a required confirmation.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                save_format=False,
+            )
+
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+    def test_paginated_export_with_repeated_header_imports_without_confirmation(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A real header followed by data, a repeated header, then more data.
+
+        Must import cleanly — the ambiguity fix must not start flagging
+        a legitimately paginated export.
+
+        Pass 1 returns on the FIRST header-like candidate it finds. Here
+        that is the genuine header at row 0, which has no EARLIER qualifying
+        row at all (there is nothing before it), so
+        header_row_looks_like_data stays False and the file imports without
+        a confirmation gate — unlike the ambiguous data-before-header shape
+        above, where no header-like candidate exists until after real data.
+        """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "paginated.csv"
+        csv.write_text(
+            "Date,Amount,Description\n"
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n"
+            "2026-01-04,8.25,Lunch\n",
+            encoding="utf-8",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        # 4 real transactions; the repeated header row is dropped by
+        # _remove_repeated_headers, not counted as a transaction.
+        assert result.rows_loaded == 4
+
     def test_headered_xlsx_with_native_date_cells_imports_completely(
         self, db: Database, tmp_path: Path
     ) -> None:
@@ -977,15 +1066,17 @@ class TestTabularConfirmationFlow:
     ) -> None:
         """The structural gate must cover the branch where the flag can be set.
 
-        `header_row_looks_like_data` is computed only for an explicit
-        `skip_rows` (readers.py — auto-detection never picks a data-looking
-        row), so the only branch that can see it true is `elif matched_format:`,
-        which asserts confidence="high" and commits. `--format <saved>` on a
-        file whose post-skip header line is a transaction therefore imported a
-        plan with one record already consumed as column names, while
-        `import_preview` refuses the same plan. No caller input clears it:
-        resolve_or_confirm honours an Override at every tier by design, and no
-        column mapping un-consumes a header row.
+        This exercises the EXPLICIT-skip_rows path of `header_row_looks_like_data`
+        (readers.py — a saved format's `skip_rows` lands on a row that itself
+        parses as data). That path only reaches `elif matched_format:`, which
+        asserts confidence="high" and commits. `--format <saved>` on a file
+        whose post-skip header line is a transaction therefore imported a plan
+        with one record already consumed as column names, while `import_preview`
+        refuses the same plan. No caller input clears it: resolve_or_confirm
+        honours an Override at every tier by design, and no column mapping
+        un-consumes a header row. (A second, independent path — auto-detection
+        flagging a data-like row before the header it picked — can also set
+        this flag; see test_readers.py's preamble-ambiguity coverage.)
         """
         from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
         from moneybin.services.import_confirmation import (

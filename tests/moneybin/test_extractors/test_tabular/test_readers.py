@@ -15,6 +15,7 @@ from moneybin.extractors.tabular.readers import (
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     date_format_has_time_component,
     normalize_excel_date_columns,
+    normalize_excel_date_columns_before_mapping,
     read_file,
 )
 
@@ -81,7 +82,7 @@ class TestCSVReader:
             "utf-8",
             ",",
             source_bytes=materialized,
-        ) == (1, True)
+        ) == (1, True, False)
         assert _row_looks_like_data_at(
             path,
             "utf-8",
@@ -1369,6 +1370,43 @@ class TestDateFormatHasTimeComponent:
 
     def test_none_has_no_time_component(self) -> None:
         assert date_format_has_time_component(None) is False
+
+    def test_literal_midnight_suffix_counts_as_time_bearing(self) -> None:
+        """A LITERAL time suffix (no strptime directive) must count too.
+
+        Codex finding: the prior implementation only scanned for known
+        directives (%H/%M/%S/%I/%p/%X), so a format like
+        ``"%Y-%m-%d 00:00:00"`` — spelling the time as literal characters,
+        not a directive, e.g. built by formatting a sample value rather
+        than hand-written — was misjudged as date-only. That let
+        normalize_excel_date_columns_before_mapping rewrite the column to a
+        bare date, after which the declared format could no longer parse
+        it (a trailing literal "00:00:00" the rewritten text no longer
+        has). The fix tries the actual parse against the representative raw
+        shape (``_excel_cell_text``'s "2026-01-01 00:00:00") instead of
+        scanning for substrings, so any spelling of a time-bearing raw
+        shape is caught, not just known directives.
+        """
+        assert date_format_has_time_component("%Y-%m-%d 00:00:00") is True
+
+    def test_literal_midnight_suffix_skips_normalization(self) -> None:
+        """End-to-end: the literal-suffix format must survive normalization.
+
+        Exercises normalize_excel_date_columns_before_mapping directly (not
+        just the boolean helper) to prove the literal-suffix format
+        actually prevents the rewrite that would otherwise break it.
+        """
+        df = pl.DataFrame({"Date": ["2026-01-01 00:00:00"], "Amount": ["1.00"]})
+        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+            df,
+            file_type="excel",
+            date_format="%Y-%m-%d 00:00:00",
+            date_column="Date",
+            native_date_columns=frozenset({"Date"}),
+        )
+        # Unchanged: the literal-suffix format expects the raw text as-is.
+        assert normalized["Date"].to_list() == ["2026-01-01 00:00:00"]
+        assert effective_format == "%Y-%m-%d 00:00:00"
 
 
 class TestParquetReader:
