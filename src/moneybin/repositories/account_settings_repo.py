@@ -12,6 +12,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from moneybin.database import has_column
 from moneybin.repositories.base import BaseRepo
 from moneybin.services.audit_service import AuditEvent
 from moneybin.tables import ACCOUNT_SETTINGS
@@ -41,10 +42,32 @@ class AccountSettingsRepo(BaseRepo):
     table_ref = ACCOUNT_SETTINGS
     pk_columns = ("account_id",)
 
-    def _fetch_row(self, account_id: str) -> dict[str, Any] | None:
-        return self._fetch_one(
-            ACCOUNT_SETTINGS, _ACCOUNT_SETTINGS_COLUMNS, "account_id", account_id
+    def _archived_at_supported(self) -> bool:
+        """True when the live ``app.account_settings`` catalog has ``archived_at``.
+
+        A profile opened with ``no_auto_upgrade=True`` (config.py's documented
+        operator mode) skips V060 -- the migration that added this column --
+        forever: ``Database.__init__`` calls ``init_schemas()``
+        (``CREATE TABLE IF NOT EXISTS``, a no-op on an existing table)
+        unconditionally, before deciding whether to run pending migrations at
+        all. One probe per repo operation feeds ``_fetch_row``, the ``set()``
+        INSERT/ON CONFLICT column lists, and the undo/restore paths below --
+        one named concept ("archived_at is optional in this catalog until
+        V060 applies"), not independent probes that could drift apart.
+        """
+        return has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+
+    def _fetch_row(
+        self, account_id: str, *, has_archived_at: bool | None = None
+    ) -> dict[str, Any] | None:
+        if has_archived_at is None:
+            has_archived_at = self._archived_at_supported()
+        columns = (
+            _ACCOUNT_SETTINGS_COLUMNS
+            if has_archived_at
+            else tuple(c for c in _ACCOUNT_SETTINGS_COLUMNS if c != "archived_at")
         )
+        return self._fetch_one(ACCOUNT_SETTINGS, columns, "account_id", account_id)
 
     def set(
         self,
@@ -71,47 +94,50 @@ class AccountSettingsRepo(BaseRepo):
         full resulting row as ``after``. ``NOW()`` (not ``CURRENT_TIMESTAMP``)
         refreshes ``updated_at`` in the ``DO UPDATE`` clause: DuckDB parses
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
+
+        The INSERT/ON CONFLICT column list drops ``archived_at`` when the live
+        catalog lacks it (pre-V060, ``no_auto_upgrade=True`` -- see
+        ``_archived_at_supported``): there is no column to write the caller's
+        value into, so it is silently not persisted rather than raising a raw
+        ``duckdb.BinderException``.
         """
         with self._transaction(in_outer_txn=in_outer_txn):
-            before = self._fetch_row(account_id)
+            has_archived_at = self._archived_at_supported()
+            before = self._fetch_row(account_id, has_archived_at=has_archived_at)
+
+            values_by_column: dict[str, Any] = {
+                "account_id": account_id,
+                "display_name": display_name,
+                "official_name": official_name,
+                "last_four": last_four,
+                "account_subtype": account_subtype,
+                "holder_category": holder_category,
+                "currency_code": currency_code,
+                "credit_limit": credit_limit,
+                "archived": archived,
+                "archived_at": archived_at,
+                "include_in_net_worth": include_in_net_worth,
+                "default_cost_basis_method": default_cost_basis_method,
+            }
+            columns = [
+                c for c in values_by_column if has_archived_at or c != "archived_at"
+            ]
+            col_sql = ", ".join(columns)
+            placeholders = ", ".join("?" for _ in columns)
+            update_sql = ", ".join(
+                f"{c} = excluded.{c}" for c in columns if c != "account_id"
+            )
             self._db.execute(
                 f"""
-                INSERT INTO {ACCOUNT_SETTINGS.full_name} (
-                    account_id, display_name, official_name, last_four,
-                    account_subtype, holder_category, currency_code,
-                    credit_limit, archived, archived_at, include_in_net_worth,
-                    default_cost_basis_method
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO {ACCOUNT_SETTINGS.full_name} ({col_sql})
+                VALUES ({placeholders})
                 ON CONFLICT (account_id) DO UPDATE SET
-                    display_name         = excluded.display_name,
-                    official_name        = excluded.official_name,
-                    last_four            = excluded.last_four,
-                    account_subtype      = excluded.account_subtype,
-                    holder_category      = excluded.holder_category,
-                    currency_code        = excluded.currency_code,
-                    credit_limit         = excluded.credit_limit,
-                    archived             = excluded.archived,
-                    archived_at          = excluded.archived_at,
-                    include_in_net_worth = excluded.include_in_net_worth,
-                    default_cost_basis_method = excluded.default_cost_basis_method,
-                    updated_at           = NOW()
-                """,  # noqa: S608  # TableRef + parameterized values
-                [
-                    account_id,
-                    display_name,
-                    official_name,
-                    last_four,
-                    account_subtype,
-                    holder_category,
-                    currency_code,
-                    credit_limit,
-                    archived,
-                    archived_at,
-                    include_in_net_worth,
-                    default_cost_basis_method,
-                ],
+                    {update_sql},
+                    updated_at = NOW()
+                """,  # noqa: S608  # TableRef + allowlisted literal column names + parameterized values
+                [values_by_column[c] for c in columns],
             )
-            after = self._fetch_row(account_id)
+            after = self._fetch_row(account_id, has_archived_at=has_archived_at)
             return self._emit_audit(
                 action="account_settings.set",
                 target=(*self._audit_target, account_id),
@@ -141,8 +167,18 @@ class AccountSettingsRepo(BaseRepo):
         ``after_value`` of the audit row it emits for this undo, so leaving
         it unmodified would misreport the row this call actually produced
         and repeat the corruption on the next undo-of-this-undo.
+
+        Guarded by ``_archived_at_supported()``: on a pre-V060,
+        ``no_auto_upgrade=True`` catalog there is no ``archived_at`` column to
+        backfill into, and adding the key here would make the generic
+        ``BaseRepo._insert_row`` (which inserts every key ``row`` holds) try
+        to write a column that does not exist.
         """
-        if row.get("archived") is True and "archived_at" not in row:
+        if (
+            row.get("archived") is True
+            and "archived_at" not in row
+            and self._archived_at_supported()
+        ):
             row["archived_at"] = date.today().isoformat()
         super()._insert_row(row)
 
@@ -190,6 +226,12 @@ class AccountSettingsRepo(BaseRepo):
         if "archived_at" in before:
             return
         if before.get("archived") == locate.get("archived"):
+            return
+        if not self._archived_at_supported():
+            # Pre-V060, no_auto_upgrade=True: the live catalog has no
+            # archived_at column to derive a value into. Nothing to backfill,
+            # and leaving the key out of both images matches what a guarded
+            # _fetch_row would capture on this same catalog.
             return
         where, where_params = self._pk_where(locate)
         derived_at = date.today() if before.get("archived") is True else None

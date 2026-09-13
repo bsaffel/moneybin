@@ -215,6 +215,73 @@ class TestPreV060SchemaToleranceOnReadOnlyOpen:
         assert detail.archived_at is None
 
 
+class TestPreV060SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating archived_at.
+
+    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1iuP``, anchored
+    ``account_service.py:430``). Unlike the read-only ``dim_accounts`` case
+    above, ``Database.__init__``
+    calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
+    existing table) unconditionally in EVERY open, before the explicit
+    ``no_auto_upgrade`` gate decides whether pending migrations run at all --
+    so a profile opened with ``no_auto_upgrade=True`` never gets V060 applied,
+    not just transiently until the next migration run.
+    """
+
+    @pytest.fixture()
+    def pre_v060_rw_db(
+        self, test_db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real write-mode Database reopened over account_settings missing archived_at."""
+        test_db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
+        db_path = test_db.path
+        test_db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    @pytest.mark.unit
+    def test_load_settings_succeeds(self, pre_v060_rw_db: Database) -> None:
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        repo.set(
+            account_id="acct_a",
+            display_name="Checking",
+            official_name=None,
+            last_four=None,
+            account_subtype=None,
+            holder_category=None,
+            currency_code=None,
+            credit_limit=None,
+            archived=False,
+            archived_at=None,
+            include_in_net_worth=True,
+            default_cost_basis_method=None,
+            actor="cli",
+        )
+        loaded = AccountService(pre_v060_rw_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.archived_at is None
+
+    @pytest.mark.unit
+    def test_settings_update_succeeds(self, pre_v060_rw_db: Database) -> None:
+        """The full `accounts set` path -- Codex's exact reported entry point.
+
+        `_load_or_default` reaches `_load_settings` before the write, and the
+        write itself flows through `AccountSettingsRepo.set`.
+        """
+        svc = AccountService(pre_v060_rw_db)
+        settings, warnings = svc.settings_update(
+            "acct_a", actor="cli", display_name="Renamed"
+        )
+        assert settings.display_name == "Renamed"
+        assert warnings == []
+
+
 class TestAccountSettingsModel:
     """Tests for AccountSettings dataclass construction and validation."""
 

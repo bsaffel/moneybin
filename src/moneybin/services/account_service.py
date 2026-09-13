@@ -422,33 +422,59 @@ class AccountService:
         assert_account_exists(self._db, account_id)
 
     def _load_settings(self, account_id: str) -> AccountSettings | None:
-        """Load settings for an account; ``None`` if no row exists (read, free)."""
+        """Load settings for an account; ``None`` if no row exists (read, free).
+
+        ``archived_at`` is projected only when the live ``app.account_settings``
+        catalog has it -- see the matching comment in ``list_accounts``. A
+        profile opened with ``no_auto_upgrade=True`` (config.py's documented
+        operator mode) skips V060 -- the migration that added this column --
+        forever, not just until the next migration run: ``Database.__init__``
+        calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
+        existing table) unconditionally, before the ``no_auto_upgrade`` branch
+        decides whether to run pending migrations at all. An unconditional
+        ``SELECT archived_at`` would raise a raw ``duckdb.BinderException``
+        the moment any settings write (``accounts set``) reaches this read.
+        """
+        has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        fields = [
+            "account_id",
+            "display_name",
+            "official_name",
+            "last_four",
+            "account_subtype",
+            "holder_category",
+            "currency_code",
+            "credit_limit",
+            "archived",
+            *(["archived_at"] if has_archived_at else []),
+            "include_in_net_worth",
+            "default_cost_basis_method",
+        ]
+        field_list = ", ".join(fields)
         row = self._db.execute(
             f"""
-            SELECT account_id, display_name, official_name, last_four,
-                   account_subtype, holder_category, currency_code,
-                   credit_limit, archived, archived_at, include_in_net_worth,
-                   default_cost_basis_method
+            SELECT {field_list}
             FROM {ACCOUNT_SETTINGS.full_name}
             WHERE account_id = ?
-            """,
+            """,  # field list is allowlisted above (literal strings)
             [account_id],
         ).fetchone()
         if row is None:
             return None
+        r = dict(zip(fields, row, strict=True))
         return AccountSettings(
-            account_id=row[0],
-            display_name=_stored_text(row[1]),
-            official_name=_stored_text(row[2]),
-            last_four=row[3],
-            account_subtype=_stored_text(row[4]),
-            holder_category=_stored_text(row[5]),
-            currency_code=row[6],
-            credit_limit=row[7],
-            archived=row[8],
-            archived_at=row[9],
-            include_in_net_worth=row[10],
-            default_cost_basis_method=row[11],
+            account_id=r["account_id"],
+            display_name=_stored_text(r["display_name"]),  # type: ignore[arg-type]
+            official_name=_stored_text(r["official_name"]),  # type: ignore[arg-type]
+            last_four=r["last_four"],  # type: ignore[arg-type]
+            account_subtype=_stored_text(r["account_subtype"]),  # type: ignore[arg-type]
+            holder_category=_stored_text(r["holder_category"]),  # type: ignore[arg-type]
+            currency_code=r["currency_code"],  # type: ignore[arg-type]
+            credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+            archived=r["archived"],  # type: ignore[arg-type]
+            archived_at=r.get("archived_at"),  # type: ignore[arg-type]
+            include_in_net_worth=r["include_in_net_worth"],  # type: ignore[arg-type]
+            default_cost_basis_method=r["default_cost_basis_method"],  # type: ignore[arg-type]
         )
 
     def list_accounts(

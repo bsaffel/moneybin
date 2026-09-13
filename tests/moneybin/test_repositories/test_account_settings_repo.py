@@ -8,6 +8,7 @@ captures the FULL prior row (Req 4).
 from __future__ import annotations
 
 import json
+from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
 from typing import Any
@@ -518,3 +519,116 @@ def test_undo_of_undo_of_legacy_first_write_unarchive_leaves_archived_at_null(
         ["acct_legacy7"],
     ).fetchone()
     assert row == (False, None)
+
+
+class TestPreV060SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating archived_at.
+
+    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1iuP``) plus the wider grid
+    found alongside it. ``Database.__init__`` calls ``init_schemas()`` (``CREATE TABLE IF NOT
+    EXISTS``, a no-op on an existing table) unconditionally in EVERY open --
+    read or write -- before the explicit ``no_auto_upgrade`` gate decides
+    whether pending migrations run at all. So a profile opened with
+    ``no_auto_upgrade=True`` never gets V060 applied, not just transiently.
+    Unlike the legacy-audit-capture tests above (which simulate a pre-V060
+    *audit row* on an already-migrated live table), every fixture here drops
+    the column from the LIVE table and never adds it back.
+    """
+
+    @pytest.fixture()
+    def pre_v060_rw_db(
+        self, db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real write-mode Database reopened over account_settings missing archived_at."""
+        db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
+        db_path = db.path
+        db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    def test_set_insert_succeeds(self, pre_v060_rw_db: Database) -> None:
+        """Cell 2: the INSERT column list must drop archived_at when absent."""
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        event = _set(repo, account_id="acct_pre_v060")
+        assert event.target_id == "acct_pre_v060"
+
+        row = pre_v060_rw_db.conn.execute(
+            "SELECT display_name, archived FROM app.account_settings "
+            "WHERE account_id = ?",
+            ["acct_pre_v060"],
+        ).fetchone()
+        assert row == ("Checking", False)
+
+    def test_set_on_conflict_update_succeeds(self, pre_v060_rw_db: Database) -> None:
+        """Cell 2: the ON CONFLICT DO UPDATE SET list must also drop archived_at."""
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        _set(repo, account_id="acct_pre_v060", display_name="Old")
+        _set(repo, account_id="acct_pre_v060", display_name="New")
+
+        row = pre_v060_rw_db.conn.execute(
+            "SELECT display_name FROM app.account_settings WHERE account_id = ?",
+            ["acct_pre_v060"],
+        ).fetchone()
+        assert row == ("New",)
+
+    def test_delete_before_capture_succeeds(self, pre_v060_rw_db: Database) -> None:
+        """Cell 3: _fetch_row's projection must not crash delete()'s before-capture."""
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        _set(repo, account_id="acct_pre_v060")
+
+        event = repo.delete("acct_pre_v060", actor="cli")
+        assert event is not None
+        assert event.before_value is not None
+        assert event.before_value["display_name"] == "Checking"
+        assert "archived_at" not in event.before_value
+
+    def test_undo_of_archive_transition_succeeds(
+        self, pre_v060_rw_db: Database
+    ) -> None:
+        """Cell 4: _restore_row's derived UPDATE must not crash when absent.
+
+        It must skip the derivation entirely when the column is absent.
+        """
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        _set(repo, account_id="acct_pre_v060", archived=False)
+        archive_event = _set(repo, account_id="acct_pre_v060", archived=True)
+        assert "archived_at" not in (archive_event.before_value or {})
+        assert "archived_at" not in (archive_event.after_value or {})
+
+        undo_result = repo.undo_event(archive_event, actor="cli")
+        assert undo_result is not None
+
+        row = pre_v060_rw_db.conn.execute(
+            "SELECT archived FROM app.account_settings WHERE account_id = ?",
+            ["acct_pre_v060"],
+        ).fetchone()
+        assert row == (False,)
+
+    def test_undo_of_delete_of_archived_account_succeeds(
+        self, pre_v060_rw_db: Database
+    ) -> None:
+        """Discovered alongside cell 4: _insert_row's own backfill must skip too.
+
+        The undo-of-DELETE path must skip deriving a value when the live
+        catalog has no column to write it into -- the same failure mode as
+        cell 4, one hop over in BaseRepo.undo_event's dispatch.
+        """
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        _set(repo, account_id="acct_pre_v060", archived=True)
+        delete_event = repo.delete("acct_pre_v060", actor="cli")
+        assert delete_event is not None
+
+        undo_result = repo.undo_event(delete_event, actor="cli")
+        assert undo_result is not None
+
+        row = pre_v060_rw_db.conn.execute(
+            "SELECT archived FROM app.account_settings WHERE account_id = ?",
+            ["acct_pre_v060"],
+        ).fetchone()
+        assert row == (True,)
