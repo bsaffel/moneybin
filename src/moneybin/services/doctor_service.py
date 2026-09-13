@@ -415,18 +415,50 @@ def _capped_pair_descriptions(
 
 
 _ASSIGN_ONCE_CLEAR = (
-    " Then re-run `moneybin system doctor`; once this check no longer "
-    "names the account, assign a currency with `moneybin accounts set "
-    "<account> --currency <ISO 4217>` and re-run `moneybin transform`."
+    " Then re-run `moneybin system doctor`; once its advice for the "
+    "account is the ordinary unknown-currency remediation — no overlap, "
+    "no no-link pair, and no pending merge named alongside it — assign a "
+    "currency with `moneybin accounts set <account> --currency <ISO "
+    "4217>` and re-run `moneybin transform`."
 )
 
 
-def _currency_assignment_closing(*, no_link_pairs: list[tuple[str, str, float]]) -> str:
+def _no_link_recovery_instruction(source_types: Collection[str]) -> str:
+    """Which retry command actually re-attempts resolution, routed by source.
+
+    See ``DoctorService._query_account_source_types`` for why sync and file
+    imports need different retries: a resolver failure after the raw rows
+    already loaded leaves the same "no link" state either way, but only one
+    of the two retry commands does anything for a given account.
+    ``moneybin sync pull`` re-attempts a sync account's resolution; it does
+    nothing for a file-imported one, which needs a re-import instead.
+    """
+    is_sync = "plaid" in source_types
+    is_file = bool(set(source_types) - {"plaid"})
+    if is_sync and is_file:
+        return (
+            "Re-run `moneybin sync pull` for the sync-sourced account(s), "
+            "and re-import the source file for the rest (see `moneybin "
+            "import history` to find it)."
+        )
+    if is_sync:
+        return "Re-run `moneybin sync pull` to retry it."
+    return (
+        "Re-import the source file for the account (see `moneybin import "
+        "history` to find it)."
+    )
+
+
+def _currency_assignment_closing(
+    *,
+    no_link_pairs: list[tuple[str, str, float]],
+    no_link_source_types: Collection[str] = (),
+) -> str:
     """The message's final step, converged onto the one sound clearance signal.
 
     This check's own duplicate-overlap risk is cleared by exactly one
     thing: this check's own next verdict. Nothing else qualifies, and this
-    message has offered three different wrong proxies for it across as
+    message has offered four different wrong proxies for it across as
     many review rounds:
 
     - A weak-signal ``accounts links run`` sweep returning no candidate —
@@ -438,6 +470,16 @@ def _currency_assignment_closing(*, no_link_pairs: list[tuple[str, str, float]])
       cannot pass until the currency is assigned in the first place.
     - A bucket's blocking note sequenced after the offer instead of
       before it.
+    - "This check no longer names the account" — ALSO unreachable: the
+      account stays in ``affected_ids`` for as long as its currency is
+      NULL, which is exactly the state assigning a currency is supposed
+      to end. A standalone-relieved pair proves this: the overlap
+      diagnosis disappears, but the account is still named, now by the
+      plain unknown-currency branch (Codex P2, doctor_service.py:420 on
+      commit 48110afd). The sound condition is narrower: the account's
+      *overlap-specific* diagnosis is gone and only the ordinary
+      unknown-currency remediation remains — not that the account has
+      vanished from the report entirely.
 
     So every branch that would otherwise end by offering currency
     assignment calls this ONE function for its ending, and gets the
@@ -445,16 +487,23 @@ def _currency_assignment_closing(*, no_link_pairs: list[tuple[str, str, float]])
     assign," always the same instruction to re-run doctor and read its own
     next verdict. A future bucket only has to be OR'd into the
     ``no_link_pairs``-style condition below; there is exactly one place
-    left to introduce a fourth variant of this defect, and exactly one
+    left to introduce a fifth variant of this defect, and exactly one
     place to fix it.
+
+    ``no_link_source_types`` routes the no-link recovery command itself
+    (see ``_no_link_recovery_instruction``): a fixed ``moneybin sync pull``
+    was itself briefly a fifth wrong assumption — Codex found a second door
+    to the same "raw rows, no link" state through a failed file import,
+    for which ``sync pull`` does nothing (doctor_service.py:3959 on commit
+    48110afd).
     """
     if no_link_pairs:
         return (
             f" {len(no_link_pairs)} pair(s) still have neither account "
             "holding a completed identity link, so `accounts links run` "
-            "would refuse either order — a sync whose account resolution "
-            "failed after loading is the current cause. Re-run `moneybin "
-            "sync pull` to retry it."
+            "would refuse either order — a resolver failure after the raw "
+            f"rows already loaded is the current cause. "
+            f"{_no_link_recovery_instruction(no_link_source_types)}"
         ) + _ASSIGN_ONCE_CLEAR
     return _ASSIGN_ONCE_CLEAR
 
@@ -3020,6 +3069,44 @@ class DoctorService:
         ).fetchall()
         return {str(row[0]) for row in rows}
 
+    def _query_account_source_types(self, account_ids: Collection[str]) -> set[str]:
+        """Distinct ``source_type`` values among ``account_ids`` — for routing advice, not identity.
+
+        A no-link account's resolver failure has two distinct causes with
+        two distinct fixes, and this is the only way to tell them apart:
+
+        - **Sync (``plaid``)**: ``SyncService.pull`` calls
+          ``_resolve_accounts`` inside a bare ``except Exception`` that only
+          logs, so a resolver failure after the sync's own raw rows already
+          landed leaves the account unlinked. Its own comment says the fix —
+          "a subsequent pull re-resolves idempotently."
+        - **File import (``ofx``, ``tabular``, etc.)**: ``ImportService``'s
+          per-source resolve loop runs in its OWN ``try/except`` AFTER the
+          raw rows are already durably loaded via ``ingest_dataframe``
+          (``import_service.py`` ~2342-2397) — a failure partway through
+          marks the import ``status="failed"`` and re-raises, but the raw
+          account/transaction rows already committed stay put. Same
+          "raw rows, no link" state as the sync case, reached through a
+          different door: ``moneybin sync pull`` does nothing for it, since
+          there is no sync connection to retry — only re-importing the file
+          re-attempts resolution.
+
+        One query for every candidate account, not one per account.
+        """
+        if not account_ids:
+            return set()
+        ids = list(account_ids)
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._db.execute(
+            f"""
+            SELECT DISTINCT source_type
+            FROM {DIM_ACCOUNTS.full_name}
+            WHERE account_id IN ({placeholders})
+            """,  # TableRef constant, parameterized values
+            ids,
+        ).fetchall()
+        return {str(row[0]) for row in rows}
+
     def _run_duplicate_account_overlap(self) -> InvariantResult:
         """One real account imported under two canonical identities.
 
@@ -3618,15 +3705,20 @@ class DoctorService:
             # A pair where NEITHER side holds an accepted `source_native` link
             # is a second dead end for `accounts links run`, distinct from
             # merged-away: `propose_pair` refuses outright ("neither account
-            # holds an accepted source_native link"). Reachable today only via
+            # holds an accepted source_native link"). Reachable via two
+            # distinct doors that leave the same "raw rows, no link" state: (1)
             # `SyncService.pull`'s swallowed exception around
-            # `_resolve_accounts` — a resolver failure partway through leaves
-            # the account's raw/staged rows durable with zero `account_links`
-            # rows at all. Split out and given different advice, following
-            # `AccountLinksService.run()`'s own backfill sweep, which already
-            # skips proposing a pair unless at least one side is mergeable
-            # rather than writing a proposal that would dead-end at merge.
+            # `_resolve_accounts`, and (2) `ImportService`'s own per-source
+            # resolve loop (import_service.py ~2377-2397), which runs in a
+            # separate try/except AFTER the raw rows already committed via
+            # `ingest_dataframe` — a mid-loop resolver failure there marks the
+            # import failed but does not roll back what already loaded. Split
+            # out and given different advice, following `AccountLinksService.
+            # run()`'s own backfill sweep, which already skips proposing a
+            # pair unless at least one side is mergeable rather than writing a
+            # proposal that would dead-end at merge.
             no_link_pairs: list[tuple[str, str, float]] = []
+            no_link_source_types: set[str] = set()
             overlap_probe_failed = False
             if unknown_account_count:
                 try:
@@ -3714,6 +3806,10 @@ class DoctorService:
                                 if pair[0] not in mergeable_accounts
                                 and pair[1] not in mergeable_accounts
                             ]
+                            no_link_source_types = self._query_account_source_types(
+                                {a for a, _, _ in no_link_pairs}
+                                | {b for _, b, _ in no_link_pairs}
+                            )
                 except Exception as e:
                     # DIM_ACCOUNTS and FCT_TRANSACTIONS were already queried
                     # successfully above, so this is NOT the core-views-absent
@@ -3749,6 +3845,7 @@ class DoctorService:
                     transform_ready_pairs = []
                     review_pairs = []
                     no_link_pairs = []
+                    no_link_source_types = set()
             if overlap_probe_failed:
                 # No _currency_assignment_closing(no_link_pairs=...) call: the
                 # probe itself crashed, so there is no pair population to
@@ -3839,7 +3936,10 @@ class DoctorService:
                     if transform_ready_pairs
                     else ""
                 )
-                closing = _currency_assignment_closing(no_link_pairs=no_link_pairs)
+                closing = _currency_assignment_closing(
+                    no_link_pairs=no_link_pairs,
+                    no_link_source_types=no_link_source_types,
+                )
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3902,7 +4002,10 @@ class DoctorService:
                     (account_id for a, b, _ in shown for account_id in (a, b)),
                     commands_use_placeholders=False,
                 )
-                closing = _currency_assignment_closing(no_link_pairs=no_link_pairs)
+                closing = _currency_assignment_closing(
+                    no_link_pairs=no_link_pairs,
+                    no_link_source_types=no_link_source_types,
+                )
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3953,11 +4056,10 @@ class DoctorService:
                         "would refuse either order. Do not assign a currency "
                         "yet, for the same reason as always: an unchecked "
                         "duplicate risk is exactly the case a currency "
-                        "assignment would admit into every total. A sync "
-                        "whose account resolution failed after loading is "
-                        "the current cause — re-run `moneybin sync pull` to "
-                        "retry it, then re-run `moneybin system "
-                        f"doctor`.{masked_note}"
+                        "assignment would admit into every total. A resolver "
+                        "failure after the raw rows already loaded is the "
+                        f"current cause. {_no_link_recovery_instruction(no_link_source_types)} "
+                        f"Then re-run `moneybin system doctor`.{masked_note}"
                     ),
                     affected_ids=[
                         *_masked_account_affected_ids(unknown_accounts),

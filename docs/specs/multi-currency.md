@@ -368,23 +368,52 @@ Numbered, testable. Tagged by phase.
    `duplicate_account_overlap`'s own overlap detection first, because an
    unknown currency is the only thing holding a duplicate account's rows out
    of every total, and assigning it a currency would admit them (GH #410). If
-   the account mirrors an existing one at the same institution, the detail
-   names every overlapping pair (capped at 5, with the remainder counted
-   rather than silently dropped) and sequences account-identity resolution
-   (`accounts links run` / `accounts links set`) ahead of the currency fix,
-   including a concrete two-id `accounts links run <account_id>
-   <candidate_account_id>` fallback command for each shown pair, for when the
-   automatic sweep raises no proposal on it. Each fallback names the
-   unknown-currency id first (`_orient_overlap_pair`) so `propose_pair`'s
-   accepted-`source_native`-link check absorbs the likely duplicate into the
-   established account in the common case, rather than the query's
-   alphabetical pair order, which carries no such relationship; this is a
-   best-effort hint, not a guarantee, since `propose_pair` still decides the
-   real direction, so the detail also points at the `accounts links set`
-   merge preview as the actual confirmation surface. If the overlap check
-   itself cannot run, the detail
-   withholds the currency-assignment advice entirely rather than risk
-   admitting an unconfirmed duplicate. A pair the user has already declared
+   the account mirrors an existing one at the same institution, the
+   overlapping pairs split into three buckets by how far each pair's own
+   identity resolution has already gotten, and each is answered differently
+   rather than with one uniform message:
+
+   - **Actionable (`review_pairs`).** Neither side has a decision yet, and
+     the pair is not stuck (see the third bucket below). The detail names
+     every overlapping pair (capped at 5, with the remainder counted rather
+     than silently dropped) and sequences account-identity resolution
+     (`accounts links run` / `accounts links set`) ahead of the currency
+     fix, including a concrete two-id `accounts links run <account_id>
+     <candidate_account_id>` fallback command for each shown pair, for when
+     the automatic sweep raises no proposal on it. Each fallback names the
+     unknown-currency id first (`_orient_overlap_pair`) so `propose_pair`'s
+     accepted-`source_native`-link check absorbs the likely duplicate into
+     the established account in the common case, rather than the query's
+     alphabetical pair order, which carries no such relationship; this is a
+     best-effort hint, not a guarantee, since `propose_pair` still decides
+     the real direction, so the detail also points at the `accounts links
+     set` merge preview as the actual confirmation surface.
+   - **Merged away, not yet applied (`transform_ready_pairs`).** An
+     `app.account_link_decisions` row already accepted the pair, but
+     `core.*` has not been rebuilt since. `accounts links run` refuses to
+     re-propose a pair a decision already covers, so the detail skips the
+     identity-resolution advice for this pair and points straight at
+     `moneybin transform` to apply the decided merge.
+   - **Neither side linked at all (`no_link_pairs`).** Neither account
+     holds an accepted `source_native` link, so `propose_pair` refuses
+     outright regardless of order — no two-id `accounts links run` fallback
+     is ever named for these. This state comes from a resolver failure
+     after an account's raw rows already loaded, reachable through two
+     doors: `SyncService.pull`'s swallowed exception around
+     `_resolve_accounts`, or `ImportService`'s own resolve loop, which runs
+     after `ingest_dataframe` has already committed the raw account and
+     transaction rows. The retry advice is source-routed rather than fixed
+     to one command: `moneybin sync pull` for a sync-sourced account,
+     re-importing the source file for a file-sourced one, or naming both
+     when the stuck pairs mix sources. When this is the *only* populated
+     bucket, the detail does not offer currency assignment at all — it
+     closes on the retry instruction and a re-run of `system doctor`
+     instead, since assigning a currency ahead of resolving the pair is the
+     one thing this check exists to prevent.
+
+   If the overlap check itself cannot run, the detail withholds the
+   currency-assignment advice entirely rather than risk admitting an
+   unconfirmed duplicate. A pair the user has already declared
    genuinely distinct via `accounts links set <decision_id> --standalone` is
    excluded from this gate — a standalone decision is a `rejected`,
    non-reversed `app.account_link_decisions` row, matched regardless of which
@@ -398,8 +427,13 @@ Numbered, testable. Tagged by phase.
    `currency_integrity`'s consumption of the shared pairs query, never in the
    query itself. Only when no overlap is found, or every found overlap has
    been declared standalone, does the detail go straight to `accounts set
-   --currency`. The `moneybin transform` that makes an assignment take effect
-   in `core.*`, and the affected ids, are attached in every case.
+   --currency`. Every branch that offers currency assignment — this plain
+   case, `review_pairs`, and `transform_ready_pairs` — closes on the same
+   re-run-doctor-then-assign sentence naming `moneybin transform`; the
+   `no_link_pairs`-only bucket above is the exception, since it never offers
+   currency assignment while its pairs remain stuck and so never mentions
+   `moneybin transform` either. The affected ids are attached in every case,
+   including that one.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is
    code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`

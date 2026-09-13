@@ -3033,7 +3033,12 @@ def test_currency_integrity_counts_past_the_reported_id_cap(
 
 
 def _insert_overlap_account(
-    db: Database, account_id: str, *, institution_slug: str, mergeable: bool = True
+    db: Database,
+    account_id: str,
+    *,
+    institution_slug: str,
+    mergeable: bool = True,
+    source_type: str = "ofx",
 ) -> None:
     """Insert one core.dim_accounts row carrying an institution slug.
 
@@ -3047,9 +3052,13 @@ def _insert_overlap_account(
     production keeps every other currency_integrity fixture in the
     ``review_pairs``/``transform_ready_pairs`` buckets the check has always
     tested. Pass ``mergeable=False`` to build the one state that skips it: a
-    sync pull whose account resolution failed after loading raw rows
-    (``SyncService.pull``'s swallowed exception around ``_resolve_accounts``)
-    leaves an account with zero ``app.account_links`` rows at all.
+    resolver failure after raw rows already loaded leaves an account with
+    zero ``app.account_links`` rows at all — reachable from either a sync
+    pull (``SyncService.pull``'s swallowed exception around
+    ``_resolve_accounts``) or a failed file import (``ImportService``'s own
+    resolve loop). ``source_type`` picks which door a no-link fixture models
+    (default ``"ofx"``, a file import; pass ``"plaid"`` for the sync door) —
+    see ``DoctorService._query_account_source_types``.
     """
     db.execute(
         """
@@ -3057,11 +3066,11 @@ def _insert_overlap_account(
             account_id, account_type, institution_name, institution_slug,
             source_type, source_file, extracted_at, loaded_at, updated_at,
             display_name, currency_code, archived, include_in_net_worth
-        ) VALUES (?, 'CHECKING', 'Bank', ?, 'ofx', 'a.qfx',
+        ) VALUES (?, 'CHECKING', 'Bank', ?, ?, 'a.qfx',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
                   ?, 'USD', FALSE, TRUE)
         """,  # test input, not user data
-        [account_id, institution_slug, account_id],
+        [account_id, institution_slug, source_type, account_id],
     )
     if mergeable:
         _insert_source_native_link(
@@ -3540,6 +3549,55 @@ def test_currency_integrity_standalone_decision_partial_relief(
     assert "DUP_F:DUP_E" in detail, detail
     assert "DUP_B:DUP_A" not in detail, detail
     assert "1 of those" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_standalone_relief_still_names_the_account(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A standalone-relieved account stays named until its currency is actually set.
+
+    Codex P2 (doctor_service.py:420 on commit 48110afd): the prior closing
+    condition — "once this check no longer names the account" — is
+    circular for exactly this case. Marking the pair ``--standalone``
+    clears the *overlap* diagnosis, but ``DUP_B``'s currency is still NULL,
+    so it stays in ``affected_ids`` (computed from ``currency_code IS
+    NULL``, independent of any overlap decision) for as long as it stays
+    unassigned — precisely the state assigning a currency is meant to end.
+    "No longer names the account" could therefore never be satisfied by
+    any action short of the one it claims to gate.
+
+    Proves both halves: the account is still named after relief, and the
+    branch that actually fires is the ordinary unknown-currency
+    remediation — no overlap, no no-link pair, no pending merge — which is
+    the achievable condition the reworded sentence now names.
+    """
+    _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
+    _insert_account_link_decision(
+        doctor_db,
+        decision_id="dec1",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+        status="rejected",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    # The circularity, proven directly: the account is STILL named in
+    # affected_ids (computed from currency_code IS NULL, independent of the
+    # overlap decision) — "no longer names the account" never clears here.
+    assert result.affected_ids is not None
+    assert "account:DUP_B" in result.affected_ids, result.affected_ids
+    # What actually fires is the plain remediation — no overlap-specific
+    # language survives the relief.
+    assert "Their amounts are segmented out of every total until you assign" in (
+        detail
+    ), detail
+    assert "resolve account identity FIRST" not in detail, detail
+    assert "neither account holding a completed identity link" not in detail, detail
+    assert "already have an accepted account-link decision" not in detail, detail
 
 
 def _mock_rematch_refresh(mocker: MockerFixture) -> MagicMock:
@@ -4153,11 +4211,11 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     # it reports clean, assign a currency" — circular, because this very
     # check cannot report clean until the currency is assigned. The condition
     # to wait for must be this check's own duplicate verdict, not the report.
-    # Converged wording (doctor_service.py:_ASSIGN_ONCE_CLEAR): "this check
-    # no longer names the account" — the same self-referential condition
+    # Converged wording (doctor_service.py:_ASSIGN_ONCE_CLEAR): "the ordinary
+    # unknown-currency remediation" — the same self-referential condition
     # every branch now uses, not a per-branch restatement of it.
     assert "reports clean" not in detail, detail
-    assert "this check no longer names the account" in detail, detail
+    assert "ordinary unknown-currency remediation" in detail, detail
 
 
 @pytest.mark.unit
@@ -4367,10 +4425,18 @@ def test_currency_integrity_neither_side_mergeable_avoids_the_dead_end_command(
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
     _insert_overlap_account(
-        doctor_db, "NOLINK_A", institution_slug="chase", mergeable=False
+        doctor_db,
+        "NOLINK_A",
+        institution_slug="chase",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_overlap_account(
-        doctor_db, "NOLINK_B", institution_slug="chase", mergeable=False
+        doctor_db,
+        "NOLINK_B",
+        institution_slug="chase",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
     _insert_amount_ladder(
@@ -4392,6 +4458,102 @@ def test_currency_integrity_neither_side_mergeable_avoids_the_dead_end_command(
     assert "would refuse either order" in detail, detail
     assert "moneybin sync pull" in detail, detail
     assert_published_commands_resolve(detail)
+
+
+@pytest.mark.unit
+def test_currency_integrity_no_link_recovery_routes_to_reimport_for_file_source(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file-imported no-link pair must not be told to re-run a sync.
+
+    Codex P2 (doctor_service.py:3959 on commit 48110afd): ``ImportService``'s
+    own resolve loop (import_service.py ~2377-2397) can leave the same
+    "raw rows, no link" state as a failed sync pull, but ``moneybin sync
+    pull`` retries nothing for a file-imported account — it needs a
+    re-import instead. Both accounts here default to ``source_type="ofx"``
+    (a file import), so the advice must route to re-importing, not syncing.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(
+        doctor_db, "NOLINK_A", institution_slug="chase", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_B", institution_slug="chase", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "NOLINK_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'NOLINK_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "Re-import the source file for the account" in detail, detail
+    assert "moneybin import history" in detail, detail
+    assert "moneybin sync pull" not in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_no_link_recovery_routes_to_both_for_mixed_sources(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sync- and file-sourced no-link pairs coexisting must name both retries.
+
+    Two unrelated no-link pairs at different institutions: CHASE_A/CHASE_B
+    are sync-sourced (``plaid``), WELLS_A/WELLS_B are file-sourced (``ofx``,
+    the default). Neither retry command alone repairs both, so the advice
+    must name both rather than silently picking one.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(
+        doctor_db,
+        "CHASE_A",
+        institution_slug="chase",
+        mergeable=False,
+        source_type="plaid",
+    )
+    _insert_overlap_account(
+        doctor_db,
+        "CHASE_B",
+        institution_slug="chase",
+        mergeable=False,
+        source_type="plaid",
+    )
+    _insert_amount_ladder(doctor_db, "CHASE_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "CHASE_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'CHASE_A'"
+    )  # test input, not user data
+    _insert_overlap_account(
+        doctor_db, "WELLS_A", institution_slug="wells", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "WELLS_B", institution_slug="wells", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "WELLS_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "WELLS_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'WELLS_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "Re-run `moneybin sync pull` for the sync-sourced account(s)" in detail, (
+        detail
+    )
+    assert "re-import the source file for the rest" in detail, detail
 
 
 @pytest.mark.unit
@@ -4425,10 +4587,18 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
         "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
     )  # test input, not user data
     _insert_overlap_account(
-        doctor_db, "NOLINK_A", institution_slug="wells", mergeable=False
+        doctor_db,
+        "NOLINK_A",
+        institution_slug="wells",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_overlap_account(
-        doctor_db, "NOLINK_B", institution_slug="wells", mergeable=False
+        doctor_db,
+        "NOLINK_B",
+        institution_slug="wells",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
     _insert_amount_ladder(
@@ -4452,8 +4622,8 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
     no_link_idx = detail.index("neither account holding a completed identity link")
     sync_pull_idx = detail.index("moneybin sync pull")
     doctor_recheck_idx = detail.index(
-        "Then re-run `moneybin system doctor`; once this check no longer "
-        "names the account"
+        "Then re-run `moneybin system doctor`; once its advice for the "
+        "account is the ordinary unknown-currency remediation"
     )
     currency_idx = detail.index(
         "assign a currency with `moneybin accounts set <account> --currency"
@@ -4493,10 +4663,18 @@ def test_currency_integrity_no_link_pair_note_appears_beside_transform_ready_pai
         "dec_merge", target_account_id="DUP_B"
     )
     _insert_overlap_account(
-        doctor_db, "NOLINK_A", institution_slug="wells", mergeable=False
+        doctor_db,
+        "NOLINK_A",
+        institution_slug="wells",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_overlap_account(
-        doctor_db, "NOLINK_B", institution_slug="wells", mergeable=False
+        doctor_db,
+        "NOLINK_B",
+        institution_slug="wells",
+        mergeable=False,
+        source_type="plaid",
     )
     _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
     _insert_amount_ladder(
@@ -4518,8 +4696,8 @@ def test_currency_integrity_no_link_pair_note_appears_beside_transform_ready_pai
     no_link_idx = detail.index("neither account holding a completed identity link")
     sync_pull_idx = detail.index("moneybin sync pull")
     doctor_recheck_idx = detail.index(
-        "Then re-run `moneybin system doctor`; once this check no longer "
-        "names the account"
+        "Then re-run `moneybin system doctor`; once its advice for the "
+        "account is the ordinary unknown-currency remediation"
     )
     currency_idx = detail.index(
         "assign a currency with `moneybin accounts set <account> --currency"
@@ -4610,7 +4788,7 @@ def test_currency_integrity_fails_closed_when_overlap_probe_errors(
     # clearance condition (_currency_assignment_closing).
     assert "no candidate" not in detail, detail
     assert "does not by itself clear this" in detail, detail
-    assert "this check no longer names the account" in detail, detail
+    assert "ordinary unknown-currency remediation" in detail, detail
     assert_published_commands_resolve(detail)
 
 
