@@ -1183,36 +1183,61 @@ the check that closes that gap — the one Requirement 14 was actually
 describing when it said "an eligible account ... must not contribute zero in
 silence," stated at the same level of detail as the staleness check above.
 
-`net_worth_unanchored_accounts` reads `reports.net_worth_accounts` for
-`account_balance IS NULL` alone, with **no `balance_date` filter** — never a
-NULL-total read off `reports.net_worth`'s own aggregate rung, and never
-scoped to `CURRENT_DATE`. Every ordinary row populates `account_balance`
-(the column's own comment at `:718`, "In currency_code," carries no NULL
-case); the synthesized-row arm is the only source of a NULL there, so the
-bare predicate identifies it regardless of what date
-§`reports.net_worth_accounts` dates that row at — that date is stated once,
-where the row is produced, and is not restated here. A mixed profile whose
-newest anchored balance predates today dates its synthesized row at the
-balance spine's own maximum, not at `CURRENT_DATE`
-(§`reports.net_worth_accounts`'s dating rule); filtering this check on
-`balance_date = CURRENT_DATE` in addition to `account_balance IS NULL`
-would silently exclude exactly that mixed profile, the ordinary case this
-`fail`-severity check exists to catch. The account
-rung is the one relation in this spec that names the affected accounts by
-id; `reports.net_worth`'s `unanchored_account_count` is a number with
-nothing to attach `affected_ids` to, while several existing `fail`
-invariants in this file already return the specific rows they flag rather
-than only a count — `investment_source_overlap`, `orphan_app_state`,
+`net_worth_unanchored_accounts` first joins `core.dim_accounts` and applies
+`include_in_net_worth AND NOT archived` — the same current-state
+eligibility `net_worth_stale_balance` applies just above, evaluated
+against the account's present row rather than date-scoped (`archived`,
+`dim_accounts.sql:362`; `include_in_net_worth`, `dim_accounts.sql:363`;
+both COALESCEd there from `app.account_settings`'s current row, not
+history). **The two invariants share one eligibility definition**, so a
+future change to what "eligible" means moves both checks together. That
+join replaces two prior attempts that were each a proxy for it: a
+`balance_date = CURRENT_DATE` filter was tried first and produced a false
+negative (below); dropping the date filter entirely cured that but
+produced the opposite false positive (also below). Neither named the real
+condition, which was never a date — it is the account's current inclusion
+state.
+
+Only an account that passes the join is then scanned in
+`reports.net_worth_accounts` for `account_balance IS NULL`, still with
+**no `balance_date` filter** — never a NULL-total read off
+`reports.net_worth`'s own aggregate rung, and never scoped to
+`CURRENT_DATE`. Every ordinary row populates `account_balance` (the
+column's own comment at `:718`, "In currency_code," carries no NULL case);
+the synthesized-row arm is the only source of a NULL there, so the bare
+predicate identifies it regardless of what date §`reports.net_worth_accounts`
+dates that row at — that date is stated once, where the row is produced,
+and is not restated here. A mixed profile whose newest anchored balance
+predates today dates its synthesized row at the balance spine's own
+maximum, not at `CURRENT_DATE` (§`reports.net_worth_accounts`'s dating
+rule); filtering this check on `balance_date = CURRENT_DATE` in addition
+to `account_balance IS NULL` would silently exclude exactly that mixed
+profile — the false negative the first version of this check produced,
+because the spine can end before today with no row dated today at all.
+Omitting the date filter without the eligibility join produced the other
+failure: `reports.net_worth_accounts` intentionally retains an archived
+account's synthesized pre-archive row — preserving it for the range in
+which the account really was eligible and unanchored is the whole point
+of Requirement 9's date-scoped history — so an unrestricted scan kept
+that row at `fail` long after the account's current `archived = TRUE`
+excludes it from Requirement 14's guard. The eligibility join closes that
+false positive without bringing a date filter back. The account rung is
+the one relation in this spec that names the affected accounts by id;
+`reports.net_worth`'s `unanchored_account_count` is a number with nothing
+to attach `affected_ids` to, while several existing `fail` invariants in
+this file already return the specific rows they flag rather than only a
+count — `investment_source_overlap`, `orphan_app_state`,
 `app_audit_coverage_*`, `currency_integrity` all do (`dedup_reconciliation`
-is the exception, and only because a global count mismatch genuinely has no
-individual row to name). The affected accounts here are individually
+is the exception, and only because a global count mismatch genuinely has
+no individual row to name). The affected accounts here are individually
 addressable, so this check follows the row-naming pattern rather than
-`dedup_reconciliation`'s. A row surviving the filter means `core.dim_holdings`,
+`dedup_reconciliation`'s. A row surviving both the eligibility join and
+the `account_balance IS NULL` filter means `core.dim_holdings`,
 `core.dim_holdings_broker_reported`, `core.fct_transactions`, or
-`core.fct_investment_transactions` carries evidence for an eligible account
-`core.fct_balances` has no anchor for at all — Requirement 14's own
-predicate, already computed once by the view this check re-reads rather
-than duplicating.
+`core.fct_investment_transactions` carries evidence for a presently
+eligible account `core.fct_balances` has no anchor for at all —
+Requirement 14's own predicate, already computed once by the view this
+check re-reads rather than duplicating.
 
 Severity is `fail`, not `warn` — the opposite of the staleness check just
 above, and deliberately so: the balance `net_worth_stale_balance` flags is
@@ -1346,7 +1371,7 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and five acceptance tests for
+tests named in §Testing Strategy, and six acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V060 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
@@ -1357,12 +1382,18 @@ scoped to *current* `archived = TRUE`; the warning clears once `accounts set
 leaves `include_in_net_worth` unchanged); as a negative, an unrelated
 `accounts set` write on the same account — a rename or a currency change,
 `include_in_net_worth` untouched — leaves it warning, pinning that a
-generic settings write is not what clears it; and, as a second negative, an
+generic settings write is not what clears it; as a second negative, an
 account whose `include_in_net_worth = FALSE` was set directly via `--exclude`
 with no `archived = TRUE` audit row ever written for it never warns at all —
 pinning that a legitimately, deliberately excluded account that predates this
 feature (or simply never went through the archive cascade) is not what this
-invariant exists to flag.
+invariant exists to flag; and, as a third negative, an account whose
+`account_settings.set` history contains a pre-marker row that turns
+`include_in_net_worth` from `TRUE` to `FALSE` while that same row's
+`archived` stays `FALSE`, followed later by a separate row recording
+`archived = TRUE` — never warns, even though the later row alone would
+satisfy the cascade-evidence clause, pinning that the row-shape evidence
+settles the account exactly as the marker would.
 
 ### Files to Modify
 
@@ -1399,7 +1430,9 @@ invariant exists to flag.
 - `src/moneybin/services/doctor_service.py` — the
   `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
   severity, flagging an account the V060 backfill left ambiguous with no
-  audit row carrying the `confirms_include_in_net_worth` marker.
+  audit row proving a deliberate decision — the
+  `confirms_include_in_net_worth` marker, or the pre-marker row-shape
+  evidence §Prerequisites defines.
 - `src/moneybin/repositories/account_settings_repo.py` — `set()` gains a
   `context: dict[str, Any] | None = None` parameter, forwarded to the
   existing `_emit_audit(context=...)` (`repositories/base.py:145`) it
@@ -1784,6 +1817,18 @@ empty and the rule's fallback applies.
   Requirement 14 makes about itself, verified end to end rather than left
   as a stated intention — the self-contradiction closed by
   §"`moneybin system doctor`: unanchored accounts."
+- **The unanchored-account guard does not fail for an account Requirement
+  14 excludes.** `moneybin system doctor` against the fourth Tier 2
+  scenario's fixture — the wholly-unanchored persona with one account
+  archived after the fact — exits `0` with no `fail` entry naming that
+  account, even though `reports.net_worth_accounts` still carries its
+  synthesized pre-archive row for the historical range in which it really
+  was eligible and unanchored. This is the regression guard for the
+  `core.dim_accounts` eligibility join `net_worth_unanchored_accounts`
+  shares with `net_worth_stale_balance` — closing the false positive an
+  unrestricted `account_balance IS NULL` scan produces once the
+  `balance_date = CURRENT_DATE` filter that caused the opposite false
+  negative was dropped.
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
@@ -1870,8 +1915,9 @@ approved as a footnote rather than reviewed on its own terms.
   restated intention: a new `system doctor` invariant,
   `account_archive_intent_ambiguous` (`warn` severity, alongside
   `net_worth_stale_balance`), flags every account where
-  `include_in_net_worth = FALSE`, no `app.audit_log` row for it carries a
-  dedicated decision marker, **and at least one `app.audit_log` row for it is
+  `include_in_net_worth = FALSE`, no `app.audit_log` row for it proves a
+  deliberate decision (the marker, or the pre-marker row-shape evidence,
+  both defined below), **and at least one `app.audit_log` row for it is
   evidence of a historical archive/cascade action** — an
   `account_settings.set` row whose full-row snapshot (`after_value`) records
   `archived = TRUE` at that point in time, regardless of the account's
@@ -1913,6 +1959,26 @@ approved as a footnote rather than reviewed on its own terms.
   ends up being. The check's `NOT EXISTS` therefore looks for that marker,
   not for a timestamp — any account with a marked row is settled, whenever
   it was written, and a rename or an omitted flag never produces one.
+
+  That marker only exists on writes made after this feature ships, though
+  — a `--exclude` predating it leaves no `context_json` at all. Such a
+  write can still prove the same fact directly from its own before/after
+  images, without the marker: `settings_update` only ever forces
+  `include_in_net_worth = FALSE` when the caller's own `archived` argument
+  is `True` in that exact call (`account_service.py:717-718`), so any
+  `account_settings.set` row where `before_value.include_in_net_worth =
+  TRUE`, `after_value.include_in_net_worth = FALSE`, and
+  `after_value.archived = FALSE` could not have been the cascade — a
+  standalone write named `include_in_net_worth` directly, independent of
+  `archived` becoming `TRUE` in that same row. That is the same fact the
+  marker states for every future write, recovered from a row that
+  predates the marker entirely. The check's `NOT EXISTS` is therefore one
+  settled-decision test with two ways to satisfy it — the marker or this
+  row shape — not two exemptions to keep in sync as a third shape
+  surfaces: a legacy account excluded standalone and archived only later,
+  whose old exclusion row carries no marker but does carry this shape, is
+  settled by the second and never warns, even though a later row in its
+  history also satisfies the cascade-evidence clause above.
   Rationale and the redundancy that makes the cascade removable:
   §`app.account_settings`; the check's file and acceptance test:
   §Implementation Plan.
