@@ -444,8 +444,11 @@ today's behavior for that account rather than guessing a cutoff.
 
 **The column alone would have preserved nothing.** `AccountService.settings_update`
 used to force `include_in_net_worth=False` in the same write as `archived=True`
-(`src/moneybin/services/account_service.py:714-718`), and `archived=False`
-deliberately did not restore it. That flag carried no date, so every historical
+(`src/moneybin/services/account_service.py:714-718` as of commit `6cf32bba`,
+the revision immediately before the cascade was retired in `dc158055`; the
+citation is pinned because the line range now resolves to unrelated code),
+and `archived=False` deliberately did not restore it. That flag carried no
+date, so every historical
 row of an archived account still failed the `include_in_net_worth` half of the
 eligibility filter, and the history this column exists to preserve was excluded
 anyway. Adding the date predicate on top of that cascade would have been inert.
@@ -870,9 +873,9 @@ approved as a footnote rather than reviewed on its own terms.
 - **Retire the archive cascade** — **closed**, ahead of this spec, the same
   sequencing as the margin-loan defect below. `AccountService.settings_update`
   no longer forces `include_in_net_worth=False` when `archived=True`;
-  `archived_at DATE` (migration V060) carries the exclusion instead,
+  `archived_at DATE` (migration V062) carries the exclusion instead,
   date-scoped, stamped with today's date on the archived FALSE→TRUE transition
-  and cleared on unarchive. V060 backfilled every already-archived account's
+  and cleared on unarchive. V062 backfilled every already-archived account's
   `archived_at` from the most recent `archived` FALSE→TRUE audit row (direct
   or via an undo of a prior unarchive). `include_in_net_worth` is left exactly
   as stored throughout — never restored, even when
@@ -881,7 +884,7 @@ approved as a footnote rather than reviewed on its own terms.
   explicitly passed `archived=True` *and* `include_in_net_worth=False` in one
   call produces a byte-identical audit image, and the repo records full row
   snapshots, not the kwargs a caller passed — there is no way to tell the two
-  apart from history alone, so V060 does not guess. An archived account with
+  apart from history alone, so V062 does not guess. An archived account with
   no audit evidence for the transition was left untouched rather than guessed
   at either — `archived_at` stays NULL, preserving today's behavior for that
   account: still excluded at every date, because `archived` alone (with no

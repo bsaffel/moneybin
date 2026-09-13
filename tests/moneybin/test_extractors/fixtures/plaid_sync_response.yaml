@@ -1,5 +1,5 @@
 # Golden-file Plaid sync response for unit tests.
-# Mirrors the shape of GET /sync/data per docs/specs/2026-05-13-plaid-sync-design.md Section 3.
+# Mirrors the shape of GET /sync/data per docs/specs/sync-plaid.md.
 # Amounts use Plaid convention (positive = expense).
 accounts:
   - account_id: acc_chase_check

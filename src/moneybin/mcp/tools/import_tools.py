@@ -1317,7 +1317,7 @@ def _import_revert_binding(plan: ImportRevertPlan) -> ConfirmationBinding:
             "source_type": plan.source_type,
             "rows_to_delete": plan.rows_to_delete,
         },
-        resolved_ids=(plan.import_id,),
+        resolved_ids=(plan.import_id, *plan.security_link_ids),
         actor="mcp",
         profile=get_settings().profile,
         authorization_context="local-profile",

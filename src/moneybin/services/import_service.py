@@ -473,6 +473,7 @@ class ImportRevertPlan:
     source_type: str | None = None
     source_origin: str | None = None
     table_counts: tuple[tuple[str, int], ...] = ()
+    security_link_ids: tuple[str, ...] = ()
 
     @property
     def revertable(self) -> bool:
@@ -489,6 +490,8 @@ class ImportRevertPlan:
         """Return the per-table destructive impact for confirmation metadata."""
         radius = dict(self.table_counts)
         radius["total_rows"] = self.rows_to_delete
+        if self.security_link_ids:
+            radius["security_links_reversed"] = len(self.security_link_ids)
         return radius
 
     def as_result(self) -> dict[str, str | int]:
@@ -6378,12 +6381,22 @@ class ImportService:
                     source_type=src_type,
                 )
 
+        from moneybin.repositories.security_links_repo import SecurityLinksRepo
+
+        security_link_ids = (
+            SecurityLinksRepo(self._db, audit=self._audit).list_manual_links_for_import(
+                import_id
+            )
+            if src_type == "manual"
+            else ()
+        )
         return ImportRevertPlan(
             import_id=import_id,
             outcome="revertable",
             source_type=src_type,
             source_origin=source_origin,
             table_counts=tuple(table_counts),
+            security_link_ids=security_link_ids,
         )
 
     def revert_confirmed(
@@ -6426,6 +6439,16 @@ class ImportService:
             live = self.plan_revert(import_id)
             verify(live)
             if live.revertable:
+                from moneybin.repositories.security_links_repo import SecurityLinksRepo
+
+                links = SecurityLinksRepo(self._db, audit=self._audit)
+                for link_id in live.security_link_ids:
+                    links.reverse(
+                        link_id=link_id,
+                        reversed_by="system" if actor == "system" else "user",
+                        actor=actor,
+                        in_outer_txn=True,
+                    )
                 for table in REVERT_TABLES[cast(str, live.source_type)]:
                     self._db.execute(
                         f"DELETE FROM {table.full_name} WHERE import_id = ?",

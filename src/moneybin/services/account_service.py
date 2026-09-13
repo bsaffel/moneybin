@@ -427,7 +427,7 @@ class AccountService:
         ``archived_at`` is projected only when the live ``app.account_settings``
         catalog has it -- see the matching comment in ``list_accounts``. A
         profile opened with ``no_auto_upgrade=True`` (config.py's documented
-        operator mode) skips V060 -- the migration that added this column --
+        operator mode) skips V062 -- the migration that added this column --
         forever, not just until the next migration run: ``Database.__init__``
         calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
         existing table) unconditionally, before the ``no_auto_upgrade`` branch
@@ -882,7 +882,7 @@ class AccountService:
             restate_fx_accounting(
                 self._db, account_currency_changed="currency_code" in diff
             )
-        # Re-read rather than return `target`: on a pre-V060 catalog opened
+        # Re-read rather than return `target`: on a pre-V062 catalog opened
         # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops
         # archived_at from the write (its own docstring says so), so `target`
         # -- built before the write ran -- would claim a date the row never

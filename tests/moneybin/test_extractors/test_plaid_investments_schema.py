@@ -1,10 +1,11 @@
-"""Raw investment DDL: auto-discovered, snapshot-keyed, upsert-deduped."""
+"""Raw investment DDL preserves revisions, receipts, and snapshot identity."""
 
 from moneybin.database import Database
 
 _TABLES = [
     "raw.plaid_securities",
     "raw.plaid_investment_transactions",
+    "raw.plaid_investment_transaction_receipts",
     "raw.plaid_investment_holdings",
     "raw.plaid_investment_holding_lots",
     "raw.plaid_investment_holdings_snapshots",
@@ -37,17 +38,18 @@ def test_snapshot_pk_scopes_by_origin_and_file(db: Database) -> None:
     assert row is not None and row[0] == 3
 
 
-def test_transactional_pk_replaces_across_jobs(db: Database) -> None:
+def test_transactional_pk_retains_revisions_and_isolates_origins(db: Database) -> None:
     ins = (
-        "INSERT OR REPLACE INTO raw.plaid_investment_transactions "
-        "(investment_transaction_id, account_id, transaction_date, amount, source_file, source_origin) "
+        "INSERT OR IGNORE INTO raw.plaid_investment_transactions "
+        "(investment_transaction_id, account_id, transaction_date, amount, observation_version, source_origin) "
         "VALUES (?, ?, ?, ?, ?, ?)"
     )
-    db.execute(ins, ["itx", "acc", "2026-07-06", "10.00", "sync_j1", "item_1"])
-    db.execute(
-        ins, ["itx", "acc", "2026-07-06", "10.00", "sync_j2", "item_1"]
-    )  # re-delivery replaces
+    db.execute(ins, ["itx", "acc", "2026-07-06", "10.00", "plaid_a", "item_1"])
+    db.execute(ins, ["itx", "acc", "2026-07-06", "11.00", "plaid_b", "item_1"])
+    db.execute(ins, ["itx", "acc", "2026-07-06", "10.00", "plaid_a", "item_1"])
+    db.execute(ins, ["itx", "acc", "2026-07-06", "10.00", "plaid_a", "item_2"])
     rows = db.execute(
-        "SELECT source_file FROM raw.plaid_investment_transactions"
+        "SELECT observation_version, source_origin FROM raw.plaid_investment_transactions "
+        "ORDER BY source_origin, observation_version"
     ).fetchall()
-    assert rows == [("sync_j2",)]
+    assert rows == [("plaid_a", "item_1"), ("plaid_b", "item_1"), ("plaid_a", "item_2")]

@@ -1,4 +1,4 @@
-"""V060: retire the archive cascade; add app.account_settings.archived_at.
+"""V062: retire the archive cascade; add app.account_settings.archived_at.
 
 Prerequisite for reports-net-worth-sql-surface.md Requirement 9 (see
 docs/specs/reports-net-worth-sql-surface.md, §``app.account_settings`` — new
@@ -64,7 +64,7 @@ for this: ``AuditService.events_for_operation`` uses the identical
 ``ORDER BY occurred_at, rowid`` for the same reason.
 
 A TRUE->FALSE (unarchive) row is recognized the same way when it is
-DELETION-shaped: undoing a pre-V060 account's first-ever settings write (that
+DELETION-shaped: undoing a pre-V062 account's first-ever settings write (that
 write's own ``before_value`` was SQL ``NULL``) deletes the row
 (``BaseRepo.undo_event``'s ``before is None`` branch), and the undo it emits
 carries ``after_value`` as SQL ``NULL`` -- not a JSON object with
@@ -180,7 +180,7 @@ def migrate(conn: object) -> None:
         if row is None:
             no_evidence += 1
             logger.debug(
-                f"V060: no archive audit row for account {account_id}; "
+                f"V062: no archive audit row for account {account_id}; "
                 "leaving archived_at NULL"
             )
             continue
@@ -191,6 +191,6 @@ def migrate(conn: object) -> None:
         )
         dated += 1
     logger.debug(
-        f"V060: backfilled archived_at for {dated} accounts, {no_evidence} "
+        f"V062: backfilled archived_at for {dated} accounts, {no_evidence} "
         "with no audit evidence; include_in_net_worth left untouched throughout"
     )

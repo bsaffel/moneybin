@@ -2837,7 +2837,7 @@ def test_historical_mcp_surface_corpus_is_complete_and_scannable() -> None:
         ("docs/specs/observability.md", "transactions_get"),
         ("docs/specs/categorization-bulk.md", "transactions_categorize_bulk_apply"),
         ("docs/specs/smart-import-financial.md", "renamed from `import_file`"),
-        ("docs/specs/2026-05-13-plaid-sync-design.md", "spending_summary"),
+        ("docs/specs/archived/2026-05-13-plaid-sync-design.md", "spending_summary"),
         ("docs/guides/connect-gsheet.md", "airtable_connect"),
         ("docs/guides/connect-gsheet.md", "smartsheet_connect"),
         ("docs/guides/connect-gsheet.md", "notion_connect"),

@@ -27,6 +27,7 @@ from moneybin.connectors.sync_models import (
 )
 from moneybin.database import Database
 from moneybin.extractors.plaid import PlaidExtractor
+from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     ACCOUNT_LINK_OUTCOMES_TOTAL,
     SYNC_CONNECT_OUTCOMES,
@@ -40,12 +41,7 @@ from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.security_resolver import SecurityResolver
-from moneybin.tables import (
-    ACCOUNT_LINKS,
-    FCT_INVESTMENT_TRANSACTIONS,
-    MANUAL_INVESTMENT_TRANSACTIONS,
-    PLAID_INVESTMENT_TRANSACTIONS,
-)
+from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
 
 logger = logging.getLogger(__name__)
 
@@ -329,36 +325,11 @@ class SyncService:
             ACCOUNT_LINK_OUTCOMES_TOTAL.labels(result=resolved_account.outcome).inc()
 
     def _investment_source_overlap(self) -> list[str]:
-        """Canonical account ids carrying BOTH manual and Plaid investment rows.
-
-        Manual rows store canonical account ids; raw Plaid rows store
-        provider-native ids — the join resolves the Plaid side through
-        ``app.account_links`` first (falling back to the raw id when no link
-        exists yet), since a raw-to-raw join would never match. The manual
-        side is a ``WHERE EXISTS`` semi-join, not an inner join: this runs on
-        every pull (including cash-only ones), and an inner join would cross
-        N Plaid rows by M manual rows for the same account before the
-        DISTINCT collapsed them back down — EXISTS only checks presence.
-        """
+        """Canonical accounts with manual and Plaid transaction or holdings evidence."""
         try:
-            rows = self.db.execute(
-                f"""
-                SELECT DISTINCT COALESCE(al.account_id, p.account_id) AS account_id
-                FROM {PLAID_INVESTMENT_TRANSACTIONS.full_name} AS p
-                LEFT JOIN {ACCOUNT_LINKS.full_name} AS al
-                  ON al.status = 'accepted' AND al.ref_kind = 'source_native'
-                  AND al.source_type = 'plaid' AND al.source_origin = p.source_origin
-                  AND al.ref_value = p.account_id
-                WHERE EXISTS (
-                  SELECT 1 FROM {MANUAL_INVESTMENT_TRANSACTIONS.full_name} AS m
-                  WHERE m.account_id = COALESCE(al.account_id, p.account_id)
-                )
-                ORDER BY account_id
-                """  # TableRef constants
-            ).fetchall()
+            return investment_source_overlap(self.db)
         except duckdb.CatalogException:  # tables may not exist on fresh DBs
             return []
-        return [str(r[0]) for r in rows]
 
     def _count_bootstrap_rows(self) -> int:
         """Count synthetic opening-lot bootstrap rows (spec: counted in the sync envelope).

@@ -46,14 +46,14 @@ class AccountSettingsRepo(BaseRepo):
         """True when the live ``app.account_settings`` catalog has ``archived_at``.
 
         A profile opened with ``no_auto_upgrade=True`` (config.py's documented
-        operator mode) skips V060 -- the migration that added this column --
+        operator mode) skips V062 -- the migration that added this column --
         forever: ``Database.__init__`` calls ``init_schemas()``
         (``CREATE TABLE IF NOT EXISTS``, a no-op on an existing table)
         unconditionally, before deciding whether to run pending migrations at
         all. One probe per repo operation feeds ``_fetch_row``, the ``set()``
         INSERT/ON CONFLICT column lists, and the undo/restore paths below --
         one named concept ("archived_at is optional in this catalog until
-        V060 applies"), not independent probes that could drift apart.
+        V062 applies"), not independent probes that could drift apart.
 
         **The invariant every caller of this probe must uphold:** the guard
         must be invisible on a migrated catalog, and truthful on an
@@ -109,7 +109,7 @@ class AccountSettingsRepo(BaseRepo):
         ``CURRENT_TIMESTAMP`` as an identifier in that position, not a call.
 
         The INSERT/ON CONFLICT column list drops ``archived_at`` when the live
-        catalog lacks it (pre-V060, ``no_auto_upgrade=True`` -- see
+        catalog lacks it (pre-V062, ``no_auto_upgrade=True`` -- see
         ``_archived_at_supported``): there is no column to write the caller's
         value into, so it is silently not persisted rather than raising a raw
         ``duckdb.BinderException``.
@@ -164,9 +164,9 @@ class AccountSettingsRepo(BaseRepo):
         """Preserve the live ``archived_at`` in the capture before deleting it.
 
         ``BaseRepo.undo_event``'s ``before is None`` branch reaches here when
-        undoing an account's FIRST settings write -- a pre-V060 archive whose
+        undoing an account's FIRST settings write -- a pre-V062 archive whose
         own captured ``after`` image has no ``archived_at`` key at all (the
-        column didn't exist when it was captured), even though V060's
+        column didn't exist when it was captured), even though V062's
         backfill (or any later write) may since have given the LIVE row a
         real, recoverable date. ``undo_event`` reuses this same ``row`` dict
         object -- by reference, not a copy -- as the ``before_value`` of the
@@ -180,7 +180,7 @@ class AccountSettingsRepo(BaseRepo):
 
         Read BEFORE the DELETE below removes the row -- there is nothing left
         to read once it commits. Guarded by ``_archived_at_supported()`` per
-        that method's invariant: on a pre-V060, ``no_auto_upgrade=True``
+        that method's invariant: on a pre-V062, ``no_auto_upgrade=True``
         catalog there is no ``archived_at`` column to read, and the SELECT
         below would raise.
         """
@@ -207,7 +207,7 @@ class AccountSettingsRepo(BaseRepo):
 
         ``BaseRepo.undo_event`` re-inserts a captured row through this hook
         whenever it undoes a DELETE-shaped event -- including the
-        undo-of-undo of a pre-V060 account's first settings write. That
+        undo-of-undo of a pre-V062 account's first settings write. That
         write's ``before_value`` is NULL, so undoing it *deletes* the row
         (the ``before is None`` branch of ``undo_event``), and undoing that
         generated undo lands here rather than in :meth:`_restore_row`.
@@ -225,7 +225,7 @@ class AccountSettingsRepo(BaseRepo):
         would misreport the row this call actually produced and repeat the
         corruption on the next undo-of-this-undo.
 
-        Guarded by ``_archived_at_supported()``: on a pre-V060,
+        Guarded by ``_archived_at_supported()``: on a pre-V062,
         ``no_auto_upgrade=True`` catalog there is no ``archived_at`` column to
         backfill into, and adding the key here would make the generic
         ``BaseRepo._insert_row`` (which inserts every key ``row`` holds) try
@@ -242,7 +242,7 @@ class AccountSettingsRepo(BaseRepo):
     def _restore_row(self, *, before: dict[str, Any], locate: dict[str, Any]) -> None:
         """Restore, deriving ``archived_at`` when a legacy capture omits it.
 
-        A pre-V060 ``account_settings.set`` audit row was captured before
+        A pre-V062 ``account_settings.set`` audit row was captured before
         ``archived_at`` existed, so neither its ``before`` nor ``after`` image
         carries the key -- ``BaseRepo._restore_row`` only sets columns present
         in ``before``, so undoing one of these rows would leave ``archived_at``
@@ -254,7 +254,7 @@ class AccountSettingsRepo(BaseRepo):
         guessed date in that second case would corrupt a real ``archived_at``.
         That second case still backfills both images with the row's actual
         LIVE value (never a guess) rather than leaving the key absent --
-        omitting it would leave the post-V060 audit row ``undo_event`` emits
+        omitting it would leave the post-V062 audit row ``undo_event`` emits
         from these same dicts with an incomplete row capture, on a catalog
         that fully supports the column.
 
@@ -269,14 +269,14 @@ class AccountSettingsRepo(BaseRepo):
         happened, so today's date would misdate history rather than recover it.
         The legacy capture itself carries no evidence of that real date (that
         is exactly why the key is missing from it) -- but the LIVE row, right
-        now, might: V060's own backfill (or any post-V060 write) may have
+        now, might: V062's own backfill (or any post-V062 write) may have
         already given this row a real, recoverable ``archived_at`` before this
         undo ever ran. Per this method's invariant (``_archived_at_supported``'s
         docstring), the guard must be a no-op on a migrated catalog -- clobbering
         that live value with a guessed ``NULL`` would violate exactly that.
         So ``locate["archived_at"]`` is read from the live row IMMEDIATELY
         BEFORE the ``UPDATE`` below overwrites it, not hardcoded: certain NULL
-        only when the live catalog genuinely holds nothing there (no V060
+        only when the live catalog genuinely holds nothing there (no V062
         backfill happened, or ``locate.archived`` was already False), and the
         real value otherwise -- so an undo-of-this-undo (redo) can recover it.
 
@@ -288,14 +288,14 @@ class AccountSettingsRepo(BaseRepo):
         ``before=locate, after=before`` (the caller's ``after`` argument *is*
         this ``locate`` dict, passed by reference): leaving either key absent
         makes a later undo-of-this-undo hit ``_require_capture`` and fail with a
-        misleading "not reversible" error. A post-V060 capture always carries
+        misleading "not reversible" error. A post-V062 capture always carries
         the key and takes the base-class path unchanged.
         """
         super()._restore_row(before=before, locate=locate)
         if "archived_at" in before:
             return
         if not self._archived_at_supported():
-            # Pre-V060, no_auto_upgrade=True: the live catalog has no
+            # Pre-V062, no_auto_upgrade=True: the live catalog has no
             # archived_at column to derive a value into. Nothing to backfill,
             # and leaving the key out of both images matches what a guarded
             # _fetch_row would capture on this same catalog.
@@ -303,7 +303,7 @@ class AccountSettingsRepo(BaseRepo):
         where, where_params = self._pk_where(locate)
         # Read the row's CURRENT archived_at before the transition branch's
         # UPDATE below can overwrite it -- on a migrated catalog this can be
-        # a genuine, recoverable date (V060's backfill, or any later write),
+        # a genuine, recoverable date (V062's backfill, or any later write),
         # and the guard must never destroy that (see the docstring above).
         # Only when the live catalog holds nothing here does this degrade to
         # the same "no guess beats a documented gap" NULL used elsewhere.
@@ -321,7 +321,7 @@ class AccountSettingsRepo(BaseRepo):
             # record it on both rather than leaving the key absent, so the
             # audit event undo_event emits from these dicts (before=after,
             # after=before, swapped) captures the full row instead of
-            # omitting it. Leaving it out here is what let a post-V060
+            # omitting it. Leaving it out here is what let a post-V062
             # generated audit row silently regress to a partial capture even
             # though the catalog fully supports it -- system_audit could not
             # then tell a persisted NULL from a genuinely missing legacy
