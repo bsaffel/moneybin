@@ -108,10 +108,12 @@ _ENUM_VOCABULARIES: Mapping[tuple[str, str], Sequence[str]] = {
 }
 
 # This explicit exception keeps canonical warehouse names coherent, and its
-# sixth column — acquisition_date — is what lets a narrow reader tell apart
-# the several rows one multi-lot disposal produces, which otherwise share
-# every other default column but gain_loss.
-_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 102}
+# leading realized_fx_gain_id is the row's own stable identifier — grain-first
+# per column-ordering.md — which is what lets a narrow reader tell apart the
+# several rows one multi-lot disposal produces even when two lots land on the
+# same gain or loss, something no other default column (including a date)
+# guarantees.
+_MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 106}
 
 #: Parameter vocabularies that change a report's default column set. Only a
 #: report declaring a *callable* default needs an entry; the guard below fails

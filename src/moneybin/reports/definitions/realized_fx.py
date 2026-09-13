@@ -279,10 +279,10 @@ from moneybin.tables import REPORTS_REALIZED_FX
         provenance=("reports.realized_fx",),
     ),
     default_columns=(
+        "realized_fx_gain_id",
         "currency_code",
         "home_currency",
         "coverage_status",
-        "acquisition_date",
         "disposal_date",
         "gain_loss",
     ),

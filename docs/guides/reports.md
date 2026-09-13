@@ -283,10 +283,11 @@ is one consumed Currency lot from a deliberate conversion, so
 one disposal can produce several rows with different acquisition dates and bases.
 An unmatched-inventory placeholder has no `currency_lot_id` and remains visible
 as an incomplete row instead of disappearing from the total.
-The default table shows `currency_code`, `home_currency`, `coverage_status`,
-`acquisition_date`, `disposal_date`, and `gain_loss` — acquisition and disposal
-dates together distinguish the rows a multi-lot disposal produces. Add
-`--wide` for `disposed_amount` plus the
+The default table shows `realized_fx_gain_id`, `currency_code`,
+`home_currency`, `coverage_status`, `disposal_date`, and `gain_loss` —
+`realized_fx_gain_id` is the row's own stable identifier, so it distinguishes
+the several rows a multi-lot disposal produces even when two lots land on the
+same gain or loss. Add `--wide` for `disposed_amount` plus the
 conversion, lot, account, source, rate, and transfer lineage. Filter with
 `--from-date`, `--to-date`, `--currency`, and
 `--coverage complete|incomplete|all`; incomplete rows stay visible by default
