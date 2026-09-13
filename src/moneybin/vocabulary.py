@@ -24,3 +24,10 @@ CONSENT_FEATURE_CATEGORIES: frozenset[ConsentFeatureCategory] = frozenset(
     get_args(ConsentFeatureCategory)
 )
 PRICE_BASES: frozenset[PriceBasis] = frozenset(get_args(PriceBasis))
+
+#: ``source_type`` values that arrive through the mediated sync server
+#: (AGENTS.md, "Sync server is opaque") rather than a file the user supplied.
+#: The one shared classification of "sync vs. file" — every caller that routes
+#: on it imports this instead of re-deriving the rule, so a second provider
+#: changes both call sites at once.
+MEDIATED_SYNC_SOURCE_TYPES: frozenset[str] = frozenset({"plaid"})
