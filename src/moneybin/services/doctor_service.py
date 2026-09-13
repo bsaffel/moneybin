@@ -3009,9 +3009,13 @@ class DoctorService:
         ids = list(account_ids)
         placeholders = ", ".join("?" for _ in ids)
         rows = self._db.execute(
-            f"SELECT DISTINCT account_id FROM {ACCOUNT_LINKS.full_name} "  # TableRef constant, parameterized values
-            "WHERE ref_kind = 'source_native' AND status = 'accepted' "
-            f"AND account_id IN ({placeholders})",
+            f"""
+            SELECT DISTINCT account_id
+            FROM {ACCOUNT_LINKS.full_name}
+            WHERE ref_kind = 'source_native'
+              AND status = 'accepted'
+              AND account_id IN ({placeholders})
+            """,  # TableRef constant, parameterized values
             ids,
         ).fetchall()
         return {str(row[0]) for row in rows}
