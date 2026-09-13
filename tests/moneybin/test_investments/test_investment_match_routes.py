@@ -69,6 +69,102 @@ def test_cli_pending_text_displays_review_evidence(
         assert field in result.output
 
 
+@pytest.mark.parametrize("command", ["pending", "history"])
+@pytest.mark.parametrize("quiet", [False, True], ids=["stdout-only", "quiet"])
+def test_cli_review_stdout_preserves_proposal_and_choice_context(
+    comparison_db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    quiet: bool,
+) -> None:
+    from moneybin.privacy.payloads.reviews import (
+        InvestmentMatchDetails,
+        InvestmentMatchReviewRow,
+        ReviewsInvestmentMatchesView,
+        ReviewStatus,
+    )
+
+    view = ReviewsInvestmentMatchesView(
+        status="pending" if command == "pending" else "history",
+        rows=[
+            InvestmentMatchReviewRow(
+                decision_id="proposal-review-123",
+                status="pending" if command == "pending" else "superseded",
+                created_at="2026-01-12T00:00:00",
+                summary="Investment Proposal",
+                details=InvestmentMatchDetails(
+                    members=["event-manual", "event-plaid"],
+                    confidence_band="fuzzy",
+                    is_competing=False,
+                    auto_eligible=False,
+                    relationship_fingerprint="relationship-123",
+                    candidate_graph_fingerprint="graph-123",
+                    algorithm_version="test-version",
+                    legs=[
+                        {
+                            "leg_role": "primary",
+                            "source_type": "manual",
+                            "source_origin": "import",
+                            "quantity": "1",
+                            "amount": "-100",
+                        }
+                    ],
+                    evidence=[{"trade_date_conflict": True}],
+                    field_choices=[
+                        {
+                            "field": "trade_date",
+                            "conflict_id": "conflict-trade-date-123",
+                            "choices": [
+                                {"choice_id": "choice-manual", "value": "2026-01-10"},
+                                {"choice_id": "choice-plaid", "value": "2026-01-11"},
+                            ],
+                        }
+                    ],
+                    supersedes_decision_ids=[],
+                    supersession=[],
+                    downstream_effects={"golden_membership_changed": False},
+                ),
+            )
+        ],
+    )
+
+    @contextmanager
+    def database_context(
+        *args: object, **kwargs: object
+    ) -> Generator[Database, None, None]:
+        yield comparison_db
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.investments.matches.get_database", database_context
+    )
+
+    def review_view(db: Database, status: ReviewStatus) -> ReviewsInvestmentMatchesView:
+        return view
+
+    monkeypatch.setattr(
+        "moneybin.adapters.investment_matching_adapters.investment_review_view",
+        review_view,
+    )
+    result = CliRunner().invoke(
+        app, ["investments", "matches", command, *(["--quiet"] if quiet else [])]
+    )
+    assert result.exit_code == 0, result.output
+    for value in (
+        "proposal-review-123",
+        "fuzzy",
+        "conflict-trade-date-123",
+        "trade_date",
+        "choice-manual",
+        "2026-01-10",
+        "choice-plaid",
+        "2026-01-11",
+        "quantity",
+        "trade_date_conflict",
+        "golden_membership_changed",
+    ):
+        assert value in result.stdout
+
+
 def test_bounded_refresh_persists_proposals_without_transform(
     comparison_db: Database,
 ) -> None:

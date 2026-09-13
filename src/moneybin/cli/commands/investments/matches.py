@@ -10,7 +10,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_note, render_rows
+from moneybin.cli.render import render_note, render_rows, render_summary
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
 
@@ -30,9 +30,12 @@ def _inspect(status: str, output: OutputFormat, quiet: bool) -> None:
         render_or_json(envelope, output, cli_actor=f"investments_matches_{status}")
         if output == OutputFormat.TEXT:
             for row in view.rows:
-                render_note(
-                    f"{row.decision_id}: {row.summary} ({row.details.confidence_band})",
-                    quiet=quiet,
+                render_summary(
+                    [
+                        ("Proposal", row.decision_id),
+                        ("Confidence", row.details.confidence_band),
+                    ],
+                    title=row.summary,
                 )
                 for leg in row.details.legs:
                     render_note(
@@ -44,10 +47,10 @@ def _inspect(status: str, output: OutputFormat, quiet: bool) -> None:
                 for evidence in row.details.evidence:
                     render_rows(["Field", "Evidence"], evidence.items())
                 for conflict in row.details.field_choices:
-                    render_note(
-                        f"Field choice: {conflict['field']} ({conflict['conflict_id']})",
-                        quiet=quiet,
-                    )
+                    render_summary([
+                        ("Field choice", str(conflict["field"])),
+                        ("Conflict", str(conflict["conflict_id"])),
+                    ])
                     # Issued choices retain the planner's persisted record shape.
                     choices = cast(list[dict[str, object]], conflict["choices"])
                     choice_rows: list[tuple[object, object]] = []
