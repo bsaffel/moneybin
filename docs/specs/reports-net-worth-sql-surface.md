@@ -203,9 +203,9 @@ this spec's to close.
     account, ever, regardless of amount or source — a dividend, fee, or
     other investment-ledger event counts exactly as a cash-ledger posting
     does, **unless the broker's newest snapshot reports a definitive zero
-    position for the account, which overrides that transaction evidence
-    rather than compounding with it** (§Data Model states the exact
-    predicate and its boundary). That is a **narrower reading than "any account with no balance
+    position for the account — the zero-snapshot override — which overrides
+    that transaction evidence rather than compounding with it** (§Data Model
+    states the exact predicate and its boundary). That is a **narrower reading than "any account with no balance
     anchor,"** taken literally — an account with genuinely zero activity of
     any kind stays silently absent, unchanged from today. That residual gap
     is this requirement's own, stated plainly rather than absorbed: see
@@ -341,110 +341,175 @@ have the view read *that*.
 
 **`core.dim_holdings_broker_reported`** — a new `kind VIEW` in `core`,
 sitting beside `dim_holdings.sql` in `src/moneybin/sqlmesh/models/core/`,
-grain `account_id`. It performs the identical receipt-scoped join
-`dim_holdings.sql`'s `newest_snapshot` CTE already performs against
-`prep.stg_plaid__investment_holdings_snapshots` — never the retained holdings
-rows of `prep.stg_plaid__investment_holdings` directly — and publishes the
-distinct accounts whose broker's newest snapshot carries at least one row
-with **nonzero position or value evidence**: `quantity <> 0 OR
-institution_value <> 0` over `prep.stg_plaid__investment_holdings`'s own
-`quantity` and `institution_value` columns (never `cost_basis` — the raw
-table's own column comment marks it "reconciliation reference ONLY — never
-overwrites ledger-derived basis",
-`src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`).
-Row PRESENCE in the newest snapshot is not by itself evidence of a position:
-the raw/staging layer legitimately carries a snapshot row reporting
-`quantity = 0, cost_basis = 0` — exercised today by
-`tests/moneybin/test_stg_plaid_investments.py:1903-1904` — so the predicate
-has to read the row's own figures, not merely that a row exists.
+grain `account_id`. Its account universe is every `(account_id,
+source_origin)` pair `prep.stg_plaid__accounts` reports whose `source_origin`
+(the Plaid item) also appears in `dim_holdings.sql`'s own `newest_snapshot`
+CTE — the identical receipt-scoped join against
+`prep.stg_plaid__investment_holdings_snapshots`, never the retained rows of
+`prep.stg_plaid__investment_holdings` directly. An account whose item never
+appears in `newest_snapshot` — the item has no successful newest pull at all
+— is **not published here**; that absence is itself a state, read by an
+outer join downstream rather than by a value (state 3, below).
+
+For every published account, the view LEFT JOINs
+`prep.stg_plaid__investment_holdings`, scoped to that account's newest
+snapshot (`source_origin` and `source_file` both), and publishes one
+nullable column, `has_position`, over the joined rows' own `quantity` and
+`institution_value` (never `cost_basis` — the raw table's own column comment
+marks it "reconciliation reference ONLY — never overwrites ledger-derived
+basis", `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`):
+
+- **`TRUE` — nonzero position or value evidence.** At least one row for the
+  account in that newest snapshot satisfies `quantity <> 0 OR
+  institution_value <> 0`. Row PRESENCE in the newest snapshot is not by
+  itself evidence of a position: the raw/staging layer legitimately carries a
+  snapshot row reporting `quantity = 0, cost_basis = 0` — exercised today by
+  `tests/moneybin/test_stg_plaid_investments.py:1903-1904` — so the predicate
+  reads the row's own figures, not merely that a row exists.
+- **`FALSE` — a definitive zero.** The account's item did successfully pull,
+  and the account holds nothing per that pull — either because the account
+  has **no rows at all** in the newest snapshot (the no-row form: a receipt
+  exists for the item, but this account's own holdings are absent from it),
+  or because every row it does have is *decisive* on `quantity` or
+  `institution_value` (not NULL on both) and none is nonzero.
+- **`NULL` — inconclusive.** A receipt exists and the account has rows in
+  it, but every one is NULL on both `quantity` and `institution_value`: no
+  decisive evidence either way.
 
 **NULL handling is what SQL's three-valued logic already does here; this
 states it rather than leaving it implicit.** A NULL `quantity` or a NULL
 `institution_value` makes its own `<> 0` comparison UNKNOWN — never FALSE,
-never TRUE. A row NULL on both columns therefore resolves the whole `OR` to
-UNKNOWN and is excluded from the account set, exactly as a row decisively
-reporting zero on both is: neither carries evidence either way. A row nonzero
-on either column, with the other NULL, still satisfies the `OR` and counts —
-one broker-confirmed figure is evidence regardless of what the other column
-says.
+never TRUE. A row NULL on both columns therefore resolves that row's `OR` to
+UNKNOWN; if no other row for the account is nonzero either, that row carries
+no evidence toward `TRUE`. It also does not by itself force `FALSE` — a row
+that is NULL on both is not *decisive* zero evidence, so an account whose
+only rows are NULL-on-both resolves to `has_position = NULL`, not `FALSE`. A
+row nonzero on either column, with the other NULL, still satisfies the `OR`
+and counts toward `TRUE` — one broker-confirmed figure is evidence regardless
+of what the other column says.
 
-**This closes two liquidation shapes, and both have to hold for the
-reasoning below to be true — closing only one reopens the other.**
-**No-row liquidation**: retained rows survive across snapshots, so reading
-the raw table without scoping to the receipt would let a liquidated item's
-newest pull — which writes ZERO holdings rows, per `dim_holdings.sql`'s own
-`newest_snapshot` comment — leave its last non-empty snapshot's rows in
-place, permanently flagging a correctly-empty account as unanchored and
-NULLing the profile total forever. Scoping to the newest snapshot receipt
-reads that pull as no candidate rows instead. **Zero-row liquidation**: the
-newest pull DOES write a holdings row for the account, but the row itself
-reports a zero quantity and a zero-or-absent value — the shape above.
-Receipt-scoping alone does not catch this one: the row sits in the correctly
-newest snapshot, so a row-presence predicate would still read it as "holding
-a position," reproducing the identical permanent-red failure against a
-correctly-liquidated account. The nonzero-evidence predicate is what closes
-this second shape; the receipt scope closes only the first — neither
-subsumes the other. This is the established pattern, not a new one:
+**Publishing only `TRUE` accounts was tried in an earlier round of this
+file, and that narrowing is the direct cause of the defect the zero-snapshot
+override below could not observe** (review thread `3998915317`). Restricting
+the relation to accounts with nonzero evidence, enumerated straight from the
+holdings rows rather than from the account universe below, was enough to
+correctly hold a liquidated account out of the *positive*-evidence reading
+Requirement 14 needs — both the item-level and account-level no-row shapes
+below leave such an account with no holdings row to enumerate it by, so it
+was silently and correctly never `TRUE`. But that same shortcut erased the
+one piece of information the override needs on the *negative* side: an
+account absent from a `TRUE`-only relation is indistinguishable from an
+account whose item never reported at all, so there was nothing left to
+publish `FALSE` from. Publish the full three-state column, enumerated from
+the account universe, instead of narrowing back to a boolean presence check
+— narrowing this relation to fix one defect is what removed the data the
+next fix needed, and re-narrowing it would remove the same data again.
+
+**This closes three liquidation shapes for `has_position`; each closes a
+distinct failure, and none of the three subsumes another.**
+
+- **No-row liquidation, item-level.** Retained rows survive across
+  snapshots, so reading the raw table without scoping to the receipt would
+  let a liquidated item's newest pull — which writes ZERO holdings rows, per
+  `dim_holdings.sql`'s own `newest_snapshot` comment — leave its last
+  non-empty snapshot's rows in place, permanently reading a correctly-empty
+  account as `TRUE`. Scoping to the newest snapshot receipt is what keeps
+  that pull from producing a false `TRUE`.
+- **No-row liquidation, account-level — the empty-receipt shape.** A
+  multi-account item's newest pull can legitimately write rows for some of
+  its accounts and none for others: one account fully liquidated while a
+  sibling account under the same item still holds positions. That account's
+  own rows are absent from the newest snapshot exactly as they would be if
+  the *whole item* had reported empty. Enumerating the account universe from
+  `prep.stg_plaid__accounts` — not from the holdings rows themselves — and
+  LEFT JOINing the holdings is what lets that absence resolve to `FALSE`
+  rather than to the account being unpublished (and therefore
+  indistinguishable from "no receipt") the way an INNER-JOIN-only shape
+  would read it.
+- **Zero-row liquidation — the row exists and reports zero.** The newest
+  pull DOES write a holdings row for the account, but the row itself reports
+  a zero quantity and a zero-or-absent value. Receipt-scoping alone does not
+  catch this one: the row sits in the correctly newest snapshot, so a
+  row-presence predicate would still read it as `TRUE`. The nonzero-evidence
+  predicate — reading the row's own figures — is what resolves this account
+  to `FALSE` instead.
+
+This is the established pattern for the receipt-scoped read, not a new one:
 `dim_holdings.sql` already reads `prep.stg_plaid__investment_holdings_snapshots`
-this way over the sibling holdings table; the new relation is the same
-receipt-scoped read over `prep.stg_plaid__investment_holdings` itself, adding
-the nonzero-evidence filter that `dim_holdings.sql`'s own `positions` CTE
-never needs because it sums open LOTS, which a closed position simply has
-none of — exposed for a second consumer that `dim_holdings.sql`'s own
-`positions`-driven shape cannot serve (below). It carries its own
-`CLASSIFICATION` entry in `src/moneybin/privacy/taxonomy.py` — `account_id`
-as `DataClass.RECORD_ID`, matching `("core", "dim_holdings")`'s own — so the
-read has ground truth to derive against instead of needing an exception.
+this way over the sibling holdings table; the new relation adds the
+account-universe LEFT JOIN the second shape requires and the nonzero-evidence
+filter that `dim_holdings.sql`'s own `positions` CTE never needs, because it
+sums open LOTS, which a closed position simply has none of. It carries its
+own `CLASSIFICATION` entry in `src/moneybin/privacy/taxonomy.py` —
+`account_id` as `DataClass.RECORD_ID`, matching `("core",
+"dim_holdings")`'s own — so the read has ground truth to derive against
+instead of needing an exception.
 
 **Evidence of holding value has four sources, and `reports.net_worth`'s
 `kind VIEW` reads all four directly — no runner involved.**
 `core.dim_holdings` sums open lots, so it emits no row at all for a
 broker-reported position with no matching lot (an unbound security, a
 declined bootstrap, or a holdings snapshot that landed before its
-transactions); `core.dim_holdings_broker_reported` is exactly the source
-`dim_holdings.sql`'s own comment names for that direction; and
-`core.fct_transactions` and `core.fct_investment_transactions` — both
-already `core.*`, so neither needs a relation of its own — together supply
-the non-investment and investment-ledger cases Requirement 14's qualifier
-adds: any account with at least one recorded transaction on either ledger,
-regardless of source or amount. The two ledgers are genuinely separate
-models — `core.fct_investment_transactions` is never unioned into
+transactions); `core.dim_holdings_broker_reported` (a row with `has_position
+= TRUE`) is exactly the source `dim_holdings.sql`'s own comment names for
+that direction; and `core.fct_transactions` and
+`core.fct_investment_transactions` — both already `core.*`, so neither needs
+a relation of its own — together supply the non-investment and
+investment-ledger cases Requirement 14's qualifier adds: any account with at
+least one recorded transaction on either ledger, regardless of source or
+amount. The two ledgers are genuinely separate models —
+`core.fct_investment_transactions` is never unioned into
 `core.fct_transactions` — so an account whose only activity is investment
 events (a dividend, a fee, a fully-disposed position) needs its own arm; the
 cash-ledger table cannot see it. All four are `core.*`, so the view joining
 them keeps `assert_acyclic` satisfied on its own terms, not through a runner
 workaround of the check.
 
-**A definitive zero-position snapshot from the newest pull overrides
-historical transaction evidence on either ledger — a new rule, stated once,
-here.** Reading the transaction arms existentially — *ever posted,
-regardless of amount* — is what makes a still-open position with no balance
-observation visible, but it also means a genuinely liquidated account, which
-posts real buy and sell events to `core.fct_investment_transactions` before
-it is disposed, would qualify through that same arm forever: historical
-activity proves the account once held value, never that it holds value
-*now*, and an unclearable `fail` on a correctly-liquidated account is worse
-than the silent zero this guard exists to prevent. The override is the
-nonzero-evidence predicate's own complement, narrowly stated: an account
-whose receipt-scoped newest snapshot (the same relation
-`core.dim_holdings_broker_reported` reads, above) carries at least one row
-that is *decisive* on `quantity` or `institution_value` — not NULL on both,
-the no-evidence-either-way case already excluded above — and, across every
-row in that snapshot, never satisfies the nonzero-evidence predicate, is
-excluded from the unanchored candidate set outright, regardless of what
-either transaction ledger shows for it. That is direct, current evidence
-there is nothing to see, and it outranks indirect evidence that there once
-was.
+**The zero-snapshot override: a definitive zero-position snapshot from the
+newest pull overrides historical transaction evidence on either ledger — a
+new rule, stated once, here and referenced everywhere else that depends on
+it.** Reading the transaction arms existentially — *ever posted, regardless
+of amount* — is what makes a still-open position with no balance observation
+visible, but it also means a genuinely liquidated account, which posts real
+buy and sell events to `core.fct_investment_transactions` before it is
+disposed, would qualify through that same arm forever: historical activity
+proves the account once held value, never that it holds value *now*, and an
+unclearable `fail` on a correctly-liquidated account is worse than the
+silent zero this guard exists to prevent. The override fires on exactly one
+condition, read from the relation above rather than restated here: the
+account has a row in `core.dim_holdings_broker_reported` with `has_position
+= FALSE`. That is direct, current evidence there is nothing to see, and it
+outranks indirect evidence that there once was.
 
-**The boundary is exact, and it is the whole reason this is safe: the
-override fires only on a definitive zero, never on the mere absence of a
-holdings snapshot.** An account with transaction activity and no holdings
-snapshot row at all — the newest pull recorded nothing for it, decisive or
-otherwise — has nothing overriding it, and the transaction arm correctly
-keeps flagging it: "we know it is empty" and "we do not know" are different
-facts, and only the first clears the guard. This is the same "genuinely
-never funded" versus "funded but nothing observed yet" distinction the
-residual gap below already turns on, applied one layer in.
+**The boundary is drawn at the receipt, not at the row — a correction to an
+earlier round of this section, which drew it at the row and reintroduced the
+exact failure the override exists to prevent** (review thread `3998915318`).
+The override fires on `has_position = FALSE` and nowhere else: not on
+`has_position = NULL` (a receipt exists but is inconclusive for this
+account), and not on the account's total absence from `core.dim_holdings_broker_reported`
+(its item has no receipt at all). Both of those are genuine "we do not know"
+states, and the transaction arm correctly keeps flagging them. An earlier
+round of this section additionally excluded the empty-receipt case above —
+an account with **no holdings rows at all** in an otherwise-real newest
+snapshot — on the theory that "no row" means "no evidence either way," the
+same treatment as `has_position = NULL`. That is wrong, and the repository
+already establishes why, verified at this head:
+`src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings_snapshots.sql:14`
+types `holdings_count INTEGER NOT NULL` with the comment "Positions this
+item returned in this snapshot; 0 = the item reported and holds NOTHING (the
+case this table exists to record)", and
+`src/moneybin/sqlmesh/models/core/dim_holdings.sql:82-83` reads the same
+receipt for the identical reason: "Read from the snapshot RECEIPTS, never
+from the holdings rows themselves. Plaid returns no holding entries for an
+item that holds nothing." An empty receipt is a *positive observation of
+emptiness*, not an absence of observation — the no-row form of `FALSE`
+above, not of `NULL`. Collapsing it into "unknown" leaves the exact failure
+the override exists to prevent standing for the most common liquidation
+shape: an account whose broker pull simply stops returning rows for it,
+rather than returning a decisive zero row, would keep qualifying through the
+transaction arm forever. The corrected rule: a receipt — a successful newest
+pull, whether or not it wrote a row for this account — is what settles the
+question; row presence never was the right test.
 
 **The other three evidence arms carry no equivalent defect, checked the
 same way.** `core.dim_holdings` sums currently-open lots (above), so a
@@ -455,7 +520,7 @@ present-state by construction, not a historical read. The plain
 contradict it, and an account it flags is removed from the candidate set
 the same way every other account is — through Requirement 9's own
 date-scoped `archived_at` eligibility once the account is actually closed —
-not through a zero-snapshot signal a cash ledger has no equivalent of.
+not through a zero-snapshot override a cash ledger has no equivalent of.
 `core.dim_holdings_broker_reported` is the source of the override itself,
 not a second place the defect could hide.
 
@@ -645,7 +710,7 @@ applies to every ordinary row, extended to the one row that has no
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
 accounts satisfying the eligible-candidate predicate stated once, above, at
-`:624-626` — not restated here, so the two cannot drift apart the way an
+`:690-691` — not restated here, so the two cannot drift apart the way an
 earlier round of this spec let them — NULL, and therefore unbounded, when
 none of them carry an `archived_at` at all. Then:
 
@@ -820,7 +885,7 @@ core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
 `core.dim_accounts.currency_code` rather than going NULL: that column is the
-account's own denomination, per this rung's own column comment at `:789`,
+account's own denomination, per this rung's own column comment at `:854`,
 independent of whether a balance was ever observed, so a Plaid account with
 a populated `iso_currency_code` but no balance, or a manual/tabular account
 with a configured or source-derived currency, still carries its known
@@ -931,7 +996,7 @@ exactly the per-candidate `synthesis_date` this section already computes
 above, so ranged behavior is unchanged. For an unranged read — no
 `from_date` and no `to_date` supplied — every row this rung's read can
 produce, synthesized or not, is dated at exactly the one date this rung's
-own dating rule already names, stated once above at `:816`:
+own dating rule already names, stated once above at `:881`:
 `COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
 CURRENT_DATE)` — never at `effective_to`'s own general default of
 `CURRENT_DATE` (§Data Model), which is usually a few days ahead of it. An
@@ -949,7 +1014,7 @@ that is the right reading for a genuinely open-below *range* — reads an
 unranged read's absent lower bound as unbounded history rather than "no
 range at all," and readmits exactly the candidate this fix excludes, dated
 at its own `archived_at` in place of the single date the unranged contract
-(`:1429`-ish, below) actually owes the read. That was the defect (comment
+(`:1483`-ish, below) actually owes the read. That was the defect (comment
 `3998860437`).
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
@@ -1335,7 +1400,7 @@ Only an account that passes the join is then scanned in
 **no `balance_date` filter** — never a NULL-total read off
 `reports.net_worth`'s own aggregate rung, and never scoped to
 `CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:799`, "In currency_code," carries no NULL case);
+column's own comment at `:864`, "In currency_code," carries no NULL case);
 the synthesized-row arm is the only source of a NULL there, so the bare
 predicate identifies it regardless of what date §`reports.net_worth_accounts`
 dates that row at — that date is stated once, where the row is produced,
@@ -1995,30 +2060,34 @@ fix is scoped to the unranged path and does not regress the ranged one.
   `balance_date = CURRENT_DATE` filter that caused the opposite false
   negative was dropped.
 - **The unanchored-account guard does not fail for a broker-reported
-  zero-quantity liquidation.** `moneybin system doctor` against a persona
-  whose only account is a liquidated investment account: its broker
-  connection stays live, its newest snapshot still carries a holdings row
-  for it reporting `quantity = 0` and no institution value, the account has
-  no balance observation of any kind, and — realistically, not by
-  omission — `core.fct_investment_transactions` carries the account's real
-  buy-then-sell history ending in that disposal. Exits `0` with no `fail`
-  entry naming that account. An earlier round of this fixture instead left
-  the investment ledger empty, which made the case pass for the wrong
-  reason: an account with no transaction history at all was never going to
-  reach the transaction-activity arm in the first place, override or not,
-  so the case proved nothing about liquidation. This is the regression
-  guard for both halves together: the nonzero-evidence predicate on
-  `core.dim_holdings_broker_reported` and the zero-snapshot override it
-  feeds (§Data Model, both) — a row-presence reading of the holdings
-  snapshot, or a candidate set that let the buy/sell history stand
+  definitive zero, in either shape the zero-snapshot override covers
+  (§Data Model).** `moneybin system doctor` against a persona whose only
+  account is a liquidated investment account, its broker connection staying
+  live and — realistically, not by omission —
+  `core.fct_investment_transactions` carrying the account's real
+  buy-then-sell history ending in that disposal, tested twice against the
+  same persona shape: **zero-quantity row**, where the newest snapshot still
+  carries a holdings row for the account reporting `quantity = 0` and no
+  institution value; and **empty receipt**, where the newest snapshot's
+  receipt exists but carries no holdings row for the account at all — the
+  no-row form the boundary correction in §Data Model addresses. The account
+  has no balance observation of any kind in either case. Both exit `0` with
+  no `fail` entry naming that account. An earlier round of this fixture
+  instead left the investment ledger empty, which made the zero-quantity-row
+  case pass for the wrong reason: an account with no transaction history at
+  all was never going to reach the transaction-activity arm in the first
+  place, override or not, so the case proved nothing about liquidation. This
+  is the regression guard for the zero-snapshot override's full boundary,
+  both shapes together — a row-presence reading of the holdings snapshot in
+  either shape, or a candidate set that let the buy/sell history stand
   regardless of the current zero position, would each independently place
   the account back in the candidate set, NULL the profile total, and fail
   this check with no user action able to clear it, because neither the
   broker's snapshot receipt nor the historical ledger ever stops naming the
-  account. Pair with the existing "does fail the release gate" case above
-  using the *same* fixture shape but a nonzero reported quantity, so the
-  two together prove the predicate discriminates on the row's own figures
-  rather than on receipt presence either way.
+  account. Pair both with the existing "does fail the release gate" case
+  above using the *same* fixture shape but a nonzero reported quantity, so
+  the three together prove the predicate discriminates on the account's own
+  evidence rather than on receipt presence alone.
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
@@ -2075,7 +2144,17 @@ multi-currency, and nine for `M2B.3`:
   ending in that disposal — not an empty ledger, which would prove nothing
   about the override this fixture exists to exercise. Added to the same
   persona; the fixture the Tier 3 "does not fail for a broker-reported
-  zero-quantity liquidation" case reads.
+  definitive zero" case reads for its zero-quantity-row half.
+- For `M2B.3`'s empty-receipt liquidation shape — the no-row twin of the
+  fixture above, and the common case in practice: the same fully-liquidated
+  persona account, broker connection live, but with its newest snapshot
+  receipt carrying **zero holdings rows for the account** rather than one
+  reporting `quantity = 0`. The account still carries no balance observation
+  of any kind, and `core.fct_investment_transactions` still carries its real
+  buy-then-sell history ending in the disposal — not an empty ledger, for
+  the same reason as above. Added to the same persona; the fixture the Tier
+  3 "does not fail for a broker-reported definitive zero" case reads for its
+  empty-receipt half.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
