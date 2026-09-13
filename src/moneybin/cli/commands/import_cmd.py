@@ -2663,14 +2663,20 @@ def import_preview(
         # entirely. matched_date_format is the corrected format to DISPLAY
         # (below) when normalization rewrote the mapped column — showing
         # the persisted format unchanged would misreport what this file
-        # will actually parse against once imported.
+        # will actually parse against once imported. date_column falls back
+        # to the caller's own --override transaction_date=<col> when no
+        # format matched — mirrors the equivalent first-contact scoping in
+        # import_service.py's _import_tabular (known_mapping = overrides):
+        # without it, a second genuinely native-date column normalizes here
+        # in the preview but not on the later confirm/replay (which always
+        # scopes to the resolved mapping's actual transaction_date column).
         df, matched_date_format = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
             date_column=matched_format.field_mapping.get("transaction_date")
             if matched_format
-            else None,
+            else (overrides.get("transaction_date") if overrides else None),
             native_date_columns=read_result.excel_native_date_columns,
         )
 

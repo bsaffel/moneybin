@@ -870,18 +870,30 @@ def _import_preview_tabular(
         read_result = read_file(path, format_info, source_bytes=source_bytes)
         # No saved/matched format and no date-format parameter exist on this
         # preview path, so no declared time-bearing format can ever reach
-        # here — normalize unconditionally before map_columns needs
-        # recognized values to find/validate the date column (see
+        # here — normalize before map_columns needs recognized values to
+        # find/validate the date column (see
         # normalize_excel_date_columns_before_mapping's docstring: skipping
         # this for a native-date Excel column doesn't just miss the date
         # column, it misidentifies it as `description` while the real
         # description column drops out of the mapping entirely). The
         # returned effective format is unused here — this path never
         # persists a date format for a later replay to disagree with.
+        # date_column scopes to the caller's own mapping (mirrors the
+        # equivalent first-contact scoping in import_service.py's
+        # _import_tabular: known_mapping = overrides) when the caller
+        # already named transaction_date — otherwise a second genuinely
+        # native-date column (e.g. a "Posted" date beside the real
+        # transaction date) normalizes here in the preview but NOT on the
+        # later confirm/replay (import_service.py always scopes to
+        # ReviewedTabularPlan.field_mapping's actual transaction_date), so
+        # the imported value silently diverges from what was previewed.
+        # None (no mapping given) still scans broadly, matching map_columns's
+        # own need to find the date column before it is known.
         read_result.df, _ = normalize_excel_date_columns_before_mapping(
             read_result.df,
             file_type=format_info.file_type,
             date_format=None,
+            date_column=mapping.get("transaction_date") if mapping else None,
             native_date_columns=read_result.excel_native_date_columns,
         )
         mapping_result = map_columns(

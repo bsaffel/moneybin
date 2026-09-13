@@ -629,6 +629,65 @@ class TestExcelReader:
         assert len(result.df) == 1
         assert result.excel_native_date_columns == frozenset({"column_1"})
 
+    def test_native_date_typed_probe_tolerates_one_dirty_value(
+        self, tmp_path: Path
+    ) -> None:
+        """A dirty placeholder must not void the typed native-date probe.
+
+        Review finding: openpyxl opening the file successfully (the ordinary
+        ``.xlsx`` case) used to disqualify a column from
+        ``excel_native_date_columns`` on its FIRST non-``datetime.date``
+        value, with no majority tolerance — reintroducing the class of bug
+        this PR fixes, but only for the path that almost never runs
+        (openpyxl failing to open the file at all). A real Date column with
+        3 genuine dates and one "pending" placeholder must still qualify.
+        """
+        import datetime
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        ws.append(["pending", 5.00, "Something"])
+        ws.append([datetime.date(2026, 1, 4), 1.00, "Tea"])
+        path = tmp_path / "dirty_native_dates.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+
+        assert result.excel_native_date_columns == frozenset({"Date"})
+
+    def test_native_date_typed_probe_excludes_a_majority_non_date_column(
+        self, tmp_path: Path
+    ) -> None:
+        """A column that is mostly NOT dates must never qualify.
+
+        The majority-tolerance fix must not become "any date counts" — a
+        column holding one incidental ``datetime.date``-typed cell among
+        mostly non-date values stays excluded.
+        """
+        import datetime
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Notes", "Description"])
+        ws.append([datetime.date(2026, 1, 1), "not a date", "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), "also not", "Salary"])
+        ws.append([datetime.date(2026, 1, 3), datetime.date(2026, 1, 3), "Tea"])
+        path = tmp_path / "mostly_text_notes_column.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+
+        assert result.excel_native_date_columns == frozenset({"Date"})
+
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
     ) -> None:
@@ -774,13 +833,20 @@ class TestExcelReader:
         actually parsing a well-formed legacy .xls stream, which this
         fabricated 8-byte header alone is not enough to be -- so the
         assertions stay clean while the failure mode under test is real.
+
+        The stub carries a genuine header row (column labels) followed by a
+        data row: the fallback now actually classifies header/headerless via
+        a raw fastexcel probe (see _classify_excel_headerless_via_fastexcel)
+        rather than hardcoding has_header=True, so a stub shaped like real
+        headered data is what makes has_header=True a classification result
+        rather than an unverified assumption.
         """
         ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
 
         stub_df = pl.DataFrame({
-            "Date": ["2026-01-01"],
-            "Amount": ["42.5"],
-            "Description": ["Coffee"],
+            "column_1": ["Date", "2026-01-01"],
+            "column_2": ["Amount", "42.5"],
+            "column_3": ["Description", "Coffee"],
         })
         mocker.patch("polars.read_excel", return_value=stub_df)
 
@@ -792,7 +858,6 @@ class TestExcelReader:
         )
         assert result.skip_rows == 0
         assert result.has_header is True
-        assert list(result.df.columns) == ["Date", "Amount", "Description"]
 
     def test_explicit_skip_rows_openpyxl_failure_falls_back_instead_of_raising(
         self, tmp_path: Path, mocker: MockerFixture
@@ -921,6 +986,74 @@ class TestExcelReader:
         assert result.has_header is False
         assert len(result.df) == 2
         assert result.excel_native_date_columns is None
+
+    def test_headerless_legacy_xls_with_explicit_sheet_not_eaten_as_header(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """The explicit-``--sheet`` legacy-.xls path needs the same classification.
+
+        Review finding (Codex P1): the calamine-based headerless
+        classification above only runs when ``sheet_used is None`` (no
+        ``--sheet``/saved-format sheet given). A caller-supplied sheet name
+        skips straight to ``_excel_sample_rows``, which raises
+        InvalidFileException/BadZipFile on a genuine legacy .xls same as
+        before — but the except clause hardcoded ``skip_rows = 0``
+        (headered) instead of running the SAME fastexcel fallback, silently
+        reintroducing MB-449 for exactly this one variant. Mirrors the
+        no-``--sheet`` test above but passes ``sheet="Sheet1"`` explicitly.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        stub_df = pl.DataFrame({
+            "column_1": ["2026-01-01", "2026-01-02"],
+            "column_2": ["42.5", "10"],
+            "column_3": ["Coffee", "Tea"],
+        })
+        mocker.patch("polars.read_excel", return_value=stub_df)
+
+        result = read_file(
+            tmp_path / "legacy_headerless.xls",
+            FormatInfo(file_type="excel"),
+            sheet="Sheet1",
+            source_bytes=ole2_magic_bytes,
+        )
+
+        assert result.has_header is False
+        assert len(result.df) == 2
+
+    def test_invalid_sheet_name_raises_clean_error_not_keyerror(
+        self, tmp_path: Path
+    ) -> None:
+        """An invalid --sheet name must raise a classified error, not KeyError.
+
+        Review finding (MUST FIX): the auto-detect classification branch
+        added by this PR calls ``_excel_sample_rows`` whenever ``sheet_used``
+        is non-None and no explicit ``skip_rows`` is given.
+        ``_excel_sample_rows`` does ``wb[sheet_name]`` with no KeyError
+        guard, and openpyxl's ``Workbook.__getitem__`` raises a bare
+        ``KeyError`` for an unknown sheet name — which
+        ``src/moneybin/errors.py`` deliberately excludes from its generic
+        ``LookupError`` classification, so it used to reach the caller as an
+        unclassified traceback instead of a clean error. The real
+        ``pl.read_excel`` read independently raises its own ``ValueError``
+        for the same bad sheet name (already classified by
+        ``handle_cli_errors``), so the fix routes the KeyError into the same
+        fastexcel-fallback helper the legacy-.xls case uses, which lets that
+        clean ValueError propagate instead of the raw KeyError.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.title = "Sheet1"
+        ws.append(["Date", "Amount", "Description"])
+        ws.append(["2026-01-01", 42.50, "Coffee"])
+        path = tmp_path / "basic.xlsx"
+        wb.save(path)
+
+        with pytest.raises(ValueError, match="no matching sheet"):
+            read_file(path, FormatInfo(file_type="excel"), sheet="NoSuchSheet")
 
 
 class TestNormalizeExcelDateColumns:

@@ -773,12 +773,18 @@ def _excel_native_date_columns(
     ``iter_rows(values_only=True)`` returns the untouched Python object (a
     ``datetime.date``/``datetime.datetime`` for a native date cell, since
     ``datetime.datetime`` is itself a ``date`` subclass), so a column
-    qualifies when EVERY non-null data-row value in it is one of those
-    types — an exact, typed answer, not a text-shape guess. Scans the whole
-    data range rather than a bounded sample: this is the source of truth
-    ``normalize_excel_date_columns`` rewrites from, so a partial scan could
-    silently miss a non-date value past the sample window and rewrite text
-    that was never actually a date.
+    qualifies when a STRICT MAJORITY of its non-null data-row values are one
+    of those types — an exact, typed count, not a text-shape guess. This is
+    the same dirty-minority tolerance ``normalize_excel_date_columns``'s own
+    fallback heuristic applies (see its docstring): a "pending" placeholder
+    or similar one-off in an otherwise all-native-date column must not
+    disqualify the column outright, or the majority-tolerant fallback this
+    function's ``None`` return triggers would be reachable only on the path
+    that almost never runs (openpyxl failing to open the file at all), while
+    the ordinary case — openpyxl succeeding — silently lost the tolerance.
+    Scans the whole data range rather than a bounded sample: this is the
+    source of truth ``normalize_excel_date_columns`` rewrites from, so a
+    partial scan could miscount past the sample window.
 
     Args:
         path: File path.
@@ -798,7 +804,11 @@ def _excel_native_date_columns(
         text-shape heuristic in that case, since typed inspection isn't
         available. An empty frozenset (as opposed to ``None``) means
         openpyxl opened the file fine and found no natively-typed date
-        column.
+        column — either the sheet has no data rows, or no column's
+        non-null values are majority ``datetime.date``. A column holding
+        entirely non-date values (numbers, strings) always scores 0 dates
+        out of its non-null count and can never reach a majority, so it
+        cannot qualify regardless of how few or many values it holds.
     """
     import openpyxl
     from openpyxl.utils.exceptions import InvalidFileException
@@ -813,21 +823,22 @@ def _excel_native_date_columns(
         return None
     try:
         ws = wb[sheet_name]
-        candidates: set[int] | None = None
+        num_cols = len(column_names)
+        date_counts = [0] * num_cols
+        non_null_counts = [0] * num_cols
         for row in ws.iter_rows(min_row=data_start_row + 1, values_only=True):
-            if candidates is None:
-                candidates = set(range(len(column_names)))
-            if not candidates:
-                break
-            for i in list(candidates):
+            for i in range(num_cols):
                 v = row[i] if i < len(row) else None
                 if v is None:
                     continue
-                if not isinstance(v, datetime.date):
-                    candidates.discard(i)
-        if not candidates:
-            return frozenset()
-        return frozenset(column_names[i] for i in candidates if i < len(column_names))
+                non_null_counts[i] += 1
+                if isinstance(v, datetime.date):
+                    date_counts[i] += 1
+        return frozenset(
+            column_names[i]
+            for i in range(num_cols)
+            if non_null_counts[i] > 0 and date_counts[i] * 2 > non_null_counts[i]
+        )
     finally:
         wb.close()
 
@@ -866,6 +877,58 @@ def _excel_row_looks_like_data_at(
         return False
     non_empty = [c.strip().strip('"').strip("'") for c in rows[row_index] if c.strip()]
     return _looks_like_data_row(non_empty) if non_empty else False
+
+
+def _classify_excel_headerless_via_fastexcel(
+    path: Path,
+    *,
+    sheet_name: str | None,
+    source_bytes: bytes | None,
+) -> tuple[int, bool]:
+    """Classify header/headerless via a raw fastexcel/calamine read.
+
+    Used whenever openpyxl can't answer this classification question itself
+    — either it can't open the container at all (legacy ``.xls``, which
+    openpyxl never supported), or (when called with an explicit
+    ``sheet_name``) it already proved that name doesn't exist in a container
+    it CAN open. fastexcel/calamine reads legacy ``.xls`` directly, so a raw
+    unheadered read stands in for the openpyxl-backed ``_excel_sample_rows``
+    classification and feeds the same ``_classify_header_rows`` algorithm.
+
+    ``sheet_name=None`` lets fastexcel pick its own default sheet (mirrors
+    ``pl.read_excel``'s own "neither ``sheet_id`` nor ``sheet_name`` given"
+    default — sheet 1); a caller-supplied name is passed through unchanged
+    so classification targets the SAME sheet the real read further down will
+    use — never silently substituting a different one.
+
+    Returns:
+        ``(skip_rows, has_header)``. Falls back to ``(0, True)`` — the
+        historical pre-detection default — only when fastexcel itself can't
+        read this container either (``fastexcel.FastExcelError``); the real
+        read further down then gets the chance to raise the actual, clean
+        error. A caller-supplied sheet name that doesn't exist raises its
+        own ``ValueError`` from ``pl.read_excel`` (already classified by
+        ``handle_cli_errors``) rather than ``FastExcelError``, so that error
+        propagates out of this function uncaught instead of being swallowed
+        into a misleading ``(0, True)`` fallback.
+    """
+    import fastexcel
+
+    try:
+        probe_df = pl.read_excel(
+            path if source_bytes is None else BytesIO(source_bytes),
+            sheet_name=sheet_name,
+            has_header=False,
+            infer_schema_length=0,
+            read_options={"header_row": None},
+        )
+        sample_rows = [
+            [v if v is not None else "" for v in row]
+            for row in probe_df.head(30).iter_rows()
+        ]
+        return _classify_header_rows(sample_rows)
+    except fastexcel.FastExcelError:
+        return 0, True
 
 
 def _read_excel(
@@ -938,63 +1001,66 @@ def _read_excel(
         # openpyxl can't open this container at all (legacy .xls) — asking
         # _excel_sample_rows would hit the identical failure on the
         # identical bytes before ever indexing a sheet name. Classify from
-        # the reader that CAN open a legacy .xls instead: a raw,
-        # unheadered fastexcel/calamine read gives the same shape
-        # _classify_header_rows expects, just sourced differently. Without
-        # this, a genuinely headerless .xls always fell back to "row 0 is
-        # the header" with no classification signal at all — MB-449 for
-        # exactly the one file variant this reader's own openpyxl-fallback
-        # tests exist to cover.
+        # the reader that CAN open a legacy .xls instead (see
+        # _classify_excel_headerless_via_fastexcel): a raw, unheadered
+        # fastexcel/calamine read gives the same shape _classify_header_rows
+        # expects, just sourced differently. Without this, a genuinely
+        # headerless .xls always fell back to "row 0 is the header" with no
+        # classification signal at all — MB-449 for exactly the one file
+        # variant this reader's own openpyxl-fallback tests exist to cover.
         if sheet_used is None:
-            import fastexcel
-
-            try:
-                probe_df = pl.read_excel(
-                    path if source_bytes is None else BytesIO(source_bytes),
-                    sheet_name=None,
-                    has_header=False,
-                    infer_schema_length=0,
-                    read_options={"header_row": None},
-                )
-                sample_rows = [
-                    [v if v is not None else "" for v in row]
-                    for row in probe_df.head(30).iter_rows()
-                ]
-                skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
-            except fastexcel.FastExcelError:
-                # Genuinely unreadable even by the engine that supports
-                # legacy .xls — fall back to the pre-detection default and
-                # let the real read below raise the actual error.
-                skip_rows = 0
+            skip_rows, resolved_has_header = _classify_excel_headerless_via_fastexcel(
+                path, sheet_name=None, source_bytes=source_bytes
+            )
         else:
             try:
                 sample_rows = _excel_sample_rows(
                     path, sheet_used, source_bytes=source_bytes
                 )
                 skip_rows, resolved_has_header = _classify_header_rows(sample_rows)
-            except (InvalidFileException, zipfile.BadZipFile):
+            except (InvalidFileException, zipfile.BadZipFile, KeyError):
                 # openpyxl only ever supported .xlsx/.xlsm/.xltx/.xltm — never
                 # legacy binary .xls. This sampling call is new: pre-PR,
                 # supplying --sheet skipped openpyxl entirely and let
                 # calamine/fastexcel (which does read legacy .xls) handle the
-                # file alone. Both exceptions mean the same thing (openpyxl
-                # cannot open this container at all, so the sampler has no
-                # opinion and the real reader below should get its chance) but
-                # openpyxl raises one or the other depending on *how* it's
-                # asked to open the file, not on anything about the caller:
-                # given a path it runs its own extension check first and raises
-                # InvalidFileException; given bytes (BytesIO, e.g. the MCP
-                # confirm-after-preview replay path) it skips straight to
-                # `ZipFile(...)`, which raises BadZipFile for a non-zip
-                # (OLE2/legacy-.xls) container. Don't "simplify" this back to
-                # one exception — the two entry shapes genuinely fail
-                # differently. Fall back to the pre-detection default (row 0 is
-                # the header) rather than refuse a file the actual read can
-                # still parse. Side effect: a genuinely corrupt .xlsx now also
-                # falls through to the real read instead of failing here first —
-                # the right outcome, since the error then comes from the
-                # component that actually has to parse the file.
-                skip_rows = 0
+                # file alone. All three exceptions mean openpyxl has no
+                # opinion here, for two different reasons:
+                # - InvalidFileException/BadZipFile: openpyxl cannot open
+                #   this CONTAINER at all — openpyxl raises one or the other
+                #   depending on *how* it's asked to open the file, not on
+                #   anything about the caller: given a path it runs its own
+                #   extension check first and raises InvalidFileException;
+                #   given bytes (BytesIO, e.g. the MCP confirm-after-preview
+                #   replay path) it skips straight to `ZipFile(...)`, which
+                #   raises BadZipFile for a non-zip (OLE2/legacy-.xls)
+                #   container. Don't "simplify" this back to one exception —
+                #   the two entry shapes genuinely fail differently.
+                # - KeyError: the container opens fine, but ``sheet_used``
+                #   (a caller-supplied ``--sheet``/saved-format sheet name)
+                #   doesn't exist in it — openpyxl's ``Workbook.__getitem__``
+                #   raises a bare KeyError, which src/moneybin/errors.py
+                #   deliberately excludes from its generic LookupError
+                #   classification, so left uncaught this reached the caller
+                #   as a raw traceback instead of a clean error.
+                # For the container case, classify via the SAME fastexcel
+                # fallback the no-explicit-sheet branch above uses (scoped to
+                # this sheet_used, so header/headerless detection still
+                # targets the right sheet instead of losing the caller's
+                # choice) rather than hardcoding skip_rows=0 (headered) —
+                # a genuinely headerless legacy .xls with an explicit --sheet
+                # must classify the same way the no-explicit-sheet branch does, or
+                # MB-449 reopens for exactly this one variant. For the
+                # sheet-name case, fastexcel independently fails to find the
+                # same nonexistent sheet and raises its own clean ValueError
+                # (already classified by handle_cli_errors) rather than
+                # fastexcel.FastExcelError, so it propagates out of the
+                # helper uncaught instead of being swallowed into a
+                # misleading "headered" fallback.
+                skip_rows, resolved_has_header = (
+                    _classify_excel_headerless_via_fastexcel(
+                        path, sheet_name=sheet_used, source_bytes=source_bytes
+                    )
+                )
     elif has_header is not None:
         resolved_has_header = has_header
 
