@@ -200,6 +200,7 @@ def test_reviewed_plan_rejects_parse_or_mapping_drift(
                 "Amount": ["-4.75"],
             }),
             "rows_in_file": 2,
+            "excel_native_date_columns": None,
         },
     )()
 
@@ -265,6 +266,7 @@ def test_a_missing_required_field_outranks_an_unreadable_date(
             "df": pl.DataFrame({"Date": ["not-a-date"], "Description": ["Coffee"]}),
             "rows_in_file": 2,
             "header_row_looks_like_data": False,
+            "excel_native_date_columns": None,
         },
     )()
 
@@ -339,6 +341,7 @@ def test_a_declined_reviewed_plan_keeps_the_preview_s_flagged_evidence(
                 "Amount": ["-4.75"],
             }),
             "rows_in_file": 2,
+            "excel_native_date_columns": None,
         },
     )()
 
@@ -906,6 +909,69 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
+    def test_implicitly_matched_saved_format_date_only_still_imports_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A matched format's date-only date_format must reconcile with the rewrite.
+
+        MUST FIX: a matched/reviewed format's persisted ``date_format`` used
+        to be handed straight to ``ResolvedMapping`` even though
+        ``normalize_excel_date_columns_before_mapping`` had just rewritten
+        the native-date column's text from "<date> 00:00:00" to bare ISO
+        ("2026-07-01"). Every shipped built-in format (mint/tiller/ynab)
+        declares a date-only ``%m/%d/%Y``-shaped format, so an .xlsx re-save
+        of that same header layout implicitly matches by header signature,
+        gets normalized to ISO text, and then fails to parse against the
+        persisted date-only format on every row — reporting success with
+        zero rows loaded. This saved format's own ``%m/%d/%Y`` reproduces
+        that exact shape without needing a real built-in fixture.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "implicit_match_date_only.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="implicit_date_only_fixture",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%m/%d/%Y",
+                number_format="us",
+            ),
+            actor="test",
+        )
+
+        # No format_name= and no date_format= — the format must be found
+        # purely by the implicit header-signature match in Stage 3, exactly
+        # like every built-in format's %m/%d/%Y-shaped date_format would be.
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
     ) -> None:
@@ -1393,9 +1459,14 @@ class TestTabularConfirmationFlow:
         from moneybin.services.import_service import ImportService
 
         # citi_credit.csv: Status,Date,Description,Debit,Credit,Member Name
+        # (dates are "01/05/2026"-shaped — date_format must match the real
+        # fixture now that _validate_date_format_override always checks the
+        # resolved format against the actual column, not just a fresh
+        # caller-supplied override.)
         split_result = _make_mapping_result(
             score=1.0,
             confidence="high",
+            date_format="%m/%d/%Y",
             field_mapping={
                 "transaction_date": "Date",
                 "debit_amount": "Debit",

@@ -875,19 +875,14 @@ def _import_preview_tabular(
         # normalize_excel_date_columns_before_mapping's docstring: skipping
         # this for a native-date Excel column doesn't just miss the date
         # column, it misidentifies it as `description` while the real
-        # description column drops out of the mapping entirely).
-        # No saved/matched format and no date-format parameter exist on this
-        # preview path, so no declared time-bearing format can ever reach
-        # here — normalize unconditionally before map_columns needs
-        # recognized values to find/validate the date column (see
-        # normalize_excel_date_columns_before_mapping's docstring: skipping
-        # this for a native-date Excel column doesn't just miss the date
-        # column, it misidentifies it as `description` while the real
-        # description column drops out of the mapping entirely).
-        read_result.df = normalize_excel_date_columns_before_mapping(
+        # description column drops out of the mapping entirely). The
+        # returned effective format is unused here — this path never
+        # persists a date format for a later replay to disagree with.
+        read_result.df, _ = normalize_excel_date_columns_before_mapping(
             read_result.df,
             file_type=format_info.file_type,
             date_format=None,
+            native_date_columns=read_result.excel_native_date_columns,
         )
         mapping_result = map_columns(
             read_result.df,

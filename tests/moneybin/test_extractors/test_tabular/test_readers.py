@@ -11,6 +11,7 @@ from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _detect_header,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
+    date_format_has_time_component,
     normalize_excel_date_columns,
     read_file,
 )
@@ -594,6 +595,40 @@ class TestExcelReader:
         assert len(result.df) == 2
         assert result.rows_in_file == 2
 
+    def test_headerless_native_date_single_row_is_typed_correctly(
+        self, tmp_path: Path
+    ) -> None:
+        """The native-date type probe must not skip a headerless sheet's row 0.
+
+        Bug found while verifying this PR: ``_excel_native_date_columns``
+        assumed its row argument always named a HEADER row (data starts the
+        row after it) and the caller passed ``skip_rows`` unconditionally —
+        correct when the sheet has a header, but ``skip_rows`` names the
+        first DATA row itself when headerless (see ``_read_excel``'s own
+        ``skip_rows`` docstring). Scanning from one row too late silently
+        emptied the candidate set on a sheet with exactly one data row (no
+        row after it to scan), so a genuinely native-date column reported
+        no native date columns at all.
+        """
+        import datetime
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        # Headerless, single row — the empty-scan trap: with the old
+        # off-by-one there is no row left to inspect at all.
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        path = tmp_path / "headerless_native_single_row.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+
+        assert result.has_header is False
+        assert len(result.df) == 1
+        assert result.excel_native_date_columns == frozenset({"column_1"})
+
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
     ) -> None:
@@ -838,6 +873,55 @@ class TestExcelReader:
         assert result.header_row_looks_like_data is False
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
 
+    def test_headerless_legacy_xls_not_eaten_as_header(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A genuinely headerless legacy .xls must not lose its first row.
+
+        Review finding: when openpyxl can't open the container at all (a
+        real legacy .xls — openpyxl never supported the binary format) AND
+        no explicit skip_rows or sheet is supplied, ``sheet_used`` stays
+        ``None`` through auto-detection. Before this fix that unconditionally
+        set ``skip_rows = 0`` with no classification signal at all —
+        reintroducing MB-449 for exactly this one file variant, since a
+        headerless file's real first transaction row would be eaten as the
+        header. The fix classifies via a raw unheadered fastexcel/calamine
+        read instead (the engine that CAN open a legacy .xls), giving the
+        same ``_classify_header_rows`` signal the openpyxl-backed path gets.
+
+        Drives the real (unmocked) openpyxl.load_workbook with the actual
+        leading bytes of an OLE2 compound file (legacy .xls's real container
+        format) via ``source_bytes`` — no ``sheet=`` is passed, so this
+        genuinely reaches the sheet-detection openpyxl call (unlike the
+        existing InvalidFileException/BadZipFile fallback tests, which all
+        pass an explicit ``sheet=`` and so never leave ``sheet_used`` as
+        ``None``) — so openpyxl fails on its own, not because a mock says
+        so. Only ``polars.read_excel`` is mocked, standing in for
+        calamine actually parsing a well-formed legacy .xls stream.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        # infer_schema_length=0 forces every column to string dtype (see
+        # _excel_native_date_columns's docstring) — mirror that shape so the
+        # stub behaves like a real unheadered read for _classify_header_rows,
+        # which indexes raw string cells.
+        stub_df = pl.DataFrame({
+            "column_1": ["2026-01-01", "2026-01-02"],
+            "column_2": ["42.5", "10"],
+            "column_3": ["Coffee", "Tea"],
+        })
+        mocker.patch("polars.read_excel", return_value=stub_df)
+
+        result = read_file(
+            tmp_path / "legacy_headerless.xls",
+            FormatInfo(file_type="excel"),
+            source_bytes=ole2_magic_bytes,
+        )
+
+        assert result.has_header is False
+        assert len(result.df) == 2
+        assert result.excel_native_date_columns is None
+
 
 class TestNormalizeExcelDateColumns:
     """Unit tests for readers.normalize_excel_date_columns.
@@ -866,20 +950,20 @@ class TestNormalizeExcelDateColumns:
             "Description": ["Coffee"],
         })
 
-        result = normalize_excel_date_columns(df)
+        result, rewritten = normalize_excel_date_columns(df)
 
         assert result["Posted At"].to_list() == ["2026-01-01 14:30:00"]
+        assert rewritten == frozenset()
 
-    def test_partial_midnight_match_column_left_untouched(self) -> None:
-        """A column with only ONE midnight-shaped value must not be rewritten.
+    def test_minority_midnight_match_column_left_untouched(self) -> None:
+        """A column where midnight-shaped values are the MINORITY is untouched.
 
-        normalize_excel_date_columns must require the WHOLE column to match
-        the midnight pattern before rewriting any of it, not just the current
-        cell — raw is untouched data from loaders (AGENTS.md's Data Layers
-        table). A Description column holding one value shaped exactly like
-        "2026-01-01 00:00:00" is not a date column and must be left
-        untouched, while a genuine all-midnight native date column beside it
-        is still normalized.
+        No ``native_date_columns`` is supplied here, so this exercises the
+        tolerant-MAJORITY text-shape fallback (openpyxl couldn't type the
+        file). A 1-of-2 match is not a majority, so the Description column
+        must be left alone — raw is untouched data from loaders (AGENTS.md's
+        Data Layers table) — while a genuine all-midnight native date column
+        beside it is still normalized.
         """
         df = pl.DataFrame({
             "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
@@ -887,10 +971,42 @@ class TestNormalizeExcelDateColumns:
             "Description": ["2026-01-01 00:00:00", "Coffee"],
         })
 
-        result = normalize_excel_date_columns(df)
+        result, rewritten = normalize_excel_date_columns(df)
 
         assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
         assert result["Description"].to_list() == ["2026-01-01 00:00:00", "Coffee"]
+        assert rewritten == frozenset({"Date"})
+
+    def test_majority_shape_fallback_tolerates_one_dirty_value(self) -> None:
+        """A dirty minority must not void normalization for the whole column.
+
+        Review finding: the old ``.all()`` gate meant one stray non-date
+        value (e.g. "pending") disqualified an otherwise-native-date column,
+        silently reverting the file to the "no recognized date format"
+        refusal this PR exists to eliminate. The fallback heuristic (no
+        ``native_date_columns`` — openpyxl couldn't type the file) now
+        qualifies a column when a STRICT MAJORITY of its non-null values
+        match, matching the dirty-minority tolerance ``_parse_dates``/
+        ``_validate_date_format_override`` already apply downstream.
+        """
+        df = pl.DataFrame({
+            "Date": [
+                "2026-01-01 00:00:00",
+                "2026-01-02 00:00:00",
+                "2026-01-03 00:00:00",
+                "pending",
+            ],
+        })
+
+        result, rewritten = normalize_excel_date_columns(df)
+
+        assert result["Date"].to_list() == [
+            "2026-01-01",
+            "2026-01-02",
+            "2026-01-03",
+            "pending",
+        ]
+        assert rewritten == frozenset({"Date"})
 
     def test_columns_restriction_protects_a_qualifying_column_outside_it(
         self,
@@ -910,13 +1026,86 @@ class TestNormalizeExcelDateColumns:
             "Memo": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
         })
 
-        result = normalize_excel_date_columns(df, columns=["Date"])
+        result, rewritten = normalize_excel_date_columns(df, columns=["Date"])
 
         assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
         assert result["Memo"].to_list() == [
             "2026-01-01 00:00:00",
             "2026-01-02 00:00:00",
         ]
+        assert rewritten == frozenset({"Date"})
+
+    def test_native_date_columns_ignores_shape_and_uses_typed_identity(
+        self,
+    ) -> None:
+        """Typed selection never touches a column that only LOOKS like a date.
+
+        Review finding: an unscoped whole-column shape scan can truncate a
+        genuine text column (e.g. Memo) if every value happens to render in
+        the "<date> 00:00:00" shape. When ``native_date_columns`` is
+        supplied (openpyxl typed the file), selection is exact-identity —
+        driven by which columns openpyxl reports as natively date-typed, not
+        by scanning rendered text — so a coincidentally uniform Memo column
+        is left alone even though it would qualify under the shape-based
+        fallback.
+        """
+        df = pl.DataFrame({
+            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+            "Memo": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+        })
+
+        result, rewritten = normalize_excel_date_columns(
+            df, native_date_columns=frozenset({"Date"})
+        )
+
+        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
+        assert result["Memo"].to_list() == [
+            "2026-01-01 00:00:00",
+            "2026-01-02 00:00:00",
+        ]
+        assert rewritten == frozenset({"Date"})
+
+    def test_native_date_columns_empty_set_normalizes_nothing(self) -> None:
+        """Openpyxl typing the file but finding no date column normalizes nothing.
+
+        An empty ``frozenset`` (as opposed to ``None``) means openpyxl
+        opened the file fine and found no natively-typed date column — even
+        a perfectly shaped midnight-text column must not be rewritten from
+        shape alone once a typed answer is available.
+        """
+        df = pl.DataFrame({
+            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
+        })
+
+        result, rewritten = normalize_excel_date_columns(
+            df, native_date_columns=frozenset()
+        )
+
+        assert result["Date"].to_list() == [
+            "2026-01-01 00:00:00",
+            "2026-01-02 00:00:00",
+        ]
+        assert rewritten == frozenset()
+
+
+class TestDateFormatHasTimeComponent:
+    """Unit tests for readers.date_format_has_time_component."""
+
+    def test_locale_dependent_x_directive_counts_as_time_bearing(self) -> None:
+        """``%X`` (locale time representation) must count as a time directive.
+
+        Reviewer NIT: the original check only recognized %H/%M/%S/%I/%p, so
+        a declared format using the locale-dependent %X directive would be
+        misjudged as date-only and have its native-date column normalized
+        (and truncated) out from under it.
+        """
+        assert date_format_has_time_component("%Y-%m-%d %X") is True
+
+    def test_bare_date_format_has_no_time_component(self) -> None:
+        assert date_format_has_time_component("%m/%d/%Y") is False
+
+    def test_none_has_no_time_component(self) -> None:
+        assert date_format_has_time_component(None) is False
 
 
 class TestParquetReader:

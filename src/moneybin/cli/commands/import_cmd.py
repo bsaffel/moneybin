@@ -2660,14 +2660,18 @@ def import_preview(
         # this for a native-date Excel column doesn't just miss the date
         # column when map_columns runs below — it misidentifies it as
         # `description` while the real description column drops out
-        # entirely.
-        df = normalize_excel_date_columns_before_mapping(
+        # entirely. matched_date_format is the corrected format to DISPLAY
+        # (below) when normalization rewrote the mapped column — showing
+        # the persisted format unchanged would misreport what this file
+        # will actually parse against once imported.
+        df, matched_date_format = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
             date_column=matched_format.field_mapping.get("transaction_date")
             if matched_format
             else None,
+            native_date_columns=read_result.excel_native_date_columns,
         )
 
         typer.echo(f"\nFile: {source.name}")
@@ -2701,7 +2705,7 @@ def import_preview(
                 f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
             )
             typer.echo(f"Sign convention: {matched_format.sign_convention}")
-            typer.echo(f"Date format: {matched_format.date_format}")
+            typer.echo(f"Date format: {matched_date_format}")
             typer.echo(f"Number format: {matched_format.number_format}")
             typer.echo("\nColumn mapping:")
             for field, col in matched_format.field_mapping.items():

@@ -2908,31 +2908,59 @@ class ImportService:
         # Excel's native-date columns still read as "<date> 00:00:00" text
         # here (readers.py never normalizes them at read time — see
         # normalize_excel_date_columns_before_mapping's docstring for why).
-        # The format that will actually parse this column is fully resolved
-        # by this point — a replayed preview's persisted format, or a saved
-        # TabularFormat's persisted format (matched by name OR by the
-        # implicit header-signature match just above) — so normalizing here
-        # can't disagree with the parse that follows it. Mirrors exactly
-        # which format each branch below actually uses (reviewed_plan/
-        # matched_format ignore a fresh override for that — see their
-        # ResolvedMapping constructions; only the auto-detect branch's
-        # date_format_effective honors one).
+        # declared_date_format is whichever format governs this column
+        # BEFORE normalization: a replayed preview's persisted format, a
+        # saved TabularFormat's persisted format (matched by name OR by the
+        # implicit header-signature match just above), or a fresh
+        # --date-format/mapping override in the auto-detect case.
+        # effective_date_format is what actually applies AFTER: unchanged,
+        # unless this step just rewrote the mapped date column, in which
+        # case it becomes "%Y-%m-%d" — the format the persisted/reviewed
+        # plan named parses the pre-rewrite text, not what's in the column
+        # now. reviewed_plan/matched_format below must use
+        # effective_date_format, not their own persisted string, or a
+        # shipped built-in (mint/tiller/ynab all declare "%m/%d/%Y") that
+        # implicitly matches an .xlsx re-save of that same layout parses
+        # zero rows silently. The auto-detect branch doesn't need this: its
+        # own date_format_effective is detected AFTER normalization runs,
+        # against the already-rewritten text, via mapping_result.date_format.
+        # matched_format's branch gives date_format_override precedence over
+        # the saved format's own date_format for THIS decision only — a
+        # caller can match a saved/built-in format by header signature and
+        # still pass a fresh --date-format (e.g. a time-bearing one for an
+        # xlsx re-save the saved format's date-only string was never meant to
+        # read); using the saved format's date-only string here would decide
+        # "no time component" and normalize away the time text the override
+        # asked to keep, before the override is ever applied below (~3521).
+        # reviewed_plan intentionally does NOT get this: it replays a
+        # persisted plan exactly, and reviewed imports don't accept a fresh
+        # date_format_override (see import_confirm's contract).
         if reviewed_plan is not None:
-            effective_date_format = reviewed_plan.date_format
+            declared_date_format = reviewed_plan.date_format
             known_mapping: dict[str, str] | None = reviewed_plan.field_mapping
         elif matched_format:
-            effective_date_format = matched_format.date_format
+            declared_date_format = date_format_override or matched_format.date_format
             known_mapping = matched_format.field_mapping
         else:
-            effective_date_format = date_format_override
-            known_mapping = None
-        df = normalize_excel_date_columns_before_mapping(
+            declared_date_format = date_format_override
+            # A first-contact caller who already named the date column via
+            # --map transaction_date=<col> has told us the mapping before
+            # Stage 3 runs map_columns — scope the normalizer to it instead
+            # of scanning every string column. Moot whenever openpyxl typed
+            # the file (native_date_columns is then the actual filter — see
+            # normalize_excel_date_columns's docstring), but still correct
+            # for the legacy-.xls majority-shape fallback, where an unrelated
+            # all-midnight-shaped column could otherwise qualify.
+            known_mapping = overrides
+
+        df, effective_date_format = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
-            date_format=effective_date_format,
+            date_format=declared_date_format,
             date_column=known_mapping.get("transaction_date")
             if known_mapping
             else None,
+            native_date_columns=read_result.excel_native_date_columns,
         )
 
         sign_evidence_header: str | None = None
@@ -3065,9 +3093,16 @@ class ImportService:
                         ),
                     )
                 )
+            # The gate above already refused reviewed_plan.date_format is
+            # None; normalize_excel_date_columns_before_mapping only ever
+            # returns None when its date_format input was None, or passes a
+            # non-None input through unchanged/overridden — never
+            # None-from-non-None. effective_date_format is therefore
+            # non-None here too.
+            assert effective_date_format is not None  # noqa: S101  # invariant, not user input
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
-                date_format=reviewed_plan.date_format,
+                date_format=effective_date_format,
                 sign_convention=reviewed_plan.sign_convention,
                 number_format=reviewed_plan.number_format,
                 is_multi_account=reviewed_plan.is_multi_account,
@@ -3075,9 +3110,12 @@ class ImportService:
             )
             format_source = "reviewed"
         elif matched_format:
+            # matched_format.date_format is a required (non-Optional) field,
+            # so the same reasoning as above applies unconditionally here.
+            assert effective_date_format is not None  # noqa: S101  # invariant, not user input
             resolved = ResolvedMapping(
                 field_mapping=matched_format.field_mapping,
-                date_format=matched_format.date_format,
+                date_format=effective_date_format,
                 sign_convention=matched_format.sign_convention,
                 number_format=matched_format.number_format,
                 is_multi_account=matched_format.multi_account,
@@ -3350,7 +3388,13 @@ class ImportService:
 
         # Covers the branches that reach here without one — the first-contact
         # branch validates earlier, before it records a confirmation outcome.
-        _validate_date_format_override(df, resolved.field_mapping, date_format_override)
+        # Validates resolved.date_format (what will actually parse this
+        # column), not the raw date_format_override parameter: the latter is
+        # None for reviewed_plan/matched_format whenever no fresh override
+        # accompanies a saved/reviewed format, which made this call a silent
+        # no-op for exactly the branches that persist their own date format
+        # — the class of bug this function's docstring names outright.
+        _validate_date_format_override(df, resolved.field_mapping, resolved.date_format)
 
         # All three branches converge here, and it sits ABOVE the success
         # metrics below, because a refusal must not first record a silent
