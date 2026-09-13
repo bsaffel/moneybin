@@ -3183,7 +3183,12 @@ class DoctorService:
                     "home currency with `moneybin profile set home_currency "
                     "<ISO>` and run `moneybin refresh` to gather rates — for "
                     "a pair the provider does not publish, `moneybin fx set "
-                    "<from> <to> <date> <rate>` is the only way to fill it."
+                    "<from> <to> <date> <rate>` is the only way to fill it. "
+                    "A supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact date, "
+                    "or asking a report for a date the provider did publish, "
+                    "is the fix."
                 )
             else:
                 remedy = (
@@ -3197,7 +3202,12 @@ class DoctorService:
                     "reconciliation drift in `moneybin reports balance-drift`. "
                     "`moneybin refresh` gathers a missing rate; for a pair "
                     "the provider does not publish, `moneybin fx set <from> "
-                    "<to> <date> <rate>` is the only way to fill it."
+                    "<to> <date> <rate>` is the only way to fill it. A "
+                    "supported pair can still leave one date unfilled — an "
+                    "ECB holiday, or an interior gap the coverage check "
+                    "cannot see — in which case `fx set` for that exact "
+                    "date, or asking a report for a date the provider did "
+                    "publish, is the fix."
                 )
             return InvariantResult(
                 name=name,

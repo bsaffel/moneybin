@@ -2799,6 +2799,10 @@ def test_currency_integrity_warns_when_a_profile_holds_two_currencies(
     assert "USD" in detail
     assert "moneybin profile set home_currency" in detail
     assert "withhold any combined figure" in detail
+    # A supported pair can still leave a date unfilled (ECB holiday, an
+    # interior gap the coverage check can't see) even after `refresh` runs.
+    assert "an interior gap the coverage check" in detail
+    assert "asking a report for a date the provider did publish" in detail
 
 
 @pytest.mark.unit
@@ -2833,6 +2837,10 @@ def test_currency_integrity_warn_with_home_currency_set_skips_redundant_advice(
     assert "moneybin fx set <from> <to> <date> <rate>" in detail
     # The balance-drift fact holds regardless of home currency — must survive.
     assert "balance-drift" in detail
+    # A supported pair can still leave a date unfilled (ECB holiday, an
+    # interior gap the coverage check can't see) even after `refresh` runs.
+    assert "an interior gap the coverage check" in detail
+    assert "asking a report for a date the provider did publish" in detail
 
 
 @pytest.mark.unit

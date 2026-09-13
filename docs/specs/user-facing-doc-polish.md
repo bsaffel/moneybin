@@ -65,7 +65,7 @@ Numbered for traceability. Each requirement is testable by inspection.
 
 9. **License section explains AGPL with substance.** Replaces the badge-only treatment. Names the four implications (free use, free fork, network-service-must-publish-source, hosted-server-runs-the-same-code). References the Bitwarden / Plausible / Element / Sentry / Ghost peer set. **Superseded:** the substantive AGPL explanation lives in [`docs/licensing.md`](../licensing.md); the README's own mention is now a one-line footer pointing to `LICENSE`.
 
-10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. Groups entries by version (or by milestone — to be decided in implementation). Devon checks for this; absence reads as "not serious."
+10. **`CHANGELOG.md` exists at repo root.** Backfilled from recent PRs in Keep-A-Changelog format. **Delivered:** entries group by milestone, not semantic version, pre-1.0 — the file's own header states the rationale and links `docs/roadmap.md`'s milestone scheme; new entries now accrete through `changelog.d/` fragments rather than direct edits. Devon checks for this; absence reads as "not serious."
 
 11. **`docs/guides/threat-model.md` exists.** One-page user-facing distillation of [`privacy-data-protection.md`](privacy-data-protection.md): what the encryption protects against (stolen laptop, synced folder, shared machine), what it doesn't (forgotten passphrase + lost recovery codes = data loss; AI vendor data flow when you ask Claude/ChatGPT a question; an attacker with both DB file and live keychain session). References ADR-009 for KDF rationale.
 
@@ -221,14 +221,23 @@ invocation in the public docs against the registered command tree. A line that
 deliberately shows a wrong or absent command carries
 `<!-- cli-invocation-ok: reason -->`.
 
-**Remaining scope.** The structure above, the broken commands, the
+**Delivery history.** The structure above, the broken commands, the
 `categorize assist` privacy statement, shipped-as-planned drift, and the guard
-shipped on `docs/public-docs-structure`; the generated references on
-`docs/generated-references`; `getting-started.md` and the reports guide on
-`docs/getting-started-and-reports-guides`. What's left: `account-identifiers.md`
-and `data-pipeline.md` rewrites;
-`system-overview.md` folded into `docs/architecture.md`; storefront and guide
-rewrites; and the investments and multi-currency guides.
+shipped on `docs/public-docs-structure` (#516, 2026-09-04). That same PR also
+delivered the `account-identifiers.md` and `data-pipeline.md` corrections this
+section originally scoped as a separate "rewrites" item — one PR, not two.
+`system-overview.md` was corrected there too, but not folded into
+`docs/architecture.md` as this section originally planned: the two pages stay
+separate and cross-link each other, `system-overview.md` as the orientation
+map and `docs/architecture.md` as the contract-level distillation. The
+generated references shipped on `docs/generated-references` (#525,
+2026-09-04); `getting-started.md` and the reports guide on
+`docs/getting-started-and-reports-guides` (#542, 2026-09-05); the storefront
+rewrite on `docs/public-docs-structure`'s successor pass, "Position the
+storefront against Finances in ChatGPT by custody" (#572, 2026-09-11); and
+the investments and multi-currency guides in Phase 3 of this pass (2026-09-11,
+see the progress note at the top of this spec). Nothing from this section
+remains open.
 
 **Site.** GitHub-only until the release trigger — see ADR-011's 2026-09-02
 amendment.
