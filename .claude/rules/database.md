@@ -203,8 +203,8 @@ Claude defaults to PostgreSQL syntax. Use DuckDB equivalents:
   | Data type | SQL | Polars | Examples |
   |---|---|---|---|
   | Money amounts | `DECIMAL(18,2)` | `pl.Decimal(18, 2)` | Balances, transaction amounts, wages, taxes, budget targets, gains/losses, filter thresholds on money |
-  | Quantities | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Share counts (fractional shares), units held |
-  | Unit prices | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Stock/crypto prices, NAV, cost basis per share |
+  | Investment quantities | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Share counts (fractional shares), units held |
+  | Investment unit prices | `DECIMAL(28,10)` | `pl.Decimal(28, 10)` | Stock/crypto prices, NAV, cost basis per share |
   | Exchange rates | `DECIMAL(18,8)` | `pl.Decimal(18, 8)` | Currency conversion rates |
 
 ### Authoritative References

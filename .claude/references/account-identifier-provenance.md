@@ -32,10 +32,10 @@ On OFX that is a real `<ACCTID>`.
 **`proposed_account_id` on the mint path is neither.** When
 `AccountResolver.propose()` finds no account to adopt (`is_new=True`) it returns
 a preview `uuid.uuid4().hex[:12]` that its own docstring calls "NOT written
-anywhere" — `resolve()` mints a *different* real id when the import commits
-(`account_resolver.py:288-290`, and `:324-346` returns it). Retaining one as a
-later reference resolves to nothing. It is display-only, and only for the life
-of the proposal.
+anywhere" (`account_resolver.py:672-673`, preview mint at `:708`) — `resolve()`
+mints a *different* real id when the import commits (`:577`, `:584`, `:612`).
+Retaining one as a later reference resolves to nothing. It is display-only, and
+only for the life of the proposal.
 
 This is why `proposal_ref` exists, and why it — not `account_id` — is the
 referent to put in front of a user or an agent.
