@@ -812,9 +812,10 @@ specific historical range with no balance-spine rows in it for one of these
 accounts is a different path entirely — it inherits `reports.net_worth`'s own
 *runner* fallback (§Data Model's `synthesis_date` rule), applied once per
 eligible unanchored candidate rather than once per row: each such account is
-dated independently at its own `LEAST(effective_to, CURRENT_DATE,
-archived_at)`, so — unlike the aggregate rung — no `archived_at_floor` across
-candidates is needed here, because there is no shared row whose single date
+dated independently by that same rule, with `archived_at_floor` computed over
+that one candidate alone — so it reduces to that account's own `archived_at`
+— unlike the aggregate rung, no `archived_at_floor` across candidates is
+needed here, because there is no shared row whose single date
 has to stay honest for more than one account at a time. The two rules never
 fire on the same query: the view's own arm only ever answers an unranged
 "now" read, and the runner's fallback only ever answers a bounded range the
@@ -1435,7 +1436,7 @@ settles the account exactly as the marker would.
   evidence §Prerequisites defines.
 - `src/moneybin/repositories/account_settings_repo.py` — `set()` gains a
   `context: dict[str, Any] | None = None` parameter, forwarded to the
-  existing `_emit_audit(context=...)` (`repositories/base.py:145`) it
+  existing `_emit_audit(context=...)` (`repositories/base.py:146`) it
   already accepts but this repo never passes.
 - `src/moneybin/services/account_service.py` — `settings_update()` passes
   `context={"confirms_include_in_net_worth": True}` when its own
@@ -1682,9 +1683,8 @@ AGENTS.md's AX bias both point at.
 - **A future-only lower bound synthesizes nothing.** A persona with an
   eligible unanchored candidate, queried with `from_date` set to a day after
   `CURRENT_DATE` and no `to_date`, returns zero rows — not a row dated
-  before the requested lower bound. This pins the general synthesis-date
-  rule in §Data Model: `synthesis_date = LEAST(effective_to, CURRENT_DATE,
-  archived_at_floor)` must also clear `effective_from` before the runner
+  before the requested lower bound. This pins the general `synthesis_date`
+  rule in §Data Model: it must also clear `effective_from` before the runner
   emits anything, and the case that surfaced the omission has to stay
   failing.
 - **A synthesized row respects an archived candidate's own window.** A
@@ -1693,7 +1693,7 @@ AGENTS.md's AX bias both point at.
   eligible-candidate predicate, but the runner dates the synthesized row at
   the candidate's own `archived_at` (`archived_at_floor`), never at
   `effective_to`. This pins `archived_at_floor` in the general
-  synthesis-date rule — the regression this thread (comment `3998387459`)
+  `synthesis_date` rule (§Data Model) — the regression this thread (comment `3998387459`)
   found: dating the row past a counted candidate's own eligible window would
   report it unanchored on a date Requirement 9 already excludes it from.
 - **Staleness invariant: entirely stale profile.** A persona whose every
@@ -1875,8 +1875,11 @@ multi-currency, and seven for `M2B.3`:
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
 expected unanchored-account count and, for the wholly-unanchored persona,
-the synthesized row's `balance_date` (the query's own `to_date`, or
-`CURRENT_DATE` for an unranged query).
+the synthesized row's `balance_date` — computed as `synthesis_date` per the
+general rule in §Data Model, never hard-coded to `to_date` or `CURRENT_DATE`:
+a fixture whose range straddles an eligible candidate's `archived_at` must
+derive the expected date from that same rule (which can instead resolve to
+`archived_at_floor`), matching the acceptance case above.
 
 ## Dependencies
 
