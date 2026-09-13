@@ -4703,17 +4703,11 @@ def test_currency_integrity_pending_pair_routes_away_from_dead_end_command(
 ) -> None:
     """A pair with a still-pending decision must not publish a dead-end command.
 
-    claude[bot] MUST FIX / Codex P2 (doctor_service.py:3764, duplicating each
-    other): a pair with a pending, non-reversed ``app.account_link_decisions``
-    row can still land in ``review_pairs``, which publishes both a
-    two-id `accounts links run` fallback and points at the no-arg sweep —
-    but `AccountLinksService.propose_pair` refuses outright ("already covers
-    this pair and is pending"), and the sweep itself skips re-proposing a
-    pair any decision already covers. Both published commands would
-    therefore dead-end. Reachable via the sweep itself: it can write a
-    pending decision on a weaker signal (institution+last-four/name) than
-    the transaction overlap this check measures, leaving the pending row
-    behind on a pair this check still flags.
+    A pair whose overlap is already covered by a pending, non-reversed
+    ``app.account_link_decisions`` row must not land in ``review_pairs``:
+    that branch's two-id `accounts links run` fallback and its pointer to
+    the no-arg sweep both dead-end against a pending decision (see
+    ``_query_pending_decision_pairs``).
 
     Every prior ``_insert_pending_decision`` fixture in this file resolves
     the decision (accept or standalone) before asserting — this is the
@@ -4736,11 +4730,72 @@ def test_currency_integrity_pending_pair_routes_away_from_dead_end_command(
     # The dead-end commands this fix exists to prevent.
     assert "`moneybin accounts links run DUP_A DUP_B`" not in detail, detail
     assert "`moneybin accounts links run DUP_B DUP_A`" not in detail, detail
-    assert "pending account-link decision" in detail, detail
+    assert "1 pair(s) already have a pending account-link decision" in detail, detail
     assert "DUP_A:DUP_B" in detail or "DUP_B:DUP_A" in detail, detail
+    assert "moneybin accounts links set <decision_id> --into <account_id>" in detail, (
+        detail
+    )
+    # `accounts links set <decision_id> --into <account_id>` cannot go
+    # through the helper (see test_currency_integrity_publishes_a_runnable_
+    # command_for_a_dashed_id) — scoped to `accounts links pending`, which can.
+    assert_published_commands_resolve("`moneybin accounts links pending`")
+
+
+@pytest.mark.unit
+def test_currency_integrity_pending_pair_names_the_pair_when_mixed_with_review(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pending pair mixed with an actionable review pair must be named and routed.
+
+    The same mixed-buckets gap Codex flagged for no_link_pairs applies to
+    pending_pairs: the review_pairs branch's own text never mentions a
+    pending pair, so without routing it through the shared closing, it
+    would silently vanish from a mixed report. DUP_A/DUP_B is an
+    actionable review pair; PEND_A/PEND_B has a still-pending decision.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
+    )  # test input, not user data
+    _insert_overlap_account(doctor_db, "PEND_A", institution_slug="wells")
+    _insert_overlap_account(doctor_db, "PEND_B", institution_slug="wells")
+    _insert_amount_ladder(doctor_db, "PEND_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "PEND_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'PEND_A'"
+    )  # test input, not user data
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_pending",
+        provisional_account_id="PEND_A",
+        candidate_account_id="PEND_B",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    # The actionable pair's fallback still publishes.
+    assert "`moneybin accounts links run DUP_B DUP_A`" in detail, detail
+    # The pending pair must not get the same dead-end fallback ...
+    assert "`moneybin accounts links run PEND_A PEND_B`" not in detail, detail
+    assert "`moneybin accounts links run PEND_B PEND_A`" not in detail, detail
+    # ... and must be named and routed, not silently dropped.
+    assert "already have a pending account-link decision" in detail, detail
+    assert "PEND_A:PEND_B" in detail or "PEND_B:PEND_A" in detail, detail
     assert "moneybin accounts links pending" in detail, detail
-    assert "moneybin accounts links set" in detail, detail
-    assert_published_commands_resolve(detail)
+    assert "moneybin accounts links set <decision_id> --into <account_id>" in detail, (
+        detail
+    )
 
 
 @pytest.mark.unit

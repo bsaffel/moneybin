@@ -405,7 +405,11 @@ Numbered, testable. Tagged by phase.
      a two-id `accounts links run` fallback would dead-end the same way the
      merged-away case's would. The detail names the pending pair and points
      at `accounts links pending` (to find the decision) then `accounts
-     links set` (to resolve it) instead.
+     links set <decision_id> --into <account_id>` (or `--standalone`)
+     instead. A pending pair coexisting with `review_pairs` or
+     `transform_ready_pairs` is named and routed the same way, through the
+     shared closing described below, rather than silently dropped from a
+     mixed report.
    - **Neither side linked at all (`no_link_pairs`).** Neither account
      holds an accepted `source_native` link, so `propose_pair` refuses
      outright regardless of order — no two-id `accounts links run` fallback
@@ -440,12 +444,14 @@ Numbered, testable. Tagged by phase.
    query itself. Only when no overlap is found, or every found overlap has
    been declared standalone, does the detail go straight to `accounts set
    --currency`. Every branch that offers currency assignment — this plain
-   case, `review_pairs`, and `transform_ready_pairs` — closes on the same
-   re-run-doctor-then-assign sentence naming `moneybin transform`; the
-   `pending_pairs`-only and `no_link_pairs`-only buckets above are the
-   exceptions, since neither offers currency assignment while its pairs
-   remain stuck and so neither mentions `moneybin transform`. The affected
-   ids are attached in every case, including those two.
+   case, `review_pairs`, `transform_ready_pairs`, and the `pending_pairs`-only
+   bucket — closes on the same re-run-doctor-then-assign sentence naming
+   `moneybin transform`: a pending decision is a decision to make, like an
+   actionable review pair, not a dead end like `no_link_pairs`. The
+   `no_link_pairs`-only bucket above is the one exception, since it never
+   offers currency assignment while its pairs remain stuck and so never
+   mentions `moneybin transform`. The affected ids are attached in every
+   case, including that one.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is
    code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`
