@@ -274,9 +274,12 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 
 ```console
 $ uv run moneybin reports realized-fx --currency EUR --coverage complete
+Using profile: demo
 ```
 
-Each complete row is one consumed Currency lot from a deliberate conversion, so
+Empty on the demo, because the family persona holds only USD accounts and
+never converts currency — no Currency lot is ever consumed. Each complete row
+is one consumed Currency lot from a deliberate conversion, so
 one disposal can produce several rows with different acquisition dates and bases.
 An unmatched-inventory placeholder has no `currency_lot_id` and remains visible
 as an incomplete row instead of disappearing from the total.
