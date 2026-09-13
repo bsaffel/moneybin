@@ -589,7 +589,7 @@ def render_rows(
         clauses.append(f"{flagged} {placeholder.value.lower()}")
     if clauses:
         # stdout, and reachable under `-q` (this renderer takes no such
-        # parameter): both are load-bearing. `moneybin reports spending >
+        # parameter): both are load-bearing. `moneybin reports spending-trend >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
         typer.echo(" · ".join(clauses))

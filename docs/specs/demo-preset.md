@@ -308,7 +308,7 @@ On success the CLI prints:
 1. The **net-worth headline** (from `DemoResult`) and a one-line doctor status
    (`✅ system doctor clean`).
 2. A short **next-steps menu** — a few CLI commands (`moneybin reports
-   spending`, `reports cashflow`, `review`) and a few example MCP prompts
+   spending-trend`, `reports cash-flow`, `review`) and a few example MCP prompts
    (e.g. *"What did I spend on dining last month?"*, *"Show my net-worth
    trend."*).
 

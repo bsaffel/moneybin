@@ -86,7 +86,7 @@ async def test_dynamic_report_audit_logs_actual_returned_row_count() -> None:
     @mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
     def _report_tool() -> ResponseEnvelope[Any]:
         payload = ReportResultPayload(
-            report_id="core:spending",
+            report_id="core:spending_trend",
             parameters={},
             semantics=ReportSemanticsPayload(
                 unit="currency",

@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Literal
 import duckdb
 
 from moneybin.database import Database
+from moneybin.matching.aliasing import resolve_curation_transaction_ids
 from moneybin.metrics.registry import (
     CATEGORIZE_APPLY_POST_COMMIT_DURATION_SECONDS,
     CATEGORIZE_APPLY_POST_COMMIT_ROWS_AFFECTED,
@@ -268,6 +269,31 @@ class CategorizationOrchestrator:
 
         # Phase 2 — batch-fetch txn rows (description + amount + account_id)
         txn_ids = [item.transaction_id for item in items]
+        # Bulk-resolved once for the whole batch (issue #538 perf follow-up):
+        # this is the categorize-commit workflow's caller-supplied ids, so
+        # Phase 4 below must route through the curation resolution seam, but
+        # a per-item resolve_curation_transaction_id() call inside that loop
+        # would turn a batch write into O(n) query round trips. An id absent
+        # here (bulk check found it not live, and the single-id alias walk
+        # still couldn't resolve it) is reported as a per-item error in
+        # Phase 4 rather than aborting the batch.
+        resolved_txn_ids = resolve_curation_transaction_ids(self._db, txn_ids)
+        # Which DISTINCT raw ids resolve to each live transaction — a batch
+        # built from a stale preview can carry both a superseded id and its
+        # canonical id (or two different superseded ids that forward to one
+        # live row). Keyed by distinct source id, not raw occurrence count: a
+        # literal duplicate transaction_id submitted twice (e.g. an LLM
+        # correcting itself within one batch) is not this collision — that
+        # shape is already handled by write_categorization's source-priority
+        # guard (first applies, second is skipped as lower_priority_source)
+        # and must keep working exactly as before. Checked per-item in Phase 4
+        # below, mirroring transaction_service._reject_composed_annotations's
+        # overlap guard.
+        resolved_id_sources: dict[str, set[str]] = {}
+        for item in items:
+            resolved = resolved_txn_ids.get(item.transaction_id)
+            if resolved is not None:
+                resolved_id_sources.setdefault(resolved, set()).add(item.transaction_id)
         # Lazy import keeps the module-level dependency one-way
         # (auto_rule_service → categorization).
         from moneybin.services.auto_rule_service import (
@@ -277,12 +303,20 @@ class CategorizationOrchestrator:
         )
 
         txn_rows: dict[str, TxnRow] = {}
+        # Fetch by the RESOLVED ids, not the caller's original txn_ids: a
+        # superseded id has no row under itself in core.fct_transactions, so
+        # fetching by the original id silently starves Phase 4's context
+        # lookups (description/memo/merchant fields) for exactly the
+        # superseded-id case this module resolves ids to support. An id
+        # resolve_curation_transaction_ids couldn't resolve is simply absent
+        # from resolved_txn_ids.values() and reported as a Phase 4 error below.
+        fetch_ids = list(dict.fromkeys(resolved_txn_ids.values()))
         # merchant_entity_id lives on core.bridge_merchant_entities;
         # fetch_rows_for_ids LEFT JOINs it on the gold transaction_id (falling
         # back to a NULL entity id when the bridge or its entity columns are
         # absent) so rung-0 entity resolution can run before name matching.
         try:
-            rows = self._matcher.fetch_rows_for_ids(txn_ids)
+            rows = self._matcher.fetch_rows_for_ids(fetch_ids)
             txn_rows = {
                 row.transaction_id: TxnRow(
                     description=row.description,
@@ -347,6 +381,47 @@ class CategorizationOrchestrator:
             txn_id = item.transaction_id
             category = item.category
             subcategory = item.subcategory
+            if txn_id not in resolved_txn_ids:
+                # Neither txn_id nor anything it forwards to names a live
+                # transaction (issue #538) — reported per-item, same as any
+                # other Phase 4 failure, rather than aborting the batch.
+                errors += 1
+                error_details.append({
+                    "transaction_id": txn_id,
+                    # Named specifically rather than reusing the generic
+                    # "check logs" reason below: the remedy differs. A stale
+                    # id is fixed by re-reading the preview that produced it,
+                    # not by retrying this call, and the caller can only tell
+                    # those apart if the reason says so.
+                    "reason": (
+                        "The transaction reference did not match a "
+                        "transaction; re-run the preview to get current ids."
+                    ),
+                })
+                continue
+            resolved_txn_id = resolved_txn_ids[txn_id]
+            if len(resolved_id_sources.get(resolved_txn_id, ())) > 1:
+                # Two or more DIFFERENT raw ids resolve to the same live
+                # transaction (e.g. a superseded id and its canonical id).
+                # Applying them independently would let same-priority writes
+                # race (the second silently wins) and double-run merchant
+                # resolution, auto-rule recording, and exemplar accumulation
+                # for what is really one transaction — reject every
+                # colliding item rather than let iteration order decide. A
+                # literal duplicate transaction_id is NOT this case (see the
+                # resolved_id_sources comment above) and falls through to
+                # write_categorization's existing source-priority guard.
+                errors += 1
+                error_details.append({
+                    "transaction_id": txn_id,
+                    "reason": (
+                        "Skipped: another item in this batch resolves to "
+                        "the same live transaction; submit one "
+                        "categorization per live transaction."
+                    ),
+                    "error": "resolved_id_collision",
+                })
+                continue
             try:
                 # Resolve pre-existing merchant first (read-only) so the
                 # precedence-guarded write below can attach the matched
@@ -357,8 +432,11 @@ class CategorizationOrchestrator:
                 # auto-rule training.
                 merchant_id: str | None = None
                 existing: dict[str, Any] | None = None
-                description = ctx.description_for(txn_id)
-                memo = ctx.memo_for(txn_id)
+                # ctx is keyed by the RESOLVED id (Phase 2 fetches by
+                # resolved_txn_ids.values()), so every lookup below uses
+                # resolved_txn_id, not the caller's original txn_id.
+                description = ctx.description_for(resolved_txn_id)
+                memo = ctx.memo_for(resolved_txn_id)
                 match_text, _norm_desc, _norm_memo = build_match_inputs(
                     description, memo
                 )
@@ -371,7 +449,7 @@ class CategorizationOrchestrator:
                             ctx.merchant_mappings,
                             description=description,
                             memo=memo,
-                            merchant_name=ctx.merchant_name_for(txn_id),
+                            merchant_name=ctx.merchant_name_for(resolved_txn_id),
                         )
                         if existing:
                             merchant_id = existing["merchant_id"]
@@ -400,9 +478,9 @@ class CategorizationOrchestrator:
                     self._applier,
                     rejected=rejected,
                     pending=pending,
-                    merchant_entity_id=ctx.merchant_entity_id_for(txn_id),
-                    source_type=ctx.merchant_entity_source_type_for(txn_id),
-                    provider_merchant_name=ctx.merchant_name_for(txn_id),
+                    merchant_entity_id=ctx.merchant_entity_id_for(resolved_txn_id),
+                    source_type=ctx.merchant_entity_source_type_for(resolved_txn_id),
+                    provider_merchant_name=ctx.merchant_name_for(resolved_txn_id),
                     name_match=existing,
                     current_merchant_id=merchant_id,
                 )
@@ -413,11 +491,12 @@ class CategorizationOrchestrator:
                     merchants_created += 1
 
                 outcome = self._applier.write_categorization(
-                    transaction_id=txn_id,
+                    transaction_id=resolved_txn_id,
                     category=category,
                     subcategory=subcategory,
                     categorized_by="ai",
                     merchant_id=merchant_id,
+                    resolve_transaction_id=False,
                 )
                 if not outcome.written:
                     # Higher-priority source already categorized this row;
@@ -442,7 +521,7 @@ class CategorizationOrchestrator:
                 # categorization actually landed.
                 try:
                     auto_rule_svc.record_categorization(
-                        txn_id,
+                        resolved_txn_id,
                         category,
                         subcategory=subcategory,
                         merchant_id=merchant_id,

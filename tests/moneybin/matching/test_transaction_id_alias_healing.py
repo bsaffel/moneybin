@@ -30,11 +30,14 @@ import pytest
 from pytest_mock import MockerFixture
 
 import moneybin.services.matching_service as matching_service
+from moneybin import error_codes
 from moneybin.database import SQLMESH_ROOT, Database
+from moneybin.errors import UserError
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.matching.aliasing import (
     AliasForwardResult,
     forward_rekeyed_transaction_ids,
+    resolve_curation_transaction_id,
 )
 from moneybin.matching.engine import MatchResult, MatchRunError
 from moneybin.repositories.account_links_repo import AccountLinksRepo
@@ -461,6 +464,82 @@ class TestRevertStrandsCurationAndTheHealPassRecoversIt:
         ), "a second pass writes no audit rows because it moves nothing"
 
 
+class TestResolveCurationTransactionIdFollowsAPredecessorEdge:
+    """The write-time seam must cover the same re-anchor shape the heal does.
+
+    ``revert_confirmed`` heals *existing* curation inline (the class above),
+    but a caller who still holds the now-dead anchor id — from a preview taken
+    before the revert — has no curation yet for the healer to move. The seam
+    must resolve that id onto its live predecessor itself, walking the map
+    undirected exactly like :func:`_heal_stranded_curation` (module docstring,
+    "A second pass heals what the first cannot see").
+    """
+
+    @pytest.mark.unit
+    def test_a_caller_held_anchor_id_resolves_to_the_live_predecessor(
+        self, pipeline_db: Database
+    ) -> None:
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+        assert _live_ids(pipeline_db) == {ofx_id}, "the OFX row anchors the group"
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}
+
+        ImportService(pipeline_db).revert_confirmed(
+            "imp2", verify=lambda _plan: None, actor="cli"
+        )
+        assert _live_ids(pipeline_db) == {csv_id}, "the group re-anchors to the CSV row"
+
+        # ofx_id has no outgoing alias edge (the row is csv_id -> ofx_id) and
+        # is no longer live -- only the undirected predecessor walk finds it.
+        assert resolve_curation_transaction_id(pipeline_db, ofx_id) == csv_id
+
+    @pytest.mark.unit
+    def test_an_ambiguous_predecessor_component_is_refused_not_guessed(
+        self, pipeline_db: Database
+    ) -> None:
+        """Two live members in the undirected component: refuse rather than pick one.
+
+        The forward walk from ``dead_id`` fails immediately -- it has no
+        outgoing alias row of its own, only two *incoming* ones from separate
+        live transactions -- so this exercises ``_live_predecessor``'s own
+        ambiguity guard, not the forward walk's. Mirrors
+        ``TestComponentsThatCannotBeResolved``'s two-live-member case for the
+        healer, at the write-time seam instead.
+        """
+        first_id = _load_csv_row(
+            pipeline_db, transaction_id="csv_1234", import_id="imp1"
+        )
+        second_id = _load_ofx_row(
+            pipeline_db,
+            source_transaction_id="ofx_5678",
+            import_id="imp2",
+            description="Hardware Store",
+            amount="-98.76",
+            txn_date=date(2024, 4, 20),
+        )
+        assert _live_ids(pipeline_db) == {first_id, second_id}
+
+        dead_id = "deadbeefdeadbeef"
+        TransactionIdAliasesRepo(pipeline_db).insert(
+            old_transaction_id=first_id, new_transaction_id=dead_id, actor="system"
+        )
+        TransactionIdAliasesRepo(pipeline_db).insert(
+            old_transaction_id=second_id, new_transaction_id=dead_id, actor="system"
+        )
+
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            resolve_curation_transaction_id(pipeline_db, dead_id)
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
+
+
 class TestCurationWrittenOnAStaleIdIsRecovered:
     """A caller holding a pre-merge id can still write curation against it.
 
@@ -807,6 +886,50 @@ class TestAnUndoneMergeStopsTheWalk:
         assert _live_ids(pipeline_db) == {ofx_id}
         assert _curation_ids(pipeline_db) == dict.fromkeys(_CURATION_TABLES, [csv_id])
         assert _categories_fk_status(pipeline_db) == "fail"
+
+
+class TestResolveCurationTransactionIdStopsAtAReversedEdge:
+    """The write-time resolver must decline a reversed edge exactly like the heal.
+
+    ``resolve_curation_transaction_id`` walks the same append-only map
+    ``_heal_stranded_curation`` does, but forward instead of undirected. Before
+    this guard it had no ``_reversed_alias_edges`` check of its own: a curation
+    writer resolving an id that later dies again would silently follow the
+    standing-but-reversed edge onto the revived id's former twin — the same
+    misattribution ``TestAnUndoneMergeStopsTheWalk`` proves the healing pass
+    declines.
+    """
+
+    @pytest.mark.unit
+    def test_a_later_strand_of_a_revived_id_is_refused_not_forwarded(
+        self, pipeline_db: Database
+    ) -> None:
+        """Merge, undo, then strand the revived id by a *separate* later event."""
+        csv_id = _load_csv_row(pipeline_db, transaction_id="csv_1234", import_id="imp1")
+        ofx_id = _load_ofx_row(
+            pipeline_db, source_transaction_id="ofx_5678", import_id="imp2"
+        )
+        _accept_dedup(
+            pipeline_db,
+            match_id="match0000001",
+            side_a=("csv", "csv_1234"),
+            side_b=("ofx", "ofx_5678"),
+        )
+
+        MatchingService(pipeline_db).undo("match0000001", actor="cli")
+        assert _live_ids(pipeline_db) == {csv_id, ofx_id}, "the group split apart"
+        assert _aliases(pipeline_db) == {csv_id: ofx_id}, "the map row still stands"
+
+        # A later, unrelated event strands csv_id again — a curation writer
+        # resolving it now must not be forwarded onto ofx_id, its former twin.
+        ImportService(pipeline_db).revert_confirmed(
+            "imp1", verify=lambda _plan: None, actor="cli"
+        )
+        assert _live_ids(pipeline_db) == {ofx_id}
+
+        with pytest.raises(UserError, match="transaction reference") as exc_info:
+            resolve_curation_transaction_id(pipeline_db, csv_id)
+        assert exc_info.value.code == error_codes.TRANSACTION_REFERENCE_NOT_FOUND
 
 
 class TestHealingRunsWhenTheMatcherFails:

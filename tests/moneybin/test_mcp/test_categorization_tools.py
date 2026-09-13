@@ -267,6 +267,15 @@ class TestTransactionsCategorizeImproveAi:
                 "(transaction_id, category, categorized_by) "
                 "VALUES ('t1', 'Shopping', 'ai')"
             )
+            # The write-time curation seam (issue #538) requires 't1' to name
+            # a live transaction before the upgrade write will accept it —
+            # prep.int_transactions__merged above is only the PFC-code source
+            # the categorizer reads to decide what to write.
+            db.execute(
+                "INSERT INTO core.fct_transactions "
+                "(transaction_id, amount, transaction_date) "
+                "VALUES ('t1', -10.00, '2026-01-01')"
+            )
 
         result = (transactions_categorize_improve_ai()).to_dict()
         # ImproveAiPayload has only an AGGREGATE field → Tier.LOW derived sensitivity
