@@ -505,6 +505,31 @@ the relation above rather than restated here: the account has a row in
 direct, current evidence there is no *security* to see, and it outranks
 indirect evidence that there once was one.
 
+**The cash-versus-security discriminator on `core.fct_investment_transactions`:
+`quantity`, not `security_id` — named once here, referenced everywhere below
+that needs it.** `security_id` cannot serve as that test: its own column
+comment gives it two NULL cases, not one — "NULL for cash-only events
+(deposit, withdrawal, account fee, cash interest) and for a synced security
+with no accepted binding"
+(`src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql:101`). A
+predicate keyed on `security_id` nullability therefore reads an unbound buy
+or sell — a synced security trade whose provider security has no accepted
+`app.security_links` row — as cash evidence, exactly the defect an earlier
+round of this section carried into the override below (review thread
+`3999020022`). `quantity` has no such overlap:
+`prep.stg_plaid__investment_transactions` sets `ledger_quantity` NULL only
+for the closed, non-security set of mapped types (dividend, interest,
+capital_gain_distribution, deposit, withdrawal, fee, return_of_capital,
+other; `stg_plaid__investment_transactions.sql:236-249`) and otherwise
+carries the row's raw signed share count regardless of whether
+`security_id` resolves through an accepted binding — an unbound buy or sell
+keeps its `quantity`; only its `security_id` goes NULL. The canonical
+column's own comment states the same contract independent of staging
+branch: "Signed units: + acquire, − dispose, NULL cash-only"
+(`fct_investment_transactions.sql:108`). The rule: **`quantity IS NULL` is a
+cash-only event; `quantity IS NOT NULL` is a security-position event, bound
+or unbound.**
+
 **The override may cancel only the evidence it actually contradicts, and a
 zero-*position* snapshot contradicts nothing about cash — this is the scope
 rule the boundary above is drawn inside of.** `has_position` (above) is
@@ -513,16 +538,17 @@ derived solely from the newest holdings snapshot's own `quantity` and
 about cash sitting in the account or moving through it. A sale's retained
 proceeds, a later cash dividend, and a plain deposit are all invisible to
 that snapshot, so the override may cancel only `core.fct_investment_transactions`
-evidence that is itself about a security position — a row where
-`security_id IS NOT NULL`. It never cancels: (1) any `core.fct_transactions`
-row, the cash ledger the holdings pull says nothing about at all; and (2) a
-`core.fct_investment_transactions` row where `security_id IS NULL` — a
-cash-only event (deposit, withdrawal, account fee, cash interest;
-`src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql:101`) that
-a securities-only snapshot was never in a position to contradict. This is a
-correction to an earlier round of this section, which read the override as
-canceling "historical transaction evidence on either ledger" with no such
-restriction** (review thread `3998969090`). An investment account that sells
+evidence that is itself about a security position — a row where `quantity
+IS NOT NULL` per the discriminator above. It never cancels: (1) any
+`core.fct_transactions` row, the cash ledger the holdings pull says nothing
+about at all; and (2) a `core.fct_investment_transactions` row where
+`quantity IS NULL` — a cash-only event that a securities-only snapshot was
+never in a position to contradict. This is a correction to an earlier round
+of this section, which read the override as canceling "historical
+transaction evidence on either ledger" with no such restriction (review
+thread `3998969090`), and a second correction to a predicate that read this
+same boundary off `security_id` instead of `quantity` (review thread
+`3999020022`). An investment account that sells
 its last security but retains the sale proceeds, or later receives a
 cash-only dividend or deposit, still resolves `has_position = FALSE` — it
 holds no security — but it still holds cash: `docs/specs/investments-overview.md:283`
@@ -575,12 +601,12 @@ removed from the candidate set the same way every other account is —
 through Requirement 9's own date-scoped `archived_at` eligibility once the
 account is actually closed — not through a zero-snapshot override a cash
 ledger has no equivalent of. `core.fct_investment_transactions`'s own
-cash-only rows (`security_id IS NULL`) are protected the same way and for
-the same reason: the newest holdings snapshot carries nothing that speaks
-to them. Only that ledger's security-linked rows (`security_id IS NOT
-NULL`) fall inside the override's scope, and `core.dim_holdings_broker_reported`
-is the source of the override itself, not a second place the defect could
-hide.
+cash-only rows (`quantity IS NULL` per the discriminator above) are
+protected the same way and for the same reason: the newest holdings
+snapshot carries nothing that speaks to them. Only that ledger's
+security-linked rows (`quantity IS NOT NULL`) fall inside the override's
+scope, and `core.dim_holdings_broker_reported` is the source of the
+override itself, not a second place the defect could hide.
 
 **What the two transaction-activity arms catch together, and what they
 still miss.** Both ledgers carry their own transaction date, but the guard
@@ -591,8 +617,9 @@ tabular import with no balance column, a Plaid account whose
 `current_balance` or `account_type` never resolved, a manual account with
 postings and no assertion, and an investment account with a dividend, a
 fee, or a cash-only credit retained after its last security sale
-(`security_id IS NULL` on that row, regardless of what its own buy/sell
-history looks like) all surface as unanchored rather than silently absent
+(`quantity IS NULL` on that row per the discriminator above, regardless of
+what its own buy/sell history looks like) all surface as unanchored rather
+than silently absent
 — every one of them has a row on one ledger or the other even though
 `core.fct_balances` has none, and a cash-only row is never in the
 zero-snapshot override's scope, so it surfaces even on an account whose
@@ -2157,6 +2184,28 @@ fix is scoped to the unranged path and does not regress the ranged one.
   above using the *same* fixture shape but a nonzero reported quantity, so
   the three together prove the predicate discriminates on the account's own
   evidence rather than on receipt presence alone.
+- **The unanchored-account guard does not fail for a broker-reported
+  definitive zero when the only ledger evidence is an unbound security
+  position — the discriminator's own boundary (§Data Model).** `moneybin
+  system doctor` against a persona whose only account is the same liquidated
+  investment account as above — live broker connection, a definitive-zero
+  newest snapshot in either shape — but whose entire
+  `core.fct_investment_transactions` history is a single buy or sell that
+  carries no accepted `app.security_links` binding: `security_id IS NULL`
+  on that row, `quantity` is not. The account has no balance observation of
+  any kind. Exits `0` with no `fail` entry naming that account. This is the
+  regression guard for the discriminator itself, not for the override's
+  scope rule: a `security_id`-keyed predicate reads this row's NULL
+  `security_id` as cash evidence, the override is barred from cancelling
+  cash evidence, and the account would then stay an unclearable candidate
+  forever — exactly the failure Codex flagged in review (finding
+  `3999020022`). The `quantity`-keyed predicate correctly reads the row as
+  security evidence (`quantity IS NOT NULL`), which the override is
+  entitled to cancel, so the account resolves the same way a bound
+  liquidation does. Pair with the two zero-quantity-row and empty-receipt
+  "does not fail" cases above, which cover a *bound* liquidation's history;
+  this one covers the *unbound* shape the discriminator itself exists to
+  get right.
 - **The unanchored-account guard still fails for an investment account
   holding cash after its last security sale — the override's cash-evidence
   boundary (§Data Model).** `moneybin system doctor` against a persona whose
@@ -2164,17 +2213,17 @@ fix is scoped to the unranged path and does not regress the ranged one.
   broker connection, a definitive-zero newest snapshot in either shape, and
   `core.fct_investment_transactions` carrying the real buy-then-sell history
   ending in the disposal — but with one additional row afterward where
-  `security_id IS NULL`: a retained sale-proceeds credit, or a later cash
-  dividend or deposit. The account still has no balance observation of any
-  kind. Exits `1`, with `net_worth_unanchored_accounts` at `fail` and
-  `affected_ids` naming the account. This is the regression guard for the
-  override's own scope rule: a definitive zero-*position* snapshot must not
-  cancel a cash-only row's evidence, so the account stays a candidate even
-  though its security-linked rows alone would have been overridden. Pair
-  with the "does not fail" case above using the identical liquidation
-  fixture minus this one cash-only row, so the two together prove the
-  override discriminates on `security_id`, not on the account's presence in
-  the investment ledger generally.
+  `quantity IS NULL` per the discriminator above: a retained sale-proceeds
+  credit, or a later cash dividend or deposit. The account still has no
+  balance observation of any kind. Exits `1`, with
+  `net_worth_unanchored_accounts` at `fail` and `affected_ids` naming the
+  account. This is the regression guard for the override's own scope rule:
+  a definitive zero-*position* snapshot must not cancel a cash-only row's
+  evidence, so the account stays a candidate even though its security-linked
+  rows alone would have been overridden. Pair with the "does not fail" case
+  above using the identical liquidation fixture minus this one cash-only
+  row, so the two together prove the override discriminates on `quantity`,
+  not on the account's presence in the investment ledger generally.
 - **The unanchored-account guard judges a depository account on its own
   evidence, never a sibling brokerage's snapshot — the receipt-scope
   correction (§Data Model, `core.dim_holdings_broker_reported`).**
@@ -2258,14 +2307,23 @@ multi-currency, and nine for `M2B.3`:
   the same reason as above. Added to the same persona; the fixture the Tier
   3 "does not fail for a broker-reported definitive zero" case reads for its
   empty-receipt half.
+- For `M2B.3`'s discriminator boundary — the unbound-security shape: the
+  same fully-liquidated persona account — live broker connection, a
+  definitive-zero newest snapshot in either shape above — but with its
+  `core.fct_investment_transactions` history replaced by a single buy or
+  sell that carries no accepted `app.security_links` binding: `security_id
+  IS NULL` on that row, `quantity` is not. The account still carries no
+  balance observation of any kind. Added to the same persona; the fixture
+  the Tier 3 discriminator-boundary case reads.
 - For `M2B.3`'s override cash-evidence boundary: the same fully-liquidated
   persona account — live broker connection, a definitive-zero newest
   snapshot in either shape above, real buy-then-sell history in
   `core.fct_investment_transactions` ending in the disposal — plus one more
-  row after the disposal where `security_id IS NULL`: a retained
-  sale-proceeds credit, or a later cash dividend or deposit. The account
-  still carries no balance observation of any kind. Added to the same
-  persona; the fixture the Tier 3 cash-evidence-boundary case reads.
+  row after the disposal where `quantity IS NULL` per the discriminator
+  above: a retained sale-proceeds credit, or a later cash dividend or
+  deposit. The account still carries no balance observation of any kind.
+  Added to the same persona; the fixture the Tier 3 cash-evidence-boundary
+  case reads.
 - For `M2B.3`'s receipt-scope correction: a two-account Plaid item — an
   investment account with a definitive-zero newest snapshot (either shape
   above) and a depository (checking) account sharing that item's
