@@ -560,10 +560,10 @@ applies to every ordinary row, extended to the one row that has no
 `balance_date` of its own to apply it at.
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
-accounts satisfying the eligible-candidate predicate already stated above
-(`include_in_net_worth AND (archived_at IS NULL OR archived_at >=
-effective_from)`) — NULL, and therefore unbounded, when none of them carry an
-`archived_at` at all. Then:
+accounts satisfying the eligible-candidate predicate stated once, above, at
+`:541-542` — not restated here, so the two cannot drift apart the way an
+earlier round of this spec let them — NULL, and therefore unbounded, when
+none of them carry an `archived_at` at all. Then:
 
 ```
 synthesis_date = LEAST(effective_to, CURRENT_DATE, archived_at_floor)
@@ -729,18 +729,26 @@ account IS the row — the guard's signal is the row's own presence with its
 balance-derived columns NULL, not a number carried beside it. The view gains
 a second `UNION ALL` arm reading the same four evidence sources joined to
 `core.dim_accounts` (§Data Model): one row per eligible unanchored account,
-dated `balance_date = CURRENT_DATE`, with `account_balance`,
+dated `balance_date = COALESCE((SELECT MAX(balance_date) FROM
+core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
+`CURRENT_DATE` unconditionally — with `account_balance`,
 `account_balance_home`, `rate_published_date`, `rate_source`,
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
-NULL, `is_observed = FALSE`, and `currency_code` NULL (the unknown segment
-this column's own comment already reserves for exactly this case — an
-account with no balance observation has no observed denomination either).
-`account_id`, `account_name`, `account_type`, and `home_currency_code` are
-not balance-derived, so they still populate from `core.dim_accounts` and
-`app.profile_settings` on this synthesized row, the same as on every
-ordinary one.
+NULL, and `is_observed = FALSE`. `currency_code` populates from
+`core.dim_accounts.currency_code` rather than going NULL: that column is the
+account's own denomination, per this rung's own column comment at `:705`,
+independent of whether a balance was ever observed, so a Plaid account with
+a populated `iso_currency_code` but no balance, or a manual/tabular account
+with a configured or source-derived currency, still carries its known
+currency on this row. NULL stays reserved for an account whose own
+denomination is genuinely unknown — a fact about the account, not about
+whether it has been observed. `account_id`, `account_name`, `account_type`,
+`currency_code`, and `home_currency_code` are not balance-derived, so they
+still populate from `core.dim_accounts` and `app.profile_settings` on this
+synthesized row, the same as on every ordinary one.
 
-**Unconditional per candidate, unlike `reports.net_worth`'s own arm.**
+**Unconditional per candidate, unlike `reports.net_worth`'s own arm — and
+dated at the spine's own maximum, not at `CURRENT_DATE`.**
 `reports.net_worth`'s `CURRENT_DATE` arm fires only when the whole
 balance-driven result is empty, because an ordinary row there already
 carries the correlated count for a mixed profile — the arm exists only to
@@ -754,14 +762,60 @@ inside an otherwise ordinary, fully-anchored profile still appears here —
 not only in the wholly-unanchored case `reports.net_worth`'s own arm is
 scoped to.
 
-A specific historical range with no balance-spine rows in it for one of
-these accounts inherits `reports.net_worth`'s own runner fallback (§Data
-Model's `synthesis_date` rule), applied once per eligible unanchored
-candidate rather than once per row: each such account is dated
-independently at its own `LEAST(effective_to, CURRENT_DATE, archived_at)`,
-so — unlike the aggregate rung — no `archived_at_floor` across candidates is
-needed here, because there is no shared row whose single date has to stay
-honest for more than one account at a time.
+**Dating that row at `CURRENT_DATE` unconditionally was a regression an
+earlier round of this spec introduced, and it is corrected here.** This
+rung's own unranged default is the same one every rung shares —
+`balance_date = MAX(balance_date)` (§Data Model, mirroring
+`NetworthService.current()`, `src/moneybin/services/networth_service.py:54-62`)
+— and `core.fct_balances_daily` carries every anchored account forward to one
+shared date, not its own last observation: `global_last_date =
+obs["balance_date"].max()` (`fct_balances_daily.py:186`), then `last_date =
+global_last_date` becomes every account's own spine end
+(`fct_balances_daily.py:193`), precisely so that, per that assignment's own
+comment, "no account drops out of a cross-account aggregate just because
+another account has a fresher statement" (`fct_balances_daily.py:183-185`) —
+the same principle the module's docstring states at greater length
+(`fct_balances_daily.py:8-15`). `global_last_date` is ordinarily older than
+`CURRENT_DATE` — the newest statement is usually a few days stale, not dated
+today. An unconditional `CURRENT_DATE` arm therefore makes `CURRENT_DATE` the
+new `MAX(balance_date)` over this rung the moment any eligible unanchored
+candidate exists, and the unranged default then filters to `CURRENT_DATE`
+alone — discarding every anchored account's row on `global_last_date` and
+returning only the synthesized ones. The synthesized row must instead be
+dated at the same date `core.fct_balances_daily` already carries every
+anchored account to — `COALESCE((SELECT MAX(balance_date) FROM
+core.fct_balances_daily), CURRENT_DATE)` — falling back to `CURRENT_DATE`
+only when the spine itself is empty, the wholly-unanchored profile that is
+exactly the one case `reports.net_worth`'s own arm is already scoped to. The
+synthesized row is simply one more account carried forward to the date every
+other account already occupies, not an account entitled to define a new one.
+
+**The day-grain rung does not share this defect — confirmed, not assumed.**
+`reports.net_worth`'s own `CURRENT_DATE` arm fires only when its whole
+balance-driven result is already empty (§"The view carries a second `UNION
+ALL` arm for the wholly-unanchored profile," above), so it can only ever
+supply the one row `MAX(balance_date)` finds when there is no anchored row to
+compete with — the empty-result guard means it never coexists with a real
+anchored row inside the same unranged read, so it never pushes
+`MAX(balance_date)` past one. That guard is exactly what this rung's own arm
+lacks, which is why this rung needed the fix above and the day-grain rung did
+not.
+
+**Two different date rules govern two different paths here, and they must
+not be confused.** The rule above governs the *unranged* read: the view's own
+arm, evaluated fresh on every query with no bound parameters, dated at
+`COALESCE(MAX(balance_date) FROM core.fct_balances_daily, CURRENT_DATE)`. A
+specific historical range with no balance-spine rows in it for one of these
+accounts is a different path entirely — it inherits `reports.net_worth`'s own
+*runner* fallback (§Data Model's `synthesis_date` rule), applied once per
+eligible unanchored candidate rather than once per row: each such account is
+dated independently at its own `LEAST(effective_to, CURRENT_DATE,
+archived_at)`, so — unlike the aggregate rung — no `archived_at_floor` across
+candidates is needed here, because there is no shared row whose single date
+has to stay honest for more than one account at a time. The two rules never
+fire on the same query: the view's own arm only ever answers an unranged
+"now" read, and the runner's fallback only ever answers a bounded range the
+view cannot see, so a given query is dated by exactly one rule, never both.
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
 invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
@@ -1278,18 +1332,23 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and four acceptance tests for
+tests named in §Testing Strategy, and five acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V060 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
 per that method's own contract — still warns, pinning that the check is not
-scoped to `archived = TRUE`; the warning clears once `accounts set
+scoped to *current* `archived = TRUE`; the warning clears once `accounts set
 --include` or `--exclude` writes the `confirms_include_in_net_worth` marker
 (whichever value is passed, including the idempotent `--exclude` that
-leaves `include_in_net_worth` unchanged); and, as a negative, an unrelated
+leaves `include_in_net_worth` unchanged); as a negative, an unrelated
 `accounts set` write on the same account — a rename or a currency change,
 `include_in_net_worth` untouched — leaves it warning, pinning that a
-generic settings write is not what clears it.
+generic settings write is not what clears it; and, as a second negative, an
+account whose `include_in_net_worth = FALSE` was set directly via `--exclude`
+with no `archived = TRUE` audit row ever written for it never warns at all —
+pinning that a legitimately, deliberately excluded account that predates this
+feature (or simply never went through the archive cascade) is not what this
+invariant exists to flag.
 
 ### Files to Modify
 
@@ -1784,9 +1843,22 @@ approved as a footnote rather than reviewed on its own terms.
   restated intention: a new `system doctor` invariant,
   `account_archive_intent_ambiguous` (`warn` severity, alongside
   `net_worth_stale_balance`), flags every account where
-  `include_in_net_worth = FALSE` and no `app.audit_log` row for it carries a
-  dedicated decision marker — never merely "some later settings write
-  exists," and never scoped to `archived = TRUE`. `AccountService.unarchive()`
+  `include_in_net_worth = FALSE`, no `app.audit_log` row for it carries a
+  dedicated decision marker, **and at least one `app.audit_log` row for it is
+  evidence of a historical archive/cascade action** — an
+  `account_settings.set` row whose full-row snapshot (`after_value`) records
+  `archived = TRUE` at that point in time, regardless of the account's
+  *current* `archived` value. That third clause is the scope fix: a legacy
+  account whose `include_in_net_worth = FALSE` never passed through the
+  cascade — set directly via `--exclude`, or predating this feature and its
+  audit trail entirely — carries no `archived = TRUE` audit row at all, so it
+  has no cascade write to disambiguate from a deliberate one and the
+  invariant leaves it alone. Genuine cascade candidates keep exactly the
+  coverage described below: the audit row proving the cascade fired once is
+  permanent (`app.audit_log` is append-only), so it still satisfies this
+  clause after `unarchive()` clears the *present-tense* `archived` flag —
+  never merely "some later settings write exists," and never scoped to
+  *current* `archived = TRUE`. `AccountService.unarchive()`
   sets `archived = FALSE` and, by contract, does **not** restore
   `include_in_net_worth` (`account_service.py:667-671`: "does NOT restore
   include_in_net_worth (per spec)"; `settings_update`'s own docstring:
