@@ -1354,8 +1354,8 @@ def test_refresh_omits_a_stage_the_caller_never_asked_for(
     result = refresh(db=MagicMock(spec=Database), steps=["transform"])
 
     assert result.stage("categorize") is None
-    # Only the step that was asked for — the other five contribute nothing.
-    assert [s.step for s in result.stages] == ["transform"]
+    # The requested transform includes its investment-planning prerequisite.
+    assert [s.step for s in result.stages] == ["investment_match", "transform"]
 
 
 def test_refresh_marks_a_requested_categorize_that_could_not_run(
@@ -1574,6 +1574,7 @@ def test_refresh_lists_stages_in_canonical_pipeline_order(
     assert [s.step for s in result.stages] == [
         "gsheet",
         "match",
+        "investment_match",
         "transform",
         "categorize",
         "identity",

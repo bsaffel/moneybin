@@ -663,7 +663,9 @@
       "merchants links history",
       "investments securities links pending",
       "investments securities links history",
-      "transactions categorize rules list-conflicts"
+      "transactions categorize rules list-conflicts",
+      "investments matches pending",
+      "investments matches history"
     ],
     "service_methods": [
       "moneybin.services.review_service.ReviewService.status",
@@ -671,12 +673,15 @@
       "moneybin.services.categorization.CategorizationService.list_uncategorized_transactions",
       "moneybin.services.auto_rule_service.AutoRuleService.review",
       "moneybin.services.auto_rule_service.AutoRuleService.list_proposal_history",
-      "moneybin.services.categorization.CategorizationService.list_rule_conflicts"
+      "moneybin.services.categorization.CategorizationService.list_rule_conflicts",
+      "moneybin.services.investment_matching_service.InvestmentMatchingService.pending",
+      "moneybin.services.investment_matching_service.InvestmentMatchingService.history"
     ],
     "observable_outcomes": [
       "pending queues preserve current IDs, statuses, counts, confidence, and auto-rule blast-radius fields",
       "auto-rule history preserves terminal proposal IDs, statuses, and promoted rule IDs",
-      "rule-conflict queues name both rules, the shared matcher, and the category each assigns"
+      "rule-conflict queues name both rules, the shared matcher, and the category each assigns",
+      "investment proposals retain issued whole-event evidence, field choices, alternatives, and replacement context"
     ],
     "exemption": null
   },
@@ -1108,13 +1113,15 @@
       "transactions matches run",
       "transactions matches backfill",
       "accounts links run",
-      "merchants links run"
+      "merchants links run",
+      "investments matches run"
     ],
     "service_methods": [
       "moneybin.orchestration.refresh.refresh",
       "moneybin.services.matching_service.MatchingService.run",
       "moneybin.services.account_links_service.AccountLinksService.run",
-      "moneybin.services.merchant_links_service.MerchantLinksService.run"
+      "moneybin.services.merchant_links_service.MerchantLinksService.run",
+      "moneybin.services.investment_matching_service.InvestmentMatchingService.run"
     ],
     "observable_outcomes": [
       "selected match/transform/categorize/identity stages report the same status/errors and create the same review proposals"

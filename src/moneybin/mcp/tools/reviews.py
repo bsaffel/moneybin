@@ -138,6 +138,7 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "categorization",
     "auto_rules",
     "matches",
+    "investment_matches",
     "rule_conflicts",
     "account_links",
     "merchant_links",
@@ -191,7 +192,7 @@ def _canonical_review_position(
     would match nothing at all rather than mis-order — which is why the shape
     is declared per queue here rather than guessed from the value.
     """
-    if status == "history" or kind == "rule_conflicts":
+    if status == "history" or kind in {"rule_conflicts", "investment_matches"}:
         canonicalize = canonical_iso_timestamp
     elif kind == "categorization":
         canonicalize = canonical_iso_date
@@ -761,6 +762,12 @@ def _load_review_view(
     status: ReviewStatus,
 ) -> ReviewsCoarsePayload:
     """Load one complete normalized collection through its existing service."""
+    if kind == "investment_matches":
+        from moneybin.adapters.investment_matching_adapters import (
+            investment_review_view,
+        )
+
+        return investment_review_view(db, status)
     if kind == "categorization":
         service = CategorizationService(db)
         rows = (
@@ -832,6 +839,8 @@ def _review_key_contract(
     status: ReviewStatus,
 ) -> tuple[tuple[type[object], ...], tuple[SortDirection, ...]]:
     """Return the typed immutable ordering contract for one review queue."""
+    if kind == "investment_matches":
+        return ((str, str), ("desc", "asc"))
     if status == "history" or kind == "categorization":
         return ((str, str), ("desc", "asc" if status == "history" else "desc"))
     if kind == "auto_rules":
@@ -852,7 +861,7 @@ def _review_ordering(
 ) -> tuple[tuple[KeysetScalar, ...], tuple[SortDirection, ...]]:
     """Return one immutable queue key whose directions match display order."""
     _, directions = _review_key_contract(kind, status)
-    if status == "history":
+    if status == "history" or kind == "investment_matches":
         return (
             (_text(row.created_at) or "", str(row.decision_id)),
             directions,
@@ -970,7 +979,9 @@ def _review_actions(
     next_cursor: str | None,
 ) -> list[str]:
     """Return queue-native decision and continuation actions."""
-    if status == "history":
+    if kind == "investment_matches":
+        actions = ["Investment matching is review-only; decisions are not available."]
+    elif status == "history":
         actions = [
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
         ]
@@ -1005,6 +1016,7 @@ def reviews_coarse(
         "categorization",
         "auto_rules",
         "matches",
+        "investment_matches",
         "rule_conflicts",
         "account_links",
         "merchant_links",

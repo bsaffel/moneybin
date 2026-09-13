@@ -56,6 +56,7 @@ from moneybin.tables import (
     IMPORTS,
     INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_UNIONED,
+    INVESTMENT_MATCH_DECISIONS,
     LOT_SELECTIONS,
     MANUAL_TRANSACTIONS,
     MATCH_DECISIONS,
@@ -431,6 +432,9 @@ class DoctorService:
         job — the heuristic limitation the helper documents.
         """
         return [
+            self._run_app_audit_coverage(
+                INVESTMENT_MATCH_DECISIONS, "proposal_id", full=full
+            ),
             self._run_app_audit_coverage(USER_CATEGORIES, "category_id", full=full),
             self._run_app_audit_coverage(CATEGORY_OVERRIDES, "category_id", full=full),
             self._run_app_audit_coverage(

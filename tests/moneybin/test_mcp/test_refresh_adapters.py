@@ -769,7 +769,7 @@ def test_a_refresh_counts_as_one_outcome_however_many_stages_ran() -> None:
         requested=expand_steps(None),
     )
 
-    assert len(stages) == 6
+    assert len(stages) == 7
     assert env.to_dict()["summary"]["returned_count"] == 1
 
 

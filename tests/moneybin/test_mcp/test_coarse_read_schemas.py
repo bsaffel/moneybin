@@ -150,6 +150,7 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
             "categorization",
             "auto_rules",
             "matches",
+            "investment_matches",
             "rule_conflicts",
             "account_links",
             "merchant_links",

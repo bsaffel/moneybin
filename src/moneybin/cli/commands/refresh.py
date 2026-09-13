@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _STAGE_LABELS: dict[str, str] = {
     "gsheet": "Sheets",
     "match": "Matching",
+    "investment_match": "Investment matching",
     "transform": "Transforms",
     "categorize": "Categorization",
     "identity": "Identity",
@@ -62,6 +63,12 @@ def _stage_summary(stage: StageOutcome) -> str:
         )
     if stage.step == "transform":
         return f"  {label}: rebuilt"
+    if stage.step == "investment_match":
+        return (
+            f"  {label}: {stage.count('pending_unique')} unique, "
+            f"{stage.count('pending_competing')} competing, "
+            f"{stage.count('stale')} stale, {stage.count('suppressed')} suppressed"
+        )
     if stage.step == "categorize":
         return (
             f"  {label}: {counts['total']} categorized "
@@ -99,6 +106,7 @@ class RefreshStepChoice(StrEnum):
     """
 
     MATCH = "match"
+    INVESTMENT_MATCH = "investment_match"
     TRANSFORM = "transform"
     CATEGORIZE = "categorize"
     IDENTITY = "identity"
@@ -113,9 +121,9 @@ def refresh_command(
         "--step",
         help=(
             "Limit the cascade to one or more steps "
-            "(repeatable; choose from match, transform, categorize, identity, "
+            "(repeatable; choose from match, investment_match, transform, categorize, identity, "
             "rates). Default: full cascade. Steps always run in canonical order "
-            "(match → transform → categorize → identity → rates) regardless of "
+            "(match → investment_match → transform → categorize → identity → rates) regardless of "
             "flag order."
         ),
     ),
@@ -154,6 +162,13 @@ def refresh_command(
     ):
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
+    investment_stage = result.stage("investment_match")
+    blocked_transform = (
+        "transform" in requested
+        and not result.applied
+        and investment_stage is not None
+        and investment_stage.error is not None
+    )
 
     # Best-effort step crashes (matcher/categorizer) don't fail the command,
     # but they are warnings (diagnostics → stderr), not informational output.
@@ -194,12 +209,12 @@ def refresh_command(
             output,
             cli_actor="refresh_command",
         )
-        if result.error is not None:
+        if result.error is not None or blocked_transform:
             raise typer.Exit(1)
         return
 
     if quiet:
-        if result.error is not None:
+        if result.error is not None or blocked_transform:
             raise typer.Exit(1)
         return
 
@@ -233,6 +248,11 @@ def refresh_command(
         else:
             logger.info(f"✅ Refresh complete in {duration:.2f}s")
         return
+    if blocked_transform:
+        logger.error(
+            "Refresh stopped before transform because investment planning failed"
+        )
+        raise typer.Exit(1)
     if result.error is not None:
         logger.error(f"❌ Refresh failed: {result.error}")
         raise typer.Exit(1)

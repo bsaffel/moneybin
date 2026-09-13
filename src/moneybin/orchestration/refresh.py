@@ -154,10 +154,19 @@ class RefreshResult:
         return find_stage(self.stages, step)
 
 
-RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity", "rates"]
+RefreshStep = Literal[
+    "gsheet",
+    "match",
+    "investment_match",
+    "transform",
+    "categorize",
+    "identity",
+    "rates",
+]
 CANONICAL_STEPS: tuple[RefreshStep, ...] = (
     "gsheet",
     "match",
+    "investment_match",
     "transform",
     "categorize",
     "identity",
@@ -209,7 +218,8 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     Used by surfaces to decide which follow-up hints to emit without
     re-deriving the membership rule from the service's internal logic.
     """
-    return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
+    requested = frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
+    return requested | {"investment_match"} if "transform" in requested else requested
 
 
 def refresh(
@@ -384,6 +394,17 @@ def refresh(
             )
         )
 
+    if "investment_match" in requested:
+        investment_stage = _run_investment_match_step(db, actor=actor)
+        stages.append(investment_stage)
+        if investment_stage.error is not None and "transform" in requested:
+            return RefreshResult(
+                applied=False,
+                duration_seconds=None,
+                transfers_retired=transfers_retired,
+                stages=tuple(stages),
+            )
+
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
         # an "apply did not run" result so the envelope's applied=False
@@ -493,6 +514,49 @@ def _step_error(exc: Exception, *, step: str) -> str:
     if classified is not None:
         return classified.message
     return f"{step} failed — the cause is in the local log"
+
+
+def _run_investment_match_step(db: Database, *, actor: str) -> StageOutcome:
+    """Persist review-only Proposals before any requested dependent transform."""
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
+    from moneybin.tables import (
+        INVESTMENT_EVENT_EVIDENCE,
+        INVESTMENT_EVENT_HEADERS,
+        INVESTMENT_EVENT_LEGS,
+    )
+
+    try:
+        for table in (
+            INVESTMENT_EVENT_HEADERS,
+            INVESTMENT_EVENT_LEGS,
+            INVESTMENT_EVENT_EVIDENCE,
+        ):
+            present = db.execute(
+                """SELECT 1 FROM information_schema.tables
+                WHERE table_schema = ? AND table_name = ?""",
+                [table.schema, table.name],
+            ).fetchone()
+            if present is None:
+                # Slice 4 owns comparison bootstrap on a newly initialized profile.
+                return StageOutcome(step="investment_match", ran=False)
+        result = InvestmentMatchingService(db).run(actor=actor)
+    except Exception:
+        logger.warning("Investment matching could not complete")
+        return StageOutcome(
+            step="investment_match",
+            ran=True,
+            error="Investment matching failed; rerun investment_match.",
+        )
+    return StageOutcome(
+        step="investment_match",
+        ran=True,
+        counts={
+            "pending_unique": result.pending_unique,
+            "pending_competing": result.pending_competing,
+            "stale": result.stale,
+            "suppressed": result.suppressed,
+        },
+    )
 
 
 def _run_gsheet_step(db: Database) -> list[Any]:

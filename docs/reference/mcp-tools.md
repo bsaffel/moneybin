@@ -518,13 +518,13 @@ Access: write, idempotent. Sensitivity: at least `low`.
 
 ### refresh_run
 
-Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.
+Run the post-load refresh pipeline. Steps select gsheet, match, investment_match, transform, categorize, identity, and rates in canonical order; transform also runs investment planning. Investment planning persists review Proposals without changing Golden membership. The cash match step acts without asking: folding duplicates can reverse accepted transfers. transfers_retired counts those; system_audit_undo(operation_id=...) restores them. Rates cache this profile's currency pairs for offline reports: rate_pairs_failed can be retried; rate_pairs_unsupported needs moneybin fx set; rate_pairs_discarded leaves partial gaps. Rebuilds core.* and reports.*; may write app review/categorization/identity state and raw exchange rates. No revert; fix inputs and rerun.
 
 Access: write, idempotent. Sensitivity: at least `medium`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `steps` | array of one of `gsheet`, `match`, `transform`, `categorize`, `identity`, `rates` |  | Subset of ``["gsheet", "match", "transform", "categorize", "identity", "rates"]`` to run. Defaults to None (full cascade). Steps execute in canonical order (gsheet → match → transform → categorize → identity → rates) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views, and rates derives the currency pairs it fetches from core.*). Pass ``["transform"]`` to run only SQLMesh apply. |
+| `steps` | array of one of `gsheet`, `match`, `investment_match`, `transform`, `categorize`, `identity`, `rates` |  | Subset of ``["gsheet", "match", "investment_match", "transform", "categorize", "identity", "rates"]`` to run. Defaults to None (full cascade). Steps execute in canonical order (gsheet → match → investment_match → transform → categorize → identity → rates) regardless of input order; dependencies enforce it (categorize reads SQLMesh-built views, and rates derives the currency pairs it fetches from core.*). Pass ``["transform"]`` to run investment planning followed by SQLMesh apply. |
 
 ### reports
 
@@ -547,7 +547,7 @@ Access: read-only, idempotent. Sensitivity: up to `high`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
-| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
+| `kind` | one of `summary`, `categorization`, `auto_rules`, `matches`, `investment_matches`, `rule_conflicts`, `account_links`, `merchant_links`, `security_links` | `summary` |  |
 | `status` | one of `pending`, `history` | `pending` |  |
 | `limit` | integer | `100` | ≥ 1 |
 | `cursor` | string |  |  |

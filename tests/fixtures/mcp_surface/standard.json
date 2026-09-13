@@ -1,5 +1,5 @@
 {
-  "sha256": "50b3656d2e983739dc4e1e58368d32b88edf5e9f62a131f756e7c4837f204259",
+  "sha256": "f9051df35c132a0bcb426193fccd40579bbbe72a0bb72fb2ef11b583fa3a44a1",
   "tool_count": 50,
   "tools": [
     {
@@ -2665,7 +2665,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. Steps select gsheet, match, investment_match, transform, categorize, identity, and rates in canonical order; transform also runs investment planning. Investment planning persists review Proposals without changing Golden membership. The cash match step acts without asking: folding duplicates can reverse accepted transfers. transfers_retired counts those; system_audit_undo(operation_id=...) restores them. Rates cache this profile's currency pairs for offline reports: rate_pairs_failed can be retried; rate_pairs_unsupported needs moneybin fx set; rate_pairs_discarded leaves partial gaps. Rebuilds core.* and reports.*; may write app review/categorization/identity state and raw exchange rates. No revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2676,6 +2676,7 @@
                     "enum": [
                       "gsheet",
                       "match",
+                      "investment_match",
                       "transform",
                       "categorize",
                       "identity",
@@ -2690,7 +2691,7 @@
                 }
               ],
               "default": null,
-              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\",\n\"identity\", \"rates\"]``\nto run. Defaults to None (full cascade). Steps execute in canonical\norder (gsheet \u2192 match \u2192 transform \u2192 categorize \u2192 identity \u2192 rates)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views, and rates derives the currency pairs it\nfetches from core.*). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
+              "description": "Subset of ``[\"gsheet\", \"match\", \"investment_match\", \"transform\", \"categorize\",\n\"identity\", \"rates\"]``\nto run. Defaults to None (full cascade). Steps execute in canonical\norder (gsheet \u2192 match \u2192 investment_match \u2192 transform \u2192 categorize \u2192 identity \u2192 rates)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views, and rates derives the currency pairs it\nfetches from core.*). Pass ``[\"transform\"]`` to run investment planning followed by\nSQLMesh apply."
             }
           },
           "type": "object"
@@ -2702,12 +2703,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 896,
-      "input_schema_bytes": 706,
+      "description_bytes": 766,
+      "input_schema_bytes": 798,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1792
+      "total_bytes": 1754
     },
     {
       "annotation_bytes": 89,
@@ -2818,6 +2819,7 @@
                 "categorization",
                 "auto_rules",
                 "matches",
+                "investment_matches",
                 "rule_conflicts",
                 "account_links",
                 "merchant_links",
@@ -2849,11 +2851,11 @@
         "name": "reviews"
       },
       "description_bytes": 331,
-      "input_schema_bytes": 431,
+      "input_schema_bytes": 452,
       "name": "reviews",
       "other_bytes": 49,
       "output_schema_bytes": 0,
-      "total_bytes": 947
+      "total_bytes": 968
     },
     {
       "annotation_bytes": 90,
@@ -5229,5 +5231,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 61938
+  "total_bytes": 61921
 }

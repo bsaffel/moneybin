@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from moneybin.privacy.payloads.accounts import (
     LinkCandidateRow,
@@ -32,6 +32,7 @@ ReviewQueueKind = Literal[
     "categorization",
     "auto_rules",
     "matches",
+    "investment_matches",
     "rule_conflicts",
     "account_links",
     "merchant_links",
@@ -261,6 +262,56 @@ class ReviewsMatchesView(BaseModel):
     kind: Annotated[Literal["matches"], DataClass.TXN_TYPE] = "matches"
     status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
     rows: list[MatchReviewRow]
+
+
+@row_set(NO_ROW_SET)
+class InvestmentMatchDetails(BaseModel):
+    """Exact financial review snapshots are classified at their highest tier."""
+
+    model_config = ConfigDict(frozen=True)
+
+    members: Annotated[list[str], DataClass.RECORD_ID]
+    confidence_band: Annotated[str, DataClass.TXN_TYPE]
+    is_competing: Annotated[bool, DataClass.AGGREGATE]
+    auto_eligible: Annotated[bool, DataClass.AGGREGATE]
+    relationship_fingerprint: Annotated[str, DataClass.RECORD_ID]
+    candidate_graph_fingerprint: Annotated[str, DataClass.RECORD_ID]
+    algorithm_version: Annotated[str, DataClass.TXN_TYPE]
+    legs: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    evidence: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    field_choices: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    supersedes_decision_ids: Annotated[list[str], DataClass.RECORD_ID]
+    supersession: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    alternatives: Annotated[list[list[str]], DataClass.RECORD_ID] = []
+    downstream_effects: Annotated[dict[str, JsonValue], DataClass.TXN_TYPE] = {}
+
+
+class InvestmentMatchReviewRow(BaseModel):
+    """One durable investment Proposal or historical lifecycle row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["investment_matches"], DataClass.TXN_TYPE] = (
+        "investment_matches"
+    )
+    status: Annotated[str, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    summary: Annotated[str, DataClass.TXN_TYPE]
+    details: InvestmentMatchDetails
+
+
+@row_set("rows")
+class ReviewsInvestmentMatchesView(BaseModel):
+    """Persisted investment-match pending or history collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["investment_matches"], DataClass.TXN_TYPE] = (
+        "investment_matches"
+    )
+    status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
+    rows: list[InvestmentMatchReviewRow]
 
 
 class AccountLinkPendingDetails(BaseModel):
@@ -501,6 +552,7 @@ ReviewsCoarsePayload = (
     | ReviewsCategorizationView
     | ReviewsAutoRulesView
     | ReviewsMatchesView
+    | ReviewsInvestmentMatchesView
     | ReviewsRuleConflictsView
     | ReviewsAccountLinksView
     | ReviewsMerchantLinksView

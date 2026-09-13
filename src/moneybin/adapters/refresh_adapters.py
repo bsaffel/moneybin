@@ -262,6 +262,18 @@ def refresh_envelope(
             categorize follow-up hint applies.
     """
     actions: list[str] = []
+    investment_stage = result.stage("investment_match")
+    if (
+        investment_stage is not None
+        and investment_stage.ran
+        and (
+            investment_stage.counts.get("pending_unique", 0)
+            + investment_stage.counts.get("pending_competing", 0)
+        )
+    ):
+        actions.append(
+            'Review pending investment Proposals with reviews(kind="investment_matches").'
+        )
     if not result.applied and result.error is not None:
         actions.append(REFRESH_APPLY_FAILED_HINT)
     # Gate the follow-up on success: when transform was requested but failed,
