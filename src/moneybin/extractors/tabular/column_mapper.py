@@ -50,6 +50,24 @@ def collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
     return [str(v) if v is not None else None for v in vals]
 
 
+def collect_field_samples(
+    df: pl.DataFrame, field_mapping: dict[str, str]
+) -> dict[str, list[str]]:
+    """Non-None sample values for every mapped destination field.
+
+    The one builder for every caller-visible sample set (a preview, a
+    confirmation gate) — pass a frame already rendered under the mapping
+    being shown, never a throwaway detection copy: a column rendered there
+    for format detection can show a shape the real import never reproduces
+    for a destination the render doesn't touch.
+    """
+    return {
+        dest: [v for v in collect_samples(df, column) if v is not None]
+        for dest, column in field_mapping.items()
+        if column in df.columns
+    }
+
+
 @dataclass
 class MappingResult:
     """Result of column mapping (Stage 3 output)."""

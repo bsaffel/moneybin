@@ -223,28 +223,19 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_after_mapping",
     ),
-    # why: pure dict lookup (no writes) — picks the date-typed destination
-    # fields out of a mapping so this adapter's normalize call scopes the
-    # same columns import_service.py's service layer does; the one place
-    # that list is named, so every caller must import it rather than repeat
-    # the field names by hand.
-    (
-        "cli/commands/import_cmd.py",
-        "moneybin.extractors.tabular.readers",
-        "mapped_date_columns",
-    ),
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.column_mapper",
         "map_columns",
     ),
-    # why: pure read — samples one column of an in-memory frame the adapter
-    # already holds. Needed so a mapping override can refresh samples for a
-    # destination the detector never proposed.
+    # why: pure read — builds {dest: samples} for an in-memory frame the
+    # adapter already holds, always against a frame rendered under the
+    # mapping being shown. Needed so a mapping override can refresh samples
+    # for a destination the detector never proposed.
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.column_mapper",
-        "collect_samples",
+        "collect_field_samples",
     ),
     (
         "mcp/tools/import_tools.py",
@@ -271,18 +262,9 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_after_mapping",
     ),
-    # why: same reason as the CLI preview entry above — the one place
-    # date-typed destination fields are named, so this adapter's normalize
-    # call scopes the same columns import_service.py does.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.readers",
-        "mapped_date_columns",
-    ),
     # why: pure module-level constant (destination field names, not values)
     # — the post-render sample refresh iterates it instead of hardcoding
-    # ("transaction_date", "post_date") by hand, same reason
-    # mapped_date_columns is allowlisted just above.
+    # ("transaction_date", "post_date") by hand.
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",

@@ -880,7 +880,7 @@ def _gate_header_position_ambiguous(
     ratified_header_position = confirm or reviewed_plan is not None
     if not ratified_header_position:
         from moneybin.extractors.confidence import Confidence
-        from moneybin.extractors.tabular.column_mapper import collect_samples
+        from moneybin.extractors.tabular.column_mapper import collect_field_samples
         from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
         from moneybin.services.import_confirmation import (
             ConfirmationRequired,
@@ -888,11 +888,7 @@ def _gate_header_position_ambiguous(
             ProposedMapping,
         )
 
-        gate_samples = {
-            dest: [v for v in collect_samples(df, column) if v is not None]
-            for dest, column in field_mapping.items()
-            if column in df.columns
-        }
+        gate_samples = collect_field_samples(df, field_mapping)
         record_counter(
             IMPORT_CONFIRMATIONS_TOTAL,
             labels={
@@ -2935,7 +2931,6 @@ class ImportService:
             save_format_to_db,
         )
         from moneybin.extractors.tabular.readers import (
-            mapped_date_columns,
             normalize_excel_date_columns_after_mapping,
             normalize_excel_date_columns_for_detection,
             read_file,
@@ -3101,7 +3096,7 @@ class ImportService:
                 from moneybin.config import get_settings
                 from moneybin.extractors.confidence import Confidence, resolve_tier
                 from moneybin.extractors.tabular.column_mapper import (
-                    collect_samples,
+                    collect_field_samples,
                     score_mapping,
                 )
                 from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
@@ -3138,14 +3133,7 @@ class ImportService:
                     else resolve_tier(score, t_high=bands.t_high, t_med=bands.t_med)
                 )
                 mapped_columns = set(reviewed_plan.field_mapping.values())
-                plan_samples = {
-                    dest: [
-                        value
-                        for value in collect_samples(df, column)
-                        if value is not None
-                    ]
-                    for dest, column in reviewed_plan.field_mapping.items()
-                }
+                plan_samples = collect_field_samples(df, reviewed_plan.field_mapping)
                 record_counter(
                     IMPORT_CONFIRMATIONS_TOTAL,
                     labels={
@@ -3275,6 +3263,9 @@ class ImportService:
             )
         else:
             from moneybin.config import get_settings
+            from moneybin.extractors.tabular.column_mapper import (
+                collect_field_samples,
+            )
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_DETECTION_SCORE,
@@ -3295,23 +3286,12 @@ class ImportService:
 
             settings = get_settings()
             bands = settings.import_.confidence
-            # A first-contact caller who already named the date column via
-            # --map transaction_date=<col> has told us part of the mapping
-            # before map_columns runs. detection_df is a throwaway copy —
-            # never imported, never shown as a sample — that only exists so
-            # map_columns / detect_date_format can recognize a native-typed
-            # date column's content; df itself stays untouched until the
-            # real mapping is final, below.
-            override_date_column, override_additional_date_columns = (
-                mapped_date_columns(overrides)
-            )
+            # detection_df is a throwaway copy — never imported, never shown
+            # as a sample — that only exists so map_columns / detect_date_
+            # format can recognize a native-typed date column's content; df
+            # itself stays untouched until the real mapping is final, below.
             detection_df = normalize_excel_date_columns_for_detection(
-                df,
-                file_type=format_info.file_type,
-                date_format=date_format_override,
-                date_column=override_date_column,
-                additional_date_columns=override_additional_date_columns or None,
-                native_date_columns=read_result.excel_native_date_columns,
+                df, file_type=format_info.file_type, date_format=date_format_override
             )
             mapping_result = map_columns(
                 detection_df,
@@ -3324,9 +3304,24 @@ class ImportService:
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )
+            # Caller-visible samples come from a render under THIS proposed
+            # mapping, not detection_df: detection_df renders every string
+            # column for format detection, so an unrelated native column
+            # (mapped to a non-date field) would otherwise show a rendering
+            # the real import never reproduces for it. Thrown away either
+            # way — resolve_or_confirm below may never reach the real
+            # render at all.
+            proposed_samples_df = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type=format_info.file_type,
+                field_mapping=mapping_result.field_mapping,
+                date_format=date_format_override or mapping_result.date_format,
+            )
             proposed = ProposedMapping(
                 field_mapping=mapping_result.field_mapping,
-                sample_values=mapping_result.sample_values,
+                sample_values=collect_field_samples(
+                    proposed_samples_df, mapping_result.field_mapping
+                ),
                 unmapped_columns=tuple(mapping_result.unmapped_columns),
             )
 
@@ -3390,8 +3385,8 @@ class ImportService:
             # overridden confirmation below — a counter the CLI path applies
             # immediately, so a later refusal cannot take it back.
             #
-            # Validated against a RENDER copy, never detection_df (round 15
-            # E2): detection_df only normalizes what map_columns/format
+            # Validated against a RENDER copy, never detection_df:
+            # detection_df only normalizes what map_columns/format
             # detection needed and can still leave a column this override
             # was never told about — e.g. a native transaction_date the
             # caller didn't name via --mapping — in raw midnight text no
@@ -3703,7 +3698,9 @@ class ImportService:
             # Confidence is imported at module scope, but a sibling branch
             # imports it locally, which makes the name function-local here.
             from moneybin.extractors.confidence import Confidence
-            from moneybin.extractors.tabular.column_mapper import collect_samples
+            from moneybin.extractors.tabular.column_mapper import (
+                collect_field_samples,
+            )
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_REVALIDATION_FAILURE_TOTAL,
@@ -3714,11 +3711,7 @@ class ImportService:
                 ProposedMapping,
             )
 
-            gate_samples = {
-                dest: [v for v in collect_samples(df, column) if v is not None]
-                for dest, column in resolved.field_mapping.items()
-                if column in df.columns
-            }
+            gate_samples = collect_field_samples(df, resolved.field_mapping)
             # This IS the replay guard the registry says the counter waits on:
             # a saved layout that no longer reads its own file. Record it as
             # such, and label the decline with the tier the envelope carries —

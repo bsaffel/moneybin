@@ -851,12 +851,14 @@ def _import_preview_tabular(
     answers a column question, not a "the header row is a transaction" one.
     """
     from moneybin.config import get_settings
-    from moneybin.extractors.tabular.column_mapper import collect_samples, map_columns
+    from moneybin.extractors.tabular.column_mapper import (
+        collect_field_samples,
+        map_columns,
+    )
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
         DATE_TYPED_TABULAR_FIELDS,
-        mapped_date_columns,
         normalize_excel_date_columns_after_mapping,
         normalize_excel_date_columns_for_detection,
         read_file,
@@ -879,20 +881,9 @@ def _import_preview_tabular(
         # never shown as a sample — that only exists so map_columns /
         # detect_date_format can recognize a native-typed date column's
         # content; read_result.df stays untouched until the final render,
-        # below. mapped_date_columns scopes it to the caller's own mapping
-        # (mirrors the equivalent first-contact scoping in
-        # import_service.py's _import_tabular) so map_columns sees the same
-        # date-typed columns the later confirm/replay will discover. An
-        # empty mapping still scans broadly, matching map_columns's own
-        # need to find the date column before it is known.
-        date_column, additional_date_columns = mapped_date_columns(mapping)
+        # below.
         detection_df = normalize_excel_date_columns_for_detection(
-            read_result.df,
-            file_type=format_info.file_type,
-            date_format=None,
-            date_column=date_column,
-            additional_date_columns=additional_date_columns or None,
-            native_date_columns=read_result.excel_native_date_columns,
+            read_result.df, file_type=format_info.file_type, date_format=None
         )
         mapping_result = map_columns(
             detection_df,
@@ -907,7 +898,6 @@ def _import_preview_tabular(
     field_mapping = mapping_result.field_mapping
     unmapped_columns = mapping_result.unmapped_columns
     confidence = mapping_result.confidence
-    sample_values = mapping_result.sample_values
     sign_convention = mapping_result.sign_convention
     number_format = mapping_result.number_format
     if mapping:
@@ -930,24 +920,19 @@ def _import_preview_tabular(
         unmapped_columns = [
             c for c in read_result.df.columns if c not in field_mapping.values()
         ]
-        # An override can swap the amount shape, which retires the losing
-        # destination — keep samples and sign in step with the merged mapping
-        # or the plan advertises a column it no longer loads and a split rule
-        # against a single amount (which rejects every row).
-        sample_values = {
-            dest: values
-            for dest, values in sample_values.items()
-            if dest in field_mapping
-        }
-        for dest, column in field_mapping.items():
-            if dest not in sample_values:
-                # read_result.df isn't rendered yet (below) — detection_df
-                # is the readable copy at this point.
-                sample_values[dest] = [
-                    value
-                    for value in collect_samples(detection_df, column)
-                    if value is not None
-                ]
+
+    # Every caller-visible sample comes from read_result.df under the FINAL
+    # field_mapping — never mapping_result.sample_values, which map_columns
+    # computed from detection_df: detection_df renders every string column
+    # for format detection, so a native column mapped to a non-date field
+    # (a Memo mapped to memo) would otherwise show a rendering the real
+    # import never reproduces for it. Correct as-is for every non-date-typed
+    # field regardless of override state, since read_result.df is still
+    # untouched here; the date-typed fields are refreshed again below,
+    # after the one real render.
+    sample_values = collect_field_samples(read_result.df, field_mapping)
+
+    if mapping:
         sign_convention = coerce_sign_convention(
             field_mapping=field_mapping, detected=sign_convention
         )
@@ -990,14 +975,16 @@ def _import_preview_tabular(
     # Keep previewed samples for the date-typed destinations in sync with
     # what actually imports, rather than showing pre-render native text for
     # a column the render above just rewrote.
-    for dest in DATE_TYPED_TABULAR_FIELDS:
-        column = field_mapping.get(dest)
-        if column and column in read_result.df.columns:
-            sample_values[dest] = [
-                value
-                for value in collect_samples(read_result.df, column)
-                if value is not None
-            ]
+    sample_values.update(
+        collect_field_samples(
+            read_result.df,
+            {
+                dest: field_mapping[dest]
+                for dest in DATE_TYPED_TABULAR_FIELDS
+                if dest in field_mapping
+            },
+        )
+    )
 
     return build_envelope(
         data=ImportPreviewPayload(

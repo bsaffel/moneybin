@@ -1135,16 +1135,13 @@ async def test_import_preview_post_date_only_override_with_native_transaction_da
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """E1 (round 15, Codex P2 readers.py:921): a native, unmapped column.
+    """A native, unmapped date column must not orphan itself.
 
-    Must not orphan itself. The caller's ``mapping`` names ONLY
-    ``post_date`` (native); ``Date`` (transaction_date) is ALSO native
-    but not in the override -- the exact counterexample. The prior
-    mapping-scoped detection copy left ``Date``
-    in raw "<date> 00:00:00" text, so ``map_columns`` (whose
-    ``detect_date_format`` only recognizes date-only shapes) could never
-    read a format from it, staging an unconfirmable ``unreadable_date``
-    plan for a file the real render converts fine.
+    The caller's ``mapping`` names ONLY ``post_date`` (native); ``Date``
+    (transaction_date) is ALSO native but not in the override. The
+    detection copy renders every date-shaped column regardless of mapping
+    state, so ``map_columns`` still detects transaction_date's format and
+    stages a confirmable plan.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     import openpyxl
@@ -1167,7 +1164,7 @@ async def test_import_preview_post_date_only_override_with_native_transaction_da
     assert preview.data.mapping.get("post_date") == "Posted"
     assert preview.data.date_format is not None, (
         "map_columns could not detect a format for the native, unmapped "
-        "transaction_date column -- the exact E1 regression"
+        "transaction_date column"
     )
 
     from moneybin.database import get_database

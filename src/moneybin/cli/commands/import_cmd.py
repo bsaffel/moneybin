@@ -2596,7 +2596,6 @@ def import_preview(
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
-        mapped_date_columns,
         normalize_excel_date_columns_after_mapping,
         normalize_excel_date_columns_for_detection,
         read_file,
@@ -2695,23 +2694,11 @@ def import_preview(
         # detection_df is a throwaway copy — never imported, never shown as
         # a sample — that only exists so map_columns below can recognize a
         # native-typed date column's content; df itself stays untouched
-        # until the final render, after the mapping resolves. Skipping this
-        # entirely would not just miss the date column when map_columns
-        # runs below — it would misidentify it as `description` while the
-        # real description column drops out entirely. mapped_date_columns
-        # falls back to the caller's own --override mapping when no format
-        # matched, mirroring the first-contact scoping in
-        # import_service.py's _import_tabular.
-        date_column, additional_date_columns = mapped_date_columns(
-            matched_format.field_mapping if matched_format else overrides
-        )
+        # until the final render, after the mapping resolves.
         detection_df = normalize_excel_date_columns_for_detection(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
-            date_column=date_column,
-            additional_date_columns=additional_date_columns or None,
-            native_date_columns=read_result.excel_native_date_columns,
         )
 
         typer.echo(f"\nFile: {source.name}")

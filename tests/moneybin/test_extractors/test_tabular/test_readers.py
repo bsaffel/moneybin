@@ -12,7 +12,6 @@ from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _classify_excel_headerless_via_fastexcel,  # pyright: ignore[reportPrivateUsage]
     _detect_header,  # pyright: ignore[reportPrivateUsage]
-    _excel_native_date_columns,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     normalize_excel_date_columns_after_mapping,
     normalize_excel_date_columns_for_detection,
@@ -598,112 +597,18 @@ class TestExcelReader:
         assert len(result.df) == 2
         assert result.rows_in_file == 2
 
-    def test_headerless_native_date_single_row_is_typed_correctly(
+    def test_blank_spacer_column_before_a_native_date_column_imports_correctly(
         self, tmp_path: Path
     ) -> None:
-        """The native-date type probe must not skip a headerless sheet's row 0.
+        """A blank interior spacer column must not misalign the date column.
 
-        Bug found while verifying this PR: ``_excel_native_date_columns``
-        assumed its row argument always named a HEADER row (data starts the
-        row after it) and the caller passed ``skip_rows`` unconditionally —
-        correct when the sheet has a header, but ``skip_rows`` names the
-        first DATA row itself when headerless (see ``_read_excel``'s own
-        ``skip_rows`` docstring). Scanning from one row too late silently
-        emptied the candidate set on a sheet with exactly one data row (no
-        row after it to scan), so a genuinely native-date column reported
-        no native date columns at all.
-        """
-        import datetime
-
-        import openpyxl
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        # Headerless, single row — the empty-scan trap: with the old
-        # off-by-one there is no row left to inspect at all.
-        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
-        path = tmp_path / "headerless_native_single_row.xlsx"
-        wb.save(path)
-
-        result = read_file(path, FormatInfo(file_type="excel"))
-
-        assert result.has_header is False
-        assert len(result.df) == 1
-        assert result.excel_native_date_columns == frozenset({"column_1"})
-
-    def test_native_date_typed_probe_tolerates_one_dirty_value(
-        self, tmp_path: Path
-    ) -> None:
-        """A dirty placeholder must not void the typed native-date probe.
-
-        ``excel_native_date_columns`` must not disqualify a column on its
-        FIRST non-``datetime.date`` value with no majority tolerance — a
-        real Date column with 3 genuine dates and one "pending" placeholder
-        must still qualify.
-        """
-        import datetime
-
-        import openpyxl
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        ws.append(["Date", "Amount", "Description"])
-        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
-        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
-        ws.append(["pending", 5.00, "Something"])
-        ws.append([datetime.date(2026, 1, 4), 1.00, "Tea"])
-        path = tmp_path / "dirty_native_dates.xlsx"
-        wb.save(path)
-
-        result = read_file(path, FormatInfo(file_type="excel"))
-
-        assert result.excel_native_date_columns == frozenset({"Date"})
-
-    def test_native_date_typed_probe_excludes_a_majority_non_date_column(
-        self, tmp_path: Path
-    ) -> None:
-        """A column that is mostly NOT dates must never qualify.
-
-        The majority-tolerance fix must not become "any date counts" — a
-        column holding one incidental ``datetime.date``-typed cell among
-        mostly non-date values stays excluded.
-        """
-        import datetime
-
-        import openpyxl
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        ws.append(["Date", "Notes", "Description"])
-        ws.append([datetime.date(2026, 1, 1), "not a date", "Coffee"])
-        ws.append([datetime.date(2026, 1, 2), "also not", "Salary"])
-        ws.append([datetime.date(2026, 1, 3), datetime.date(2026, 1, 3), "Tea"])
-        path = tmp_path / "mostly_text_notes_column.xlsx"
-        wb.save(path)
-
-        result = read_file(path, FormatInfo(file_type="excel"))
-
-        assert result.excel_native_date_columns == frozenset({"Date"})
-
-    def test_native_date_probe_survives_a_blank_spacer_column(
-        self, tmp_path: Path
-    ) -> None:
-        """A blank spacer column before Date must not misattribute dates.
-
-        Codex finding, confirmed empirically: ``pl.read_excel``'s
-        ``drop_empty_cols=True`` default elides a column whose header AND
-        every data cell are blank, so ``df.columns`` (3 entries: Date,
-        Amount, Description) drifts out of alignment with openpyxl's raw
-        physical row (4 entries: blank spacer, Date, Amount, Description).
-        Indexing ``column_names[i]`` against physical position ``i``
-        directly used to attribute the REAL Date column's typed values to
-        ``column_names[1]`` ("Amount"), while ``column_names[0]`` ("Date")
-        never saw any of its own values (it read the blank spacer's Nones
-        instead) — so a valid file was refused with "no recognized date
-        format" while "Amount" was wrongly flagged as a native date column.
+        A column-selection step that indexes a physical row position
+        against ``df.columns`` is fragile: ``pl.read_excel``'s
+        ``drop_empty_cols=True`` default elides a header-and-data-blank
+        spacer, shifting ``df.columns`` out of alignment with the
+        worksheet's physical layout. Rendering every string column by its
+        OWN cell shape needs no such indexing step, so a blank spacer
+        carries no column-identity risk at all.
         """
         import datetime
 
@@ -721,30 +626,43 @@ class TestExcelReader:
         path = tmp_path / "blank_spacer_before_date.xlsx"
         wb.save(path)
 
-        result = read_file(path, FormatInfo(file_type="excel"))
+        read_result = read_file(path, FormatInfo(file_type="excel"))
+        assert list(read_result.df.columns) == ["Date", "Amount", "Description"]
 
-        assert list(result.df.columns) == ["Date", "Amount", "Description"]
-        assert result.excel_native_date_columns == frozenset({"Date"})
+        detection_df = normalize_excel_date_columns_for_detection(
+            read_result.df, file_type="excel", date_format=None
+        )
+        mapping_result = map_columns(detection_df)
+        assert mapping_result.field_mapping.get("transaction_date") == "Date"
+        assert mapping_result.field_mapping.get("amount") == "Amount"
+        assert mapping_result.date_format is not None
 
-    def test_native_date_typed_scan_is_bounded_to_sample_rows(
+        rendered = normalize_excel_date_columns_after_mapping(
+            read_result.df,
+            file_type="excel",
+            field_mapping=mapping_result.field_mapping,
+            date_format=mapping_result.date_format,
+        )
+        dates = rendered["Date"].to_list()
+        assert None not in dates
+        assert [
+            datetime.datetime.strptime(d, mapping_result.date_format).date()
+            for d in dates
+        ] == [datetime.date(2026, 1, 1), datetime.date(2026, 1, 2)]
+
+    def test_date_column_with_8_iso_text_and_2_native_cells_imports_all_10(
         self, tmp_path: Path
     ) -> None:
-        """The typed scan stops at ``sample_rows``, not the whole column.
+        """A genuine native/text mix must not fail a strict-majority gate.
 
-        Performance finding: an unconditional full-sheet ``openpyxl`` pass
-        cost ~8.0s of a ~14.0s ``read_file()`` call on a real 49,999-row x
-        15-column file (measured; see ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS``).
-        Fixed by capping the scan at ``sample_rows`` data rows (production
-        default 2,000). Proves the bound is actually applied — not just
-        documented — by adding data ONLY beyond row 3 and showing a
-        ``sample_rows=3`` probe never sees it: 7 total rows, 4 of them
-        genuine native dates (a clear whole-column majority), but the
-        first 3 rows are all non-date placeholders, so a probe bounded to
-        those first 3 rows correctly reports no majority within the
-        sample. This is the accepted cost named in the module docstring —
-        a dirty run at the very START of a column, longer than
-        ``sample_rows``, now reads as non-date — verified here directly
-        rather than only asserted.
+        A native-typed selection probe requiring a STRICT MAJORITY of
+        native cells before a column qualifies for rendering would leave a
+        Date column with only 2 native cells among 8 ISO-text ones (20%)
+        unrendered — its 2 midnight-shaped cells would fail to parse under
+        the detected format, dropping the parse rate to 80%, below the 90%
+        auto-detect confidence bar. Rendering by per-cell shape, not by a
+        whole-column vote, means the 2 native cells always render
+        regardless of how the other 8 read.
         """
         import datetime
 
@@ -754,74 +672,34 @@ class TestExcelReader:
         ws = wb.active
         assert ws is not None
         ws.append(["Date", "Amount", "Description"])
-        for i in range(3):
-            ws.append(["pending", i, "x"])
-        for i in range(4):
-            ws.append([datetime.date(2026, 1, i + 1), i, "x"])
-        path = tmp_path / "dirty_prefix_exceeds_sample_bound.xlsx"
+        for i in range(8):
+            ws.append([f"2026-01-{i + 1:02d}", i, "text"])
+        for i in range(2):
+            ws.append([datetime.date(2026, 2, i + 1), i, "native"])
+        path = tmp_path / "mixed_majority_text.xlsx"
         wb.save(path)
 
-        result = read_file(path, FormatInfo(file_type="excel"))
-        assert result.sheet_used is not None
-        column_names = list(result.df.columns)
+        read_result = read_file(path, FormatInfo(file_type="excel"))
 
-        # Unbounded (sample_rows covers every data row): whole-column
-        # majority is 4-of-7 dates -> qualifies. Positive control proving
-        # the fixture itself has a real whole-column majority.
-        unbounded = _excel_native_date_columns(
-            path,
-            result.sheet_used,
-            data_start_row=1,
-            has_header=True,
-            column_names=column_names,
-            sample_rows=7,
+        detection_df = normalize_excel_date_columns_for_detection(
+            read_result.df, file_type="excel", date_format=None
         )
-        assert unbounded == frozenset({"Date"})
+        mapping_result = map_columns(detection_df)
+        assert mapping_result.field_mapping.get("transaction_date") == "Date"
+        assert mapping_result.date_format is not None
 
-        # Bounded to the first 3 (all-dirty) rows: 0-of-3 -> no majority
-        # within the sample, even though the whole column would qualify.
-        bounded = _excel_native_date_columns(
-            path,
-            result.sheet_used,
-            data_start_row=1,
-            has_header=True,
-            column_names=column_names,
-            sample_rows=3,
+        rendered = normalize_excel_date_columns_after_mapping(
+            read_result.df,
+            file_type="excel",
+            field_mapping=mapping_result.field_mapping,
+            date_format=mapping_result.date_format,
         )
-        assert bounded == frozenset()
-
-    def test_native_date_columns_nonexistent_sheet_degrades_to_none(
-        self, tmp_path: Path
-    ) -> None:
-        """A sheet name openpyxl can't resolve must degrade, not raise.
-
-        ``wb[sheet_name]`` raises a bare ``KeyError`` for an unknown sheet —
-        the same failure family as ``InvalidFileException``/``BadZipFile``
-        (a container openpyxl can't open at all), so it must degrade to
-        ``None`` (falls back to the shape heuristic) the same way. Called
-        directly: end-to-end via ``read_file``, ``pl.read_excel`` (fastexcel)
-        already validates ``sheet_used`` before this function's one caller
-        ever reuses it, so the KeyError branch is unreachable through that
-        path — see the round-14 thread reply for the full trace.
-        """
-        import openpyxl
-
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        assert ws is not None
-        ws.append(["Date", "Amount", "Description"])
-        ws.append(["2026-01-01", 42.5, "Coffee"])
-        path = tmp_path / "single_sheet.xlsx"
-        wb.save(path)
-
-        result = _excel_native_date_columns(
-            path,
-            "NoSuchSheet",
-            data_start_row=1,
-            has_header=True,
-            column_names=["Date", "Amount", "Description"],
-        )
-        assert result is None
+        dates = rendered["Date"].to_list()
+        assert len(dates) == 10
+        assert None not in dates
+        for d in dates:
+            # Must not raise -- every one of the 10 cells parses cleanly.
+            datetime.datetime.strptime(d, mapping_result.date_format)
 
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
@@ -1101,10 +979,9 @@ class TestExcelReader:
         """
         ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
 
-        # infer_schema_length=0 forces every column to string dtype (see
-        # _excel_native_date_columns's docstring) — mirror that shape so the
-        # stub behaves like a real unheadered read for _classify_header_rows,
-        # which indexes raw string cells.
+        # infer_schema_length=0 forces every column to string dtype — mirror
+        # that shape so the stub behaves like a real unheadered read for
+        # _classify_header_rows, which indexes raw string cells.
         stub_df = pl.DataFrame({
             "column_1": ["2026-01-01", "2026-01-02"],
             "column_2": ["42.5", "10"],
@@ -1120,7 +997,6 @@ class TestExcelReader:
 
         assert result.has_header is False
         assert len(result.df) == 2
-        assert result.excel_native_date_columns is None
 
     def test_headerless_legacy_xls_native_date_not_eaten_as_header(
         self, tmp_path: Path, mocker: MockerFixture
@@ -1253,17 +1129,13 @@ class TestExcelReader:
 class TestTimeBearingFormatRenderIsIdempotent:
     """A declared time-bearing format needs no detection-time special-casing.
 
-    Round 15: ``date_format_has_time_component`` (and the detection-copy
-    skip it drove) is deleted — its only caller was the auto-detect branch
-    of ``normalize_excel_date_columns_for_detection``, and rendering a
-    native midnight cell through ``strftime`` into a time-bearing format
-    reproduces the exact raw text (parse the captured ISO date, then
-    ``strftime`` back through the same directives/literals that produced
-    the "00:00:00" suffix in the first place), so unioning a time-bearing
-    column into the scan is always safe — at worst a no-op. These two tests
-    (kept from the deleted helper's own end-to-end coverage) prove that
-    directly against ``normalize_excel_date_columns_after_mapping``, which
-    was never guarded by the deleted helper and is unaffected by its removal.
+    Rendering a native midnight cell through ``strftime`` into a
+    time-bearing format reproduces the exact raw text (parse the captured
+    ISO date, then ``strftime`` back through the same directives/literals
+    that produced the "00:00:00" suffix in the first place), so no format-
+    inspection guard is needed before including such a column in a scan.
+    These two tests prove that directly against
+    ``normalize_excel_date_columns_after_mapping``.
     """
 
     def test_literal_midnight_suffix_round_trips(self) -> None:
@@ -1304,30 +1176,26 @@ class TestTimeBearingFormatRenderIsIdempotent:
         ]
 
 
-class TestExcelDateCandidateColumnsFindEveryDateColumn:
-    """R1 grid: mapped-upfront state x native/text role x declared format.
+class TestNormalizeExcelDateColumnsForDetectionRendersEveryColumn:
+    """Grid: native/text/mixed per date column x mapped-upfront or not x format.
 
-    ``normalize_excel_date_columns_for_detection`` must render EVERY date
-    candidate into one representation regardless of mapping state — the
-    prior mapping-scoped design left an unmapped native column untouched
-    whenever a caller had already named some OTHER date field via override
-    (E1: ``overrides={"post_date": "Posted"}`` with a native, unmapped
-    ``transaction_date`` orphaned it). Proven against the REAL
-    ``map_columns``, not a stand-in, since that's the actual consumer E1
-    broke — every combination below must produce an identical, successful
-    outcome: transaction_date mapped with a non-None format, and the real
-    (after-mapping) render leaves no NULLs in either date column.
+    ``normalize_excel_date_columns_for_detection`` takes no mapping input
+    at all — it renders every string column's midnight-shaped cells
+    unconditionally, so there is no column-selection decision left for a
+    probe (native-type scan, majority-shape gate) to get wrong. This grid
+    proves the FULL pipeline (detection copy -> ``map_columns`` ->
+    after-mapping render) stays correct across column shape, whether the
+    caller pre-declares the mapping via an override, and the declared
+    format.
     """
 
     @pytest.mark.parametrize(
         "declared_format", [None, "%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"]
     )
-    @pytest.mark.parametrize("post_date_role", ["native", "text"])
-    @pytest.mark.parametrize("transaction_date_role", ["native", "text"])
-    @pytest.mark.parametrize(
-        "mapped_upfront", ["none", "transaction_date", "post_date", "both"]
-    )
-    def test_transaction_date_is_always_found_with_a_format(
+    @pytest.mark.parametrize("post_date_role", ["native", "text", "mixed"])
+    @pytest.mark.parametrize("transaction_date_role", ["native", "text", "mixed"])
+    @pytest.mark.parametrize("mapped_upfront", ["none", "both"])
+    def test_transaction_date_and_post_date_always_import_correctly(
         self,
         mapped_upfront: str,
         transaction_date_role: str,
@@ -1340,56 +1208,33 @@ class TestExcelDateCandidateColumnsFindEveryDateColumn:
             "Post Date": _render_role(_POST_DATES, post_date_role, text_shape),
             "Amount": ["-4.50", "10.00", "42.50", "5.00"],
         })
-        native_date_columns: frozenset[str] = frozenset(
-            ({"Date"} if transaction_date_role == "native" else set[str]())
-            | ({"Post Date"} if post_date_role == "native" else set[str]())
+        overrides = (
+            {"transaction_date": "Date", "post_date": "Post Date"}
+            if mapped_upfront == "both"
+            else None
         )
-        # The caller's own known-mapped columns BEFORE map_columns runs --
-        # simulates a first-contact --mapping override naming zero, one, or
-        # both date fields ahead of time. Header aliases ("date", "post
-        # date") let map_columns discover either field on its own too, so
-        # this axis isolates what the detection copy was TOLD versus what
-        # it independently renders via native_date_columns.
-        date_column = "Date" if mapped_upfront in ("transaction_date", "both") else None
-        additional_date_columns = (
-            ["Post Date"] if mapped_upfront in ("post_date", "both") else []
-        )
-        overrides: dict[str, str] = {}
-        if date_column:
-            overrides["transaction_date"] = date_column
-        if additional_date_columns:
-            overrides["post_date"] = additional_date_columns[0]
 
         detection_df = normalize_excel_date_columns_for_detection(
-            df,
-            file_type="excel",
-            date_format=declared_format,
-            date_column=date_column,
-            additional_date_columns=additional_date_columns or None,
-            native_date_columns=native_date_columns,
+            df, file_type="excel", date_format=declared_format
         )
+        mapping_result = map_columns(detection_df, overrides=overrides)
 
-        mapping_result = map_columns(detection_df, overrides=overrides or None)
-
-        # (a) map_columns finds transaction_date, and -- when NOTHING is
-        # already declared -- a non-None auto-detected format. This is E1's
-        # exact scenario: no --date-format, so mapping_result.date_format is
-        # the ONLY source of a format, and _DATE_FORMATS (date_detection.py)
-        # is date-only, so it can only succeed if the detection copy handed
-        # it recognizable (rendered) content. A time-bearing declared_format
-        # is never in _DATE_FORMATS's fixed candidate list regardless of
-        # rendering -- that's a disclosed, pre-existing limit of
-        # auto-detection, not this candidate-selection fix -- so once a
-        # caller already declares a format, detect_date_format's own guess
-        # no longer matters: date_format_override wins outright downstream
-        # (see import_service.py's date_format_effective).
+        # (a) map_columns finds both fields, and -- when NOTHING is already
+        # declared -- a non-None auto-detected format. _DATE_FORMATS
+        # (date_detection.py) is date-only, so this only succeeds if the
+        # detection copy handed it recognizable (rendered) content. A
+        # time-bearing declared_format is never in _DATE_FORMATS's fixed
+        # candidate list regardless of rendering -- a disclosed,
+        # pre-existing limit of auto-detection -- so once a caller already
+        # declares a format, detect_date_format's own guess no longer
+        # matters: the declared format wins outright downstream.
         assert mapping_result.field_mapping.get("transaction_date") == "Date"
+        assert mapping_result.field_mapping.get("post_date") == "Post Date"
         if declared_format is None:
             assert mapping_result.date_format is not None, (
                 f"map_columns could not auto-detect a format for "
                 f"{transaction_date_role} transaction_date "
-                f"(mapped_upfront={mapped_upfront!r}) -- the exact E1 "
-                "regression"
+                f"(mapped_upfront={mapped_upfront!r})"
             )
 
         # (b) the imported frame parses with no NULLs in either date column.
@@ -1404,15 +1249,9 @@ class TestExcelDateCandidateColumnsFindEveryDateColumn:
             field_mapping=mapping_result.field_mapping,
             date_format=final_format,
         )
-        for dest_field, expected in (
-            ("transaction_date", _ROLE_DATES),
-            ("post_date", _POST_DATES),
-        ):
-            column = mapping_result.field_mapping.get(dest_field)
-            if column is None:
-                continue
+        for column, expected in (("Date", _ROLE_DATES), ("Post Date", _POST_DATES)):
             values = rendered[column].to_list()
-            assert None not in values, f"{dest_field} lost a value to NULL"
+            assert None not in values, f"{column} lost a value to NULL"
             for value, expected_date in zip(values, expected, strict=True):
                 assert (
                     datetime.datetime.strptime(value, final_format).date()
@@ -1530,9 +1369,7 @@ class TestNormalizeExcelDateCellInvariant:
         [
             "transaction_date_mapped_upfront",
             "post_date_mapped_upfront",
-            "only_post_date_mapped_upfront",
-            "neither_mapped_auto_detect",
-            "post_date_mapped_only_by_final_mapping",
+            "detection_copy_then_final_mapping",
         ],
     )
     def test_every_cell_kind_survives_or_rewrites_correctly(
@@ -1583,76 +1420,19 @@ class TestNormalizeExcelDateCellInvariant:
             assert normalized["Posted"].to_list() == posted_expected
             return
 
-        if column_role == "only_post_date_mapped_upfront":
-            # D's headline counterexample: a first-contact override names
-            # ONLY post_date. The detection copy must not touch the real
-            # frame's transaction_date column (not yet known to it), and
-            # the final render must still get both right once map_columns
-            # resolves transaction_date too.
-            df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
-            detection_df = normalize_excel_date_columns_for_detection(
-                df,
-                file_type="excel",
-                date_format=None,
-                date_column=None,
-                additional_date_columns=["Posted"],
-            )
-            assert detection_df["Date"].to_list() == date_col, (
-                "detection copy must not diverge from what the real frame "
-                "will render -- if it collapses Date on its own guess, "
-                "map_columns could detect the wrong format from it"
-            )
-            assert df["Date"].to_list() == date_col, "real frame must stay untouched"
-            normalized = normalize_excel_date_columns_after_mapping(
-                df,
-                file_type="excel",
-                field_mapping=full_mapping,
-                date_format=declared_format,
-            )
-            assert normalized["Date"].to_list() == expected_date
-            assert normalized["Posted"].to_list() == posted_expected
-            return
-
-        if column_role == "neither_mapped_auto_detect":
-            # No mapping known at all -- the detection copy runs its broad
-            # auto-detect scan (feeding map_columns's own discovery), but
-            # the real frame is still untouched until the final render.
-            df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
-            detection_df = normalize_excel_date_columns_for_detection(
-                df,
-                file_type="excel",
-                date_format=None,
-            )
-            assert df["Date"].to_list() == date_col, "real frame must stay untouched"
-            assert df["Posted"].to_list() == posted_col, (
-                "real frame must stay untouched"
-            )
-            del detection_df  # only used to prove it's a separate object above
-            normalized = normalize_excel_date_columns_after_mapping(
-                df,
-                file_type="excel",
-                field_mapping=full_mapping,
-                date_format=declared_format,
-            )
-            assert normalized["Date"].to_list() == expected_date
-            assert normalized["Posted"].to_list() == posted_expected
-            return
-
-        assert column_role == "post_date_mapped_only_by_final_mapping"
-        # Only transaction_date is known before mapping resolves (a partial
-        # first-contact override that names just the one column).
+        assert column_role == "detection_copy_then_final_mapping"
+        # normalize_excel_date_columns_for_detection takes no mapping input
+        # at all -- it renders its OWN copy's midnight-shaped cells
+        # unconditionally, regardless of what map_columns will later
+        # resolve. The real frame stays untouched until the one final
+        # render.
         df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
         detection_df = normalize_excel_date_columns_for_detection(
-            df, file_type="excel", date_format=None, date_column="Date"
+            df, file_type="excel", date_format=None
         )
-        assert detection_df["Posted"].to_list() == posted_col, (
-            "the detection copy must not touch a column outside the "
-            "caller's own known mapping"
-        )
-        assert df["Posted"].to_list() == posted_col, "real frame must stay untouched"
+        del detection_df  # only used to prove it's a separate object below
         assert df["Date"].to_list() == date_col, "real frame must stay untouched"
-        # map_columns later aliases "Posted" to post_date; the one render
-        # against the FINAL mapping must get both columns right.
+        assert df["Posted"].to_list() == posted_col, "real frame must stay untouched"
         normalized = normalize_excel_date_columns_after_mapping(
             df,
             file_type="excel",
@@ -1734,12 +1514,10 @@ class TestNormalizeExcelDateColumnsAfterMappingGrid:
     ) -> None:
         """A mapped column normalizes regardless of its own native/text mix.
 
-        ``_excel_native_date_columns`` excludes a column from its frozenset
-        when native cells are a MINORITY of the sample -- irrelevant here,
-        since ``normalize_excel_date_columns_after_mapping`` doesn't accept
-        ``native_date_columns`` at all: a mapped column is a date column
-        regardless of its own native/text mix, once the caller already
-        knows the mapping, so there is no membership check left to fail.
+        ``normalize_excel_date_columns_after_mapping`` renders per-cell, not
+        by a whole-column vote: a mapped column is a date column regardless
+        of its own native/text mix, once the caller already knows the
+        mapping, so there is no column-level membership check to fail.
         """
         df = pl.DataFrame({
             "Date": [
