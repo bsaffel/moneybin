@@ -1,6 +1,6 @@
 """sync_* MCP tools — Phase 1 implementations.
 
-Per docs/specs/2026-05-13-plaid-sync-design.md Section 11.
+Per docs/specs/sync-plaid.md. The client speaks only moneybin-sync's public API.
 
 Device authentication is a nonblocking variant of sync_link + sync_status;
 logout is the credential-state variant of sync_disconnect. sync_key_rotate

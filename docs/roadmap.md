@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-12 -->
 # Roadmap
 
 MoneyBin is pre-v1 and solo-maintained. The AGPL license guarantees the code
@@ -178,11 +178,11 @@ M3 layers packaging, distribution, and the web UI on top of the M1 engine and M2
 | Address | Area | Status | Notes |
 |---|---|---|---|
 | **M3A** | Evaluator/testing surface (**pulled forward**) | 🗓️ | `moneybin demo` preset + first-run wizard + a **narrow** Web review console (categorization/import/doctor/lineage), **built on M3L**. Ships early as a *testing/trust* surface so the M1 core is legible — but it's productization, hence M3. Demo preset + wizard are first-public-release items (see above). Demo preset shipped: [`demo-preset.md`](specs/demo-preset.md) (✅ `moneybin demo`). |
-| **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. The PyPI half is a first-public-release item; brew + `.mcpb` follow later. Packaging ladder + per-client blessed paths designed in [`ai-client-compatibility.md`](specs/ai-client-compatibility.md) (Claude Code plugin/marketplace, MCP Registry publish, install-badge deep links, Antigravity T1 install). |
+| **M3B** | Install & packaging | 🗓️ | PyPI Trusted Publishing + Homebrew formula + `.mcpb` bundle. The PyPI half is a first-public-release item; brew + `.mcpb` follow later. Packaging ladder + per-client blessed paths designed in [`ai-client-compatibility.md`](specs/ai-client-compatibility.md) (Claude Code plugin/marketplace, MCP Registry publish, install-badge deep links, Antigravity T1 install). At close, README/docs also add earned quality-gate trust signals (doctor, scenario suite, CI/security checks, privacy/redaction, audit/undo) per [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md) Requirement 19 — linked only when the underlying check exists and is inspectable. |
 | **M3C** | Full Web UI | 🗓️ | Extends the M3A console to the complete dashboard surface, backed by real domains; **built on M3L**. The same web UI is planned to run locally and on the hosted tier. |
 | **M3D** | Remote / HTTP MCP transport + auth | 🗓️ | Unlocks ChatGPT web (mobile MCP undocumented as of Jul 2026 — re-verify at M3D); identity via Auth0/OIDC, MoneyBin-owned authorization/consent. Auth design inputs (OAuth 2.1+PKCE floor, DCR→CIMD, Auth0-`OAuthProxy` vs WorkOS) in [`ai-client-compatibility.md`](specs/ai-client-compatibility.md). |
 | **M3E** | Migration guides | 🗓️ | Mint/Tiller/YNAB/Actual/Maybe/OFX; each gated on its import path being real. |
-| **M3F** | Doc polish + landing + screenshots + demo video | 🚧 | Earned positioning — after the core is real. [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md). |
+| **M3F** | Doc polish + landing + screenshots + demo video | 🚧 | Earned positioning — after the core is real. Doc polish shipped — [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md) (implemented). Landing page, screenshots, and demo video remain undone, gated on the founder reopening the public-preview posture question — see [Post-launch / Beyond v1](#post-launch--beyond-v1). |
 | **M3G** | Generated agent financial-context briefing | 🗓️ | Briefing layer from warehouse state; any MCP exposure remains unnamed until bounded-registry admission. |
 | **M3H** | Hosted launch | 🗓️ | Auth + billing + per-user encrypted DuckDB + GDPR + on-call. **Deployment choice, not the headline.** M3H close = v1. |
 | **M3I** | Extension contributor UX | 🗓️ | Scaffolders, validator, plugin bundle; in-tree provider Platinum sweep. |
@@ -210,6 +210,7 @@ Designed or noted, but not gating launch. Listed without commitment.
 - **FIRE / retirement projection** (Monte Carlo, Roth conversions, RMDs). A wealth analysis package on top of M1J — built only after the investment ledger is correct, never as a shallow dashboard.
 - **Multi-account-holder sharing / household ownership.** Single-user is the v1 posture; if adopted, modeled as core ownership bridges, not app-only filters.
 - **EU Open Banking / SimpleFIN** sync providers. After Plaid + one additional provider validate the sync framework.
+- **Public-preview landing page, screenshots, and demo video.** Not committed to any milestone; gated on the founder reopening the public-preview posture question. Scoped originally in [`user-facing-doc-polish.md`](specs/user-facing-doc-polish.md), whose docs-only scope shipped without them.
 
 ---
 

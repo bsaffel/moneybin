@@ -523,6 +523,50 @@ WHERE FALSE;
 """
 
 
+# The rate spine — three SQLMesh models (one VIEW, one FULL table, one VIEW) in
+# production. Column shapes mirror each model's final SELECT, in its projected
+# order. Stubbed here so the classification-completeness guard actually sees
+# them: it compares CLASSIFICATION against this synthetic catalog rather than a
+# SQLMesh-built one, so a table absent here is a table the guard cannot miss.
+CORE_FCT_EXCHANGE_RATES_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.fct_exchange_rates AS
+SELECT CAST(NULL AS VARCHAR) AS from_currency,
+       CAST(NULL AS VARCHAR) AS to_currency,
+       CAST(NULL AS VARCHAR) AS rate_source,
+       CAST(NULL AS VARCHAR) AS rate_vendor,
+       CAST(NULL AS DECIMAL(18, 8)) AS rate,
+       CAST(NULL AS DATE) AS rate_date,
+       CAST(NULL AS TIMESTAMP) AS updated_at
+WHERE FALSE;
+"""
+
+CORE_FCT_EXCHANGE_RATES_DAILY_DDL = """\
+CREATE TABLE IF NOT EXISTS core.fct_exchange_rates_daily (
+    from_currency VARCHAR,
+    to_currency VARCHAR,
+    rate_source VARCHAR,
+    rate_vendor VARCHAR,
+    rate DECIMAL(18, 8),
+    days_since_published INTEGER,
+    effective_date DATE,
+    published_date DATE
+);
+"""
+
+CORE_FCT_EXCHANGE_RATES_EFFECTIVE_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.fct_exchange_rates_effective AS
+SELECT CAST(NULL AS VARCHAR) AS from_currency,
+       CAST(NULL AS VARCHAR) AS to_currency,
+       CAST(NULL AS VARCHAR) AS rate_source,
+       CAST(NULL AS VARCHAR) AS rate_vendor,
+       CAST(NULL AS DECIMAL(18, 8)) AS rate,
+       CAST(NULL AS INTEGER) AS days_since_published,
+       CAST(NULL AS DATE) AS effective_date,
+       CAST(NULL AS DATE) AS published_date
+WHERE FALSE;
+"""
+
+
 def create_core_dim_stub_views(db: Database) -> None:
     """Materialize core.* SQLMesh-managed view/table stubs for testing.
 
@@ -544,6 +588,9 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
     db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
+    db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
+    db.execute(CORE_FCT_EXCHANGE_RATES_STUB_DDL)
+    db.execute(CORE_FCT_EXCHANGE_RATES_EFFECTIVE_STUB_DDL)
 
 
 def create_core_tables(db: Database) -> None:

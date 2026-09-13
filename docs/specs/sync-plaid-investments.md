@@ -125,9 +125,11 @@ reach the ledger, everything downstream is existing machinery.
    a successful load, `SyncService.pull()` runs the standard post-load refresh
    (same semantics, soft-fail behavior, and opt-outs as `sync-plaid.md`
    Requirement 10).
-10. **Connection status.** `app.sync_connections` reflects investments in its
-    per-institution counts and error details, same envelope as cash sync.
-    Investments-specific Plaid error codes map to actionable guidance (below).
+10. **Connection status.** moneybin-sync owns connection health. The client
+    reads `GET /institutions` through `SyncService.list_connections()` and
+    maps error codes to actionable guidance. `GET /sync/data` exposes one
+    `status`, `error`, and `error_code` per institution at
+    `metadata.institutions`; product-specific error detail is unimplemented.
 11. **No PII or financial data in logs.** Record counts, institution names,
     and masked identifiers only — no tickers-with-quantities, no amounts.
 12. **Registration.** Provider-owned raw DDL lands in
@@ -1229,9 +1231,9 @@ Extends the `sync-plaid.md` error table (all codes there still apply):
 | `PRODUCTS_NOT_SUPPORTED` | Institution/account doesn't support the investments product | "{institution} doesn't provide investment data through Plaid. Cash accounts still sync normally." |
 | `INVALID_PRODUCT` | Item lacks investments consent (linked before consent expansion) | "{institution} was linked before investment access — run `moneybin sync link` to re-consent." |
 
-A partial failure (investments errored, cash succeeded) is recorded
-per-product in the institution's `app.sync_connections` error details; cash
-data still loads.
+`GET /sync/data` reports one outcome per institution, not separate cash and
+investments outcomes. Product-specific partial-failure reporting is
+unimplemented.
 
 ---
 
@@ -1241,10 +1243,10 @@ data still loads.
 
 | Test area | What's tested |
 |---|---|
-| `PlaidInvestmentsLoader.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Replaying the same `source_file` is idempotent and preserves its receipt sequence; a different `job_id` writes a distinct receipt, reuses an identical content revision or appends a changed content revision, and never duplicates a same-grain receipt. |
+| `PlaidExtractor.load()` | Golden-file JSON → in-memory DuckDB: row counts, column values, metadata generation for all three tables. Empty arrays load cleanly. Replaying the same `source_file` is idempotent and preserves its receipt sequence; a different `job_id` writes a distinct receipt, reuses an identical content revision or appends a changed content revision, and never duplicates a same-grain receipt. |
 | M1J.7 transaction revision migration | Future matching slice 1: existing rows become first revisions and receipts with monotonic ingestion sequences; identical content reuses a revision while every distinct sync job records one idempotent receipt; replay preserves the original sequence; changing any matching or Golden-projected value appends a revision; A→B→A selects A from the third receipt without deleting B even when extraction timestamps tie; lineage-only changes do not create content revisions. |
 | Holdings snapshot receipt order | Distinct pulls with equal `metadata.synced_at` receive increasing `ingestion_sequence` values; first-snapshot bootstrap ranks holdings-bearing receipts per `(account_id, source_origin)`, including an account first delivered later, and newest-snapshot reconciliation selects the last applicable receipt, while same-job replay preserves the stored sequence and cannot rotate either anchor. |
-| `PlaidInvestmentsLoader.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
+| `PlaidExtractor.load()` — multi-item scoping | A **two-item** golden payload: (1) each item's own `transactions_window_start` (from its per-institution `metadata` result) is stamped onto **that item's** holdings rows, matched by `source_origin` — never one item's window flattened onto another's; (2) two items that share a provider-local `(account_id, security_id)` produce **distinct, non-colliding** `raw.plaid_investment_holdings` and `raw.plaid_investment_holding_lots` rows (PK includes `source_origin`), so neither newest-snapshot reconciliation nor the opening-lot bootstrap conflates them. |
 | `SecurityResolver` | Each ladder rung: adopt existing binding; CUSIP/ISIN exact → auto-bind (exchange irrelevant); ticker match with MIC normalization (`"NASDAQ"`↔`"XNAS"` normalize equal → bind; both-absent → bind on unique ticker; unnormalizable free-text exchange → treated as absent, binds not reviews; both-present-different-MIC → rung 3); **identifier tie** (one CUSIP/ISIN/ticker matching **more than one** catalog entry — exercised at two and at three) → provisional mint + one pending merge decision **per tied candidate** (`identifier_tie`), never auto-pick; **stripped-ticker hit** (`VOD.L`→`VOD`, share-class `HEI.A`→`HEI`, preferred `BAC-PL`→`BAC`) never auto-binds — provisional mint + `ticker_suffix_strip` decision per stem candidate, and a batch carrying both stem and share class mints **two** securities regardless of `security_id` order; fuzzy → provisional mint + bind + pending **merge** decision **per** equally-named catalog entry (a duplicate name never collapses to one); an in-batch provisional mint is an auto-bind target but is **never offered as a merge candidate** to a later row; mint with `created_by='plaid'`; merge-accept rebinds and removes the provisional row (audited); merge-reject keeps it; Guard-2 rejection (contradicting strong identifier); attribute refresh touches minted rows only; institution-scoped composite `ref_value`. |
 | Taxonomy mapping | Parametrized over the full mapping table — every Plaid (type, subtype) pair → expected (`type`, `subtype`), including every excluded-at-staging row. |
 | `doctor_service` — short-leg surface | Golden payload with `buy to cover`/`sell short` legs: they map to `other` (recorded, kept out of the lot engine — no spurious long lot, no oversold phantom gain), and `system doctor` reports them as unmodeled short activity — surfaced, never silently dropped. |
@@ -1278,7 +1280,7 @@ transactions), which also seed the golden files.
 
 | File | Purpose |
 |---|---|
-| `src/moneybin/loaders/plaid_investments_loader.py` | `PlaidInvestmentsLoader`: JSON arrays → the four raw tables |
+| `src/moneybin/extractors/plaid/extractor.py` | Extend the existing `PlaidExtractor`: optional investment arrays → the raw tables |
 | `src/moneybin/services/security_resolver.py` | `SecurityResolver` adopt-or-mint ladder |
 | `src/moneybin/repositories/security_links_repo.py` | Binding + decision writes (Invariant 10; audit-emitting); merge-accept also migrates `app.lot_selections` |
 | `src/moneybin/extractors/plaid/schema/raw_plaid_securities.sql` | DDL — provider-owned raw, in the Plaid extractor's schema dir (auto-discovered) |
@@ -1296,7 +1298,7 @@ transactions), which also seed the golden files.
 | `src/moneybin/sqlmesh/models/prep/stg_plaid__opening_lots.sql` | Opening-lot bootstrap anchored to the first holdings-bearing snapshot per `(account_id, source_origin)`, ranked after the receipt-to-holdings join by `(extracted_at ASC, ingestion_sequence ASC)`; the selected receipt supplies the unique `source_file`. Draw the gap `G` from pre-window `tax_lots[]` (dated `< transactions_window_start`) oldest-first, residual `basis_incomplete` dated before `W`, dual-date (trade before `W`, real acquisition date), guards for short/split → synthetic `opening_bootstrap` `transfer_in`s into the ledger union |
 | `seeds/exchange_mic_map.csv` (+ SQLMesh seed model) | MIC↔common-name registry for exchange normalization; the few dozen exchanges a personal portfolio touches, extensible |
 | Migration (next free `V0xx`) | `app.securities.created_by`; new app tables; core column additions |
-| `tests/moneybin/test_extractors/fixtures/plaid_investments_sync_response.yaml` | Loader fixture, hand-authored to the server contract. Not a Sandbox capture: Sandbox investment payloads are captured on the moneybin-sync side, and none of them carries a `transfer/split` row |
+| `tests/moneybin/test_extractors/fixtures/plaid_investments_sync_response.yaml` | Extractor fixture, hand-authored to the server contract. Not a Sandbox capture: Sandbox investment payloads are captured on the moneybin-sync side, and none of them carries a `transfer/split` row |
 | Unit/SQL test modules | Per the testing strategy |
 
 ### Files to modify
@@ -1308,9 +1310,9 @@ transactions), which also seed the golden files.
 | `src/moneybin/sqlmesh/models/core/dim_securities.sql` | Supersede the union comment (no structural change) |
 | `src/moneybin/repositories/securities_repo.py` | Add `created_by` to the repo's column list so mint/refresh writes go through `SecuritiesRepo` (Invariant 10 — the only `app.securities` write path); the resolver's "never touch `created_by='user'` rows" rule is enforced here, not in the service |
 | `src/moneybin/schema.py` | Add the two `app.security_link*` files to `_NON_PROVIDER_SCHEMA_FILES` (the four raw DDL files auto-discover from the Plaid extractor's schema dir — no edit needed) |
-| `src/moneybin/services/sync_service.py` | Invoke `PlaidInvestmentsLoader` + `SecurityResolver` in `pull()` (load → resolve → refresh) |
+| `src/moneybin/services/sync_service.py` | Use the existing `PlaidExtractor` and invoke `SecurityResolver` in `pull()` (load → resolve → refresh) |
 | `src/moneybin/services/doctor_service.py` | **Nine** investment reconciliation checks: staging rows held out of the ledger for review (`split_underivable` / `unmapped_subtype`); opening-lot-bootstrap positions the bootstrap declined to synthesize (short/split/negative-gap); unmodeled legs stripped of ledger quantity (short/option/adjustment); engine-derived held lots diverging from the `tax_lots` snapshot; manual-and-Plaid source overlap on one account; unresolved (pending-review) securities; one provider security bound to two canonical securities; positions Plaid reports holding but the ledger never opened; and phantom holdings the ledger carries but the newest snapshot no longer reports |
-| `src/moneybin/loaders/plaid_loader.py` or shared response model | Extend `SyncDataResponse` with the three optional arrays |
+| `src/moneybin/connectors/sync_models.py` and `src/moneybin/extractors/plaid/extractor.py` | `SyncDataResponse` carries the three optional arrays; `PlaidExtractor` loads them |
 | `src/moneybin/connectors/sync_models.py` | `PullResult`: carry the per-outcome security-resolution counts (adopted / auto-bound / proposed / minted / pending) in the pull envelope — resolution is a reported stage, not a silent side effect |
 | `src/moneybin/cli/commands/sync.py` | `sync pull` output: render those counts, naming the pending-decision command whenever an identity is awaiting review |
 | Review sweep (CLI `moneybin review` / MCP `reviews(kind="summary")`) | Add `security_links_pending` count |
@@ -1406,7 +1408,7 @@ contract above is its specification.
   review on this spec's PR; the original propose-without-mint shape was a
   correctness bug.)
 - **Raw keys scoped by `source_origin`, not `source_file`.** The implemented
-  loader matches the shipped cash tables (the `sync-plaid.md` doc had drifted
+  extractor matches the shipped cash tables (the `sync-plaid.md` doc had drifted
   from the implementation — corrected alongside this spec): overlapping
   date-range pulls re-deliver the same provider rows, and origin-scoped keys
   currently make re-delivery a replace instead of a duplicate that would

@@ -300,9 +300,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         Closes land in raw.security_prices and holdings value from core, so
 |   |   |         a pull alone changes no reported value. --refresh rebuilds the
 |   |   |         transform step in the same command; without it the success line
-|   |   |         names `refresh run`. A failed apply exits 1 in both output modes --
-|   |   |         the rows are already committed, so the retry is a bare `refresh
-|   |   |         run`, never a re-pull against the provider's rate limit.
+|   |   |         names `refresh`. A failed apply exits 1 in both output modes --
+|   |   |         the rows are already committed, so the retry is a bare `refresh`,
+|   |   |         never a re-pull against the provider's rate limit.
 |   |   |         --since further back than 365 days is refused for crypto, naming the
 |   |   |         earliest date CoinGecko's keyless tier serves: narrowing the window
 |   |   |         silently returned one year and reported a full backfill. The refusal
@@ -317,7 +317,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |   |         a worthless position is a ledger event, not a zero price.
 |   |   |         Crosses the same app/core boundary `pull` does -- the mark lands in
 |   |   |         app.security_price_overrides while holdings value from core -- so it
-|   |   |         carries the same --refresh flag, the same `refresh run` hint, and the
+|   |   |         carries the same --refresh flag, the same `refresh` hint, and the
 |   |   |         same non-zero exit on a failed apply.
 |   |   |         --currency defaults to the currency the position is held in, not a
 |   |   |         fixed USD: core.dim_holdings values a position only where the price's
