@@ -38,6 +38,10 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import (
+    resolve_curation_transaction_id,
+    resolve_curation_transaction_ids,
+)
 from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
@@ -431,7 +435,8 @@ class MatchApplier:
 
         Captures the prior row (or NULL) as ``before`` and the new shape as
         ``after`` so the audit trail can reconstruct overwrites. Mutation +
-        audit row commit atomically.
+        audit row commit atomically. Resolution happens once, inside
+        :meth:`set_category_in_active_txn`.
         """
         with self._transaction():
             self.set_category_in_active_txn(
@@ -450,6 +455,7 @@ class MatchApplier:
         subcategory: str | None,
         categorized_by: Literal["user"] = "user",
         actor: str,
+        resolve_transaction_id: bool = True,
     ) -> None:
         """``set_category`` body without txn boundaries.
 
@@ -462,7 +468,25 @@ class MatchApplier:
         admitting a lower-priority source here would let it silently overwrite
         a higher-priority existing categorization. New callers needing a
         non-user write must route through :meth:`write_categorization`.
+
+        ``resolve_transaction_id=True`` (default) resolves ``transaction_id``
+        through the shared curation seam first (issue #538) — the safety net
+        for :meth:`set_category`'s single caller-supplied id. Safe for
+        ``TransactionService.create_manual_batch``'s pre-materialization write
+        too: the resolver's liveness check also accepts a row still only in
+        ``raw.manual_transactions`` (the manual entry's own raw insert,
+        already committed by the time this runs), the same allowance the
+        doctor's ``orphan_app_state`` invariant makes. ``create_manual_batch``
+        instead passes ``resolve_transaction_id=False`` for the ids it just
+        minted in that same call (mirroring :meth:`write_categorization`'s
+        identical fast path): they cannot possibly be aliased yet, so
+        resolving up to ``_MANUAL_BATCH_MAX`` of them one at a time in a loop
+        would be exactly the per-row cost
+        :func:`resolve_curation_transaction_id`'s own docstring calls
+        disqualifying at batch scale, for zero benefit.
         """
+        if resolve_transaction_id:
+            transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         category_id = resolve_category_id(self._db, category, subcategory)
         # Routes through the repo (paired audit, full before/after — Req 4).
         # in_outer_txn=True: the caller already owns the transaction.
@@ -480,8 +504,16 @@ class MatchApplier:
         """Delete a transaction's category row and emit ``category.clear`` audit.
 
         Routes through the repo (full before-row capture, Req 4). No-op (and no
-        audit event) when no row exists.
+        audit event) when no row exists. ``transaction_id`` is resolved
+        through the shared curation seam first (issue #538) — permissively
+        (``required=False``): clearing removes state rather than creating it,
+        so it must stay a safe no-op on an id that names no live transaction
+        (orphan cleanup) instead of refusing, per the seam's add-vs-remove
+        asymmetry (see :func:`resolve_curation_transaction_id`).
         """
+        transaction_id = resolve_curation_transaction_id(
+            self._db, transaction_id, required=False
+        )
         self._tx_categories.clear(transaction_id, actor=actor)
 
     # -- Merchant management --
@@ -2006,6 +2038,7 @@ class MatchApplier:
         confidence: float | None = None,
         source_type: str = "internal",
         in_outer_txn: bool = False,
+        resolve_transaction_id: bool = True,
     ) -> WriteOutcome:
         """Insert or replace a categorization, respecting source precedence.
 
@@ -2015,6 +2048,18 @@ class MatchApplier:
         write succeeds only if its source priority is ≤ the existing row's;
         otherwise the existing row stands and the
         ``CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL`` metric is incremented.
+
+        ``resolve_transaction_id=True`` (default) resolves ``transaction_id``
+        through the shared curation seam (issue #538) — the safety net for a
+        genuine single-row caller. A loop caller that already bulk-resolved
+        its whole batch via :func:`resolve_curation_transaction_ids` passes
+        ``resolve_transaction_id=False`` with the already-live id, so the
+        loop pays one bulk liveness query instead of one ``execute()`` per
+        iteration (issue #538 perf follow-up — see
+        :func:`resolve_curation_transaction_id`'s docstring for the measured
+        cost of the per-row alternative). This is an internal fast path, not
+        a second resolution mechanism: it trusts the caller, it doesn't skip
+        resolution's meaning.
 
         Returns:
             ``WriteOutcome.written=True`` if the write took effect (insert or
@@ -2027,12 +2072,21 @@ class MatchApplier:
                 :func:`priority_case_sql`), so an unknown source would silently
                 resolve to NULL priority and never overwrite — fail loudly
                 instead of letting a typo masquerade as a precedence skip.
+            UserError(code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND): neither
+                ``transaction_id`` nor anything it forwards to names a live
+                transaction. Only raised when ``resolve_transaction_id=True``.
         """
         if categorized_by not in SOURCE_PRIORITY:
             raise ValueError(
                 f"Unknown categorized_by={categorized_by!r}; "
                 f"must be one of {sorted(SOURCE_PRIORITY)}"
             )
+        # Resolved here — not by each caller — so every guarded write shares
+        # the seam (issue #538). transactions_categorize_commit's caller-
+        # supplied ids are what this protects; loop callers bulk-resolve
+        # ahead of time and pass resolve_transaction_id=False (see param doc).
+        if resolve_transaction_id:
+            transaction_id = resolve_curation_transaction_id(self._db, transaction_id)
         # FK is paired with text on identical precedence terms. The repo owns
         # the precedence-guarded upsert + paired audit; a precedence-skipped
         # write returns None (no mutation, no audit). Engine writes record their
@@ -2071,9 +2125,34 @@ class MatchApplier:
     def write_categorizations(
         self, categorizations: list[dict[str, object]]
     ) -> set[str]:
-        """Apply engine categorizations as one guarded, audited batch."""
+        """Apply engine categorizations as one guarded, audited batch.
+
+        Every ``transaction_id`` is resolved through the shared curation seam
+        first (issue #538) — same seam as :meth:`write_categorization`, so a
+        superseded id can never land a category row on a dead id. Resolved as
+        one bulk call via :func:`resolve_curation_transaction_ids` rather than
+        one ``execute()`` per row: this method's whole purpose is batching, so
+        a per-row liveness check here would turn a bulk write into O(n) query
+        round trips (issue #538 perf follow-up — see
+        :func:`resolve_curation_transaction_id`'s docstring for the measured
+        cost). The engine batch callers (``apply_rules``,
+        ``apply_merchant_categories``) source every id from a fresh
+        ``core.fct_transactions`` scan, so the bulk liveness check resolves
+        the whole batch in one query with no per-id fallback needed.
+
+        Raises:
+            UserError(code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND): a
+                batch member's ``transaction_id`` names no live transaction.
+        """
         if not categorizations:
             return set()
+        resolved_ids = resolve_curation_transaction_ids(
+            self._db,
+            (
+                str(categorization["transaction_id"])
+                for categorization in categorizations
+            ),
+        )
         prepared: list[dict[str, object]] = []
         category_ids: dict[tuple[str, str | None], str | None] = {}
         for categorization in categorizations:
@@ -2083,6 +2162,13 @@ class MatchApplier:
                     f"Unknown categorized_by={categorized_by!r}; "
                     f"must be one of {sorted(SOURCE_PRIORITY)}"
                 )
+            raw_transaction_id = str(categorization["transaction_id"])
+            if raw_transaction_id not in resolved_ids:
+                raise UserError(
+                    "The transaction reference did not match a transaction.",
+                    code=error_codes.TRANSACTION_REFERENCE_NOT_FOUND,
+                )
+            transaction_id = resolved_ids[raw_transaction_id]
             category_key = (
                 str(categorization["category"]),
                 cast("str | None", categorization["subcategory"]),
@@ -2093,6 +2179,7 @@ class MatchApplier:
                 )
             prepared.append({
                 **categorization,
+                "transaction_id": transaction_id,
                 "category_id": category_ids[category_key],
             })
         written = self._tx_categories.upsert_guarded_many(prepared, actor="system")
