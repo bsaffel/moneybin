@@ -103,6 +103,13 @@ def effective_template(
         db, from_currency="USD", to_currency="GGG", rate_date="2026-01-12", rate="4.000"
     )
 
+    # A real observation dated exactly on a Saturday -- no shipped adapter
+    # writes one today, but the weekend-hop arm must not outrank it if one
+    # ever does.
+    _insert_provider(
+        db, from_currency="USD", to_currency="HHH", rate_date="2026-01-10", rate="5.000"
+    )
+
     # GBP->USD: no provider coverage at all, for the uncovered-override case.
 
     with sqlmesh_context(db) as ctx:
@@ -467,3 +474,41 @@ def test_an_override_on_a_gap_friday_carries_into_the_weekend(db: Database) -> N
         assert resolved.source == "override"
         assert resolved.rate == Decimal(str(sql_row[2]))
         assert resolved.rate_date == date(2026, 1, 9)
+
+
+@pytest.mark.slow
+def test_an_exact_weekend_observation_outranks_a_friday_override(
+    db: Database,
+) -> None:
+    """A real same-day weekend publication wins over the calendar-Friday hop.
+
+    USD/HHH carries a genuine provider observation dated exactly on a
+    Saturday (2026-01-10) -- no shipped adapter writes one today, but the
+    weekend-hop arm (rule 2) must not manufacture a wrong answer if one ever
+    does. `_stored_rate(on)` checks the exact requested day BEFORE ever
+    falling back to `_last_publication_day`'s Friday lookup, so an override
+    on the preceding Friday must not outrank a real Saturday publication.
+
+    Measured directly against `resolve_rate`, not asserted from reading the
+    SQL alone.
+    """
+    _insert_override(
+        db, from_currency="USD", to_currency="HHH", rate_date="2026-01-09", rate="9.999"
+    )
+
+    row = db.execute(
+        "SELECT effective_date, published_date, rate, rate_source, rate_vendor "
+        "FROM core.fct_exchange_rates_effective "
+        "WHERE from_currency = 'USD' AND to_currency = 'HHH' AND effective_date = '2026-01-10'"
+    ).fetchone()
+    assert row is not None
+    assert str(row[1]) == "2026-01-10"
+    assert float(row[2]) == pytest.approx(5.000)  # type: ignore[reportUnknownArgumentType]  # pytest.approx stubs incomplete
+    assert row[3] == "provider"
+    assert row[4] == "frankfurter"
+
+    service = CurrencyService(db, adapter=None)
+    resolved = service.resolve_rate("USD", "HHH", date(2026, 1, 10))
+    assert resolved.source == "frankfurter"
+    assert resolved.rate == Decimal(str(row[2]))
+    assert resolved.rate_date == date(2026, 1, 10)

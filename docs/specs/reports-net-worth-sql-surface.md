@@ -409,16 +409,24 @@ Four rules, in this precedence, reproduce `_stored_rate`:
 1. **An override on the `effective_date` itself wins** — `_stored_rate`'s
    exact-day check. `published_date` becomes that day and
    `days_since_published` is 0: the user priced the day itself.
-2. **Otherwise, on a Saturday or Sunday, an override on the calendar Friday
-   immediately before it wins** — `_last_publication_day`'s weekend hop, a
-   function of the calendar date asked about rather than of whatever
-   `published_date` the daily spine happens to record for that row.
-   `_stored_rate(Friday)` checks the override table before ever touching the
-   daily spine's own carry, so a Friday override reaches the weekend it hops
-   to even when Friday itself was never a provider publication day — a gap
-   the daily spine carries straight through from the prior observation.
-   `published_date` becomes that Friday and `days_since_published` counts
-   from it (1 for Saturday, 2 for Sunday).
+2. **Otherwise, on a Saturday or Sunday row that is itself CARRIED from an
+   earlier publication (`published_date <> effective_date`) — never on a
+   weekend row that is a genuine same-day observation — an override on the
+   calendar Friday immediately before it wins.** This is
+   `_last_publication_day`'s weekend hop, a function of the calendar date
+   asked about rather than of whatever `published_date` the daily spine
+   happens to record for that row. `_stored_rate(Friday)` checks the
+   override table before ever touching the daily spine's own carry, so a
+   Friday override reaches the weekend it hops to even when Friday itself
+   was never a provider publication day — a gap the daily spine carries
+   straight through from the prior observation. `published_date` becomes
+   that Friday and `days_since_published` counts from it (1 for Saturday, 2
+   for Sunday). The carried-row restriction exists because `_stored_rate`
+   checks the exact requested day first: a vendor observation dated
+   precisely on a Saturday or Sunday already answers `resolve_rate` on its
+   own, and a Friday correction must not outrank it — no shipped adapter
+   writes such a row today, but the view must not manufacture the wrong
+   answer for it if that changes.
 3. **Otherwise an override on the row's `published_date` wins** — the same
    exact-day check reached through the ordinary carry-forward. A corrected
    publication prices every day carrying from it, weekend or interior

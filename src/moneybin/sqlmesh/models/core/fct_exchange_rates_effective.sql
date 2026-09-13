@@ -19,17 +19,25 @@
    1. An override on the effective_date itself wins — _stored_rate's exact-day
       check. published_date becomes that day and days_since_published is 0:
       the user priced the day itself.
-   2. Otherwise, on a Saturday or Sunday, an override on the calendar Friday
-      immediately before it wins — _last_publication_day's weekend hop, which
-      is a function of the calendar date asked about, not of what
-      core.fct_exchange_rates_daily happens to record as this row's
-      published_date. _stored_rate(Friday) checks the override table before
-      ever touching the daily spine's own notion of what Friday carries from,
-      so a Friday override applies to the weekend it hops to even when Friday
-      itself was never a provider publication day — a gap the daily spine
-      carries straight through from the prior observation. published_date
-      becomes that Friday and days_since_published counts from it (1 for
-      Saturday, 2 for Sunday). This is distinct from rule 3 below: it fires
+   2. Otherwise, on a Saturday or Sunday whose row is CARRIED from an earlier
+      publication (published_date <> effective_date) — never on a weekend row
+      that is itself a genuine same-day observation — an override on the
+      calendar Friday immediately before it wins. This is
+      _last_publication_day's weekend hop, a function of the calendar date
+      asked about, not of what core.fct_exchange_rates_daily happens to
+      record as this row's published_date. _stored_rate(Friday) checks the
+      override table before ever touching the daily spine's own notion of
+      what Friday carries from, so a Friday override applies to the weekend
+      it hops to even when Friday itself was never a provider publication
+      day — a gap the daily spine carries straight through from the prior
+      observation. published_date becomes that Friday and
+      days_since_published counts from it (1 for Saturday, 2 for Sunday).
+      The carried-row restriction exists because _stored_rate(on) checks the
+      EXACT requested day first: a vendor observation dated precisely on a
+      Saturday or Sunday already answers resolve_rate on its own, and a
+      Friday correction must not outrank it (no shipped adapter writes such
+      a row today, but the view must not manufacture the wrong answer for it
+      if that changes). This rule is distinct from rule 3 below: it fires
       only for the two weekend days, and only against the exact calendar
       Friday, never an earlier weekday.
    3. Otherwise an override on the row's published_date wins — the same
@@ -118,10 +126,23 @@ WITH daily_with_overrides AS (
      Saturday/Sunday row, independent of whatever core.fct_exchange_rates_daily
      recorded as this row's own published_date. ISODOW 6/7 = Saturday/Sunday;
      every other day never matches (rate_date is never NULL, but the CASE
-     forces NULL on a non-weekend day so it cannot coincide with one). */
+     forces NULL on a non-weekend day so it cannot coincide with one).
+
+     d.published_date <> d.effective_date is load-bearing: it fires only when
+     this weekend row is actually CARRIED from an earlier publication, never
+     when the row is itself a genuine same-day observation (published_date =
+     effective_date there). _stored_rate(on) checks the exact requested day
+     before ever falling back to the Friday lookup, so a real vendor
+     observation dated exactly on a weekend already answers resolve_rate on
+     its own — a Friday correction must not outrank it. No shipped adapter
+     currently writes such a row (every one folds a weekend request back to
+     the preceding business day before storing it), so this guards an
+     input the view must not manufacture the wrong answer for if that ever
+     changes, not a case exercised in production today. */
   LEFT JOIN app.exchange_rate_overrides AS ow
     ON ow.from_currency = d.from_currency
     AND ow.to_currency = d.to_currency
+    AND d.published_date <> d.effective_date
     AND ow.rate_date = CASE ISODOW(d.effective_date)
       WHEN 6
       THEN d.effective_date - INTERVAL '1' DAY
