@@ -3205,6 +3205,20 @@ class ImportService:
                         # *values* are the problem — with no date column at all,
                         # --date-format is useless and a mapping override is
                         # the real recovery.
+                        #
+                        # Deliberately NOT passing header_position_ambiguous
+                        # here (default False): unlike the first-contact
+                        # branch below, a reviewed_plan replay's preview
+                        # already surfaced reviewed_plan.header_position_
+                        # ambiguous as its own visible field before the
+                        # caller ever chose to call import_confirm — calling
+                        # confirm on a plan that showed it IS the
+                        # ratification (see ConfirmationRequired's
+                        # docstring). This refusal's real, still-open cause
+                        # is the mapping confidence gate above (Req 4: low
+                        # is never auto-acceptable, even replayed); naming
+                        # the header question again here would misdirect the
+                        # caller back to something already answered.
                         reason=classify_unconfirmable_plan(
                             header_row_looks_like_data=(
                                 reviewed_plan.header_row_looks_like_data
@@ -3396,11 +3410,21 @@ class ImportService:
                         proposed=proposed,
                         # See the reviewed-plan branch: a file with no date
                         # column mapped is a mapping problem, not a format one.
+                        # header_position_ambiguous is gated to "not confirm"
+                        # here (see classify_unconfirmable_plan's own
+                        # docstring on why it cannot self-gate): if the
+                        # caller already passed confirm=True, this reason
+                        # would misdirect them back to a question they
+                        # already answered instead of the real remaining
+                        # blocker (no readable date column).
                         reason=classify_unconfirmable_plan(
                             header_row_looks_like_data=False,
                             date_format=None,
                             field_mapping=proposed.field_mapping,
                             flagged_fields=list(mapping_result.flagged_fields),
+                            header_position_ambiguous=(
+                                read_result.header_position_ambiguous and not confirm
+                            ),
                         ),
                         samples=dict(proposed.sample_values),
                     )
@@ -3428,23 +3452,32 @@ class ImportService:
                     emit_metrics=emit_metrics,
                     observations=observations,
                 )
-                # resolve_or_confirm refuses a low tier with its own generic
-                # reason, and a consumed header row is what pinned the tier —
-                # so re-classify before raising, or every surface prescribes a
-                # mapping retry for the one cause no mapping answers. In THIS
-                # `else:` branch (matched_format is None, reviewed_plan is
-                # None), read_result.header_row_looks_like_data is always
-                # False: it was computed from the read_file() call above using
-                # the pre-header-matching matched_format, which is None here,
-                # so skip_rows was None and both readers' auto-detection path
-                # never flags a data-looking row. The header_row_looks_like_data
-                # arm of classify_unconfirmable_plan is therefore unreachable
-                # from this exact call site — it stays wired here as
-                # defense-in-depth for the shared classifier, which the
-                # `reviewed_plan is not None` and `elif matched_format:`
-                # branches above DO reach with True for a saved/matched format
-                # whose explicit skip_rows lands on a row that itself parses
-                # as a transaction.
+                # resolve_or_confirm returns "unknown_layout" generically —
+                # both for its own low-tier refusal AND for its ordinary
+                # "first contact always confirms" fallback (no signal, not
+                # self-accepted) — so re-classify before raising, or every
+                # surface prescribes a mapping retry for a cause a mapping
+                # retry cannot answer. In THIS `else:` branch (matched_format
+                # is None, reviewed_plan is None), read_result.header_row_
+                # looks_like_data is always False: it was computed from the
+                # read_file() call above using the pre-header-matching
+                # matched_format, which is None here, so skip_rows was None
+                # and both readers' auto-detection path never flags a
+                # data-looking row AS THE HEADER ITSELF. The header_row_
+                # looks_like_data arm of classify_unconfirmable_plan is
+                # therefore unreachable from this exact call site — it stays
+                # wired here as defense-in-depth for the shared classifier,
+                # which the `reviewed_plan is not None` and `elif
+                # matched_format:` branches above DO reach with True for a
+                # saved/matched format whose explicit skip_rows lands on a
+                # row that itself parses as a transaction.
+                #
+                # read_result.header_position_ambiguous, by contrast, IS
+                # reachable here — auto-detection's own red flag, unrelated
+                # to an explicit skip_rows — which is exactly the gap Codex
+                # P1 (round 9) found: this branch's ordinary first-contact
+                # confirmation request named no reason at all for it before
+                # this classify_unconfirmable_plan call could see it.
                 raise ImportConfirmationRequiredError(
                     dataclasses.replace(
                         outcome,
@@ -3457,6 +3490,26 @@ class ImportService:
                             if isinstance(outcome.proposed, ProposedMapping)
                             else dict(mapping_result.field_mapping),
                             flagged_fields=list(mapping_result.flagged_fields),
+                            # Gated to "not confirm" — see
+                            # classify_unconfirmable_plan's docstring. This
+                            # is the site Codex P1 (round 9) named directly:
+                            # a first-contact file with leading transaction-
+                            # like rows and NO signal always reaches here
+                            # with outcome.reason == "unknown_layout" (rule
+                            # 5's ordinary "first contact always confirms"
+                            # fallback, per resolve_or_confirm's own
+                            # docstring — not something a low tier or a
+                            # missing field caused). Reclassifying HERE, as
+                            # part of naming the reason, means the caller's
+                            # first message already names the header
+                            # inference instead of a generic "unknown
+                            # layout, pass --confirm" that never mentions
+                            # it — closing the gap where confirm=True was
+                            # accepted as ratification of a risk the user
+                            # was never shown.
+                            header_position_ambiguous=(
+                                read_result.header_position_ambiguous and not confirm
+                            ),
                         ),
                     )
                     if outcome.reason == "unknown_layout"

@@ -758,18 +758,24 @@ class TestTabularConfirmationFlow:
         consumed``, which is UNCONFIRMABLE by design — that blocked a
         legitimate summary-row file even with ``confirm=True``).
 
-        On first contact, an unconfirmed mapping refuses as ``unknown_layout``
-        before the header-ambiguity gate is ever reached (Req 4: no
-        auto-accept without a signal) — that refusal is the generic "nothing
-        was confirmed yet" gate, not evidence about header ambiguity
-        specifically. ``test_matched_format_header_position_ambiguous_is_
-        dismissible`` below isolates the header-ambiguity gate itself via a
+        On first contact, an unconfirmed mapping ALWAYS reaches
+        `resolve_or_confirm`'s own `ConfirmationRequired` (a human caller
+        with no signal never self-accepts, per Req 4) — but
+        `classify_unconfirmable_plan` now reclassifies that generic outcome
+        into `header_position_ambiguous` whenever the signal is present, so
+        the caller's FIRST message already names the header inference
+        instead of a generic "unknown layout, pass --confirm" (Codex P1,
+        round 9: that generic message let confirm=True get accepted as
+        ratification of a risk the user was never shown — dismissible, but
+        uninformative, which design-principles.md "Magic stays visible"
+        treats as equivalent to silent).
+        `test_matched_format_header_position_ambiguous_is_dismissible`
+        below isolates the LATER, Resolved-outcome gate via a
         matched_format import, which bypasses resolve_or_confirm entirely.
-        What THIS test pins is the end state: with ``confirm=True`` the file
-        imports, ratifying the detected header position — still not silent,
-        since the row(s) treated as preamble are exactly the ones the caller
-        confirmed away.
         """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
         from moneybin.services.import_service import ImportService
 
         csv = tmp_path / "data_before_header.csv"
@@ -781,12 +787,23 @@ class TestTabularConfirmationFlow:
             encoding="utf-8",
         )
 
+        # The caller's first message must already name the real inference.
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=False,
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_position_ambiguous"
+
         # Before the header_position_ambiguous fix, this raised
         # header_row_consumed and confirm=True could not clear it — the
-        # regression this round's coordinator flagged.
+        # regression an earlier round's coordinator flagged.
         result = ImportService(db).import_file(
             csv,
-            account_name="test",
+            account_name="test2",
             refresh=False,
             confirm=True,
             save_format=False,

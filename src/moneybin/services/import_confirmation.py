@@ -308,6 +308,7 @@ def classify_unconfirmable_plan(
     date_format: str | None,
     field_mapping: dict[str, str],
     flagged_fields: list[str],
+    header_position_ambiguous: bool = False,
 ) -> ConfirmationReason:
     """Name the cause a caller's next action has to answer.
 
@@ -320,15 +321,46 @@ def classify_unconfirmable_plan(
     Precedence is by what the caller can actually do:
 
     1. A consumed header row — no input touches it, so it outranks everything.
-    2. A missing required destination — the date recoveries remap a column or
+    2. An unconfirmed ambiguous header position — structural, like #1, but
+       (unlike #1) the caller CAN clear it, with confirm=True. Ranked above
+       the mapping-quality checks below because a wrong header-position guess
+       means the mapping was scored against possibly-wrong rows in the first
+       place; the mapping question is moot until the header question is
+       answered.
+    3. A missing required destination — the date recoveries remap a column or
        supply a format, and neither supplies a field that is absent.
-    3. An unreadable date on a *mapped* column — remap it or name its format.
-    4. Otherwise a plain mapping correction.
+    4. An unreadable date on a *mapped* column — remap it or name its format.
+    5. Otherwise a plain mapping correction.
+
+    `header_position_ambiguous` MUST already be gated by the caller to
+    "present AND not yet ratified" (see `ReadResult.header_position_
+    ambiguous`'s docstring in readers.py, and this reason's own docstring on
+    `ConfirmationRequired` for what ratifies it) — this function has no
+    access to `confirm`/`reviewed_plan` to gate it itself, and a caller that
+    passes the raw unconditional flag would reclassify a SECOND, already-
+    ratified confirm() call away from its real remaining blocker (e.g. a
+    still-missing required field) and back onto a question the caller
+    already answered.
+
+    Codex P1 (round 9): before this parameter existed, `resolve_or_confirm`'s
+    own `ConfirmationRequired` (reason="unknown_layout", the ordinary "first
+    contact always confirms" outcome for a human caller with no signal) was
+    raised as-is, so a first-contact file with leading transaction-like rows
+    showed a generic "pass --confirm" message that never mentioned them.
+    Following that advice set confirm=True, which a LATER, separate gate
+    then read as ratification of an inference the user was never shown —
+    dismissible, but uninformative, which `design-principles.md` "Magic
+    stays visible" treats as equivalent to silent. Reclassifying here, as
+    part of naming the reason in the first place, removes the ordering
+    question entirely: there is no later gate position left to get wrong,
+    because the true reason is what gets raised the first time.
     """
     from moneybin.extractors.tabular.column_mapper import score_mapping
 
     if header_row_looks_like_data:
         return "header_row_consumed"
+    if header_position_ambiguous:
+        return "header_position_ambiguous"
     _, missing_required = score_mapping(field_mapping, flagged_fields, date_format)
     if missing_required:
         return "unknown_layout"

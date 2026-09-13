@@ -1169,7 +1169,11 @@ def import_preview_coarse(
     # One classifier, shared with both service branches: which recovery a plan
     # needs was decided three separate ways and corrected one site at a time,
     # and each divergence shipped a hint that could not resolve the refusal it
-    # accompanied.
+    # accompanied. Deliberately NOT passing header_position_ambiguous
+    # (default False): this preview's own data.header_position_ambiguous
+    # field already disclosed the ambiguity before the caller chose to call
+    # import_confirm — see classify_unconfirmable_plan's docstring and the
+    # matching comment on the service's reviewed-plan branch.
     plan_reason = (
         classify_unconfirmable_plan(
             header_row_looks_like_data=bool(
