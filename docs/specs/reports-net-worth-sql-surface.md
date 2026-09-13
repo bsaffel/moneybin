@@ -202,7 +202,10 @@ this spec's to close.
     `core.fct_transactions` or `core.fct_investment_transactions` for the
     account, ever, regardless of amount or source — a dividend, fee, or
     other investment-ledger event counts exactly as a cash-ledger posting
-    does. That is a **narrower reading than "any account with no balance
+    does, **unless the broker's newest snapshot reports a definitive zero
+    position for the account, which overrides that transaction evidence
+    rather than compounding with it** (§Data Model states the exact
+    predicate and its boundary). That is a **narrower reading than "any account with no balance
     anchor,"** taken literally — an account with genuinely zero activity of
     any kind stays silently absent, unchanged from today. That residual gap
     is this requirement's own, stated plainly rather than absorbed: see
@@ -412,6 +415,50 @@ cash-ledger table cannot see it. All four are `core.*`, so the view joining
 them keeps `assert_acyclic` satisfied on its own terms, not through a runner
 workaround of the check.
 
+**A definitive zero-position snapshot from the newest pull overrides
+historical transaction evidence on either ledger — a new rule, stated once,
+here.** Reading the transaction arms existentially — *ever posted,
+regardless of amount* — is what makes a still-open position with no balance
+observation visible, but it also means a genuinely liquidated account, which
+posts real buy and sell events to `core.fct_investment_transactions` before
+it is disposed, would qualify through that same arm forever: historical
+activity proves the account once held value, never that it holds value
+*now*, and an unclearable `fail` on a correctly-liquidated account is worse
+than the silent zero this guard exists to prevent. The override is the
+nonzero-evidence predicate's own complement, narrowly stated: an account
+whose receipt-scoped newest snapshot (the same relation
+`core.dim_holdings_broker_reported` reads, above) carries at least one row
+that is *decisive* on `quantity` or `institution_value` — not NULL on both,
+the no-evidence-either-way case already excluded above — and, across every
+row in that snapshot, never satisfies the nonzero-evidence predicate, is
+excluded from the unanchored candidate set outright, regardless of what
+either transaction ledger shows for it. That is direct, current evidence
+there is nothing to see, and it outranks indirect evidence that there once
+was.
+
+**The boundary is exact, and it is the whole reason this is safe: the
+override fires only on a definitive zero, never on the mere absence of a
+holdings snapshot.** An account with transaction activity and no holdings
+snapshot row at all — the newest pull recorded nothing for it, decisive or
+otherwise — has nothing overriding it, and the transaction arm correctly
+keeps flagging it: "we know it is empty" and "we do not know" are different
+facts, and only the first clears the guard. This is the same "genuinely
+never funded" versus "funded but nothing observed yet" distinction the
+residual gap below already turns on, applied one layer in.
+
+**The other three evidence arms carry no equivalent defect, checked the
+same way.** `core.dim_holdings` sums currently-open lots (above), so a
+disposed position already produces none — it needs no override because
+summing open lots is never fooled by history in the first place; it is
+present-state by construction, not a historical read. The plain
+`core.fct_transactions` arm has no position-level snapshot that could ever
+contradict it, and an account it flags is removed from the candidate set
+the same way every other account is — through Requirement 9's own
+date-scoped `archived_at` eligibility once the account is actually closed —
+not through a zero-snapshot signal a cash ledger has no equivalent of.
+`core.dim_holdings_broker_reported` is the source of the override itself,
+not a second place the defect could hide.
+
 **What the two transaction-activity arms catch together, and what they
 still miss.** Both ledgers carry their own transaction date, but the guard
 reads each existentially — *has this account ever posted, on either ledger*
@@ -598,7 +645,7 @@ applies to every ordinary row, extended to the one row that has no
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
 accounts satisfying the eligible-candidate predicate stated once, above, at
-`:544-545` — not restated here, so the two cannot drift apart the way an
+`:624-626` — not restated here, so the two cannot drift apart the way an
 earlier round of this spec let them — NULL, and therefore unbounded, when
 none of them carry an `archived_at` at all. Then:
 
@@ -773,7 +820,7 @@ core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
 `core.dim_accounts.currency_code` rather than going NULL: that column is the
-account's own denomination, per this rung's own column comment at `:742`,
+account's own denomination, per this rung's own column comment at `:789`,
 independent of whether a balance was ever observed, so a Plaid account with
 a populated `iso_currency_code` but no balance, or a manual/tabular account
 with a configured or source-derived currency, still carries its known
@@ -874,6 +921,36 @@ duplicate, because a candidate the view already answered inside the range is
 excluded; no omission, because every remaining candidate is still checked on
 its own, regardless of what the rest of the profile's accounts are doing in
 that same range.
+
+**Membership in this anti-join is itself evaluated at the date the
+candidate's row would carry, not at the aggregate rung's own
+existence-only predicate — filtering on the real condition rather than a
+proxy for it, the same discipline this section's "unconditional per
+candidate" text above already follows.** For a ranged read, that date is
+exactly the per-candidate `synthesis_date` this section already computes
+above, so ranged behavior is unchanged. For an unranged read — no
+`from_date` and no `to_date` supplied — every row this rung's read can
+produce, synthesized or not, is dated at exactly the one date this rung's
+own dating rule already names, stated once above at `:816`:
+`COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
+CURRENT_DATE)` — never at `effective_to`'s own general default of
+`CURRENT_DATE` (§Data Model), which is usually a few days ahead of it. An
+eligible-by-Requirement-14 candidate whose `archived_at` predates that date
+fails Requirement 9's own eligibility test at the one date an unranged read
+actually returns — the same test the view's own arm above already applies
+to it at that same date, and the reason that arm already omits its row for
+exactly this candidate. The candidate therefore never reaches the anti-join
+step at all on an unranged read: it is not "missing" from the
+range-filtered output, it is correctly absent, and nothing is synthesized
+for it at any date, including its own `archived_at`. Gating this on
+`effective_from` instead — the aggregate rung's own predicate, which
+resolves `effective_from IS NULL` to "unbounded, admit everything" because
+that is the right reading for a genuinely open-below *range* — reads an
+unranged read's absent lower bound as unbounded history rather than "no
+range at all," and readmits exactly the candidate this fix excludes, dated
+at its own `archived_at` in place of the single date the unranged contract
+(`:1429`-ish, below) actually owes the read. That was the defect (comment
+`3998860437`).
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
 invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
@@ -1258,7 +1335,7 @@ Only an account that passes the join is then scanned in
 **no `balance_date` filter** — never a NULL-total read off
 `reports.net_worth`'s own aggregate rung, and never scoped to
 `CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:752`, "In currency_code," carries no NULL case);
+column's own comment at `:799`, "In currency_code," carries no NULL case);
 the synthesized-row arm is the only source of a NULL there, so the bare
 predicate identifies it regardless of what date §`reports.net_worth_accounts`
 dates that row at — that date is stated once, where the row is produced,
@@ -1864,6 +1941,24 @@ runner's own `synthesis_date` rule (§Data Model) — pinning that the fallback
 is evaluated per candidate, never gated on the whole filtered result being
 empty, which a range containing other accounts' rows never is.
 
+**A ninth case pins the anti-join's unranged eligibility date** — the
+regression guard for the defect this thread (comment `3998860437`) found in
+the per-candidate anti-join above. The same first-scenario mixed persona,
+with its eligible unanchored candidate additionally archived before
+`core.fct_balances_daily`'s own spine maximum, queried with no range at
+all: the candidate does not appear in the result at any date — never at the
+spine maximum (Requirement 9 already excludes it there, the same as an
+ordinary row), and never synthesized at its own `archived_at` either. This
+is the regression guard for evaluating the anti-join's candidate set at the
+date an unranged read actually returns rather than at the aggregate rung's
+`effective_from`-based existence check, which an earlier round of this
+section let readmit the candidate and synthesize a historical row inside
+what the unranged contract promises is a `MAX(balance_date)`-only result.
+The same persona queried again over an explicit historical range spanning
+the candidate's `archived_at` still synthesizes its row there, dated at
+`archived_at_floor` exactly as the eighth case already pins — proving the
+fix is scoped to the unranged path and does not regress the ranged one.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -1901,15 +1996,25 @@ empty, which a range containing other accounts' rows never is.
   negative was dropped.
 - **The unanchored-account guard does not fail for a broker-reported
   zero-quantity liquidation.** `moneybin system doctor` against a persona
-  whose only account is a liquidated investment account — its broker's
-  newest snapshot still carries a holdings row for it, but that row reports
-  `quantity = 0` and no institution value, and the account has no balance
-  observation of any kind — exits `0` with no `fail` entry naming that
-  account. This is the regression guard for the nonzero-evidence predicate
-  on `core.dim_holdings_broker_reported` (§Data Model): a row-presence
-  reading of the same fixture would place the account in the candidate set,
-  NULL the profile total, and fail this check with no user action able to
-  clear it, because the broker's snapshot receipt never stops naming the
+  whose only account is a liquidated investment account: its broker
+  connection stays live, its newest snapshot still carries a holdings row
+  for it reporting `quantity = 0` and no institution value, the account has
+  no balance observation of any kind, and — realistically, not by
+  omission — `core.fct_investment_transactions` carries the account's real
+  buy-then-sell history ending in that disposal. Exits `0` with no `fail`
+  entry naming that account. An earlier round of this fixture instead left
+  the investment ledger empty, which made the case pass for the wrong
+  reason: an account with no transaction history at all was never going to
+  reach the transaction-activity arm in the first place, override or not,
+  so the case proved nothing about liquidation. This is the regression
+  guard for both halves together: the nonzero-evidence predicate on
+  `core.dim_holdings_broker_reported` and the zero-snapshot override it
+  feeds (§Data Model, both) — a row-presence reading of the holdings
+  snapshot, or a candidate set that let the buy/sell history stand
+  regardless of the current zero position, would each independently place
+  the account back in the candidate set, NULL the profile total, and fail
+  this check with no user action able to clear it, because neither the
+  broker's snapshot receipt nor the historical ledger ever stops naming the
   account. Pair with the existing "does fail the release gate" case above
   using the *same* fixture shape but a nonzero reported quantity, so the
   two together prove the predicate discriminates on the row's own figures
@@ -1924,7 +2029,7 @@ empty, which a range containing other accounts' rows never is.
 
 The `international` persona already supplies the shapes needed: several
 currencies, one of them unpriced. Two additions for Requirement 9 and
-multi-currency, and eight for `M2B.3`:
+multi-currency, and nine for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -1956,13 +2061,21 @@ multi-currency, and eight for `M2B.3`:
   dividend or fee recorded only in `core.fct_investment_transactions` — no
   cash-ledger transaction, no holding, no balance — the fixture the
   seventh Tier 2 scenario reads.
+- For `M2B.3`'s unranged anti-join eligibility: the first bullet's mixed
+  persona, with its unanchored account additionally archived before the
+  persona's other accounts' latest balance date, queried both unranged and
+  over an explicit range spanning the archival — the fixture the ninth Tier
+  2 scenario reads.
 - For `M2B.3`'s zero-quantity liquidation shape: a persona investment account
   whose broker connection stays live — its newest snapshot still carries a
   holdings row for the account — but whose position is fully liquidated:
-  the row reports `quantity = 0` and no institution value, and the account
-  carries no balance observation of any kind. Added to the same persona; the
-  fixture the Tier 3 "does not fail for a broker-reported zero-quantity
-  liquidation" case reads.
+  the row reports `quantity = 0` and no institution value, the account
+  carries no balance observation of any kind, and
+  `core.fct_investment_transactions` carries its real buy-then-sell history
+  ending in that disposal — not an empty ledger, which would prove nothing
+  about the override this fixture exists to exercise. Added to the same
+  persona; the fixture the Tier 3 "does not fail for a broker-reported
+  zero-quantity liquidation" case reads.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
