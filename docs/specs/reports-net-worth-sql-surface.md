@@ -342,22 +342,56 @@ grain `account_id`. It performs the identical receipt-scoped join
 `dim_holdings.sql`'s `newest_snapshot` CTE already performs against
 `prep.stg_plaid__investment_holdings_snapshots` — never the retained holdings
 rows of `prep.stg_plaid__investment_holdings` directly — and publishes the
-distinct accounts the broker's newest snapshot reports holding any position.
-Retained rows survive across snapshots, so reading the raw table would let a
-liquidated item's newest pull — which writes zero holdings rows — leave its
-last non-empty snapshot's rows in place, permanently flagging a
-correctly-empty account as unanchored and NULLing the profile total forever.
-Scoping to the newest snapshot receipt reads that pull as no candidate rows
-instead, exactly as `dim_holdings.sql`'s own `newest_snapshot` comment
-requires. This is the established pattern, not a new one: `dim_holdings.sql`
-already reads `prep.stg_plaid__investment_holdings_snapshots` this way over
-the sibling holdings table; the new relation is the same receipt-scoped read
-over `prep.stg_plaid__investment_holdings` itself, exposed for a second
-consumer that `dim_holdings.sql`'s own `positions`-driven shape cannot serve
-(below). It carries its own `CLASSIFICATION` entry in
-`src/moneybin/privacy/taxonomy.py` — `account_id` as `DataClass.RECORD_ID`,
-matching `("core", "dim_holdings")`'s own — so the read has ground truth to
-derive against instead of needing an exception.
+distinct accounts whose broker's newest snapshot carries at least one row
+with **nonzero position or value evidence**: `quantity <> 0 OR
+institution_value <> 0` over `prep.stg_plaid__investment_holdings`'s own
+`quantity` and `institution_value` columns (never `cost_basis` — the raw
+table's own column comment marks it "reconciliation reference ONLY — never
+overwrites ledger-derived basis",
+`src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`).
+Row PRESENCE in the newest snapshot is not by itself evidence of a position:
+the raw/staging layer legitimately carries a snapshot row reporting
+`quantity = 0, cost_basis = 0` — exercised today by
+`tests/moneybin/test_stg_plaid_investments.py:1903-1904` — so the predicate
+has to read the row's own figures, not merely that a row exists.
+
+**NULL handling is what SQL's three-valued logic already does here; this
+states it rather than leaving it implicit.** A NULL `quantity` or a NULL
+`institution_value` makes its own `<> 0` comparison UNKNOWN — never FALSE,
+never TRUE. A row NULL on both columns therefore resolves the whole `OR` to
+UNKNOWN and is excluded from the account set, exactly as a row decisively
+reporting zero on both is: neither carries evidence either way. A row nonzero
+on either column, with the other NULL, still satisfies the `OR` and counts —
+one broker-confirmed figure is evidence regardless of what the other column
+says.
+
+**This closes two liquidation shapes, and both have to hold for the
+reasoning below to be true — closing only one reopens the other.**
+**No-row liquidation**: retained rows survive across snapshots, so reading
+the raw table without scoping to the receipt would let a liquidated item's
+newest pull — which writes ZERO holdings rows, per `dim_holdings.sql`'s own
+`newest_snapshot` comment — leave its last non-empty snapshot's rows in
+place, permanently flagging a correctly-empty account as unanchored and
+NULLing the profile total forever. Scoping to the newest snapshot receipt
+reads that pull as no candidate rows instead. **Zero-row liquidation**: the
+newest pull DOES write a holdings row for the account, but the row itself
+reports a zero quantity and a zero-or-absent value — the shape above.
+Receipt-scoping alone does not catch this one: the row sits in the correctly
+newest snapshot, so a row-presence predicate would still read it as "holding
+a position," reproducing the identical permanent-red failure against a
+correctly-liquidated account. The nonzero-evidence predicate is what closes
+this second shape; the receipt scope closes only the first — neither
+subsumes the other. This is the established pattern, not a new one:
+`dim_holdings.sql` already reads `prep.stg_plaid__investment_holdings_snapshots`
+this way over the sibling holdings table; the new relation is the same
+receipt-scoped read over `prep.stg_plaid__investment_holdings` itself, adding
+the nonzero-evidence filter that `dim_holdings.sql`'s own `positions` CTE
+never needs because it sums open LOTS, which a closed position simply has
+none of — exposed for a second consumer that `dim_holdings.sql`'s own
+`positions`-driven shape cannot serve (below). It carries its own
+`CLASSIFICATION` entry in `src/moneybin/privacy/taxonomy.py` — `account_id`
+as `DataClass.RECORD_ID`, matching `("core", "dim_holdings")`'s own — so the
+read has ground truth to derive against instead of needing an exception.
 
 **Evidence of holding value has four sources, and `reports.net_worth`'s
 `kind VIEW` reads all four directly — no runner involved.**
@@ -739,7 +773,7 @@ core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
 `core.dim_accounts.currency_code` rather than going NULL: that column is the
-account's own denomination, per this rung's own column comment at `:708`,
+account's own denomination, per this rung's own column comment at `:742`,
 independent of whether a balance was ever observed, so a Plaid account with
 a populated `iso_currency_code` but no balance, or a manual/tabular account
 with a configured or source-derived currency, still carries its known
@@ -1224,7 +1258,7 @@ Only an account that passes the join is then scanned in
 **no `balance_date` filter** — never a NULL-total read off
 `reports.net_worth`'s own aggregate rung, and never scoped to
 `CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:718`, "In currency_code," carries no NULL case);
+column's own comment at `:752`, "In currency_code," carries no NULL case);
 the synthesized-row arm is the only source of a NULL there, so the bare
 predicate identifies it regardless of what date §`reports.net_worth_accounts`
 dates that row at — that date is stated once, where the row is produced,
@@ -1865,6 +1899,21 @@ empty, which a range containing other accounts' rows never is.
   unrestricted `account_balance IS NULL` scan produces once the
   `balance_date = CURRENT_DATE` filter that caused the opposite false
   negative was dropped.
+- **The unanchored-account guard does not fail for a broker-reported
+  zero-quantity liquidation.** `moneybin system doctor` against a persona
+  whose only account is a liquidated investment account — its broker's
+  newest snapshot still carries a holdings row for it, but that row reports
+  `quantity = 0` and no institution value, and the account has no balance
+  observation of any kind — exits `0` with no `fail` entry naming that
+  account. This is the regression guard for the nonzero-evidence predicate
+  on `core.dim_holdings_broker_reported` (§Data Model): a row-presence
+  reading of the same fixture would place the account in the candidate set,
+  NULL the profile total, and fail this check with no user action able to
+  clear it, because the broker's snapshot receipt never stops naming the
+  account. Pair with the existing "does fail the release gate" case above
+  using the *same* fixture shape but a nonzero reported quantity, so the
+  two together prove the predicate discriminates on the row's own figures
+  rather than on receipt presence either way.
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
@@ -1875,7 +1924,7 @@ empty, which a range containing other accounts' rows never is.
 
 The `international` persona already supplies the shapes needed: several
 currencies, one of them unpriced. Two additions for Requirement 9 and
-multi-currency, and seven for `M2B.3`:
+multi-currency, and eight for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -1907,6 +1956,13 @@ multi-currency, and seven for `M2B.3`:
   dividend or fee recorded only in `core.fct_investment_transactions` — no
   cash-ledger transaction, no holding, no balance — the fixture the
   seventh Tier 2 scenario reads.
+- For `M2B.3`'s zero-quantity liquidation shape: a persona investment account
+  whose broker connection stays live — its newest snapshot still carries a
+  holdings row for the account — but whose position is fully liquidated:
+  the row reports `quantity = 0` and no institution value, and the account
+  carries no balance observation of any kind. Added to the same persona; the
+  fixture the Tier 3 "does not fail for a broker-reported zero-quantity
+  liquidation" case reads.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
