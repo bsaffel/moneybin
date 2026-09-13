@@ -44,6 +44,6 @@ referent to put in front of a user or an agent.
 you can see.** `_gate_account_proposals` enumerates every source account and
 omits the ones already bound or not confirming, so a file's only *visible*
 proposal is legitimately `@1` when `@0` was answered in an earlier call
-(`import_service.py:2060`, and `:1101` builds the valid set from
+(`import_service.py:2434`, and `:1392` builds the valid set from
 `range(len(source_accounts))`; pinned by `test_import_binding.py:165-193`).
 Renumbering the surfaced list to start at `@0` would bind the wrong account.

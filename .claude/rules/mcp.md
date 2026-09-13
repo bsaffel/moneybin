@@ -176,11 +176,11 @@ on an automatic consent gate, or on a degraded response that has not shipped.
 
 Default: every non-exempt user capability is covered by MCP. CLI-only
 capability status requires a justified exception; granular CLI commands may
-still sit behind an MCP umbrella. Two acceptable justifications:
+still sit behind an MCP umbrella.
 
 The permitted categories are defined by
 [`moneybin-capabilities.md`](../../docs/specs/moneybin-capabilities.md)
-§Exemptions — `secret-material`, `operator-territory`,
+§Exemptions — five in total: `secret-material`, `operator-territory`,
 `granular-operator-debug`, `protocol-only`, and the one temporary
 `admission-pending`. That section names the categories only; which rows carry
 each one lives in

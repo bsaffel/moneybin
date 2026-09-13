@@ -162,6 +162,14 @@ When adding a new CLI command:
 3. If the command is a stub, add it to the `TestStubCommands` parametrize list
 4. Mutating tests must use `tmp_path` + `make_workflow_env()` for isolation — never share DB state
 
+## Best Practices
+
+- Arrange-Act-Assert structure.
+- Each test verifies a single behavior.
+- No shared mutable state between tests.
+- Use `monkeypatch` for env vars.
+- Descriptive test names that explain the scenario.
+
 ## A Fixture That Trips Two Guards Isolates Neither
 
 When a code path is protected by more than one guard, each guard needs a fixture
