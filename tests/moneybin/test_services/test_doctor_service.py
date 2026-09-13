@@ -3812,6 +3812,8 @@ def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
     concern, not this test's; asserted here only enough to confirm it didn't
     regress into the identity-resolution dead end.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
     _insert_overlap_account(doctor_db, "DUP_C", institution_slug="wells")
@@ -3851,6 +3853,7 @@ def test_currency_integrity_merge_auto_rejected_sibling_grants_no_relief(
     assert "moneybin transform" in detail, detail
     assert "DUP_A" in detail, detail
     assert "DUP_B" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4255,6 +4258,8 @@ def test_currency_integrity_mixed_branches_enumerate_the_same_accounts(
     institutions keep the two pairs from cross-pairing, since the overlap query
     groups by institution.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4292,10 +4297,16 @@ def test_currency_integrity_mixed_branches_enumerate_the_same_accounts(
     assert "MIX_V" in detail, detail
     assert "`moneybin accounts links run MIX_V MIX_W`" in detail, detail
     # The merged-away pair is routed to transform advice, never to links run.
-    assert "moneybin transform" in detail, detail
+    assert "moneybin transform apply" in detail, detail
     assert "accounts links run MIX_U" not in detail, detail
     # Both branches populated on one result — the case nothing else covered.
     assert "Separately, 1 pair(s)" in detail, detail
+    # Scoped rather than whole-detail: the review_pairs branch's own sibling
+    # `accounts links set <decision_id> --into <account_id>` cannot go
+    # through the helper at all (see test_currency_integrity_publishes_a_
+    # runnable_command_for_a_dashed_id).
+    assert_published_commands_resolve("`moneybin accounts links run MIX_V MIX_W`")
+    assert_published_commands_resolve("`moneybin transform apply`")
 
 
 @pytest.mark.unit
@@ -4310,8 +4321,10 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     other in ``core.*`` — but ``propose_pair`` refuses to re-propose a pair
     an accepted decision already covers, so pointing the user at
     ``accounts links run`` here would be a dead end. The message must name
-    ``moneybin transform`` instead.
+    ``moneybin transform apply`` instead.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
     _insert_source_native_link(
@@ -4349,6 +4362,7 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     # every branch now uses, not a per-branch restatement of it.
     assert "reports clean" not in detail, detail
     assert "ordinary unknown-currency remediation" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4373,6 +4387,8 @@ def test_currency_integrity_transform_routing_is_per_account_not_per_pair(
     account imported a third time gives DUP_U mirroring both DUP_A (already
     decided) and DUP_B (still unresolved).
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4410,6 +4426,7 @@ def test_currency_integrity_transform_routing_is_per_account_not_per_pair(
     # so any `accounts links run` naming it (either order) would refuse.
     assert "accounts links run DUP_U DUP_B" not in detail, detail
     assert "accounts links run DUP_B DUP_U" not in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4425,8 +4442,10 @@ def test_currency_integrity_merged_away_branch_explains_an_altered_id(
     the sibling review-pairs branch (``commands_use_placeholders=True``); this
     one pins that ``_altered_id_note`` also reaches ``detail`` from THIS call
     site (``commands_use_placeholders=False``), where the only published
-    command is ``moneybin transform`` and carries no ids at all.
+    command is ``moneybin transform apply`` and carries no ids at all.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4470,6 +4489,7 @@ def test_currency_integrity_merged_away_branch_explains_an_altered_id(
     # Proves the note fired: this phrase belongs to _altered_id_note alone,
     # nothing else in this branch's text names where to read the real id.
     assert "moneybin accounts list" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4486,6 +4506,8 @@ def test_currency_integrity_transform_ready_pairs_cap_and_overflow_are_counted(
     Hand-derived expectation, before running: 6 merged-away pairs built,
     cap is 5, so shown = 5 and overflow = 6 - 5 = 1.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4536,6 +4558,7 @@ def test_currency_integrity_transform_ready_pairs_cap_and_overflow_are_counted(
     assert expected_overflow == 1  # hand-derived: 6 built, cap 5
     assert detail.count("% overlap)") == expected_shown, detail
     assert f", plus {expected_overflow} more pair(s) not shown" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit
@@ -4936,6 +4959,8 @@ def test_currency_integrity_no_link_pair_note_appears_beside_transform_ready_pai
     overlap. Pins the same both-buckets-nonempty ordering by index
     comparison as the review_pairs sibling test above.
     """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
     _mock_rematch_refresh(mocker)
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4993,6 +5018,7 @@ def test_currency_integrity_no_link_pair_note_appears_beside_transform_ready_pai
         "assign a currency with `moneybin accounts set <account> --currency"
     )
     assert no_link_idx < sync_pull_idx < doctor_recheck_idx < currency_idx, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit

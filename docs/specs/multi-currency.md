@@ -393,7 +393,7 @@ Numbered, testable. Tagged by phase.
      `core.*` has not been rebuilt since. `accounts links run` refuses to
      re-propose a pair a decision already covers, so the detail skips the
      identity-resolution advice for this pair and points straight at
-     `moneybin transform` to apply the decided merge.
+     `moneybin transform apply` to apply the decided merge.
    - **Already pending a decision (`pending_pairs`).** A `pending`,
      non-reversed `app.account_link_decisions` row already covers the pair —
      reachable from the very sweep this check's own advice starts with,
@@ -446,11 +446,11 @@ Numbered, testable. Tagged by phase.
    --currency`. Every branch that offers currency assignment — this plain
    case, `review_pairs`, `transform_ready_pairs`, and the `pending_pairs`-only
    bucket — closes on the same re-run-doctor-then-assign sentence naming
-   `moneybin transform`: a pending decision is a decision to make, like an
+   `moneybin transform apply`: a pending decision is a decision to make, like an
    actionable review pair, not a dead end like `no_link_pairs`. The
    `no_link_pairs`-only bucket above is the one exception, since it never
    offers currency assignment while its pairs remain stuck and so never
-   mentions `moneybin transform`. The affected ids are attached in every
+   mentions `moneybin transform apply`. The affected ids are attached in every
    case, including that one.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is

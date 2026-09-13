@@ -314,8 +314,8 @@ def _altered_id_note(
     id (``AB_C``) beside a sentence explaining ``****NNNN``.
 
     ``commands_use_placeholders`` is False on the branch whose only published
-    command is ``moneybin transform``, which carries no ids — pointing that
-    reader at a ``<...>`` they cannot see would be its own confusion.
+    command is ``moneybin transform apply``, which carries no ids — pointing
+    that reader at a ``<...>`` they cannot see would be its own confusion.
     """
     if not any(
         _publishable_account_id(account_id) != account_id for account_id in account_ids
@@ -420,7 +420,7 @@ _ASSIGN_ONCE_CLEAR = (
     "account is the ordinary unknown-currency remediation — no overlap, "
     "no no-link pair, and no pending merge named alongside it — assign a "
     "currency with `moneybin accounts set <account> --currency <ISO "
-    "4217>` and re-run `moneybin transform`."
+    "4217>` and re-run `moneybin transform apply`."
 )
 
 #: The routing clause shared by both places a pending decision is reported —
@@ -3028,7 +3028,7 @@ class DoctorService:
         account breaks every ``accounts links run`` command it appears in, not
         just the one for its own accepted decision. The caller uses this set to
         route every pair touching a merged-away account to ``moneybin
-        transform`` instead.
+        transform apply`` instead.
 
         Same "merged away" predicate as the ``merged_away`` CTE in
         :meth:`_query_distinctness_decided_pairs` — kept as a second
@@ -3591,7 +3591,7 @@ class DoctorService:
           decision that has not yet reached ``core.*`` (a refresh/transform
           that failed between accept and apply — see
           ``_query_merged_away_accounts``) — is named separately and pointed
-          at ``moneybin transform`` rather than ``accounts links run``, which
+          at ``moneybin transform apply`` rather than ``accounts links run``, which
           ``AccountResolver.knows_account_id`` would refuse for either
           argument named in the pair, not only the account's own accepted
           decision.
@@ -3959,8 +3959,8 @@ class DoctorService:
                 transform_note = (
                     f" Separately, {len(transform_ready_pairs)} pair(s) "
                     "already have an accepted decision awaiting `moneybin "
-                    "transform` — that may resolve those without further "
-                    "review."
+                    "transform apply` — that may resolve those without "
+                    "further review."
                     if transform_ready_pairs
                     else ""
                 )
@@ -4047,7 +4047,7 @@ class DoctorService:
                         "that has not reached `core.*` yet — the merge is "
                         "recorded, but a refresh/transform did not "
                         "complete after it, so the transactions still "
-                        "show as two accounts. Run `moneybin transform` "
+                        "show as two accounts. Run `moneybin transform apply` "
                         "to apply it (`moneybin accounts links run` would "
                         f"refuse — a decision already covers this pair).{masked_note}"
                         f"{closing}"
