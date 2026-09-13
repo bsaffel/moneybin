@@ -9,7 +9,9 @@ from pytest_mock import MockerFixture
 
 from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
+    _classify_excel_headerless_via_fastexcel,  # pyright: ignore[reportPrivateUsage]
     _detect_header,  # pyright: ignore[reportPrivateUsage]
+    _excel_native_date_columns,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     date_format_has_time_component,
     normalize_excel_date_columns,
@@ -726,6 +728,70 @@ class TestExcelReader:
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
         assert result.excel_native_date_columns == frozenset({"Date"})
 
+    def test_native_date_typed_scan_is_bounded_to_sample_rows(
+        self, tmp_path: Path
+    ) -> None:
+        """The typed scan stops at ``sample_rows``, not the whole column.
+
+        Performance finding: an unconditional full-sheet ``openpyxl`` pass
+        cost ~8.0s of a ~14.0s ``read_file()`` call on a real 49,999-row x
+        15-column file (measured; see ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS``).
+        Fixed by capping the scan at ``sample_rows`` data rows (production
+        default 2,000). Proves the bound is actually applied — not just
+        documented — by adding data ONLY beyond row 3 and showing a
+        ``sample_rows=3`` probe never sees it: 7 total rows, 4 of them
+        genuine native dates (a clear whole-column majority), but the
+        first 3 rows are all non-date placeholders, so a probe bounded to
+        those first 3 rows correctly reports no majority within the
+        sample. This is the accepted cost named in the module docstring —
+        a dirty run at the very START of a column, longer than
+        ``sample_rows``, now reads as non-date — verified here directly
+        rather than only asserted.
+        """
+        import datetime
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        for i in range(3):
+            ws.append(["pending", i, "x"])
+        for i in range(4):
+            ws.append([datetime.date(2026, 1, i + 1), i, "x"])
+        path = tmp_path / "dirty_prefix_exceeds_sample_bound.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+        assert result.sheet_used is not None
+        column_names = list(result.df.columns)
+
+        # Unbounded (sample_rows covers every data row): whole-column
+        # majority is 4-of-7 dates -> qualifies. Positive control proving
+        # the fixture itself has a real whole-column majority.
+        unbounded = _excel_native_date_columns(
+            path,
+            result.sheet_used,
+            data_start_row=1,
+            has_header=True,
+            column_names=column_names,
+            sample_rows=7,
+        )
+        assert unbounded == frozenset({"Date"})
+
+        # Bounded to the first 3 (all-dirty) rows: 0-of-3 -> no majority
+        # within the sample, even though the whole column would qualify.
+        bounded = _excel_native_date_columns(
+            path,
+            result.sheet_used,
+            data_start_row=1,
+            has_header=True,
+            column_names=column_names,
+            sample_rows=3,
+        )
+        assert bounded == frozenset()
+
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
     ) -> None:
@@ -1092,6 +1158,32 @@ class TestExcelReader:
 
         with pytest.raises(ValueError, match="no matching sheet"):
             read_file(path, FormatInfo(file_type="excel"), sheet="NoSuchSheet")
+
+    def test_headerless_classification_probe_bounds_the_read_to_30_rows(
+        self, mocker: MockerFixture
+    ) -> None:
+        """The legacy-.xls classification probe must cap the read at 30 rows.
+
+        Performance finding: materializing the WHOLE sheet and slicing
+        with ``.head(30)`` afterward parses every row this function never
+        uses, and ``_read_excel``'s real read parses the whole sheet again
+        right after — a large legacy ``.xls`` paid for two complete
+        parses, including files later rejected by the row limit. Pins the
+        call shape (Mock Boundaries, testing.md): the fix asks
+        ``pl.read_excel`` for ``n_rows=30`` directly rather than relying on
+        a post-hoc slice, so this asserts the real argument reaches the
+        read instead of trusting the returned value alone (which looks
+        identical either way).
+        """
+        stub_df = pl.DataFrame({"c1": ["Date"], "c2": ["Amount"]})
+        mock_read = mocker.patch("polars.read_excel", return_value=stub_df)
+
+        _classify_excel_headerless_via_fastexcel(
+            Path("/nonexistent.xls"), sheet_name="Sheet1", source_bytes=b"stub"
+        )
+
+        _, kwargs = mock_read.call_args
+        assert kwargs["read_options"].get("n_rows") == 30
 
 
 class TestNormalizeExcelDateColumns:

@@ -755,6 +755,22 @@ def _excel_cell_text(value: object) -> str:
     return str(value)
 
 
+# Row cap for _excel_native_date_columns's typed scan. Measured on a real
+# 49,999-row x 15-column .xlsx: the full-column scan cost ~8.0s of a ~14.0s
+# read_file() call (>55% of total import time), and nearly all of that is
+# openpyxl.load_workbook()'s own fixed per-file overhead — a max_row=30
+# scan still cost ~2.7s, barely less than a max_row=2000 scan at ~2.9s,
+# because the workbook-open dominates below roughly 1,000-2,000 rows. A
+# full scan of all 49,999 rows cost ~7.6s, so shrinking the cap much below
+# 2,000 buys almost nothing further while making the majority-tolerance
+# check (see _excel_native_date_columns's docstring) fragile against a
+# longer dirty run at the START of the column. 2,000 sits past that
+# diminishing-returns knee while staying at ~4% of the accepted 50,000-row
+# import limit, so a genuinely huge file's cost for this one step is
+# capped regardless of size.
+_EXCEL_NATIVE_DATE_SAMPLE_ROWS = 2000
+
+
 def _excel_column_physical_indices(
     path: Path,
     sheet_name: str,
@@ -822,6 +838,7 @@ def _excel_native_date_columns(
     has_header: bool,
     column_names: list[str],
     source_bytes: bytes | None = None,
+    sample_rows: int = _EXCEL_NATIVE_DATE_SAMPLE_ROWS,
 ) -> frozenset[str] | None:
     """Column names openpyxl reports as natively date/datetime-typed.
 
@@ -842,9 +859,24 @@ def _excel_native_date_columns(
     function's ``None`` return triggers would be reachable only on the path
     that almost never runs (openpyxl failing to open the file at all), while
     the ordinary case — openpyxl succeeding — silently lost the tolerance.
-    Scans the whole data range rather than a bounded sample: this is the
-    source of truth ``normalize_excel_date_columns`` rewrites from, so a
-    partial scan could miscount past the sample window.
+
+    Scans only the first ``sample_rows`` data rows, not the whole column
+    (review finding: an unconditional full-sheet ``openpyxl`` pass cost
+    ~8.0s of a ~14.0s ``read_file()`` call on a real 49,999-row x 15-column
+    file — see ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS`` for the measurement behind
+    the 2,000-row default). This changes what "majority" means: it is now a
+    majority over the SAMPLE, not the whole column. Cost this pays: a
+    dirty run at the very START of the column longer than ``sample_rows``
+    (e.g. 2,000+ leading "pending" placeholders followed by genuine native
+    dates) now reads as majority-non-date and is left unnormalized — worse
+    than the whole-column scan for that one narrow shape, accepted because
+    openpyxl's read-only streaming parser cannot skip ahead to sample the
+    column's middle or tail without paying the same full per-row parse cost
+    a whole-column scan would (confirmed empirically: capping at even 30
+    rows saved almost nothing over 2,000, since the fixed
+    ``load_workbook()`` cost dominates below roughly 1,000-2,000 rows — see
+    the constant's own comment). A dirty MINORITY scattered anywhere within
+    the sample is still tolerated exactly as before.
 
     Args:
         path: File path.
@@ -864,8 +896,13 @@ def _excel_native_date_columns(
             occupies a real slot in openpyxl's ``iter_rows()`` — so this is
             resolved to physical indices via
             ``_excel_column_physical_indices`` before use, never assumed to
-            equal ``range(len(column_names))``.
+            equal ``range(len(column_names))``. That resolution is by
+            column IDENTITY (fastexcel's own metadata), not row position,
+            so it stays correct regardless of how many data rows this
+            function goes on to sample.
         source_bytes: Already materialized workbook object to inspect.
+        sample_rows: Maximum number of data rows to scan. Overridable for
+            tests; production callers use the module default.
 
     Returns:
         ``None`` when openpyxl cannot open this container at all (legacy
@@ -873,11 +910,11 @@ def _excel_native_date_columns(
         text-shape heuristic in that case, since typed inspection isn't
         available. An empty frozenset (as opposed to ``None``) means
         openpyxl opened the file fine and found no natively-typed date
-        column — either the sheet has no data rows, or no column's
-        non-null values are majority ``datetime.date``. A column holding
-        entirely non-date values (numbers, strings) always scores 0 dates
-        out of its non-null count and can never reach a majority, so it
-        cannot qualify regardless of how few or many values it holds.
+        column — either the sampled rows are empty, or no column's
+        non-null sampled values are majority ``datetime.date``. A column
+        holding entirely non-date values (numbers, strings) always scores 0
+        dates out of its non-null count and can never reach a majority, so
+        it cannot qualify regardless of how few or many values it holds.
     """
     import openpyxl
     from openpyxl.utils.exceptions import InvalidFileException
@@ -903,7 +940,11 @@ def _excel_native_date_columns(
         )
         date_counts = [0] * num_cols
         non_null_counts = [0] * num_cols
-        for row in ws.iter_rows(min_row=data_start_row + 1, values_only=True):
+        for row in ws.iter_rows(
+            min_row=data_start_row + 1,
+            max_row=data_start_row + sample_rows,
+            values_only=True,
+        ):
             for i in range(num_cols):
                 physical_i = physical_indices[i]
                 v = row[physical_i] if physical_i < len(row) else None
@@ -993,16 +1034,26 @@ def _classify_excel_headerless_via_fastexcel(
     import fastexcel
 
     try:
+        # n_rows caps the read itself (fastexcel/calamine stops parsing
+        # once it has this many rows) rather than materializing the whole
+        # sheet and slicing afterward — review finding: the old
+        # materialize-then-.head(30) paid for the WHOLE sheet here, then
+        # _read_excel's real read parses the whole sheet again below, so a
+        # large supported .xls paid for two complete parses even when
+        # destined for the row-limit refusal. 30 matches
+        # _classify_header_rows's own "first ~30 physical rows" contract
+        # (the same bound _excel_sample_rows already samples for the
+        # openpyxl-backed classification path) — reusing it rather than
+        # inventing a second bound for the identical classification task.
         probe_df = pl.read_excel(
             path if source_bytes is None else BytesIO(source_bytes),
             sheet_name=sheet_name,
             has_header=False,
             infer_schema_length=0,
-            read_options={"header_row": None},
+            read_options={"header_row": None, "n_rows": 30},
         )
         sample_rows = [
-            [v if v is not None else "" for v in row]
-            for row in probe_df.head(30).iter_rows()
+            [v if v is not None else "" for v in row] for row in probe_df.iter_rows()
         ]
         return _classify_header_rows(sample_rows)
     except fastexcel.FastExcelError:
