@@ -41,6 +41,19 @@ re-archival case the broadened action match exists for — undoing an unarchive
 row emits a FALSE->TRUE row *after* that unarchive's own ``occurred_at``, so it
 still qualifies as the latest unsuperseded archive evidence.
 
+"After" is ordered by ``(occurred_at, rowid)``, never ``occurred_at`` alone.
+Every row written in one outer transaction (``AccountSettingsRepo.set(...,
+in_outer_txn=True)`` -- a supported, not contrived, path) shares one
+transaction-stable ``occurred_at``: DuckDB's ``CURRENT_TIMESTAMP`` does not
+advance within a transaction. An archive -> unarchive -> re-archive sequence
+run that way emits three rows with an identical timestamp, and a strict
+``occurred_at >`` comparison can't tell the final re-archive from the
+unarchive it follows -- it would reject the current FALSE->TRUE transition
+and leave the account NULL, the exact blanket exclusion this migration exists
+to remove. ``rowid`` (monotonic, append-only) is the established tiebreaker
+for this: ``AuditService.events_for_operation`` uses the identical
+``ORDER BY occurred_at, rowid`` for the same reason.
+
 A TRUE->FALSE (unarchive) row is recognized the same way when it is
 DELETION-shaped: undoing a pre-V060 account's first-ever settings write (that
 write's own ``before_value`` was SQL ``NULL``) deletes the row
@@ -115,6 +128,7 @@ def migrate(conn: object) -> None:
             """
             WITH transitions AS (
                 SELECT
+                    rowid AS rid,
                     occurred_at,
                     (
                         before_value IS NULL
@@ -133,18 +147,17 @@ def migrate(conn: object) -> None:
                   AND target_table = 'account_settings'
                   AND target_id = ?
                   AND action LIKE 'account_settings.set%'
-            ),
-            last_unarchive AS (
-                SELECT MAX(occurred_at) AS at
-                FROM transitions
-                WHERE from_true AND to_false
             )
             SELECT CAST(t.occurred_at AS DATE)
-            FROM transitions AS t, last_unarchive AS u
+            FROM transitions AS t
             WHERE t.from_false
               AND t.to_true
-              AND (u.at IS NULL OR t.occurred_at > u.at)
-            ORDER BY t.occurred_at DESC
+              AND NOT EXISTS (
+                  SELECT 1 FROM transitions AS u
+                  WHERE u.from_true AND u.to_false
+                    AND (u.occurred_at, u.rid) > (t.occurred_at, t.rid)
+              )
+            ORDER BY t.occurred_at DESC, t.rid DESC
             LIMIT 1
             """,
             [account_id],

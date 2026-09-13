@@ -49,6 +49,12 @@ _STALE_AFTER_UNDO_DELETE = "acct-staleafterundo1"  # first-write archive, undone
 # (a deletion-shaped unarchive with after_value NULL, not a JSON false), then
 # re-archived with no further audit evidence -> NULL, not the undone archive's
 # date
+_TIED_TIMESTAMPS = "acct-tiedtimestamp1"  # archive/unarchive/re-archive inside
+# one outer transaction -> all three rows share one occurred_at; the final
+# FALSE->TRUE transition must still win via the rowid tiebreak
+_NEVER_UNARCHIVED = "acct-neverunarchiv1"  # archived once, no unarchive
+# evidence at all -> must still be dated (pins the NOT EXISTS rewrite against
+# the zero-row regression a naive scalar-CTE replacement would introduce)
 
 
 def _audit_row_sql(action: str = "account_settings.set") -> str:
@@ -89,6 +95,8 @@ def pre_v060_db(db: Database) -> Database:
             (_UNDO_REARCHIVED, "Undo Re-archived", True, True),
             (_STALE_AFTER_UNARCHIVE, "Stale After Unarchive", True, True),
             (_STALE_AFTER_UNDO_DELETE, "Stale After Undo Delete", True, True),
+            (_TIED_TIMESTAMPS, "Tied Timestamps", True, True),
+            (_NEVER_UNARCHIVED, "Never Unarchived", True, True),
         ],
     )
 
@@ -263,6 +271,66 @@ def pre_v060_db(db: Database) -> Database:
             "op-staleafterundo1b",
         ],
     )
+    # _TIED_TIMESTAMPS: archived, unarchived, and re-archived inside ONE outer
+    # transaction (AccountSettingsRepo.set(..., in_outer_txn=True)) -- DuckDB's
+    # CURRENT_TIMESTAMP is transaction-stable, so all three rows share the
+    # identical occurred_at. Insertion order is the append order: archive
+    # (audit_id 'a'), unarchive ('b'), re-archive ('c'). A strict
+    # occurred_at > comparison cannot distinguish the final re-archive from
+    # the unarchive it follows and would reject it; the rowid tiebreak (this
+    # table's insertion order) must recognize row 'c' as strictly after row
+    # 'b' despite the tied timestamp, so archived_at is dated, not NULL.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-tiedtimestamp1a",
+            "2026-05-01 09:00:00",
+            _TIED_TIMESTAMPS,
+            None,
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-tiedtimestamp1",
+        ],
+    )
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-tiedtimestamp1b",
+            "2026-05-01 09:00:00",
+            _TIED_TIMESTAMPS,
+            '{"archived": true, "include_in_net_worth": true}',
+            '{"archived": false, "include_in_net_worth": true}',
+            "op-tiedtimestamp1",
+        ],
+    )
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-tiedtimestamp1c",
+            "2026-05-01 09:00:00",
+            _TIED_TIMESTAMPS,
+            '{"archived": false, "include_in_net_worth": true}',
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-tiedtimestamp1",
+        ],
+    )
+
+    # _NEVER_UNARCHIVED: archived once, no unarchive evidence at all. Pins the
+    # NOT EXISTS rewrite against the regression the trap warns about: a naive
+    # `ORDER BY ... LIMIT 1` scalar CTE for "last unarchive" would return zero
+    # rows here (there is no unarchive), and a cross join against zero rows
+    # yields nothing -- silently leaving archived_at NULL for every
+    # never-unarchived account instead of correctly dating it.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-neverunarchiv1",
+            "2026-06-01 09:00:00",
+            _NEVER_UNARCHIVED,
+            None,
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-neverunarchiv1",
+        ],
+    )
     return db
 
 
@@ -387,6 +455,41 @@ def test_v060_ignores_archive_evidence_superseded_by_a_deleted_row(
     run_migration(pre_v060_db, migrate)
     archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_UNDO_DELETE)
     assert archived_at is None
+    assert include is True
+
+
+def test_v060_orders_tied_transitions_by_append_position(
+    pre_v060_db: Database,
+) -> None:
+    """A tied occurred_at (one outer transaction) must not reject the re-archive.
+
+    Codex P2 (PR #596, comment 3998538957): all three rows share one
+    transaction-stable occurred_at. A strict occurred_at > comparison for
+    "no later unarchive" can't distinguish the final re-archive from the
+    unarchive it immediately follows and rejects it, leaving archived_at
+    NULL -- the exact blanket exclusion this migration exists to remove.
+    The rowid tiebreak (append order) must resolve the tie correctly.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _TIED_TIMESTAMPS)
+    assert archived_at == date(2026, 5, 1)
+    assert include is True
+
+
+def test_v060_dates_an_account_with_no_unarchive_evidence(
+    pre_v060_db: Database,
+) -> None:
+    """The NOT EXISTS rewrite must still date an account with zero unarchives.
+
+    A naive `ORDER BY ... LIMIT 1` scalar CTE for "last unarchive" returns
+    zero rows when there is no unarchive, and a cross join against zero rows
+    yields nothing -- silently NULLing every never-unarchived account. This
+    pins the correct behavior: no unarchive evidence at all still dates the
+    account from its one archive row.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _NEVER_UNARCHIVED)
+    assert archived_at == date(2026, 6, 1)
     assert include is True
 
 
