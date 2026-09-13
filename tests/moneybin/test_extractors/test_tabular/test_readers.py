@@ -688,6 +688,44 @@ class TestExcelReader:
 
         assert result.excel_native_date_columns == frozenset({"Date"})
 
+    def test_native_date_probe_survives_a_blank_spacer_column(
+        self, tmp_path: Path
+    ) -> None:
+        """A blank spacer column before Date must not misattribute dates.
+
+        Codex finding, confirmed empirically: ``pl.read_excel``'s
+        ``drop_empty_cols=True`` default elides a column whose header AND
+        every data cell are blank, so ``df.columns`` (3 entries: Date,
+        Amount, Description) drifts out of alignment with openpyxl's raw
+        physical row (4 entries: blank spacer, Date, Amount, Description).
+        Indexing ``column_names[i]`` against physical position ``i``
+        directly used to attribute the REAL Date column's typed values to
+        ``column_names[1]`` ("Amount"), while ``column_names[0]`` ("Date")
+        never saw any of its own values (it read the blank spacer's Nones
+        instead) — so a valid file was refused with "no recognized date
+        format" while "Amount" was wrongly flagged as a native date column.
+        """
+        import datetime
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        # Column 0 is an entirely blank spacer — header AND every data
+        # cell blank — which is exactly what pl.read_excel's
+        # drop_empty_cols default elides from df.columns.
+        ws.append([None, "Date", "Amount", "Description"])
+        ws.append([None, datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([None, datetime.date(2026, 1, 2), 100.00, "Salary"])
+        path = tmp_path / "blank_spacer_before_date.xlsx"
+        wb.save(path)
+
+        result = read_file(path, FormatInfo(file_type="excel"))
+
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert result.excel_native_date_columns == frozenset({"Date"})
+
     def test_explicit_skip_rows_pointed_at_data_row_is_flagged(
         self, tmp_path: Path
     ) -> None:

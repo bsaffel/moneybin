@@ -755,11 +755,71 @@ def _excel_cell_text(value: object) -> str:
     return str(value)
 
 
+def _excel_column_physical_indices(
+    path: Path,
+    sheet_name: str,
+    *,
+    has_header: bool,
+    data_start_row: int,
+    column_names: list[str],
+    source_bytes: bytes | None,
+) -> list[int]:
+    """Map each ``column_names[i]`` to its true worksheet column index.
+
+    ``pl.read_excel``'s ``drop_empty_cols=True`` default (used by every
+    ``pl.read_excel`` call in this reader, since none override it) elides
+    any column whose header AND every data cell in the read range are
+    blank — confirmed empirically: an entirely-blank column between two
+    populated ones disappears from ``df.columns`` while openpyxl's
+    ``iter_rows()`` still reports it at its real physical position. Once one
+    column is dropped, every later ``column_names[i]`` no longer equals the
+    worksheet's physical column ``i`` — the assumption
+    ``_excel_native_date_columns`` used to make. A blank header with
+    populated data, or a named header with blank data, does NOT get
+    dropped (fastexcel keeps it, auto-naming it ``__UNNAMED__N`` in the
+    header-blank case) — only header-AND-data both blank triggers the drop.
+
+    Asks fastexcel's own column metadata for the answer
+    (``ColumnInfo.absolute_index`` is the worksheet's real position) rather
+    than reimplementing that blank-detection rule by hand, which would
+    silently drift the moment fastexcel's own rule changes. ``header_row``/
+    ``skip_rows`` are passed with the exact same values ``_read_excel``'s
+    real ``pl.read_excel`` call uses (translated to the low-level API), so
+    this sees the identical column set fastexcel actually returned.
+
+    Returns:
+        The physical worksheet column index for each entry in
+        ``column_names``, in the same order. Falls back to the identity
+        mapping (``range(len(column_names))`` — the pre-fix assumption) if
+        the low-level read disagrees with the already-succeeded
+        ``df.columns`` read on column count, or if fastexcel can't read the
+        file this way at all: a mismatch means something about this file
+        defeats the assumption this helper makes, and a wrong-but-plausible
+        remapping is worse than the untouched heuristic.
+    """
+    import fastexcel
+
+    try:
+        reader = fastexcel.read_excel(path if source_bytes is None else source_bytes)
+        sheet = reader.load_sheet(
+            sheet_name,
+            header_row=(data_start_row - 1) if has_header else None,
+            skip_rows=None if has_header else data_start_row,
+        )
+        columns = sheet.available_columns()
+    except fastexcel.FastExcelError:
+        return list(range(len(column_names)))
+    if len(columns) != len(column_names):
+        return list(range(len(column_names)))
+    return [col.absolute_index for col in columns]
+
+
 def _excel_native_date_columns(
     path: Path,
     sheet_name: str,
     *,
     data_start_row: int,
+    has_header: bool,
     column_names: list[str],
     source_bytes: bytes | None = None,
 ) -> frozenset[str] | None:
@@ -792,10 +852,19 @@ def _excel_native_date_columns(
         data_start_row: Physical row index (0-based) of the first DATA row —
             already offset past the header row when the sheet has one; the
             caller (headered or headerless) resolves that before calling.
+        has_header: Whether the sheet has a consumed header row — needed
+            (alongside ``data_start_row``) to ask fastexcel for the same
+            column set it returned for the real read (see
+            ``_excel_column_physical_indices``).
         column_names: The real column's names, in order, as
-            ``pl.read_excel`` returned them — openpyxl's positional column
-            index is matched against this list, since fastexcel's own
-            column naming/dedup can differ from openpyxl's raw layout.
+            ``pl.read_excel`` returned them. Not necessarily 1:1 with
+            openpyxl's physical column positions — an entirely blank column
+            (header AND every data cell empty) is dropped from this list by
+            ``pl.read_excel``'s ``drop_empty_cols=True`` default but still
+            occupies a real slot in openpyxl's ``iter_rows()`` — so this is
+            resolved to physical indices via
+            ``_excel_column_physical_indices`` before use, never assumed to
+            equal ``range(len(column_names))``.
         source_bytes: Already materialized workbook object to inspect.
 
     Returns:
@@ -824,11 +893,20 @@ def _excel_native_date_columns(
     try:
         ws = wb[sheet_name]
         num_cols = len(column_names)
+        physical_indices = _excel_column_physical_indices(
+            path,
+            sheet_name,
+            has_header=has_header,
+            data_start_row=data_start_row,
+            column_names=column_names,
+            source_bytes=source_bytes,
+        )
         date_counts = [0] * num_cols
         non_null_counts = [0] * num_cols
         for row in ws.iter_rows(min_row=data_start_row + 1, values_only=True):
             for i in range(num_cols):
-                v = row[i] if i < len(row) else None
+                physical_i = physical_indices[i]
+                v = row[physical_i] if physical_i < len(row) else None
                 if v is None:
                     continue
                 non_null_counts[i] += 1
@@ -1108,6 +1186,7 @@ def _read_excel(
             # silently emptied the candidate set on a small sheet (e.g. one
             # data row) with no header to skip at all.
             data_start_row=skip_rows + 1 if resolved_has_header else skip_rows,
+            has_header=resolved_has_header,
             column_names=list(df.columns),
             source_bytes=source_bytes,
         )
