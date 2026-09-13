@@ -5098,7 +5098,7 @@ def test_currency_integrity_plain_advice_unchanged_when_no_duplicate_overlap(
         "1 account(s) have an unknown currency. Their amounts "
         "are segmented out of every total until you assign one — "
         "run `moneybin accounts set <account> --currency <ISO 4217>`, "
-        "then `moneybin transform`: the setting is app state, and "
+        "then `moneybin transform apply`: the setting is app state, and "
         "core.* only picks it up on the next transform, so this check "
         "keeps failing until you re-run one. "
         "MoneyBin never guesses a currency, because a wrong guess "

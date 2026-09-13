@@ -423,6 +423,17 @@ _ASSIGN_ONCE_CLEAR = (
     "4217>` and re-run `moneybin transform`."
 )
 
+#: The routing clause shared by both places a pending decision is reported —
+#: `_currency_assignment_closing` (mixed with another bucket) and the
+#: pending-only branch (its sole subject). Each site keeps its own count and
+#: pair-description placement; only this fixed tail is common.
+_PENDING_DECISION_ROUTING = (
+    " — `accounts links run` would refuse to re-propose it. Decide it "
+    "first: `moneybin accounts links pending` to see the decision, then "
+    "`moneybin accounts links set <decision_id> --into <account_id>` (or "
+    "`--standalone`) to resolve it."
+)
+
 
 def _no_link_recovery_instruction(source_types: Collection[str]) -> str:
     """Which retry command actually re-attempts resolution, routed by source.
@@ -492,11 +503,8 @@ def _currency_assignment_closing(
         )
         notes += (
             f" {len(pending_pairs)} pair(s) ({pair_descriptions}{overflow_note}) "
-            "already have a pending account-link decision — `accounts "
-            "links run` would refuse to re-propose it. Decide it first: "
-            "`moneybin accounts links pending` to see the decision, then "
-            "`moneybin accounts links set <decision_id> --into "
-            f"<account_id>` (or `--standalone`) to resolve it.{masked_note}"
+            f"already have a pending account-link decision"
+            f"{_PENDING_DECISION_ROUTING}{masked_note}"
         )
     if no_link_pairs:
         shown, pair_descriptions, overflow_note = _capped_pair_descriptions(
@@ -4072,12 +4080,8 @@ class DoctorService:
                         f"{', '.join(parts)} have an unknown currency, and "
                         f"{len(pending_pairs)} pair(s) already have a "
                         "pending account-link decision "
-                        f"({pair_descriptions}{overflow_note}) — `accounts "
-                        "links run` would refuse to re-propose it. Decide "
-                        "it first: `moneybin accounts links pending` to "
-                        "see the decision, then `moneybin accounts links "
-                        "set <decision_id> --into <account_id>` (or "
-                        f"`--standalone`) to resolve it.{masked_note}"
+                        f"({pair_descriptions}{overflow_note})"
+                        f"{_PENDING_DECISION_ROUTING}{masked_note}"
                         f"{closing}"
                     ),
                     affected_ids=[
