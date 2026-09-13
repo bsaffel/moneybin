@@ -202,7 +202,10 @@ def _is_live_fingerprint(raw: str | None) -> bool:
 #: What an account id may contain and still be embedded in a backtick-quoted
 #: command or a JSON id. Everything else — a backtick, a quote, whitespace, a
 #: shell metacharacter, a control character — is replaced before publishing.
-_PUBLISHABLE_ACCOUNT_ID_CHARS = re.compile(r"[^A-Za-z0-9_.:@+*-]")
+#: ``*`` is NOT in the allowed set: it is the default-enabled glob, so a
+#: pasted command naming an id like ``AB*C`` would have the shell expand it
+#: before ``moneybin`` saw it, silently changing the arguments.
+_PUBLISHABLE_ACCOUNT_ID_CHARS = re.compile(r"[^A-Za-z0-9_.:@+-]")
 
 
 def _publishable_account_id(account_id: str) -> str:
@@ -223,10 +226,17 @@ def _publishable_account_id(account_id: str) -> str:
        :data:`_PUBLISHABLE_ACCOUNT_ID_CHARS` becomes ``_``.
 
     ``_`` rather than a more visible marker because it is inert in both a shell
-    word and a Markdown span; a ``?`` would glob.
+    word and a Markdown span; a ``?`` or ``*`` would glob.
+
+    **Order is load-bearing: sanitize first, then mask.** The mask emits its own
+    ``****`` prefix, which is MoneyBin's canonical masked form and must survive
+    — but ``*`` is a glob, so it cannot be in the allowed set. Sanitizing the
+    raw id first neutralizes a caller-supplied ``*`` while the mask's asterisks
+    are added afterward and never scanned. Reversing these two lines either
+    re-admits the glob or mangles ``****1234`` into ``____1234``.
     """
-    return _PUBLISHABLE_ACCOUNT_ID_CHARS.sub(
-        "_", mask_embedded_account_number(account_id)
+    return mask_embedded_account_number(
+        _PUBLISHABLE_ACCOUNT_ID_CHARS.sub("_", account_id)
     )
 
 
@@ -3688,10 +3698,10 @@ class DoctorService:
                         "not a guarantee — the merge preview shown by "
                         "`accounts links set` names the actual absorbed and "
                         "surviving accounts, and that is what to check before "
-                        "confirming. Only then assign a currency with "
-                        "`moneybin accounts set <account> --currency "
-                        f"<ISO 4217>` and re-run `moneybin transform`."
-                        f"{transform_note}{masked_note}"
+                        f"confirming.{transform_note} Only then assign a "
+                        "currency with `moneybin accounts set <account> "
+                        "--currency <ISO 4217>` and re-run "
+                        f"`moneybin transform`.{masked_note}"
                     ),
                     affected_ids=[
                         *_masked_account_affected_ids(unknown_accounts),

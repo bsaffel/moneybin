@@ -3869,7 +3869,12 @@ def test_currency_integrity_neutralizes_injection_chars_in_a_published_id(
     """
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
-    hostile = "AB`C;D"
+    # Backtick closes the Markdown span, `;` chains a shell command, and `*` is
+    # the default-enabled glob the shell expands before moneybin sees it. The
+    # glob is the one that survived the first pass at this fix, because the
+    # mask's own `****` needs `*` to reach the reader — which is why the helper
+    # sanitizes before masking rather than after.
+    hostile = "AB`C;D*E"
     _insert_overlap_account(doctor_db, hostile, institution_slug="chase")
     _insert_overlap_account(doctor_db, "DUP_SAFE", institution_slug="chase")
     _insert_amount_ladder(doctor_db, hostile, rows=rows)
@@ -3889,10 +3894,11 @@ def test_currency_integrity_neutralizes_injection_chars_in_a_published_id(
     assert result.status == "fail"
     detail = result.detail or ""
     assert hostile not in detail, detail
-    assert "AB_C_D" in detail, detail
-    assert "`moneybin accounts links run AB_C_D DUP_SAFE`" in detail, detail
+    assert "AB_C_D_E" in detail, detail
+    assert "*" not in detail.split("each pair shown as ")[1].split(" (")[0], detail
+    assert "`moneybin accounts links run AB_C_D_E DUP_SAFE`" in detail, detail
     assert result.affected_ids is not None
-    assert "account:AB_C_D" in result.affected_ids, result.affected_ids
+    assert "account:AB_C_D_E" in result.affected_ids, result.affected_ids
 
 
 @pytest.mark.unit
