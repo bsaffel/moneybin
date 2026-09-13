@@ -54,6 +54,28 @@ def test_display_currency_targets_are_normalized_without_restatement(
     assert restated == []
 
 
+def test_set_setting_rejects_an_oversized_display_target_list(
+    service: ProfileSettingsService,
+) -> None:
+    """The CLI's comma-parsed string reaches the same repo-level count bound.
+
+    An unbounded target set would make ``plan_rate_backfill`` build a
+    Cartesian product against every held currency (MB-148 CONSIDER).
+    """
+    from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
+
+    codes = ",".join(
+        f"{chr(65 + i % 26)}{chr(65 + (i // 26) % 26)}{chr(65 + i // 676)}"
+        for i in range(DISPLAY_CURRENCY_TARGETS_MAX_COUNT + 1)
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        service.set_setting("display_currency_targets", codes, actor="cli")
+
+    assert excinfo.value.code == "mutation_invalid_input"
+    assert service.get_settings().display_currency_targets == ()
+
+
 def test_set_setting_classifies_a_malformed_display_target_list(
     service: ProfileSettingsService,
 ) -> None:

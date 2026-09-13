@@ -18,6 +18,7 @@ from typing import Any
 
 import duckdb
 
+from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
 from moneybin.repositories.base import BaseRepo
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.audit_service import AuditEvent
@@ -164,12 +165,24 @@ class ProfileSettingsRepo(BaseRepo):
 
 
 def _normalize_currency_targets(currency_codes: Sequence[str]) -> tuple[str, ...]:
-    """Canonicalize each ISO code while retaining its first declared order."""
+    """Canonicalize each ISO code while retaining its first declared order.
+
+    Bounded at ``DISPLAY_CURRENCY_TARGETS_MAX_COUNT`` here, the one choke point
+    both the CLI's comma-parsed string and MCP's already-typed ``list[str]``
+    reach: an unbounded set would make ``plan_rate_backfill`` build a Cartesian
+    product against every held currency and issue that many provider calls
+    each refresh.
+    """
     targets: list[str] = []
     for value in currency_codes:
         currency = _normalize_currency(value)
         if currency not in targets:
             targets.append(currency)
+    if len(targets) > DISPLAY_CURRENCY_TARGETS_MAX_COUNT:
+        raise ValueError(
+            "display_currency_targets exceeds "
+            f"{DISPLAY_CURRENCY_TARGETS_MAX_COUNT} distinct codes"
+        )
     return tuple(targets)
 
 

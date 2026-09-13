@@ -45,6 +45,34 @@ def test_v060_adds_an_empty_default_target_collection(db: Database) -> None:
     ).fetchone() == ("USD", [])
 
 
+def test_v060_add_column_applies_comment_and_classification_immediately(
+    db: Database,
+) -> None:
+    """Catalog gets the human comment and `[class: currency]` immediately.
+
+    Right after ADD COLUMN, not only after the next writable open.
+    `init_schemas()` applies both from the schema file before migrations run
+    and silently skips a column that does not exist yet, so V060 must set
+    them itself (Codex CONSIDER on V060 line 32).
+    """
+    db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")
+    migration = Migration.from_file(_MIGRATION_PATH)
+
+    MigrationRunner(db, migrations_dir=_MIGRATION_PATH.parent).apply_one(migration)
+
+    comment = db.execute(
+        """
+        SELECT comment FROM duckdb_columns()
+        WHERE schema_name = 'app' AND table_name = 'profile_settings'
+          AND column_name = 'display_currency_targets'
+        """
+    ).fetchone()
+    assert comment is not None
+    assert comment[0] == (
+        "Explicit read targets; empty leaves refresh cost unchanged [class: currency]"
+    )
+
+
 def test_v060_runs_through_the_migration_runner_transaction(db: Database) -> None:
     """The runner survives V060's required commit/reopen boundary and records it."""
     db.execute("ALTER TABLE app.profile_settings DROP COLUMN display_currency_targets")

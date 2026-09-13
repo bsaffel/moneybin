@@ -11,6 +11,15 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+#: Mirrors the trailing `--` comment on this column in
+#: app_profile_settings.sql. `init_schemas()` applies that schema-file
+#: comment (and the `[class: currency]` classification sigil) before
+#: migrations run, so it silently skips a column this migration hasn't
+#: added yet — set both directly here so an upgraded database's catalog
+#: never goes a full startup cycle without either (V044 applies its own
+#: column comments the same way).
+_COLUMN_COMMENT = "Explicit read targets; empty leaves refresh cost unchanged"
+
 
 def migrate(conn: object) -> None:
     """Add an empty-by-default target list without changing accounting state."""
@@ -31,6 +40,14 @@ def migrate(conn: object) -> None:
             "ADD COLUMN display_currency_targets VARCHAR[] DEFAULT []"
         )
         needs_tighten = True
+        escaped = _COLUMN_COMMENT.replace("'", "''")
+        conn.execute(  # type: ignore[union-attr]
+            "COMMENT ON COLUMN app.profile_settings.display_currency_targets "
+            f"IS '{escaped}'"
+        )
+        from moneybin.privacy.comment_sync import sync_classification_comments
+
+        sync_classification_comments(conn)  # type: ignore[arg-type]
     elif row[0]:
         logger.debug(
             "V060: backfilling nullable app.profile_settings.display_currency_targets"

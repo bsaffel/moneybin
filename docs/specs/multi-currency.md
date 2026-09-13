@@ -512,8 +512,9 @@ Numbered, testable. Tagged by phase.
     discards what it already holds: one provider call per foreign currency per
     refresh, spent to make the stranded-span case impossible rather than unlikely.
 
-    **Display targets (MB-148).** `app.profile_settings.display_currency_targets`
-    is an empty-by-default ordered collection of ISO-4217 codes, normalized and
+    **Display targets (MB-148) — an elaboration of this requirement, not new
+    scope.** `app.profile_settings.display_currency_targets` is an
+    empty-by-default ordered collection of ISO-4217 codes, normalized and
     deduplicated on write through the profile Repo. Refresh plans direct
     `held -> home` and `held -> declared target` windows, omitting identity and
     duplicate pairs; it never manufactures an inverse. An empty collection keeps

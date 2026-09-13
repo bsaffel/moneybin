@@ -92,6 +92,27 @@ def test_invalid_display_currency_target_leaves_prior_targets_untouched(
     assert repo.get_display_currency_targets() == ("EUR",)
 
 
+def test_oversized_display_currency_target_set_is_rejected(
+    repo: ProfileSettingsRepo,
+) -> None:
+    """A target count past the bound is refused before the Cartesian blowup.
+
+    ``plan_rate_backfill`` builds held-currency x target pairs, so an unbounded
+    set becomes unbounded provider calls each refresh (MB-148 CONSIDER).
+    """
+    from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
+
+    codes = [
+        f"{chr(65 + i % 26)}{chr(65 + (i // 26) % 26)}{chr(65 + i // 676)}"
+        for i in range(DISPLAY_CURRENCY_TARGETS_MAX_COUNT + 1)
+    ]
+
+    with pytest.raises(ValueError, match="exceeds"):
+        repo.set_display_currency_targets(codes, actor="cli")
+
+    assert repo.get_display_currency_targets() == ()
+
+
 def test_home_currency_reads_as_unset_before_the_table_exists(
     db: Database, repo: ProfileSettingsRepo
 ) -> None:

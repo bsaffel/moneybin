@@ -89,9 +89,12 @@ class ProfileSettingsService:
             targets = _parse_display_currency_targets(value)
             self._repo.set_display_currency_targets(targets, actor=actor)
         except ValueError as exc:
+            # The repo also enforces DISPLAY_CURRENCY_TARGETS_MAX_COUNT, whose
+            # message names the actual bound violated — surface it verbatim
+            # instead of the generic malformed-code text below.
             raise UserError(
-                "Invalid display currency target: expected comma-separated ISO 4217 "
-                "codes such as USD, EUR, or GBP.",
+                f"Invalid display currency target: {exc}. Expected "
+                "comma-separated ISO 4217 codes such as USD, EUR, or GBP.",
                 code=error_codes.MUTATION_INVALID_INPUT,
             ) from exc
 
