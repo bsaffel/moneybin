@@ -29,7 +29,7 @@ GRAIN, DESCRIPTIVE, DATE, PROVENANCE, MEASURE = range(5)
 
 # Rule B names labels and dimensions as separate blocks, and the guard checks
 # them as one. Which a name column is depends on whether it names the report's
-# own grain — `merchant_normalized` is the label on `core:merchants` and a
+# own grain — `merchant_normalized` is the label on `core:merchant_activity` and a
 # dimension on `core:large_transactions`, which is grained by transaction — and
 # no declaration carries the grain. Ranking them apart would enforce a
 # distinction the guard cannot see, so it checks only that both precede the

@@ -25,8 +25,8 @@ def _opt_str(value: Decimal | None) -> str | None:
 
 _NEXT_STEPS = (
     "\nTry next:\n"
-    "  moneybin reports spending\n"
-    "  moneybin reports cashflow\n"
+    "  moneybin reports spending-trend\n"
+    "  moneybin reports cash-flow\n"
     "  moneybin review\n"
     "Or ask your AI assistant (MCP):\n"
     '  "What did I spend on dining last month?"\n'

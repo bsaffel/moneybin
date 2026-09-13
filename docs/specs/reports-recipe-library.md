@@ -45,7 +45,7 @@ This spec is the inaugurating implementation of that convention. It exercises th
 ### Related specs
 
 - [`architecture-shared-primitives.md`](architecture-shared-primitives.md) — gate spec; defines the `reports.*` schema, layer rules, and the `core.agg_net_worth → reports.net_worth` cascading edit. **Carries one small follow-up amendment in this spec** (rename `reports.networth` → `reports.net_worth`); see [Migrations](#migrations).
-- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending`, `reports cashflow`). This spec adds four more subcommands (`reports recurring`, `reports merchants`, `reports large-transactions`, `reports balance-drift`). `core.uncategorized_queue` is an internal categorization-review queue, reached through the reviews surface rather than a report command or registered report route.
+- [`moneybin-cli.md`](moneybin-cli.md) — v2 reports CLI namespace (`reports networth`, `reports spending-trend`, `reports cash-flow`). This spec adds four more subcommands (`reports recurring-subscriptions`, `reports merchant-activity`, `reports large-transactions`, `reports balance-drift`). `core.uncategorized_queue` is an internal categorization-review queue, reached through the reviews surface rather than a report command or registered report route.
 - [`moneybin-mcp.md`](moneybin-mcp.md) — the current `reports` catalog/runner preserves per-report CLI commands.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. **Extended** by this spec to include the `reports` schema with `audience: "interface"`.
 - [`reports-net-worth.md`](reports-net-worth.md) — owner of the existing `core.agg_net_worth` model, which this spec migrates. The two `NetworthService` SQL references are updated as part of the migration (no behavior change).
@@ -69,8 +69,8 @@ This spec is the inaugurating implementation of that convention. It exercises th
 ## Architectural Pattern
 
 > **Surface-layer note (report auto-generation):** the `reports.*` SQLMesh
-> views are unchanged. The six view-backed reports (`cashflow`,
-> `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`)
+> views are unchanged. The six view-backed reports (`cash-flow`,
+> `spending-trend`, `recurring-subscriptions`, `merchant-activity`, `large-transactions`, `balance-drift`)
 > are declared as `@report` runners in `src/moneybin/reports/definitions/`
 > and their CLI commands are registered via `register_reports_cli` from
 > `ALL_REPORTS`; MCP dispatches the same catalog entries through `reports`.
@@ -130,7 +130,7 @@ series), dynamically classified under the generic tool's `critical` maximum.
 
 **Shipped:** PR #121 (M2A entry).
 
-**Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cashflow` and any drill-down the consumer wants (by account, by category, totals).
+**Purpose:** Monthly inflow/outflow/net per account × category. Powers `reports cash-flow` and any drill-down the consumer wants (by account, by category, totals).
 
 **Grain:** One row per `(year_month, account_id, category)`. Wide-grain — consumers `GROUP BY` further, or aggregate over the whole table for a single net number.
 
@@ -156,8 +156,8 @@ Excludes transactions in archived accounts.
 | `outflow` | `DECIMAL(18,2)` | Sum of negative amounts in this cell (kept negative) |
 | `net` | `DECIMAL(18,2)` | inflow + outflow |
 
-CLI: `moneybin reports cashflow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]`.
-MCP: `reports(report_id="core:cashflow", parameters={...})`, dynamically
+CLI: `moneybin reports cash-flow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]`.
+MCP: `reports(report_id="core:cash_flow", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
 ### `reports.spending_trend`
@@ -200,8 +200,8 @@ is needed.
 | `yoy_pct` | `DECIMAL(8,4)` | yoy_delta / prev_year_spend; NULL if prev_year_spend = 0 |
 | `trailing_3mo_avg` | `DECIMAL(18,2)` | Rolling average of up to 3 calendar months ending this month, same category; missing category-months contribute zero |
 
-CLI: `moneybin reports spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
-MCP: `reports(report_id="core:spending", parameters={...})`, dynamically
+CLI: `moneybin reports spending-trend [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]`.
+MCP: `reports(report_id="core:spending_trend", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
 ### `reports.recurring_subscriptions`
@@ -258,8 +258,8 @@ classified under the generic tool's `critical` maximum.
 
 **Posture:** `reports.recurring_subscriptions` is a **candidate generator**, not authoritative state. The acceptance/rejection loop (where users confirm "yes this is a subscription, track it") belongs to a future spec — see [Out of Scope](#out-of-scope).
 
-CLI: `moneybin reports recurring [--min-confidence FLOAT] [--status active|inactive|all] [--cadence weekly|biweekly|monthly|quarterly|yearly]`.
-MCP: `reports(report_id="core:recurring", parameters={...})`, dynamically
+CLI: `moneybin reports recurring-subscriptions [--min-confidence FLOAT] [--status active|inactive|all] [--cadence weekly|biweekly|monthly|quarterly|yearly]`.
+MCP: `reports(report_id="core:recurring_subscriptions", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
 ### `reports.merchant_activity`
@@ -289,8 +289,8 @@ classified under the generic tool's `critical` maximum.
 | `median_amount` | `DECIMAL(18,2)` | Median signed amount (DuckDB MEDIAN aggregate) |
 | `total_spend` | `DECIMAL(18,2)` | Lifetime absolute outflow |
 
-CLI: `moneybin reports merchants [--top N] [--sort spend|count|recent]`.
-MCP: `reports(report_id="core:merchants", parameters={...})`, dynamically
+CLI: `moneybin reports merchant-activity [--top N] [--sort spend|count|recent]`.
+MCP: `reports(report_id="core:merchant_activity", parameters={...})`, dynamically
 classified under the generic tool's `critical` maximum.
 
 ### `reports.large_transactions`
@@ -417,7 +417,7 @@ src/moneybin/sqlmesh/models/core/
 - `docs/specs/architecture-shared-primitives.md` — small text amendment per [Migration 1](#1-amendment-to-architecture-shared-primitivesmd).
 
 **CLI:**
-- The view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. `core.uncategorized_queue` is an internal categorization-review queue, served through `reviews(kind="categorization", status="pending")` rather than a report command.
+- The view-backed subcommands (`cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners in `src/moneybin/reports/definitions/` and registered by `register_reports_cli(ALL_REPORTS, app)` in `src/moneybin/cli/commands/reports/__init__.py`. `networth` / `networth-history` stay hand-written. `core.uncategorized_queue` is an internal categorization-review queue, served through `reviews(kind="categorization", status="pending")` rather than a report command.
 - The existing `categories list` and `merchants list` CLI commands are unaffected because their services use the module-level `CATEGORIES` / `MERCHANTS` constants. After migration, those constants resolve to `core.dim_*`.
 
 **MCP:**
@@ -471,16 +471,16 @@ These are part of the spec's success criteria — without curated example querie
 
 ## CLI Interface
 
-Extends `moneybin-cli.md` v2's `reports` namespace. Four new subcommands added; three existing subcommands (`networth`, `cashflow`, `spending`) backed by the new/migrated views. The six view-backed subcommands (`cashflow`, `spending`, `recurring`, `merchants`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners; `networth` / `networth-history` are hand-written. Flag names on the framework-generated commands derive from the runner's parameter names (e.g. `from_month` → `--from-month`).
+Extends `moneybin-cli.md` v2's `reports` namespace. Four new subcommands added; three existing subcommands (`networth`, `cash-flow`, `spending-trend`) backed by the new/migrated views. The six view-backed subcommands (`cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`, `large-transactions`, `balance-drift`) are framework-generated from `@report` runners; `networth` / `networth-history` are hand-written. Flag names on the framework-generated commands derive from the runner's parameter names (e.g. `from_month` → `--from-month`).
 
 ```
 moneybin reports
 +-- networth [--as-of DATE]                          (hand-written — backed by reports.net_worth)
 +-- networth-history [--from DATE] [--to DATE] [--interval daily|weekly|monthly]   (hand-written)
-+-- cashflow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]
-+-- spending [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]
-+-- recurring [--min-confidence FLOAT] [--status active|inactive|all] [--cadence ...]
-+-- merchants [--top N] [--sort spend|count|recent]
++-- cash-flow [--from-month MONTH] [--to-month MONTH] [--by account|category|account-and-category]
++-- spending-trend [--from-month MONTH] [--to-month MONTH] [--category SLUG] [--compare yoy|mom|trailing]
++-- recurring-subscriptions [--min-confidence FLOAT] [--status active|inactive|all] [--cadence ...]
++-- merchant-activity [--top N] [--sort spend|count|recent]
 +-- large-transactions [--top N] [--anomaly account|category|none]
 +-- balance-drift [--account NAME] [--status drift|warning|clean|no-data] [--since DATE]
 ```
@@ -506,10 +506,10 @@ does not mirror the CLI 1:1 or generate one MCP callback per report.
 |---|---|---|
 | `reports(report_id="core:networth", parameters={...})` | Dynamic; maximum `critical` | Point-in-time net worth (service-backed) |
 | `reports(report_id="core:networth_history", parameters={...})` | Dynamic; maximum `critical` | Net worth history (service-backed) |
-| `reports(report_id="core:cashflow", parameters={...})` | Dynamic; maximum `critical` | Monthly cash flow |
-| `reports(report_id="core:spending", parameters={...})` | Dynamic; maximum `critical` | Spending trend with deltas |
-| `reports(report_id="core:recurring", parameters={...})` | Dynamic; maximum `critical` | Recurring subscription candidates |
-| `reports(report_id="core:merchants", parameters={...})` | Dynamic; maximum `critical` | Merchant activity |
+| `reports(report_id="core:cash_flow", parameters={...})` | Dynamic; maximum `critical` | Monthly cash flow |
+| `reports(report_id="core:spending_trend", parameters={...})` | Dynamic; maximum `critical` | Spending trend with deltas |
+| `reports(report_id="core:recurring_subscriptions", parameters={...})` | Dynamic; maximum `critical` | Recurring subscription candidates |
+| `reports(report_id="core:merchant_activity", parameters={...})` | Dynamic; maximum `critical` | Merchant activity |
 | `reports(report_id="core:large_transactions", parameters={...})` | Dynamic; maximum `critical` | Large transactions |
 | `reports(report_id="core:balance_drift", parameters={...})` | Dynamic; maximum `critical` | Balance reconciliation drift |
 
