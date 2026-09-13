@@ -1497,6 +1497,40 @@ class TestDateFormatHasTimeComponent:
         ]
         assert effective_format == "%Y-%m-%d %H:%M:%S.%f"
 
+    def test_post_date_rewrite_never_flips_an_untouched_transaction_date(
+        self,
+    ) -> None:
+        """post_date's own rewrite must not change the format transaction_date parses under.
+
+        "Date" (transaction_date) is plain text and is not a normalization
+        candidate here (``native_date_columns`` names only "Posted"). A
+        first-contact caller who has named both columns via ``--mapping``
+        but not yet declared ``--date-format`` reaches this with
+        ``date_format=None`` — a real call shape, not a contrived one.
+        transform_dataframe parses every date-typed field under the single
+        shared format this function returns, so if "Posted" being native
+        alone flipped it to "%Y-%m-%d", "Date"'s untouched text would stop
+        parsing under a format nothing about it ever asked for.
+        """
+        df = pl.DataFrame({
+            "Date": ["01/03/2026", "01/04/2026"],
+            "Posted": ["2026-01-05 00:00:00", "2026-01-06 00:00:00"],
+            "Amount": ["-4.50", "100.00"],
+        })
+        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+            df,
+            file_type="excel",
+            date_format=None,
+            date_column="Date",
+            additional_date_columns=["Posted"],
+            native_date_columns=frozenset({"Posted"}),
+        )
+        assert effective_format is None
+        assert normalized["Posted"].to_list() == [
+            "2026-01-05 00:00:00",
+            "2026-01-06 00:00:00",
+        ]
+
 
 class TestParquetReader:
     """Tests for Parquet file reading."""

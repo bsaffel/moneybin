@@ -1168,13 +1168,12 @@ class TestTabularConfirmationFlow:
     ) -> None:
         """Every mapped date field must normalize together, not just one.
 
-        Codex P1/claude, round 10: normalize_excel_date_columns_before_mapping
-        was scoped to only the ``transaction_date`` column. When ``post_date``
-        ALSO maps to a native-Excel-date column, ``effective_date_format``
-        becomes ``"%Y-%m-%d"`` (from ``transaction_date``'s rewrite) while
-        ``post_date`` stays raw ``"<date> 00:00:00"`` text — ``_parse_dates``
-        then fails to parse it under that format and transforms.py stores it
-        as NULL, non-fatally and silently. The saved format's own persisted
+        When both ``transaction_date`` and ``post_date`` map to native-Excel-
+        date columns, both must be normalized together: rewriting only
+        ``transaction_date`` flips ``effective_date_format`` to
+        ``"%Y-%m-%d"`` while ``post_date`` stays raw ``"<date> 00:00:00"``
+        text — a mismatch ``_parse_dates`` fails on non-fatally, so every
+        ``post_date`` silently becomes NULL. The saved format's own persisted
         ``date_format`` ("%m/%d/%Y", never the file's actual shape) proves the
         fix does not depend on it matching either column's pre-rewrite text.
         """

@@ -2930,6 +2930,7 @@ class ImportService:
             save_format_to_db,
         )
         from moneybin.extractors.tabular.readers import (
+            mapped_date_columns,
             normalize_excel_date_columns_before_mapping,
             read_file,
         )
@@ -3075,27 +3076,16 @@ class ImportService:
             # all-midnight-shaped column could otherwise qualify.
             known_mapping = overrides
 
-        # post_date is the only other date-typed tabular field (raw_tabular_
-        # transactions.sql declares exactly transaction_date and post_date as
-        # DATE) and transform_dataframe parses it under the SAME date_format
-        # as transaction_date (transforms.py) — so when both map to native-
-        # Excel-date columns, both must be normalized together or post_date
-        # is left in raw "<date> 00:00:00" text while effective_date_format
-        # becomes "%Y-%m-%d", and _parse_dates silently drops every post_date
-        # to NULL (Codex P1/claude, round 10).
-        known_post_date_column = (
-            known_mapping.get("post_date") if known_mapping else None
-        )
+        # mapped_date_columns is the one place every date-typed destination
+        # field is named — see normalize_excel_date_columns_before_mapping's
+        # docstring for why duplicating that list per call site is unsafe.
+        date_column, additional_date_columns = mapped_date_columns(known_mapping)
         df, effective_date_format = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
             date_format=declared_date_format,
-            date_column=known_mapping.get("transaction_date")
-            if known_mapping
-            else None,
-            additional_date_columns=[known_post_date_column]
-            if known_post_date_column
-            else None,
+            date_column=date_column,
+            additional_date_columns=additional_date_columns or None,
             native_date_columns=read_result.excel_native_date_columns,
         )
 

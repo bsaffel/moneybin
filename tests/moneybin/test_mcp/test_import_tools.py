@@ -902,6 +902,85 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     ]
 
 
+async def test_import_preview_coarse_post_date_matches_what_import_stores(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The previewed post_date sample must match what the import stores.
+
+    All three normalize_excel_date_columns_before_mapping call sites now
+    derive their scope from the shared mapped_date_columns helper, so a
+    first-contact preview naming both transaction_date and post_date as
+    native-Excel-date columns must show the same post_date the later
+    import commits — not a still-raw "<date> 00:00:00" sample that
+    silently diverges once imported.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append([date(2026, 1, 1), date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append([date(2026, 1, 2), date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_native.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx),
+        mapping={"transaction_date": "Date", "post_date": "Posted"},
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.sample_values["post_date"] == ["2026-01-03", "2026-01-04"]
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "post_date_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"transaction_date": "Date", "post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            # Incidental to this test: the account resolver's fallback rung
+            # always offers mcp_db's seeded accounts as weak candidates for a
+            # never-before-seen source, so import_answering_gate can't answer
+            # on this test's behalf. Bind explicitly to "new" -- the honest
+            # choice for a name that matches nothing but the fallback rung.
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored_post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+
+    assert [d.isoformat() for d in stored_post_dates] == preview.data.sample_values[
+        "post_date"
+    ]
+
+
 @pytest.mark.parametrize(
     ("suffix", "limit_field"),
     [

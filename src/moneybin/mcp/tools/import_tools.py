@@ -852,6 +852,7 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
+        mapped_date_columns,
         normalize_excel_date_columns_before_mapping,
         read_file,
     )
@@ -878,22 +879,24 @@ def _import_preview_tabular(
         # description column drops out of the mapping entirely). The
         # returned effective format is unused here — this path never
         # persists a date format for a later replay to disagree with.
-        # date_column scopes to the caller's own mapping (mirrors the
-        # equivalent first-contact scoping in import_service.py's
-        # _import_tabular: known_mapping = overrides) when the caller
-        # already named transaction_date — otherwise a second genuinely
-        # native-date column (e.g. a "Posted" date beside the real
-        # transaction date) normalizes here in the preview but NOT on the
-        # later confirm/replay (import_service.py always scopes to
-        # ReviewedTabularPlan.field_mapping's actual transaction_date), so
-        # the imported value silently diverges from what was previewed.
-        # None (no mapping given) still scans broadly, matching map_columns's
-        # own need to find the date column before it is known.
+        # mapped_date_columns scopes to the caller's own mapping (mirrors
+        # the equivalent first-contact scoping in import_service.py's
+        # _import_tabular: known_mapping = overrides) so this preview
+        # normalizes the same date-typed columns the later confirm/replay
+        # will (import_service.py derives its own scope from the same
+        # helper) — otherwise a second genuinely native-date column (e.g. a
+        # "Posted" date beside the real transaction date) could normalize
+        # here but not there, and the imported value would silently diverge
+        # from what was previewed. An empty mapping still scans broadly,
+        # matching map_columns's own need to find the date column before it
+        # is known.
+        date_column, additional_date_columns = mapped_date_columns(mapping)
         read_result.df, _ = normalize_excel_date_columns_before_mapping(
             read_result.df,
             file_type=format_info.file_type,
             date_format=None,
-            date_column=mapping.get("transaction_date") if mapping else None,
+            date_column=date_column,
+            additional_date_columns=additional_date_columns or None,
             native_date_columns=read_result.excel_native_date_columns,
         )
         mapping_result = map_columns(
@@ -1289,7 +1292,7 @@ def import_preview_coarse(
         # `not plan_is_unconfirmable` branch above) rather than the whole
         # list: a header_position_ambiguous warning appended there is a
         # second entry the agent must still see, and reassigning `actions`
-        # outright silently dropped it (Codex P1, round 10).
+        # outright silently dropped it.
         if not plan_is_unconfirmable:
             actions[0] = (
                 f"Use import_confirm(preview_id='{preview_id}') before the "

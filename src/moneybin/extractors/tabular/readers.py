@@ -750,6 +750,33 @@ def date_format_has_time_component(
     return True
 
 
+# The tabular schema's only date-typed destination fields (raw_tabular_
+# transactions.sql declares exactly these two as DATE). Single source of
+# truth for mapped_date_columns below — each of the three
+# normalize_excel_date_columns_before_mapping call sites must derive its
+# scope from this same list, not repeat "transaction_date" and "post_date"
+# by hand (that drift is the exact failure both functions' docstrings exist
+# to prevent).
+_DATE_TYPED_TABULAR_FIELDS: tuple[str, ...] = ("transaction_date", "post_date")
+
+
+def mapped_date_columns(
+    field_mapping: dict[str, str] | None,
+) -> tuple[str | None, list[str]]:
+    """Split a field mapping into (transaction_date's column, other date columns).
+
+    The one place all three ``normalize_excel_date_columns_before_mapping``
+    callers get this list from, so it can't drift per call site again.
+    """
+    if not field_mapping:
+        return None, []
+    primary = field_mapping.get(_DATE_TYPED_TABULAR_FIELDS[0])
+    others = [
+        field_mapping[f] for f in _DATE_TYPED_TABULAR_FIELDS[1:] if f in field_mapping
+    ]
+    return primary, others
+
+
 def normalize_excel_date_columns_before_mapping(
     df: pl.DataFrame,
     *,
@@ -771,55 +798,68 @@ def normalize_excel_date_columns_before_mapping(
     column mapping unnormalized doesn't just fail to detect the date column —
     it gets misidentified as ``description`` while the real description
     column drops out of the mapping entirely, a worse failure than refusing
-    to detect a date at all).
+    to detect a date at all). All three now build ``date_column``/
+    ``additional_date_columns`` via ``mapped_date_columns`` rather than
+    naming destination fields by hand, so a third date-typed field would
+    only need to be added there.
 
     No-op for non-Excel file types. Skips normalization entirely when
     ``date_format`` declares a time component — see
     ``date_format_has_time_component`` and ``normalize_excel_date_columns``
-    for why. Otherwise normalizes, scoped to ``date_column`` plus
-    ``additional_date_columns`` when the caller already knows the mapping (a
-    saved/matched format or a reviewed plan); both ``None`` normalizes
-    broadly, matching what ``map_columns``'s own content-based discovery
-    needs when no mapping exists yet.
+    for why. Otherwise normalizes, scoped to ``date_column`` when the caller
+    already knows the mapping (a saved/matched format or a reviewed plan);
+    ``None`` normalizes broadly, matching what ``map_columns``'s own
+    content-based discovery needs when no mapping exists yet.
 
-    ``additional_date_columns`` exists for ``post_date``: transform_dataframe
-    parses it with the same ``date_format`` used for ``transaction_date``
-    (transforms.py), so if both map to native-Excel-date columns and only
-    ``transaction_date`` is normalized, ``effective_date_format`` becomes
-    ``"%Y-%m-%d"`` while ``post_date`` stays raw ``"<date> 00:00:00"`` text —
-    a mismatch ``_parse_dates`` fails on non-fatally, so every ``post_date``
-    silently becomes ``NULL`` (Codex P1/claude, round 10). Every mapped
-    date-typed field must be normalized together, not just the one this
-    function originally scoped to.
+    ``additional_date_columns`` (``post_date``) is normalized ONLY when
+    ``date_column`` (``transaction_date``) itself is rewritten, never on its
+    own: transform_dataframe parses every date-typed field under the same
+    shared ``date_format`` (transforms.py), which is declared for
+    ``transaction_date``. Flipping it because ``post_date`` alone turned out
+    to be a native column would leave a still-raw, still-differently-shaped
+    ``transaction_date`` unable to parse under a format it never asked for —
+    trading a silently-NULL ``post_date`` for outright rejected rows, a
+    worse failure. So ``transaction_date``'s own rewrite decision gates
+    both.
 
     Returns:
         ``(possibly-rewritten df, effective_date_format)``. ``date_format``
-        passes through unchanged UNLESS this step actually rewrote
-        ``date_column`` or a member of ``additional_date_columns`` — a
-        persisted/reviewed format was written for the column's *pre-rewrite*
-        text, so the parser must follow the rewrite this step just made, not
-        the format that no longer matches what's in the column. These two
-        outcomes are mutually exclusive: a time-bearing ``date_format``
-        always skips normalization (returned above), so a column is never
-        both rewritten and still expected to parse under its original
-        format.
+        passes through unchanged UNLESS ``date_column`` was itself rewritten
+        — a persisted/reviewed format was written for the column's
+        *pre-rewrite* text, so the parser must follow the rewrite this step
+        just made, not the format that no longer matches what's in the
+        column. These two outcomes are mutually exclusive: a time-bearing
+        ``date_format`` always skips normalization (returned above), so a
+        column is never both rewritten and still expected to parse under
+        its original format.
     """
     if file_type != "excel":
         return df, date_format
     if date_format_has_time_component(date_format, df=df, date_column=date_column):
         return df, date_format
-    known_columns = ([date_column] if date_column else []) + list(
-        additional_date_columns or []
+    if date_column is None:
+        # Auto-detect: no known mapping yet, so scan every qualifying
+        # column. mapping_result.date_format (detected AFTER this call)
+        # governs downstream instead of this function's own return value —
+        # see the auto-detect branch note in import_service.py.
+        normalized, _ = normalize_excel_date_columns(
+            df, columns=None, native_date_columns=native_date_columns
+        )
+        return normalized, date_format
+    primary_normalized, primary_rewritten = normalize_excel_date_columns(
+        df, columns=[date_column], native_date_columns=native_date_columns
     )
-    normalized, rewritten = normalize_excel_date_columns(
-        df,
-        columns=known_columns or None,
+    if date_column not in primary_rewritten or not additional_date_columns:
+        effective_date_format = (
+            "%Y-%m-%d" if date_column in primary_rewritten else date_format
+        )
+        return primary_normalized, effective_date_format
+    fully_normalized, _ = normalize_excel_date_columns(
+        primary_normalized,
+        columns=additional_date_columns,
         native_date_columns=native_date_columns,
     )
-    effective_date_format = (
-        "%Y-%m-%d" if rewritten & set(known_columns) else date_format
-    )
-    return normalized, effective_date_format
+    return fully_normalized, "%Y-%m-%d"
 
 
 def _excel_cell_text(value: object) -> str:
@@ -927,19 +967,9 @@ def _excel_column_physical_indices(
     this sees the identical column set fastexcel actually returned.
 
     Bounded by ``n_rows=_EXCEL_NATIVE_DATE_SAMPLE_ROWS``, matching the
-    sibling openpyxl-based scans (Codex, round 10). Verified empirically
-    (three fixtures: a dense 49,999-row file, a blank-header column
-    populated only near the end, and a blank-header column that is always
-    blank) that ``available_columns()``'s column list and each
-    ``absolute_index`` are fixed by the header row alone and independent of
-    ``n_rows`` — it never implements ``pl.read_excel``'s own
-    ``drop_empty_cols`` (that already-blank-vs-dropped gap is exactly why
-    the length check below exists and fires on every truly-blank column,
-    not just a capped-window false positive). No correctness cost, and a
-    real one avoided: unlike this fastexcel/calamine call, whose full-height
-    scan already measured under a quarter-second even uncapped (see the
-    comment above ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS``, whose openpyxl-backed
-    scan is the one that actually motivated that cap).
+    sibling openpyxl-based scans. Verified empirically that a capped
+    ``n_rows`` does not change ``available_columns()``'s column list or any
+    ``absolute_index`` — both are fixed by the header row alone.
 
     Returns:
         The physical worksheet column index for each entry in

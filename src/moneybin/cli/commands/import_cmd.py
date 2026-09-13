@@ -2573,6 +2573,7 @@ def import_preview(
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
+        mapped_date_columns,
         normalize_excel_date_columns_before_mapping,
         read_file,
     )
@@ -2676,20 +2677,21 @@ def import_preview(
         # entirely. matched_date_format is the corrected format to DISPLAY
         # (below) when normalization rewrote the mapped column — showing
         # the persisted format unchanged would misreport what this file
-        # will actually parse against once imported. date_column falls back
-        # to the caller's own --override transaction_date=<col> when no
-        # format matched — mirrors the equivalent first-contact scoping in
-        # import_service.py's _import_tabular (known_mapping = overrides):
-        # without it, a second genuinely native-date column normalizes here
-        # in the preview but not on the later confirm/replay (which always
-        # scopes to the resolved mapping's actual transaction_date column).
+        # will actually parse against once imported. mapped_date_columns
+        # falls back to the caller's own --override mapping when no format
+        # matched — mirrors the equivalent first-contact scoping in
+        # import_service.py's _import_tabular (known_mapping = overrides),
+        # via the same helper, so this preview normalizes the same
+        # date-typed columns the later confirm/replay will.
+        date_column, additional_date_columns = mapped_date_columns(
+            matched_format.field_mapping if matched_format else overrides
+        )
         df, matched_date_format = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
-            date_column=matched_format.field_mapping.get("transaction_date")
-            if matched_format
-            else (overrides.get("transaction_date") if overrides else None),
+            date_column=date_column,
+            additional_date_columns=additional_date_columns or None,
             native_date_columns=read_result.excel_native_date_columns,
         )
 
@@ -2720,11 +2722,9 @@ def import_preview(
         if read_result.header_position_ambiguous:
             # Dismissible, unlike the flag above: ratifying the detected
             # header position unblocks it. `import preview` has no --confirm
-            # option of its own (Codex P2, round 10) — the hand-rolled text
-            # this replaced told the user to pass a flag this command
-            # doesn't have. Use the shared helper, which names the commands
-            # that actually clear this gate (`import files --confirm` /
-            # `import confirm --accept`).
+            # option of its own — use the shared helper, which names the
+            # commands that actually clear this gate (`import files
+            # --confirm` / `import confirm --accept`).
             from moneybin.services.import_confirmation import (
                 header_position_ambiguous_recovery,
             )

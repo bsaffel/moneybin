@@ -213,6 +213,16 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_before_mapping",
     ),
+    # why: pure dict lookup (no writes) — picks the date-typed destination
+    # fields out of a mapping so this adapter's normalize call scopes the
+    # same columns import_service.py's service layer does; the one place
+    # that list is named, so every caller must import it rather than repeat
+    # the field names by hand.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.readers",
+        "mapped_date_columns",
+    ),
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.column_mapper",
@@ -243,6 +253,14 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_before_mapping",
+    ),
+    # why: same reason as the CLI preview entry above — the one place
+    # date-typed destination fields are named, so this adapter's normalize
+    # call scopes the same columns import_service.py does.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.readers",
+        "mapped_date_columns",
     ),
     # FIELD_ALIASES is a pure module-level constant (destination field name ->
     # alias list) — import_preview's mapping= override validates against its
