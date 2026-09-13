@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-13 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -126,7 +126,7 @@ The CLI has a few task-shaped overlaps; this section disambiguates the common on
 
 **"Refresh / transform / categorize run — which?"**
 
-- **`moneybin refresh`** — the right answer 99% of the time. Runs gsheet → match → transform → categorize → identity → rates in order; idempotent.
+- **`moneybin refresh`** — the default answer. Runs gsheet → match → transform → categorize → identity → rates in order; idempotent.
 - **`transform <verb>`** — drop here only for SQLMesh-only operator work (debugging a model, restating a date range, validating SQL).
 - **`transactions categorize run`** — drop here only when you want to re-run categorization engines without touching transforms (e.g., after editing rules).
 

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-12 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Roadmap
 
 MoneyBin is pre-v1 and solo-maintained. The AGPL license guarantees the code
@@ -129,7 +129,7 @@ Every planned way your money gets in lands cleanly — with the *ergonomics* (co
 | **M1L** | Engine integrity & recovery completion | 🚧 | Paired audit writes + lint routing gate + doctor coverage + undo consumer. [`app-integrity-invariant.md`](specs/app-integrity-invariant.md), [`data-recovery-contract.md`](specs/data-recovery-contract.md). |
 | **M1M** | Source observations — vocabulary & canonical homes (positioning doc) | ✅ | [`source-observations.md`](specs/source-observations.md). Names where source-observed facts already live: `raw.*` + `meta.fct_transaction_provenance` for transactions; `core.fct_balances` + `app.balance_assertions` for balances; `app.match_decisions` for M:N curation. Forbids parallel `core.fct_source_observations` / `core.bridge_transaction_observations` / `app.observations`. Web UI read map. (Like M0D, this slot's deliverable is the doc itself; the underlying primitives shipped across `matching-*` and `reports-net-worth.md`.) |
 | **M1N** | Data-pipeline reconciliation | 📐 | raw→prep→core accounting, orphan detection. [`data-reconciliation.md`](specs/data-reconciliation.md). |
-| **M1O** | [`moneybin export` bundle and report delivery](specs/export.md) (CSV / Parquet / Excel / Google Sheets) | ✅ | Closed 13-table canonical bundles and one registered report run share a prepared-snapshot service. Local artifacts are immutable with manifest, checksums, and generated data dictionary; output-only Sheets destinations manage latest-state tabs separately from inbound connections. |
+| **M1O** | [`moneybin export` bundle and report delivery](specs/export.md) (CSV / Parquet / Excel / Google Sheets) | ✅ | Closed canonical bundles ([`cli-reference.md`](guides/cli-reference.md#export)) and one registered report run share a prepared-snapshot service. Local artifacts are immutable with manifest, checksums, and generated data dictionary; output-only Sheets destinations manage latest-state tabs separately from inbound connections. |
 | **M1P** | Anonymizer (real data → reproducible test fixtures) | 📐 | The real-data parity enabler for the Ingestion-Complete gate. [`testing-anonymized-data.md`](specs/testing-anonymized-data.md). |
 | **M1Q** | Extension framework (provider / report / package) | 🚧 | Powers customizable reports; strengthens the warehouse. **🔒 public contract locks at the M1→M2 boundary**, after the schema stabilizes. [`extension-contracts.md`](specs/extension-contracts.md). |
 | **M1R** | Format-compatibility test scaffolding | 🗓️ | Curated bank-export fixtures + extractor verification; supports the Ingestion-Complete gate. |

@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-13 -->
 # System Overview
 
 MoneyBin is a local-first, AI-native personal finance platform. This page is the orientation map — what each major piece does, how they fit together, and what runs when. For the architectural depth (primitives, contracts, layers, internal invariants), see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`data-model.md`](data-model.md). For the full reference, see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
@@ -11,7 +11,7 @@ Five runtime components plus three cross-cutting concerns. The data they share i
 |---|---|---|---|
 | **Local DuckDB store** | Storage | One encrypted file per profile under `~/.moneybin/profiles/<name>/moneybin.duckdb`. Holds `raw → prep → core → reports` plus the `app.*` overlay. | [`database-security.md`](../guides/database-security.md), [`data-model.md`](data-model.md) |
 | **CLI** | Runtime (per-invocation) | Typer-based command surface (Typer is the argparse-style CLI framework); first-class agent peer to MCP. Every command supports `--output json` and returns the same response envelope as the matching MCP tool. | [`cli-reference.md`](../guides/cli-reference.md) |
-| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). One 50-tool standard registry spans 13 user-facing domain groups across 17 literal tool-name prefixes over stdio; the generic `reports` catalog and runner lists and executes registered reports. Capable hosts may optionally defer schemas only from that same registry. The registry advertises zero output schemas. | [`mcp-server.md`](../guides/mcp-server.md) |
+| **MCP server** | Runtime (per session) | FastMCP-based local server (FastMCP is the Python MCP server library). One 50-tool standard registry, grouped by user-facing domain and literal tool-name prefix, over stdio; the generic `reports` catalog and runner lists and executes registered reports. Capable hosts may optionally defer schemas only from that same registry. The registry advertises zero output schemas. | [`mcp-server.md`](../guides/mcp-server.md) |
 | **SQLMesh pipeline** | Runtime (on-demand) | Compiles and runs the `raw → prep → core → reports` transformations. SQLMesh owns every write to `prep.*`, `core.*`, `reports.*`, `meta.*`, and `seeds.*`. | [`data-pipeline.md`](../guides/data-pipeline.md) |
 | **Sync client** | Runtime (on-demand) | Talks to `moneybin-sync` to broker Plaid pulls. The server is opaque — the client only knows the API surface. | [`server-api-contract.md`](server-api-contract.md) |
 | **Privacy middleware** | Cross-cutting | Tool decorator (`@mcp_tool`) plus FastMCP middleware that classifies responses, masks critical fields, and enforces the read/write allowlist. Global consent-based response gating remains deferred. | [`docs/specs/mcp-architecture.md`](../specs/mcp-architecture.md) |
@@ -130,13 +130,14 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-One 50-tool standard registry spans 13 user-facing domain groups across 17
-literal tool-name prefixes over stdio. The generic `reports` catalog and runner
+One 50-tool standard registry spans [user-facing domain
+groups](../guides/mcp-server.md) across literal tool-name prefixes over stdio.
+The generic `reports` catalog and runner
 lists and executes registered reports, so a new report does not add a tool slot.
 Capable hosts may optionally defer schemas from that same registry without
 changing its tool names, approvals, allowlists, annotations, or audit identity.
-The registry advertises zero output schemas. Supported in eight clients
-— see [`mcp-clients.md`](../guides/mcp-clients.md). MoneyBin uses four
+The registry advertises zero output schemas. Supported in every client the
+[MCP clients guide](../guides/mcp-clients.md) lists. MoneyBin uses four
 sensitivity tiers (`low` / `medium` / `high` / `critical`). Static tools derive
 classification from typed payloads; variable projections classify dynamically
 under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)

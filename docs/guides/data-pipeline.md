@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-03 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. This guide walks the layers, explains what each one's job is, names the actual models in the repo, and shows where consumers should query from.
@@ -271,7 +271,7 @@ Both share the `app.match_decisions` table — `match_type = 'dedup'` versus `ma
 
 ## `refresh` — the canonical command
 
-`refresh` is the post-load cascade: gsheet → match → transform → categorize → identity → rates. Idempotent. Safe to retry. It's the right answer 99% of the time when you want derived state to catch up with new raw data.
+`refresh` is the post-load cascade: gsheet → match → transform → categorize → identity → rates. Idempotent. Safe to retry. It's the right answer when you want derived state to catch up with new raw data.
 
 ```bash
 moneybin refresh                         # full cascade

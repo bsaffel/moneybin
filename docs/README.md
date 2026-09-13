@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-13 -->
 # MoneyBin Documentation
 
 Every page, ordered by what you are trying to do. Guides are how-tos, reference pages are lookup material, [`specs/`](specs/) holds design records, and [`decisions/`](decisions/) holds ADRs.
@@ -42,7 +42,7 @@ Working with data that is already loaded — categorizing it, understanding the 
 - **[Reports](guides/reports.md)** — The eight built-in reports with their real output, `--wide` and JSON, saving your own SQL as a report, and which reports `--display-currency` can price into one currency.
 - **[Data pipeline](guides/data-pipeline.md)** — How files become canonical tables: the raw / prep / core / app / reports layers, and where consumers should read from.
 - **[Direct SQL access](guides/sql-access.md)** — Open the encrypted DuckDB file from the DuckDB CLI, a UI, or your own scripts.
-- **[Export](guides/cli-reference.md#export)** — Publish the 13-table canonical bundle as CSV, Parquet, or XLSX to a local file or a Google Sheet.
+- **[Export](guides/cli-reference.md#export)** — Publish the closed canonical bundle as CSV, Parquet, or XLSX to a local file or a Google Sheet.
 - **[Data model](reference/data-model.md)** — Every table you can read — `core.*`, `reports.*`, `app.*`, `meta.*`, `seeds.*` — with grain, key columns, and meaning.
 - **[Data sources](reference/data-sources.md)** — Every supported import format and integration, what it preserves, where it lands.
 - **[Account matching](reference/account-matching.md)** — How records from different sources resolve to one canonical account: the identity signals used, where each comes from per format, and when MoneyBin asks you to confirm.
@@ -67,7 +67,7 @@ Running MoneyBin unattended — cron, containers, more than one machine.
 - **[Setting up Claude Desktop](guides/setting-up-claude-desktop.md)** — The end-user happy path: install, one `moneybin mcp install` command, restart, ask a first question.
 - **[MCP server](guides/mcp-server.md)** — The builder doc: tool catalog, response envelope, sensitivity tiers, action-hint chaining, latency and cost guidance for planning tool budgets, and the [seven registered prompts](guides/mcp-server.md#prompts).
 - **[MCP tool reference](reference/mcp-tools.md)** — Every registered tool's description, parameters, annotations, and declared sensitivity; generated from the tool list the server hands a connecting client.
-- **[MCP clients](guides/mcp-clients.md)** — Per-client setup for the eight clients MoneyBin is tested against, plus why ChatGPT on the web cannot connect yet.
+- **[MCP clients](guides/mcp-clients.md)** — Per-client setup for every client MoneyBin is tested against, plus why ChatGPT on the web cannot connect yet.
 - **Extending the server** — [CONTRIBUTING § Adding a new MCP tool](../CONTRIBUTING.md#adding-a-new-mcp-tool) carries the recipe: service, decorator, CLI peer, tests.
 
 ## Security and privacy

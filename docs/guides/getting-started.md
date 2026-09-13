@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Getting started
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
@@ -214,7 +214,7 @@ The [categorization guide](categorization.md) has the precedence ladder, the bul
 
 ## 8. Ask your AI assistant
 
-One command writes MoneyBin into a client's MCP config, embedding the active profile. It asks before writing; `--print` shows the entry without writing it, and `--client` takes any of the eight supported clients.
+One command writes MoneyBin into a client's MCP config, embedding the active profile. It asks before writing; `--print` shows the entry without writing it, and `--client` takes any of the [supported clients](mcp-clients.md).
 
 ```bash
 uv run moneybin mcp install --client claude-desktop
@@ -226,7 +226,7 @@ Restart the client fully, then ask in your own words:
 - *"What did I spend at Whole Foods in January?"*
 - *"Show me the SQL behind that number."*
 
-The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a SQL-backed report, with `?` where a withheld value goes, and the two service-backed net-worth reports have no SQL to print. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
+The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and the rest of the [standard registry](mcp-server.md) — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a SQL-backed report, with `?` where a withheld value goes, and the two service-backed net-worth reports have no SQL to print. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other supported clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
 
 ## Next
 

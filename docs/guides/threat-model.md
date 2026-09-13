@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Threat Model
 
 What MoneyBin protects against, and what it does not. This page is the honest list — written so a privacy-conscious user can decide whether MoneyBin meets their threat model, not so MoneyBin looks good. If you're trusting MoneyBin with real financial data, read this in full before you decide.
@@ -317,7 +317,7 @@ A reasonable question from someone migrating off a service that died: what happe
 - **License.** MoneyBin is AGPL-3.0-or-later. The source is yours under that license — to read, modify, fork, and run privately or publicly. See [licensing](../licensing.md).
 - **Your encrypted database is portable.** The DuckDB file is openable by any DuckDB client with the encryption key — no MoneyBin process required. The schema is documented in [architecture](../architecture.md). If MoneyBin disappears tomorrow, you can `ATTACH` the database in `duckdb` CLI, supply the key, and `SELECT` your data.
 - **Plaintext export.** `moneybin export bundle` publishes the closed canonical
-  13-table catalog as redacted CSV under
+  [catalog](cli-reference.md#export) as redacted CSV under
   `~/Documents/MoneyBin/<profile>/exports/` by default. Use `--unredacted` only
   when the portable copy must retain every value. Export files are private to
   the current user (`0600`, with `0700` directories), but they are plaintext:

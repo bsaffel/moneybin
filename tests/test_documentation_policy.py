@@ -1,6 +1,6 @@
 """Regression checks for public documentation policy.
 
-Guards three documentation and agent-routing rules:
+Guards four documentation and agent-routing rules:
 
 1. Specs and ADRs explain MoneyBin decisions with the project's own
    constraints and evidence, not an external product's behavior. The lexicon
@@ -11,6 +11,8 @@ Guards three documentation and agent-routing rules:
 2. Public documents never link into ``private/``.
 3. Active agent instructions never route work to retired local trackers or the
    retired ``update-specs`` skill.
+4. Each count listed in ``_stated_figures`` derives from the code and is stated
+   in exactly one user-facing file; every other file links there.
 
 A paragraph that must legitimately name an external product (a compatibility
 matrix, a migration note) declares it inline with
@@ -1049,4 +1051,211 @@ def test_public_docs_refresh_cascades_match_runtime() -> None:
     assert not violations, (
         "Public docs spell a refresh cascade that does not match "
         f"`{' → '.join(CANONICAL_STEPS)}`:\n" + "\n".join(violations)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Figures stated in public prose match the code, and each has one home
+# ---------------------------------------------------------------------------
+
+_NUMBER_WORDS: tuple[str, ...] = tuple(
+    (
+        "zero one two three four five six seven eight nine ten eleven twelve "
+        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+    ).split()
+)
+_NUMBER = (
+    r"(\d+|"
+    + "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in _NUMBER_WORDS)
+    + ")"
+)
+
+
+def _as_int(token: str) -> int:
+    return int(token) if token.isdigit() else _NUMBER_WORDS.index(token.lower())
+
+
+class _Figure(NamedTuple):
+    """One code-derived count, the public file that states it, and its spellings.
+
+    Each pattern's capture groups are the stated numbers, in `expected` order;
+    a pattern that captures only the first number checks only the first.
+    """
+
+    label: str
+    home: str
+    patterns: tuple[str, ...]
+    expected: tuple[int, ...]
+
+
+def _spec_domain_table() -> dict[str, frozenset[str]]:
+    """The `Domain | Tools` table in the MCP spec, domain name → tool names."""
+    text = (_REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md").read_text()
+    section = text.split("## Standard registry", 1)[1].split("\n## ", 1)[0]
+    rows: dict[str, frozenset[str]] = {}
+    for line in section.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 2 and cells[0] not in {"Domain", "---"}:
+            rows[cells[0]] = frozenset(re.findall(r"`([a-z_]+)`", cells[1]))
+    return rows
+
+
+def _hidden_stub_paths() -> list[str]:
+    """Every hidden CLI command whose body is the shared not-implemented stub."""
+    import inspect
+
+    import typer
+
+    from moneybin.cli.main import app
+
+    stubs: list[str] = []
+
+    def walk(instance: typer.Typer, path: list[str], hidden: bool) -> None:
+        for command in instance.registered_commands:
+            callback = command.callback
+            assert callback is not None
+            name = command.name or callback.__name__
+            is_hidden = hidden or bool(command.hidden)
+            source = inspect.getsource(callback)
+            # A `whole_command=False` call is one unfinished mode of a live
+            # command, not a stub (stubs.py); it must not count.
+            if (
+                is_hidden
+                and "_not_implemented(" in source
+                and "whole_command=False" not in source
+            ):
+                stubs.append(" ".join([*path, name]))
+        for group in instance.registered_groups:
+            child = group.typer_instance
+            assert child is not None
+            walk(child, [*path, str(group.name)], hidden or bool(group.hidden))
+
+    walk(app, [], False)
+    return stubs
+
+
+def _stated_figures() -> list[_Figure]:
+    import csv
+
+    from moneybin.cli.commands.mcp import (
+        _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
+    )
+    from moneybin.exports.catalog import BUNDLE_TABLES
+    from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+
+    domains = _spec_domain_table()
+    assert frozenset().union(*domains.values()) == STANDARD_TOOL_NAMES, (
+        "The MCP spec's domain table no longer lists exactly the standard registry"
+    )
+    prefixes = {name.split("_")[0] for name in STANDARD_TOOL_NAMES}
+    # The spec restates both counts in the sentence above its own table, and
+    # specs are outside the user-facing scan, so pin that sentence here.
+    spec_text = (_REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md").read_text()
+    spec_sentence = re.search(
+        r"The (\d+) user-facing domains below group (\d+) literal tool-name prefixes",
+        spec_text.replace("\n", " "),
+    )
+    assert spec_sentence is not None, "moneybin-mcp.md lost its domain-count sentence"
+    assert tuple(int(group) for group in spec_sentence.groups()) == (
+        len(domains),
+        len(prefixes),
+    ), "moneybin-mcp.md's domain-count sentence disagrees with its own table"
+    seeds = _REPO_ROOT / "src" / "moneybin" / "sqlmesh" / "models" / "seeds"
+    with (seeds / "categories.csv").open(newline="") as handle:
+        seeded_categories = sum(1 for _ in csv.DictReader(handle))
+    stubs = _hidden_stub_paths()
+    n = _NUMBER
+    return [
+        _Figure(
+            "MCP domain groups",
+            "docs/guides/mcp-server.md",
+            (rf"\b{n} (?:user-facing )?domain groups\b",),
+            (len(domains),),
+        ),
+        _Figure(
+            "MCP tool-name prefixes",
+            "docs/guides/mcp-server.md",
+            (rf"\b{n} (?:literal )?tool-name prefixes\b",),
+            (len(prefixes),),
+        ),
+        _Figure(
+            "export bundle tables",
+            "docs/guides/cli-reference.md",
+            (rf"\b{n}-table\b",),
+            (len(BUNDLE_TABLES),),
+        ),
+        _Figure(
+            "MCP install clients",
+            "docs/guides/mcp-clients.md",
+            (rf"\b{n} (?:supported |other |tested )?clients\b",),
+            (len(_SUPPORTED_CLIENTS),),
+        ),
+        _Figure(
+            "hidden stub commands",
+            "docs/guides/cli-reference.md",
+            (rf"\b{n} commands are stubs\b",),
+            (len(stubs),),
+        ),
+        _Figure(
+            "hidden stubs under `db key`",
+            "docs/guides/cli-reference.md",
+            (rf"\b{n} `db key` names\b",),
+            (sum(path.startswith("db key ") for path in stubs),),
+        ),
+        _Figure(
+            "seeded categories",
+            "docs/guides/getting-started.md",
+            (rf"\b{n} seeded categories\b",),
+            (seeded_categories,),
+        ),
+    ]
+
+
+def test_public_docs_stated_figures_match_code() -> None:
+    """Each figure in `_stated_figures` derives from the code and has one home.
+
+    A listed figure is stated in exactly one user-facing file; every other file
+    links there instead of restating it, so a code change reds this test rather
+    than a reader. The home's statement must equal the derived value in every
+    spelling the patterns recognise, across hard wraps. Numbers inside
+    transcripts are dated evidence and are not scanned; a figure with no cheap
+    derivation is written as a bound ("more than thirty") rather than pinned
+    here. The table is the guard's scope, not a claim about every number in the
+    docs: the `raw`/`prep` CRITICAL declaration counts and the registry's tool
+    count are pinned at every site they appear by
+    tests/moneybin/test_docs/test_internal_critical_docs.py and
+    test_mcp_surface_docs.py, which predate the one-home rule and also cover
+    the CHANGELOG, specs, and shipped source strings; a count absent from both
+    is unguarded until someone adds it.
+    """
+    documents = _user_facing_documents()
+    violations: list[str] = []
+    for figure in _stated_figures():
+        stated_in_home = False
+        for document in documents:
+            relative = document.relative_to(_REPO_ROOT).as_posix()
+            text = document.read_text()
+            # Newline → space keeps every offset, so a phrase split across a
+            # hard wrap still matches and its line number is still right.
+            flat = text.replace("\n", " ")
+            for pattern in figure.patterns:
+                for found in re.finditer(pattern.replace(" ", r"\s+"), flat):
+                    stated = tuple(_as_int(group) for group in found.groups() if group)
+                    number = text.count("\n", 0, found.start()) + 1
+                    if relative != figure.home:
+                        violations.append(
+                            f"{relative}:{number}: `{found.group(0)}` restates the "
+                            f"{figure.label}; link to {figure.home} instead"
+                        )
+                    elif stated != figure.expected[: len(stated)]:
+                        violations.append(
+                            f"{relative}:{number}: `{found.group(0)}` states "
+                            f"{stated}; the code derives {figure.expected}"
+                        )
+                    else:
+                        stated_in_home = True
+        if not stated_in_home:
+            violations.append(f"{figure.home} no longer states the {figure.label}")
+    assert not violations, "Public docs state a figure the code contradicts:\n" + (
+        "\n".join(violations)
     )

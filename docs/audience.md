@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-10 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.
@@ -30,7 +30,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 - **Beancount / hledger** — no direct ledger importer; export postings to CSV and import that. Round-tripping back to Beancount syntax isn't supported.
 - **Bank OFX/QFX/QBO** — full first-class import alongside tabular.
 
-**Data exit:** `moneybin export bundle` writes a 13-table canonical bundle (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets. Beyond that closed set, the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
+**Data exit:** `moneybin export bundle` writes a closed [canonical bundle](guides/cli-reference.md#export) (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets. Beyond that closed set, the database itself is portable — one encrypted DuckDB file per profile, queryable with any DuckDB client.
 
 **What's still rough:** The install path is still `git clone` + `uv` + `make setup`. No visual UI yet — see the tracker persona below.
 
@@ -41,7 +41,7 @@ These are the people MoneyBin already serves well in what's shipped now. Install
 **Job to be done:** Ask "what did I spend on AWS last quarter?" inside the same chat window where they write code. Get back a real answer with SQL behind it, not a hosted vendor's summary — and when the built-in answer isn't enough, have the agent *build* the missing piece.
 
 **Why MoneyBin fits today:**
-- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` (eight clients supported).
+- A wide MCP surface across accounts, transactions, reports, categories, merchants, system, sync, and transform — installable via `moneybin mcp install --client claude-code` ([every supported client](guides/mcp-clients.md)).
 - MCP and CLI preserve capability and service-outcome parity without requiring
   1:1 methods; `--output json` keeps the CLI a first-class agent surface.
 - The agent answers with SQL it wrote against canonical fact and dimension tables — and you can read that SQL and verify it.
