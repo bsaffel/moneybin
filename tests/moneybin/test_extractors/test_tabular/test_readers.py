@@ -1442,6 +1442,61 @@ class TestDateFormatHasTimeComponent:
         assert normalized["Date"].to_list() == ["2026-01-01 00:00:00"]
         assert effective_format == "%Y-%m-%d 00:00:00"
 
+    def test_fractional_seconds_format_recognized_via_actual_column(self) -> None:
+        """A raw shape neither prior probe carries must still be recognized.
+
+        Codex finding: the representative-shape probe ("2000-01-02
+        00:00:00") has no fractional-second suffix, so a declared
+        "%Y-%m-%d %H:%M:%S.%f" — a real raw shape for a native Excel
+        datetime with sub-second precision — tested False against it. This
+        is the fourth iteration on this helper (directive list -> %X ->
+        synthetic-probe -> now this), and each fix left the same residual
+        weakness: guessing the raw shape instead of reading it. The fix
+        reads the actual column instead of guessing: when date_column names
+        a real df column, it checks whether date_format parses that
+        column's own text (format_parses), so any raw shape is recognized,
+        not just ones a probe author anticipated.
+        """
+        assert date_format_has_time_component("%Y-%m-%d %H:%M:%S.%f") is False, (
+            "sanity check: the synthetic-probe fallback (no column given) "
+            "still can't recognize this shape -- confirms the old behavior "
+            "is unchanged when no column is available, per this function's "
+            "own documented fallback."
+        )
+        df = pl.DataFrame({
+            "Date": ["2026-01-02 00:00:00.123000", "2026-01-03 00:00:00.456000"],
+            "Amount": ["42.5", "10"],
+        })
+        assert (
+            date_format_has_time_component(
+                "%Y-%m-%d %H:%M:%S.%f", df=df, date_column="Date"
+            )
+            is True
+        )
+
+    def test_fractional_seconds_format_skips_normalization(self) -> None:
+        """End-to-end: the fractional-seconds format must survive normalization.
+
+        Mirrors test_literal_midnight_suffix_skips_normalization for the
+        raw shape the representative-probe approach could never anticipate.
+        """
+        df = pl.DataFrame({
+            "Date": ["2026-01-02 00:00:00.123000", "2026-01-03 00:00:00.456000"],
+            "Amount": ["42.5", "10"],
+        })
+        normalized, effective_format = normalize_excel_date_columns_before_mapping(
+            df,
+            file_type="excel",
+            date_format="%Y-%m-%d %H:%M:%S.%f",
+            date_column="Date",
+            native_date_columns=frozenset({"Date"}),
+        )
+        assert normalized["Date"].to_list() == [
+            "2026-01-02 00:00:00.123000",
+            "2026-01-03 00:00:00.456000",
+        ]
+        assert effective_format == "%Y-%m-%d %H:%M:%S.%f"
+
 
 class TestParquetReader:
     """Tests for Parquet file reading."""

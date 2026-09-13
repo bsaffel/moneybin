@@ -1533,6 +1533,63 @@ class TestPendingSidecarAccountHint:
         # --accept is the one option that helps in neither case.
         assert not any("--accept" in a for a in actions), actions
 
+    def test_header_position_ambiguous_sidecar_recommends_archiving_command(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar must not recommend a command that leaves it re-processed.
+
+        Codex finding: the shared ``header_position_ambiguous_recovery()``
+        text leads with ``moneybin import files <path> --confirm`` — correct
+        for the direct CLI path, but that command does not call
+        ``archive_confirmed_file`` (confirmed by reading
+        ``import_files_command``'s body: zero calls). A pending-inbox file
+        recovered that way would complete the import while the source and
+        this sidecar stay in pending/, so the next inbox sync reprocesses a
+        finished item and duplicates every transaction it just loaded — the
+        harm this whole round of work exists to prevent. ``import confirm
+        --accept`` calls ``archive_confirmed_file`` (see
+        ``import_confirm_command``) and is the only command this sidecar may
+        recommend.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "ambiguous.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text(
+            "2026-05-01,42.50,Coffee\n"
+            "2026-05-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-05-03,5.00,Snack\n"
+        )
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="low",
+            score=0.0,
+            reason="header_position_ambiguous",
+            proposed_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        assert any("import confirm" in a and "--accept" in a for a in actions), actions
+        # The non-archiving command must not appear anywhere in this
+        # sidecar's recovery text — not even as a secondary mention.
+        assert not any("import files" in a for a in actions), actions
+
     def test_actions_omit_account_name_when_no_hint(self, tmp_path: Path) -> None:
         from pathlib import Path as _Path
 

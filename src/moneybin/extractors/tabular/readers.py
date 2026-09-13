@@ -700,33 +700,49 @@ def normalize_excel_date_columns(
     return normalized, frozenset(date_cols)
 
 
-def date_format_has_time_component(date_format: str | None) -> bool:
+def date_format_has_time_component(
+    date_format: str | None,
+    *,
+    df: pl.DataFrame | None = None,
+    date_column: str | None = None,
+) -> bool:
     """True if the declared format expects the raw Excel timestamp shape.
 
-    ``pl.read_excel(infer_schema_length=0)`` renders a native Excel date
-    cell as Python's ``str(datetime)`` — always a midnight-suffixed
-    timestamp (``"2026-01-01 00:00:00"``; see ``_excel_cell_text``'s
-    docstring), regardless of whether the caller's declared format spells
-    that suffix with a directive (``%H:%M:%S``) or a literal
-    (``"%Y-%m-%d 00:00:00"``, e.g. a saved/reviewed format built by
-    formatting a sample value). A directive-only scan for
-    %H/%M/%S/%I/%p/%X sees the first spelling and misses the second, so
-    ``normalize_excel_date_columns_before_mapping`` rewrote the column to a
-    bare date and the caller's literal-suffix format could no longer parse
-    it. Scanning for more literal substrings would only patch this one
-    shape — the problem is the approach (pattern-matching the format
-    string), not the list of patterns.
+    Two prior fixes each tried a representative synthetic raw shape (a bare
+    probe string, then one adding ``%X`` support) and each closed exactly
+    the one instance of this bug it was written for: a literal suffix, then
+    a fractional-seconds suffix (``"%Y-%m-%d %H:%M:%S.%f"``) neither probe
+    carries. Guessing the raw shape is the actual defect — a fifth shape
+    would reopen this the same way.
 
-    Try the actual parse instead: attempt ``date_format`` against the exact
-    text this reader would see for an unnormalized native date cell. Any
-    format that successfully parses that representative raw shape expects
-    it, directive or literal, and the column must not be normalized out
-    from under it; any format that can't parse it (a plain ``"%Y-%m-%d"``,
-    "unconverted data remains") declares a bare date and normalizing is
-    safe.
+    Ends the class instead: when ``date_column`` names a column present in
+    ``df``, check whether ``date_format`` actually parses that column's own
+    raw text via ``format_parses`` (the same dirty-tolerant, majority-rate
+    check ``_validate_date_format_override`` already uses for the identical
+    question at a later point in the pipeline). Any format that reads the
+    real values expects that raw shape, directive or literal, fractional
+    seconds or not, and the column must not be normalized out from under
+    it; a format that doesn't (a plain ``"%Y-%m-%d"`` against
+    ``"2026-01-01 00:00:00"``) declares a bare date and normalizing is safe.
+
+    Falls back to the synthetic probe only when there is no column to
+    check: ``date_column`` is ``None`` or absent from ``df.columns`` — the
+    first-contact case where the caller supplied ``--date-format`` without
+    ``--mapping transaction_date=<column>`` to say which column it governs
+    (see ``normalize_excel_date_columns_before_mapping``'s ``else``
+    branch), so there is genuinely no raw text to read yet.
+    ``pl.read_excel(infer_schema_length=0)`` renders a native Excel
+    date/datetime cell as Python's ``str(datetime)`` — a midnight-suffixed
+    timestamp (``"2026-01-01 00:00:00"``; see ``_excel_cell_text``'s
+    docstring) absent a real time-of-day — so that stays a faithful
+    stand-in for this one narrow case where the real column is unavailable.
     """
     if date_format is None:
         return False
+    if df is not None and date_column is not None and date_column in df.columns:
+        from moneybin.extractors.tabular.date_detection import format_parses
+
+        return format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format)
     try:
         datetime.datetime.strptime("2000-01-02 00:00:00", date_format)
     except ValueError:
@@ -778,7 +794,7 @@ def normalize_excel_date_columns_before_mapping(
     """
     if file_type != "excel":
         return df, date_format
-    if date_format_has_time_component(date_format):
+    if date_format_has_time_component(date_format, df=df, date_column=date_column):
         return df, date_format
     normalized, rewritten = normalize_excel_date_columns(
         df,

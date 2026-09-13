@@ -1650,6 +1650,80 @@ class TestTabularConfirmationFlow:
                 == prior
             ), outcome
 
+    def test_an_ambiguous_header_refusal_does_not_also_record_overridden(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A header-position refusal must not double-count as "overridden".
+
+        Codex finding, the same class as
+        test_a_refused_date_override_records_no_success_metrics above: for a
+        first-contact ambiguous file submitted with an unrelated --mapping
+        override but no --confirm, resolve_or_confirm's own gate accepted
+        the override (recording "overridden") before the later
+        header_position_ambiguous gate declined the same call — one refused
+        import counted as both "overridden" and "declined", poisoning the
+        confirmation counters used to calibrate self-accept policy. Fixed by
+        running the header-position gate before resolve_or_confirm's
+        resolution-outcome counters, not just before the header gate's own
+        counter.
+        """
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        # This fixture's mapping (Date/Amount/Description, all required
+        # fields present) detects at "high" confidence — the header
+        # ambiguity is an independent axis from mapping quality, and the
+        # "declined" counter this gate records is labeled with that same
+        # mapping-confidence tier (matching the pre-fix code this replaces,
+        # which also labeled its "declined" counter from the mapping tier,
+        # not a hardcoded "low" — the gate's own *proposed* confidence in
+        # its raised ConfirmationRequired is hardcoded low, but that is a
+        # different field from this counter's tier label).
+        before = {
+            outcome: IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="high", outcome=outcome
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            for outcome in ("overridden", "accepted", "declined")
+        }
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            # CLI shape: no observations buffer, so counters apply
+            # immediately and a rollback cannot undo a premature increment.
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=False,
+                overrides={"description": "Description"},
+                save_format=False,
+            )
+
+        for outcome in ("overridden", "accepted"):
+            assert (
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular", tier="high", outcome=outcome
+                )._value.get()  # type: ignore[reportPrivateUsage]
+                == before[outcome]
+            ), outcome
+        assert (
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="high", outcome="declined"
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            == before["declined"] + 1
+        )
+
     def test_a_date_format_override_that_cannot_read_the_column_is_refused(
         self, db: Database, tmp_path: Path
     ) -> None:

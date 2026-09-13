@@ -818,6 +818,120 @@ def _validate_date_format_override(
     )
 
 
+def _gate_header_position_ambiguous(
+    *,
+    read_result: Any,
+    reviewed_plan: "ReviewedTabularPlan | None",
+    field_mapping: dict[str, str],
+    confidence_tier: str,
+    df: Any,
+    confirm: bool,
+    emit_metrics: bool,
+    observations: MetricObservations | None,
+) -> None:
+    """Refuse or (if ratified) warn-and-proceed on an ambiguous header pick.
+
+    header_position_ambiguous is auto-detection's OWN red flag (see
+    ReadResult's docstring in readers.py) — a data-like row precedes the
+    header auto-detection picked, and the classifier cannot tell a real
+    transaction from a legitimate balance-summary preamble apart. UNLIKE
+    header_row_looks_like_data, nothing is lost yet: the rows in question
+    were classified as preamble, not consumed as a header. So this reason
+    IS confirmable — but ONLY by confirm=True, or (for the reviewed_plan
+    branch) the mere act of calling import_confirm on a preview that
+    already showed it (reviewed_plan replays an EXPLICIT skip_rows, so
+    read_result never recomputes this for that branch — the persisted
+    plan value is the only source there, and by construction it can only
+    be True here if that preview surfaced it).
+
+    Deliberately NOT bool(overrides), unlike resolve_or_confirm's own
+    Override handling: an override answers "is this COLUMN MAPPING
+    correct", a question this ambiguity never asked. Treating any
+    unrelated --mapping correction as ratification let a caller silently
+    self-accept a header-position guess they were never shown (Codex P1 —
+    design-principles.md "Magic stays visible": "a weak or ambiguous
+    inference always surfaces — and is never eligible for agent
+    self-accept, regardless of confidence score"). Checked the other two
+    bool(overrides)-as-ratification sites in this file for the same
+    defect: resolve_or_confirm's own Override signal IS the mapping answer
+    it asked for, and user_ratified_via_override (auto-save-format gate)
+    stays scoped to the mapping question overrides actually answers — so
+    neither reopens this bug.
+
+    Callers must invoke this BEFORE recording any resolution-outcome
+    counter (self-accept/override/accepted) for the branch it gates:
+    a refusal here must not first count as a resolved import (Codex P2 —
+    on the first-contact branch, resolve_or_confirm's own accept/override
+    counters used to fire before this check ran, so one refused import was
+    counted as both "overridden" and "declined", poisoning the
+    calibration data those confirmation counters exist to produce). One
+    function, called once per branch at that branch's own earliest point
+    with a field_mapping to show, is what keeps this true structurally —
+    a shared "gate" called late cannot un-record a counter an earlier call
+    already emitted.
+    """
+    header_position_ambiguous = (
+        reviewed_plan.header_position_ambiguous
+        if reviewed_plan is not None
+        else read_result.header_position_ambiguous
+    )
+    if not header_position_ambiguous:
+        return
+    ratified_header_position = confirm or reviewed_plan is not None
+    if not ratified_header_position:
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.extractors.tabular.column_mapper import collect_samples
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        gate_samples = {
+            dest: [v for v in collect_samples(df, column) if v is not None]
+            for dest, column in field_mapping.items()
+            if column in df.columns
+        }
+        record_counter(
+            IMPORT_CONFIRMATIONS_TOTAL,
+            labels={
+                "channel": "tabular",
+                "tier": confidence_tier,
+                "outcome": "declined",
+            },
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=Confidence(
+                    score=0.0, tier="low", flagged=(), missing_required=()
+                ),
+                proposed=ProposedMapping(
+                    field_mapping=dict(field_mapping),
+                    sample_values=gate_samples,
+                    unmapped_columns=tuple(
+                        c for c in df.columns if c not in field_mapping.values()
+                    ),
+                ),
+                reason="header_position_ambiguous",
+                samples=gate_samples,
+            )
+        )
+    # Ratified: proceed with the detected header position, but stay visible
+    # about it rather than going fully silent (Magic stays visible) — the
+    # caller confirmed the risk, not the outcome.
+    logger.warning(
+        "⚠️  A row before the detected header also reads as a "
+        "transaction. Proceeding with the detected header position "
+        "as confirmed — if that row was a real transaction, it was "
+        "not imported."
+    )
+
+
 # What each channel's import path can actually forward to the resolver.
 # ``account_bindings`` is absent by design: every channel honors it, because it
 # is the answer to the account gate they all raise.
@@ -3116,6 +3230,19 @@ class ImportService:
                 is_multi_account=reviewed_plan.is_multi_account,
                 confidence=reviewed_plan.confidence,
             )
+            # Ahead of format_source/metrics below, per
+            # _gate_header_position_ambiguous's own contract: a refusal
+            # must not first record a resolution outcome for this branch.
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=reviewed_plan,
+                field_mapping=resolved.field_mapping,
+                confidence_tier=resolved.confidence,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             format_source = "reviewed"
         elif matched_format:
             # matched_format.date_format is a required (non-Optional) field,
@@ -3128,6 +3255,16 @@ class ImportService:
                 number_format=matched_format.number_format,
                 is_multi_account=matched_format.multi_account,
                 confidence="high",
+            )
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=None,
+                field_mapping=resolved.field_mapping,
+                confidence_tier=resolved.confidence,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
             )
             format_source = (
                 "built-in" if matched_format.name in builtin_formats else "saved"
@@ -3326,6 +3463,35 @@ class ImportService:
                     else outcome
                 )
 
+            # Ahead of the self-accept/override/accepted counters below, per
+            # _gate_header_position_ambiguous's own contract: an unrelated
+            # --mapping correction (which just cleared resolve_or_confirm's
+            # OWN gate above, recording nothing yet) must not let this
+            # different gate's refusal get counted as an accepted or
+            # overridden resolution too (Codex P2 — the ordering this
+            # function replaces recorded both "overridden" and "declined"
+            # for one refused import, poisoning the confirmation counters
+            # used to calibrate self-accept policy).
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=None,
+                field_mapping=outcome.field_mapping,
+                confidence_tier=confidence.tier,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+
+            # A NEW gate that can still refuse a `Resolved` outcome (as
+            # header_position_ambiguous does above) belongs ABOVE this
+            # point, not below — this exact ordering mistake has now
+            # shipped twice on two different reasons (unreadable_date via
+            # its own date_format_effective-is-None check earlier in this
+            # branch, then header_position_ambiguous here), each time
+            # letting a refused import double-count as both resolved and
+            # declined on this CLI/service path, where `observations` is
+            # `None` and a later rollback cannot undo it.
             if outcome.self_accepted:
                 record_counter(
                     IMPORT_SELF_ACCEPT_TOTAL,
@@ -3507,97 +3673,10 @@ class ImportService:
                 )
             )
 
-        # header_position_ambiguous is auto-detection's OWN red flag (see
-        # ReadResult's docstring in readers.py) — a data-like row precedes the
-        # header auto-detection picked, and the classifier cannot tell a real
-        # transaction from a legitimate balance-summary preamble apart. UNLIKE
-        # header_row_looks_like_data above, nothing is lost yet: the rows in
-        # question were classified as preamble, not consumed as a header. So
-        # this reason IS confirmable — but ONLY by confirm=True, or (for the
-        # reviewed_plan branch) the mere act of calling import_confirm on a
-        # preview that already showed it (reviewed_plan replays an EXPLICIT
-        # skip_rows, so read_result never recomputes this for that branch —
-        # the persisted plan value is the only source there, and by
-        # construction it can only be True here if that preview surfaced it).
-        #
-        # Deliberately NOT bool(overrides), unlike resolve_or_confirm's own
-        # Override handling above: an override answers "is this COLUMN
-        # MAPPING correct", a question this ambiguity never asked. Treating
-        # any unrelated --mapping correction as ratification let a caller
-        # silently self-accept a header-position guess they were never shown
-        # (Codex P1 — design-principles.md "Magic stays visible": "a weak or
-        # ambiguous inference always surfaces — and is never eligible for
-        # agent self-accept, regardless of confidence score"). Checked the
-        # other two bool(overrides)-as-ratification sites in this file for
-        # the same defect: line ~3175's Override signal IS the mapping
-        # answer resolve_or_confirm asked for, and line ~4207's
-        # user_ratified_via_override gates auto-saving the detected mapping
-        # as a format — both stay scoped to the mapping question overrides
-        # actually answers, so neither reopens this bug.
-        header_position_ambiguous = (
-            reviewed_plan.header_position_ambiguous
-            if reviewed_plan is not None
-            else read_result.header_position_ambiguous
-        )
-        ratified_header_position = confirm or reviewed_plan is not None
-        if header_position_ambiguous:
-            if not ratified_header_position:
-                from moneybin.extractors.confidence import Confidence
-                from moneybin.extractors.tabular.column_mapper import collect_samples
-                from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
-                from moneybin.services.import_confirmation import (
-                    ConfirmationRequired,
-                    ImportConfirmationRequiredError,
-                    ProposedMapping,
-                )
-
-                gate_samples = {
-                    dest: [v for v in collect_samples(df, column) if v is not None]
-                    for dest, column in resolved.field_mapping.items()
-                    if column in df.columns
-                }
-                record_counter(
-                    IMPORT_CONFIRMATIONS_TOTAL,
-                    labels={
-                        "channel": "tabular",
-                        "tier": resolved.confidence,
-                        "outcome": "declined",
-                    },
-                    emit_metrics=emit_metrics,
-                    observations=observations,
-                    disposition="rollback",
-                )
-                raise ImportConfirmationRequiredError(
-                    ConfirmationRequired(
-                        channel="tabular",
-                        confidence=Confidence(
-                            score=0.0,
-                            tier="low",
-                            flagged=(),
-                            missing_required=(),
-                        ),
-                        proposed=ProposedMapping(
-                            field_mapping=dict(resolved.field_mapping),
-                            sample_values=gate_samples,
-                            unmapped_columns=tuple(
-                                c
-                                for c in df.columns
-                                if c not in resolved.field_mapping.values()
-                            ),
-                        ),
-                        reason="header_position_ambiguous",
-                        samples=gate_samples,
-                    )
-                )
-            # Ratified: proceed with the detected header position, but stay
-            # visible about it rather than going fully silent (Magic stays
-            # visible) — the caller confirmed the risk, not the outcome.
-            logger.warning(
-                "⚠️  A row before the detected header also reads as a "
-                "transaction. Proceeding with the detected header position "
-                "as confirmed — if that row was a real transaction, it was "
-                "not imported."
-            )
+        # header_position_ambiguous is now gated per-branch, above, at each
+        # branch's own earliest point with a field_mapping to show — see
+        # _gate_header_position_ambiguous's docstring for why it must run
+        # before that branch's own resolution-outcome counters (Codex P2).
 
         # Record format match and detection confidence metrics
         if matched_format:

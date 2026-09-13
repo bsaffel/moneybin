@@ -950,7 +950,6 @@ class InboxService:
         )
         from moneybin.privacy.redaction import redact_typed
         from moneybin.services.import_confirmation import (
-            header_position_ambiguous_recovery,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
@@ -1040,7 +1039,21 @@ class InboxService:
         elif reason == "header_position_ambiguous":
             # Unlike header_row_consumed, --accept genuinely resolves this —
             # it ratifies the detected header position, nothing was consumed.
-            actions.append(header_position_ambiguous_recovery(str(moved_path)))
+            # Deliberately NOT header_position_ambiguous_recovery(): that
+            # shared text leads with `import files <path> --confirm` for the
+            # direct CLI path, but `import files` does not call
+            # archive_confirmed_file (see the unreadable_date branch below
+            # for the same lifecycle gap) — recommending it here would
+            # complete the import while leaving the source and this sidecar
+            # in pending/, so the next inbox sync reprocesses a finished
+            # item and duplicates every transaction it just loaded. `import
+            # confirm --accept` both ratifies and archives, and needs no
+            # second command mentioned: unlike unreadable_date, nothing
+            # `import files` can do here that `import confirm` cannot.
+            actions.append(
+                f"moneybin import confirm {quoted_path} --accept (ratifies "
+                "the detected header position and archives this file)"
+            )
         elif reason == "unreadable_date":
             # Two halves, and only one stays inside the inbox lifecycle. A
             # wrong-column correction runs through `import confirm`, which
