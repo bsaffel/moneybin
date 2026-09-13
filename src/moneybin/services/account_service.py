@@ -17,7 +17,7 @@ from difflib import SequenceMatcher, get_close_matches
 from typing import Any, cast
 
 from moneybin import error_codes
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -475,6 +475,13 @@ class AccountService:
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # Field list is constructed from literal strings (not user input).
+        # archived_at is projected only when the live core.dim_accounts
+        # catalog has it: a read-only open (accounts_list's own path) skips
+        # migrations and model materialization entirely, so an existing
+        # profile whose dim_accounts predates this column would otherwise
+        # hit a raw DuckDB binder error before a `transform apply` ever
+        # rebuilds it. Absent means "not yet migrated" -- None, not a guess.
+        has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
         fields = [
             "account_id",
             "display_name",
@@ -484,7 +491,7 @@ class AccountService:
             "holder_category",
             "currency_code",
             "archived",
-            "archived_at",
+            *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "last_four",
             "credit_limit",
@@ -497,23 +504,25 @@ class AccountService:
             ORDER BY institution_name, account_type, account_id
         """  # field list is allowlisted above (literal strings)
         rows = self._db.execute(sql, params).fetchall()
-        account_summaries = [
-            AccountSummary(
-                account_id=str(row[0]),
-                display_name=row[1],
-                institution_name=row[2],
-                account_type=row[3],
-                account_subtype=row[4],
-                holder_category=row[5],
-                currency_code=row[6],
-                archived=bool(row[7]),
-                archived_at=row[8],
-                include_in_net_worth=bool(row[9]),
-                last_four=row[10],
-                credit_limit=row[11],
+        account_summaries: list[AccountSummary] = []
+        for row in rows:
+            r = dict(zip(fields, row, strict=True))
+            account_summaries.append(
+                AccountSummary(
+                    account_id=str(r["account_id"]),
+                    display_name=r["display_name"],  # type: ignore[arg-type]
+                    institution_name=r["institution_name"],  # type: ignore[arg-type]
+                    account_type=r["account_type"],  # type: ignore[arg-type]
+                    account_subtype=r["account_subtype"],  # type: ignore[arg-type]
+                    holder_category=r["holder_category"],  # type: ignore[arg-type]
+                    currency_code=r["currency_code"],  # type: ignore[arg-type]
+                    archived=bool(r["archived"]),
+                    archived_at=r.get("archived_at"),  # type: ignore[arg-type]
+                    include_in_net_worth=bool(r["include_in_net_worth"]),
+                    last_four=r["last_four"],  # type: ignore[arg-type]
+                    credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+                )
             )
-            for row in rows
-        ]
         logger.info(f"Listed {len(account_summaries)} accounts")
         return AccountListPayload(rows=account_summaries)
 
@@ -524,6 +533,9 @@ class AccountService:
         credit_limit, routing_number). The middleware masks CRITICAL fields
         via ``Annotated[T, DataClass.X]`` metadata on ``AccountDetail``.
         """
+        # archived_at is projected only when the live core.dim_accounts
+        # catalog has it -- see the matching comment in list_accounts.
+        has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
         fields = [
             "account_id",
             "display_name",
@@ -535,7 +547,7 @@ class AccountService:
             "last_four",
             "credit_limit",
             "archived",
-            "archived_at",
+            *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "source_type",
             "routing_number",
@@ -566,7 +578,7 @@ class AccountService:
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]
             archived=bool(r["archived"]),
-            archived_at=r["archived_at"],  # type: ignore[arg-type]
+            archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
             source_type=r["source_type"],  # type: ignore[arg-type]
         )

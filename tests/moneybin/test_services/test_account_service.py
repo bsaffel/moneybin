@@ -6,6 +6,7 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock
@@ -165,6 +166,53 @@ class TestListAccounts:
         assert d["summary"]["total_count"] == 2
         actions: list[str] = d["actions"]
         assert len(actions) > 0
+
+
+class TestPreV060SchemaToleranceOnReadOnlyOpen:
+    """A read-only open must tolerate core.dim_accounts predating archived_at.
+
+    ``Database.__init__``'s ``read_only=True`` branch skips schema init,
+    migrations, and SQLMesh model materialization entirely -- so an existing
+    profile whose ``core.dim_accounts`` was materialized before this column
+    existed hits this path on every ``moneybin accounts list`` / ``accounts
+    get`` until something else (``transform apply``, ``refresh run``, or an
+    ``mcp serve`` boot self-heal) rebuilds the model. Neither read-only NOR
+    write-mode ``Database.__init__`` ever materializes SQLMesh models
+    automatically, so this is not a transient window -- an unconditional
+    ``SELECT archived_at`` would raise a raw ``duckdb.BinderException``
+    before any of those recovery paths ran.
+    """
+
+    @pytest.fixture()
+    def pre_v060_ro_db(
+        self, db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real read-only Database reopened over a dim_accounts missing archived_at."""
+        create_core_tables_raw(db.conn)
+        db.execute("ALTER TABLE core.dim_accounts DROP COLUMN archived_at")
+        db.execute(
+            "INSERT INTO core.dim_accounts "
+            "(account_id, display_name, archived) "
+            "VALUES ('acct_pre_v060', 'Pre-V060 Account', FALSE)"
+        )
+        db_path = db.path
+        db.close()
+        ro_db = Database(db_path, secret_store=mock_secret_store, read_only=True)
+        yield ro_db
+        ro_db.close()
+
+    @pytest.mark.unit
+    def test_list_accounts_succeeds(self, pre_v060_ro_db: Database) -> None:
+        result = AccountService(pre_v060_ro_db).list_accounts()
+        assert len(result.rows) == 1
+        assert result.rows[0].account_id == "acct_pre_v060"
+        assert result.rows[0].archived_at is None
+
+    @pytest.mark.unit
+    def test_get_account_succeeds(self, pre_v060_ro_db: Database) -> None:
+        detail = AccountService(pre_v060_ro_db).get_account("acct_pre_v060")
+        assert detail is not None
+        assert detail.archived_at is None
 
 
 class TestAccountSettingsModel:
