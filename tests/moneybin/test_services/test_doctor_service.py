@@ -3843,6 +3843,12 @@ def test_currency_integrity_grants_no_relief_when_pair_was_reconsidered(
     identical pair. "Newer" is decided on ``decided_at``, the column every
     write in ``LinkDecisionsRepoBase`` stamps with ``CURRENT_TIMESTAMP`` on
     both insert and status transition.
+
+    The correctly-denied-relief pair is ALSO now genuinely pending (dec_new),
+    so it routes to the ``pending_pairs`` branch rather than ``review_pairs``
+    — a stronger assertion than before this pair was pending-aware: not just
+    "not silently cleared" but "not left in the bucket that would have
+    published a dead-end `accounts links run` command for it too."
     """
     _setup_overlap_pair_with_unknown_currency(doctor_db)
     _insert_pending_decision(
@@ -3870,7 +3876,11 @@ def test_currency_integrity_grants_no_relief_when_pair_was_reconsidered(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "resolve account identity FIRST" in detail, detail
+    assert "pending account-link decision" in detail, detail
+    assert "resolve account identity FIRST" not in detail, detail
+    assert (
+        "Their amounts are segmented out of every total until you assign" not in detail
+    ), detail
 
 
 @pytest.mark.unit
@@ -4636,6 +4646,101 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
         "assign a currency with `moneybin accounts set <account> --currency"
     )
     assert no_link_idx < sync_pull_idx < doctor_recheck_idx < currency_idx, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_no_link_pair_names_the_pair_when_mixed(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-link pair mixed with review_pairs must name the pair, not just a count.
+
+    Codex P2 (doctor_service.py:481): when a no-link pair coexists with an
+    actionable review pair, the review_pairs branch's own text never renders
+    the no-link pair, and the closing sentence used to give only a bare
+    count and a source-wide retry — the user could not tell which pair or
+    file the retry instruction referred to. ``_currency_assignment_closing``
+    now renders the same masked pair description the no-link-only branch
+    uses. NOLINK_A/NOLINK_B must appear by name (masked form), not merely by
+    count.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
+    )  # test input, not user data
+    _insert_overlap_account(
+        doctor_db, "NOLINK_A", institution_slug="wells", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_B", institution_slug="wells", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "NOLINK_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'NOLINK_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    # The specific stuck pair must be named, not just counted.
+    assert "NOLINK_A:NOLINK_B" in detail or "NOLINK_B:NOLINK_A" in detail, detail
+    assert "% overlap)" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_pending_pair_routes_away_from_dead_end_command(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A pair with a still-pending decision must not publish a dead-end command.
+
+    claude[bot] MUST FIX / Codex P2 (doctor_service.py:3764, duplicating each
+    other): a pair with a pending, non-reversed ``app.account_link_decisions``
+    row can still land in ``review_pairs``, which publishes both a
+    two-id `accounts links run` fallback and points at the no-arg sweep —
+    but `AccountLinksService.propose_pair` refuses outright ("already covers
+    this pair and is pending"), and the sweep itself skips re-proposing a
+    pair any decision already covers. Both published commands would
+    therefore dead-end. Reachable via the sweep itself: it can write a
+    pending decision on a weaker signal (institution+last-four/name) than
+    the transaction overlap this check measures, leaving the pending row
+    behind on a pair this check still flags.
+
+    Every prior ``_insert_pending_decision`` fixture in this file resolves
+    the decision (accept or standalone) before asserting — this is the
+    first that asserts while it is STILL pending.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_pending",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    # The dead-end commands this fix exists to prevent.
+    assert "`moneybin accounts links run DUP_A DUP_B`" not in detail, detail
+    assert "`moneybin accounts links run DUP_B DUP_A`" not in detail, detail
+    assert "pending account-link decision" in detail, detail
+    assert "DUP_A:DUP_B" in detail or "DUP_B:DUP_A" in detail, detail
+    assert "moneybin accounts links pending" in detail, detail
+    assert "moneybin accounts links set" in detail, detail
+    assert_published_commands_resolve(detail)
 
 
 @pytest.mark.unit

@@ -369,14 +369,14 @@ Numbered, testable. Tagged by phase.
    unknown currency is the only thing holding a duplicate account's rows out
    of every total, and assigning it a currency would admit them (GH #410). If
    the account mirrors an existing one at the same institution, the
-   overlapping pairs split into three buckets by how far each pair's own
+   overlapping pairs split into four buckets by how far each pair's own
    identity resolution has already gotten, and each is answered differently
    rather than with one uniform message:
 
    - **Actionable (`review_pairs`).** Neither side has a decision yet, and
-     the pair is not stuck (see the third bucket below). The detail names
-     every overlapping pair (capped at 5, with the remainder counted rather
-     than silently dropped) and sequences account-identity resolution
+     the pair is not stuck (see the other three buckets below). The detail
+     names every overlapping pair (capped at 5, with the remainder counted
+     rather than silently dropped) and sequences account-identity resolution
      (`accounts links run` / `accounts links set`) ahead of the currency
      fix, including a concrete two-id `accounts links run <account_id>
      <candidate_account_id>` fallback command for each shown pair, for when
@@ -394,6 +394,18 @@ Numbered, testable. Tagged by phase.
      re-propose a pair a decision already covers, so the detail skips the
      identity-resolution advice for this pair and points straight at
      `moneybin transform` to apply the decided merge.
+   - **Already pending a decision (`pending_pairs`).** A `pending`,
+     non-reversed `app.account_link_decisions` row already covers the pair —
+     reachable from the very sweep this check's own advice starts with,
+     since that backfill matches on institution+last-four/name, a different
+     signal than the transaction overlap this check measures, and can queue
+     a pending decision for a pair still flagged here. `propose_pair`
+     refuses outright ("already covers this pair and is pending"), and the
+     sweep itself skips re-proposing a pair any decision already covers, so
+     a two-id `accounts links run` fallback would dead-end the same way the
+     merged-away case's would. The detail names the pending pair and points
+     at `accounts links pending` (to find the decision) then `accounts
+     links set` (to resolve it) instead.
    - **Neither side linked at all (`no_link_pairs`).** Neither account
      holds an accepted `source_native` link, so `propose_pair` refuses
      outright regardless of order — no two-id `accounts links run` fallback
@@ -430,10 +442,10 @@ Numbered, testable. Tagged by phase.
    --currency`. Every branch that offers currency assignment — this plain
    case, `review_pairs`, and `transform_ready_pairs` — closes on the same
    re-run-doctor-then-assign sentence naming `moneybin transform`; the
-   `no_link_pairs`-only bucket above is the exception, since it never offers
-   currency assignment while its pairs remain stuck and so never mentions
-   `moneybin transform` either. The affected ids are attached in every case,
-   including that one.
+   `pending_pairs`-only and `no_link_pairs`-only buckets above are the
+   exceptions, since neither offers currency assignment while its pairs
+   remain stuck and so neither mentions `moneybin transform`. The affected
+   ids are attached in every case, including those two.
    The third clause — "any report path that would violate Requirement 5" — is a
    **build-time** guard rather than a runtime one, because the set of report paths is
    code, not data: `test_every_money_bearing_report_projects_the_currency_it_is_denominated_in`

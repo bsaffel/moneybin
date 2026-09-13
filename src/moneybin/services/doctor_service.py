@@ -471,14 +471,27 @@ def _currency_assignment_closing(
     ``_no_link_recovery_instruction``) by each stuck account's own source,
     since a sync retry does nothing for a file-imported account and a
     re-import does nothing for a sync one.
+
+    Names the stuck pairs themselves via ``_capped_pair_descriptions`` — the
+    same rendering the no-link-only branch uses — rather than a bare count:
+    a caller mixing this bucket with an actionable one still needs to know
+    which pair or file the retry instruction refers to.
     """
     if no_link_pairs:
+        shown, pair_descriptions, overflow_note = _capped_pair_descriptions(
+            no_link_pairs
+        )
+        masked_note = _altered_id_note(
+            (account_id for a, b, _ in shown for account_id in (a, b)),
+            commands_use_placeholders=False,
+        )
         return (
-            f" {len(no_link_pairs)} pair(s) still have neither account "
-            "holding a completed identity link, so `accounts links run` "
-            "would refuse either order — a resolver failure after the raw "
-            f"rows already loaded is the current cause. "
-            f"{_no_link_recovery_instruction(no_link_source_types)}"
+            f" {len(no_link_pairs)} pair(s) ({pair_descriptions}{overflow_note}) "
+            "still have neither account holding a completed identity link, "
+            "so `accounts links run` would refuse either order — a resolver "
+            "failure after the raw rows already loaded is the current "
+            f"cause. {_no_link_recovery_instruction(no_link_source_types)}"
+            f"{masked_note}"
         ) + _ASSIGN_ONCE_CLEAR
     return _ASSIGN_ONCE_CLEAR
 
@@ -2969,6 +2982,42 @@ class DoctorService:
         ).fetchall()
         return {(str(a), str(b)) for a, b in rows}
 
+    def _query_pending_decision_pairs(
+        self, account_ids: Collection[str]
+    ) -> set[tuple[str, str]]:
+        """Oriented ``(LEAST, GREATEST)`` pairs already covered by a pending, non-reversed decision.
+
+        Pending is pair-specific, unlike merged-away's per-account broadcast
+        (``_query_merged_away_accounts`` — an account merged away breaks
+        every pair it touches): only the exact pair a decision names is
+        blocked, so this follows :meth:`_query_distinctness_decided_pairs`'s
+        oriented-pair shape instead. ``AccountLinksService.propose_pair``
+        refuses outright when a pending or accepted decision already covers
+        a pair, and ``run()``'s own backfill sweep — the retry this check's
+        own advice starts with — skips writing a new one under the same
+        condition, so a pair landing here would dead-end both the published
+        fallback and the sweep meant to clear it.
+
+        One query for every candidate pair, not one per pair.
+        """
+        if not account_ids:
+            return set()
+        ids = list(account_ids)
+        placeholders = ", ".join("?" for _ in ids)
+        rows = self._db.execute(
+            f"""
+            SELECT LEAST(provisional_account_id, candidate_account_id) AS account_a,
+                   GREATEST(provisional_account_id, candidate_account_id) AS account_b
+            FROM {ACCOUNT_LINK_DECISIONS.full_name}
+            WHERE status = 'pending'
+              AND reversed_at IS NULL
+              AND provisional_account_id IN ({placeholders})
+              AND candidate_account_id IN ({placeholders})
+            """,  # TableRef constant, parameterized values
+            [*ids, *ids],
+        ).fetchall()
+        return {(str(a), str(b)) for a, b in rows}
+
     def _query_merged_away_accounts(self, account_ids: Collection[str]) -> set[str]:
         """Which of ``account_ids`` are the provisional side of an accepted, non-reversed decision.
 
@@ -3051,12 +3100,11 @@ class DoctorService:
         distinct doors, each needing a different retry: ``SyncService.pull``
         swallows a resolver exception in a bare ``except Exception`` after
         its own raw rows already landed, so a later sync pull re-resolves it.
-        ``ImportService``'s per-source resolve loop instead runs in its own
-        ``try/except`` AFTER ``ingest_dataframe`` has already committed the
-        raw rows (``import_service.py`` ~2342-2397); it marks the import
-        failed rather than rolling those rows back, so only a re-import
-        retries it. ``moneybin sync pull`` does nothing for that case, since
-        there is no sync connection to retry.
+        ``ImportService._import_ofx``'s account-resolve step instead runs in
+        its own ``try/except`` AFTER the raw rows are already committed; it
+        marks the import failed rather than rolling those rows back, so only
+        a re-import retries it. ``moneybin sync pull`` does nothing for that
+        case, since there is no sync connection to retry.
 
         One query for every candidate account, not one per account.
         """
@@ -3668,6 +3716,18 @@ class DoctorService:
             # is split from `review_pairs` and answered with `moneybin
             # transform` instead of the identity-resolution advice.
             transform_ready_pairs: list[tuple[str, str, float]] = []
+            # A pair already covered by a PENDING, non-reversed decision is a
+            # third dead end for `accounts links run`, distinct from both
+            # merged-away and no-link: `propose_pair` refuses outright
+            # ("already covers this pair and is pending"), and `run()`'s own
+            # backfill sweep — the retry this check's own advice starts
+            # with — skips writing a new proposal under the identical
+            # condition, so both published commands dead-end. Reachable via
+            # that very sweep: it can write a pending decision for a pair
+            # this check independently flags through transaction overlap,
+            # since the two use different signals (see
+            # _query_pending_decision_pairs).
+            pending_pairs: list[tuple[str, str, float]] = []
             review_pairs: list[tuple[str, str, float]] = []
             # A pair where NEITHER side holds an accepted `source_native` link
             # is a second dead end for `accounts links run`, distinct from
@@ -3675,11 +3735,11 @@ class DoctorService:
             # holds an accepted source_native link"). Reachable via two
             # distinct doors that leave the same "raw rows, no link" state: (1)
             # `SyncService.pull`'s swallowed exception around
-            # `_resolve_accounts`, and (2) `ImportService`'s own per-source
-            # resolve loop (import_service.py ~2377-2397), which runs in a
-            # separate try/except AFTER the raw rows already committed via
-            # `ingest_dataframe` — a mid-loop resolver failure there marks the
-            # import failed but does not roll back what already loaded. Split
+            # `_resolve_accounts`, and (2) `ImportService._import_ofx`'s own
+            # account-resolve step, which runs in a separate try/except AFTER
+            # the raw rows already committed via `ingest_dataframe` — a
+            # mid-loop resolver failure there marks the import failed but
+            # does not roll back what already loaded. Split
             # out and given different advice, following `AccountLinksService.
             # run()`'s own backfill sweep, which already skips proposing a
             # pair unless at least one side is mergeable rather than writing a
@@ -3757,19 +3817,38 @@ class DoctorService:
                                 if pair[0] not in merged_away_accounts
                                 and pair[1] not in merged_away_accounts
                             ]
-                            mergeable_accounts = self._query_mergeable_accounts(
+                            # Per pair, not per account: unlike merged-away,
+                            # a pending decision blocks only the exact pair
+                            # it names (see _query_pending_decision_pairs).
+                            pending_decision_pairs = self._query_pending_decision_pairs(
                                 {a for a, _, _ in not_merged_away}
                                 | {b for _, b, _ in not_merged_away}
                             )
-                            review_pairs = [
+                            pending_pairs = [
                                 pair
                                 for pair in not_merged_away
+                                if (min(pair[0], pair[1]), max(pair[0], pair[1]))
+                                in pending_decision_pairs
+                            ]
+                            not_pending = [
+                                pair
+                                for pair in not_merged_away
+                                if (min(pair[0], pair[1]), max(pair[0], pair[1]))
+                                not in pending_decision_pairs
+                            ]
+                            mergeable_accounts = self._query_mergeable_accounts(
+                                {a for a, _, _ in not_pending}
+                                | {b for _, b, _ in not_pending}
+                            )
+                            review_pairs = [
+                                pair
+                                for pair in not_pending
                                 if pair[0] in mergeable_accounts
                                 or pair[1] in mergeable_accounts
                             ]
                             no_link_pairs = [
                                 pair
-                                for pair in not_merged_away
+                                for pair in not_pending
                                 if pair[0] not in mergeable_accounts
                                 and pair[1] not in mergeable_accounts
                             ]
@@ -3810,6 +3889,7 @@ class DoctorService:
                     overlapping_unknown_accounts = []
                     overlap_pairs = []
                     transform_ready_pairs = []
+                    pending_pairs = []
                     review_pairs = []
                     no_link_pairs = []
                     no_link_source_types = set()
@@ -3997,12 +4077,56 @@ class DoctorService:
                         ),
                     ],
                 )
+            if overlapping_unknown_accounts and pending_pairs:
+                # review_pairs and transform_ready_pairs are both empty here
+                # — every remaining pair already has a pending decision,
+                # most likely from `accounts links run`'s own backfill
+                # sweep (this check's own first-step advice can write one on
+                # a different, weaker signal than the transaction overlap
+                # this check measures). `propose_pair` refuses outright
+                # ("already covers this pair and is pending"), and the sweep
+                # itself skips re-proposing under the same condition, so
+                # neither published command would do anything.
+                shown, pair_descriptions, overflow_note = _capped_pair_descriptions(
+                    pending_pairs
+                )
+                masked_note = _altered_id_note(
+                    (account_id for a, b, _ in shown for account_id in (a, b)),
+                    commands_use_placeholders=False,
+                )
+                closing = _currency_assignment_closing(
+                    no_link_pairs=no_link_pairs,
+                    no_link_source_types=no_link_source_types,
+                )
+                return InvariantResult(
+                    name=name,
+                    status="fail",
+                    detail=(
+                        f"{', '.join(parts)} have an unknown currency, and "
+                        f"{len(overlapping_unknown_accounts)} of those "
+                        "account(s) already have a pending account-link "
+                        f"decision ({pair_descriptions}{overflow_note}) — "
+                        "`accounts links run` would refuse to re-propose "
+                        "it. Decide it first: `moneybin accounts links "
+                        "pending` to see the decision, then `moneybin "
+                        "accounts links set` to resolve it (merge with "
+                        f"--into <account_id> or reject with --standalone).{masked_note}"
+                        f"{closing}"
+                    ),
+                    affected_ids=[
+                        *_masked_account_affected_ids(unknown_accounts),
+                        *(
+                            f"transaction:{transaction_id}"
+                            for transaction_id in unknown_transactions
+                        ),
+                    ],
+                )
             if overlapping_unknown_accounts and no_link_pairs:
-                # review_pairs and transform_ready_pairs are both empty here —
-                # every overlap this account has is with an account that
-                # never completed identity resolution at all (see
-                # _query_mergeable_accounts). No `accounts links run` command
-                # is publishable for any of them.
+                # review_pairs, transform_ready_pairs, and pending_pairs are
+                # all empty here — every overlap this account has is with an
+                # account that never completed identity resolution at all
+                # (see _query_mergeable_accounts). No `accounts links run`
+                # command is publishable for any of them.
                 shown, pair_descriptions, overflow_note = _capped_pair_descriptions(
                     no_link_pairs
                 )
