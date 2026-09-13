@@ -474,19 +474,23 @@ def test_undo_of_undo_of_legacy_archive_row_succeeds(db: Database) -> None:
 def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
     db: Database,
 ) -> None:
-    """Undo-of-undo of a pre-V060 FIRST-write archive must not drop archived_at.
+    """Undo-of-undo of a pre-V060 FIRST-write archive must preserve archived_at.
 
     When archiving was a pre-V060 account's first settings write, its
     ``before_value`` is NULL, so undoing that event takes ``undo_event``'s
     INSERT-shaped path (``before is None`` -> ``_delete_by_pk``), never
-    ``_restore_row``. Undoing THAT generated undo (a redo) then reinserts the
-    captured legacy row through ``_insert_row`` -- a different hook than the
-    UPDATE-shaped undo ``_restore_row`` already normalizes. The legacy
-    captured image has no ``archived_at`` key at all, so without
-    ``AccountSettingsRepo._insert_row`` normalizing it, the account would
-    come back as ``archived=True, archived_at=NULL`` -- losing the date V060
-    backfilled and reading as excluded at every date under the date-scoped
-    net-worth predicate.
+    ``_restore_row``. The live row already carries a real, V060-backfilled
+    ``archived_at`` (2024-06-01) at undo time, even though the legacy
+    captured ``after`` image has no ``archived_at`` key at all --
+    ``_delete_by_pk`` must copy that live value into the capture before the
+    DELETE erases it. Undoing THAT generated undo (a redo) then reinserts the
+    captured row through ``_insert_row``: with the date now present in the
+    capture, it must restore the real 2024-06-01, not synthesize today's date.
+
+    Codex PR #596 P2 (comment 3998603776): before this fix, ``_delete_by_pk``
+    dropped the live date on the floor and ``_insert_row`` guessed
+    ``date.today()`` on redo -- this test used to assert exactly that guess,
+    pinning the bug in place.
     """
     repo = AccountSettingsRepo(db)
     # The live row mirrors what the first-write archive produced, with
@@ -510,7 +514,7 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         operation_id="op-legacy6",
     )
 
-    # Undo #1: before is None -> deletes the row.
+    # Undo #1: before is None -> deletes the row via _delete_by_pk.
     undo_result = repo.undo_event(first_write_event, actor="cli")
     assert undo_result is not None
     assert (
@@ -520,6 +524,11 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         ).fetchone()
         is None
     )
+    # The real live date must survive into the undo's own before_value
+    # capture -- not be reported as an unrecoverable NULL/missing key, which
+    # is what a later redo would restore from.
+    assert undo_result.before_value is not None
+    assert undo_result.before_value["archived_at"] == "2024-06-01"
 
     # Undo #2 (redo): after is None -> reinserts via _insert_row, not
     # _restore_row.
@@ -530,12 +539,12 @@ def test_undo_of_undo_of_legacy_first_write_archive_normalizes_archived_at(
         "SELECT archived, archived_at FROM app.account_settings WHERE account_id = ?",
         ["acct_legacy6"],
     ).fetchone()
-    assert row == (True, date.today())
+    assert row == (True, date(2024, 6, 1))
 
-    # The redo's own emitted audit row must carry the derived archived_at,
-    # not the omitted key -- otherwise undoing THIS redo repeats the bug.
+    # The redo's own emitted audit row must carry the preserved date, not a
+    # freshly guessed one -- otherwise undoing THIS redo repeats the loss.
     assert redo_result.after_value is not None
-    assert redo_result.after_value["archived_at"] == date.today().isoformat()
+    assert redo_result.after_value["archived_at"] == "2024-06-01"
 
 
 def test_undo_of_undo_of_legacy_first_write_unarchive_leaves_archived_at_null(
@@ -687,3 +696,30 @@ class TestPreV060SchemaToleranceOnAccountSettingsWrite:
             ["acct_pre_v060"],
         ).fetchone()
         assert row == (True,)
+
+    def test_undo_of_first_write_archive_succeeds(
+        self, pre_v060_rw_db: Database
+    ) -> None:
+        """_delete_by_pk's live-date read must skip too when the column is absent.
+
+        The undo-of-INSERT path (BaseRepo.undo_event's ``before is None``
+        branch, undoing an account's first-ever settings write) must not
+        attempt to SELECT a column the live catalog does not have -- the same
+        failure mode cells 4 and the DELETE-path test above guard against,
+        one more hop over in BaseRepo.undo_event's dispatch.
+        """
+        repo = AccountSettingsRepo(pre_v060_rw_db)
+        first_write_event = _set(repo, account_id="acct_pre_v060", archived=True)
+        assert first_write_event.before_value is None
+        assert "archived_at" not in (first_write_event.after_value or {})
+
+        undo_result = repo.undo_event(first_write_event, actor="cli")
+        assert undo_result is not None
+
+        assert (
+            pre_v060_rw_db.conn.execute(
+                "SELECT 1 FROM app.account_settings WHERE account_id = ?",
+                ["acct_pre_v060"],
+            ).fetchone()
+            is None
+        )

@@ -160,6 +160,48 @@ class AccountSettingsRepo(BaseRepo):
                 parent_audit_id=parent_audit_id,
             )
 
+    def _delete_by_pk(self, row: dict[str, Any]) -> None:
+        """Preserve the live ``archived_at`` in the capture before deleting it.
+
+        ``BaseRepo.undo_event``'s ``before is None`` branch reaches here when
+        undoing an account's FIRST settings write -- a pre-V060 archive whose
+        own captured ``after`` image has no ``archived_at`` key at all (the
+        column didn't exist when it was captured), even though V060's
+        backfill (or any later write) may since have given the LIVE row a
+        real, recoverable date. ``undo_event`` reuses this same ``row`` dict
+        object -- by reference, not a copy -- as the ``before_value`` of the
+        undo event it emits, so mutating it here is what lets a later
+        undo-of-this-undo (redo) reach :meth:`_insert_row` with the key
+        already present, so it restores the real date instead of guessing
+        ``date.today()`` (:meth:`_insert_row`'s fallback remains correct for
+        the case it was written for: a legacy capture reversed before this
+        fix shipped, or one where the live row genuinely never got a
+        backfilled date).
+
+        Read BEFORE the DELETE below removes the row -- there is nothing left
+        to read once it commits. Guarded by ``_archived_at_supported()`` per
+        that method's invariant: on a pre-V060, ``no_auto_upgrade=True``
+        catalog there is no ``archived_at`` column to read, and the SELECT
+        below would raise.
+        """
+        if (
+            row.get("archived") is True
+            and "archived_at" not in row
+            and self._archived_at_supported()
+        ):
+            where, where_params = self._pk_where(row)
+            live_row = self._db.execute(
+                f"SELECT archived_at FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk
+                f"WHERE {where}",
+                where_params,
+            ).fetchone()
+            row["archived_at"] = (
+                live_row[0].isoformat()
+                if live_row is not None and live_row[0] is not None
+                else None
+            )
+        super()._delete_by_pk(row)
+
     def _insert_row(self, row: dict[str, Any]) -> None:
         """Normalize a legacy archived capture before an undo re-inserts it.
 
@@ -168,18 +210,20 @@ class AccountSettingsRepo(BaseRepo):
         undo-of-undo of a pre-V060 account's first settings write. That
         write's ``before_value`` is NULL, so undoing it *deletes* the row
         (the ``before is None`` branch of ``undo_event``), and undoing that
-        generated undo lands here rather than in :meth:`_restore_row`. The
-        deleted row's captured image is the original pre-V060
-        ``account_settings.set`` payload, which never carried ``archived_at``
-        -- reinserting it unmodified stands the row back up as
-        ``archived=True, archived_at=NULL``, which the date-scoped net-worth
-        predicate reads as "archived at every date," losing the date V060
-        backfilled onto the (now-deleted) live row. Mutating ``row`` in place
-        -- not a copy -- matters for the same reason :meth:`_restore_row`
-        mutates both its images: ``undo_event`` reuses this same dict as the
-        ``after_value`` of the audit row it emits for this undo, so leaving
-        it unmodified would misreport the row this call actually produced
-        and repeat the corruption on the next undo-of-this-undo.
+        generated undo lands here rather than in :meth:`_restore_row`.
+        :meth:`_delete_by_pk` now copies a real, live ``archived_at`` into
+        this same capture at delete time whenever one exists, so this
+        fallback fires only when no such date was ever recoverable there --
+        a legacy capture reversed before that fix shipped, or a row that
+        genuinely never got a backfilled date. Reinserting the row unmodified
+        in that case would stand it back up as ``archived=True,
+        archived_at=NULL``, which the date-scoped net-worth predicate reads
+        as "archived at every date." Mutating ``row`` in place -- not a copy
+        -- matters for the same reason :meth:`_restore_row` mutates both its
+        images: ``undo_event`` reuses this same dict as the ``after_value``
+        of the audit row it emits for this undo, so leaving it unmodified
+        would misreport the row this call actually produced and repeat the
+        corruption on the next undo-of-this-undo.
 
         Guarded by ``_archived_at_supported()``: on a pre-V060,
         ``no_auto_upgrade=True`` catalog there is no ``archived_at`` column to

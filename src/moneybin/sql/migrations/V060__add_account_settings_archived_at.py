@@ -11,16 +11,25 @@ worth) exclude an account only for dates after it, instead of retroactively.
 Backfill, for every account currently ``archived=TRUE``: find the most recent
 ``app.audit_log`` row on this account whose ``archived`` transitioned FALSE ->
 TRUE (append-only, so this evidence has not decayed) and stamp ``archived_at``
-with that row's date. The action match is ``action LIKE 'account_settings.set%'``,
-not an exact ``= 'account_settings.set'`` — ``BaseRepo.undo_event`` records a
-reversal as ``f"{event.action}.undo"``, so undoing a prior unarchive re-archives
-via an ``account_settings.set.undo`` row (and undoing *that* undo via
+with that row's date. The action match is ``action LIKE 'account_settings.set%'
+OR action LIKE 'account_settings.delete%'``, not an exact
+``= 'account_settings.set'`` — ``BaseRepo.undo_event`` records a reversal as
+``f"{event.action}.undo"``, so undoing a prior unarchive re-archives via an
+``account_settings.set.undo`` row (and undoing *that* undo via
 ``account_settings.set.undo.undo``, arbitrarily deep), each carrying the same
 before/after row-image shape as a direct ``.set``. An exact-action match would
 skip that evidence and fall back to an older direct-``.set`` archive row (or
 none), stamping ``archived_at`` before the account's actual latest active
-period. The prefix is scoped safely: ``account_settings.delete`` and its own
-undo chain start with ``account_settings.delete``, never ``...set``. A
+period. ``account_settings.delete`` is matched too, not excluded: deleting an
+archived settings row (``AccountSettingsRepo.delete``) produces an audit event
+with ``before_value.archived = true`` and ``after_value = NULL`` — the row's
+absence returns the account to the default active state exactly as an
+unarchive does, so a genuine deletion must be able to end an archived streak
+and disqualify an earlier archive row from being picked as current evidence,
+the same way an audited unarchive already does (below). Its own undo chain
+(``account_settings.delete.undo``, arbitrarily deep) shares the ``.delete``
+prefix and is matched for the identical reason a ``.set.undo`` chain is: it
+carries the same before/after row-image shape as its forward event. A
 transition counts either when ``before_value.archived`` reads ``'false'`` or
 when ``before_value`` is SQL ``NULL`` — ``AccountSettingsRepo.set`` captures no
 prior row on an account's first-ever settings write, and the absence of a row
@@ -63,7 +72,10 @@ carries ``after_value`` as SQL ``NULL`` -- not a JSON object with
 default on this end of a transition exactly as it is on the other, so this
 also ends an archived streak. Missing it would let a stale pre-undo archive
 date win over an intervening deleted-then-un-audited-re-archived period, the
-same class of bug the previous paragraph's check closes.
+same class of bug the previous paragraph's check closes. A genuine
+``account_settings.delete`` row carries the identical ``after_value = NULL``
+shape and is recognized by the same ``to_false`` check, now that the widened
+action filter above admits it into the CTE at all.
 
 ``include_in_net_worth`` is left exactly as stored for every account this
 migration touches — never restored, even when
@@ -146,7 +158,10 @@ def migrate(conn: object) -> None:
                 WHERE target_schema = 'app'
                   AND target_table = 'account_settings'
                   AND target_id = ?
-                  AND action LIKE 'account_settings.set%'
+                  AND (
+                      action LIKE 'account_settings.set%'
+                      OR action LIKE 'account_settings.delete%'
+                  )
             )
             SELECT CAST(t.occurred_at AS DATE)
             FROM transitions AS t

@@ -49,6 +49,11 @@ _STALE_AFTER_UNDO_DELETE = "acct-staleafterundo1"  # first-write archive, undone
 # (a deletion-shaped unarchive with after_value NULL, not a JSON false), then
 # re-archived with no further audit evidence -> NULL, not the undone archive's
 # date
+_STALE_AFTER_GENUINE_DELETE = "acct-staleafterdel1"  # archived via a normal
+# .set, then the settings row is genuinely REMOVED via
+# AccountSettingsRepo.delete() (action='account_settings.delete', not a
+# '.set'-prefixed undo), then re-archived with NO further audit evidence ->
+# NULL, not the superseded .set archive's date
 _TIED_TIMESTAMPS = "acct-tiedtimestamp1"  # archive/unarchive/re-archive inside
 # one outer transaction -> all three rows share one occurred_at; the final
 # FALSE->TRUE transition must still win via the rowid tiebreak
@@ -95,6 +100,7 @@ def pre_v060_db(db: Database) -> Database:
             (_UNDO_REARCHIVED, "Undo Re-archived", True, True),
             (_STALE_AFTER_UNARCHIVE, "Stale After Unarchive", True, True),
             (_STALE_AFTER_UNDO_DELETE, "Stale After Undo Delete", True, True),
+            (_STALE_AFTER_GENUINE_DELETE, "Stale After Genuine Delete", True, True),
             (_TIED_TIMESTAMPS, "Tied Timestamps", True, True),
             (_NEVER_UNARCHIVED, "Never Unarchived", True, True),
         ],
@@ -269,6 +275,38 @@ def pre_v060_db(db: Database) -> Database:
             '{"archived": true, "include_in_net_worth": true}',
             None,
             "op-staleafterundo1b",
+        ],
+    )
+
+    # _STALE_AFTER_GENUINE_DELETE: archived via a normal .set on 2026-01-01,
+    # then the settings row is genuinely REMOVED via AccountSettingsRepo.delete()
+    # on 2026-02-01 -- action='account_settings.delete', an entirely different
+    # action family from '.set', not one of its undo suffixes. That deletion
+    # ends the archived streak exactly as an audited unarchive does (Codex PR
+    # #596 P2, comment 3998603780): the account is currently archived again
+    # with NO further audit evidence at all. The migration must recognize the
+    # genuine delete's after_value NULL as superseding the 2026-01-01 archive
+    # and leave archived_at NULL, not date the account back to it.
+    db.execute(
+        _audit_row_sql(),
+        [
+            "aud-staleafterdel1a",
+            "2026-01-01 09:00:00",
+            _STALE_AFTER_GENUINE_DELETE,
+            '{"archived": false, "include_in_net_worth": true}',
+            '{"archived": true, "include_in_net_worth": true}',
+            "op-staleafterdel1a",
+        ],
+    )
+    db.execute(
+        _audit_row_sql("account_settings.delete"),
+        [
+            "aud-staleafterdel1b",
+            "2026-02-01 09:00:00",
+            _STALE_AFTER_GENUINE_DELETE,
+            '{"archived": true, "include_in_net_worth": true}',
+            None,
+            "op-staleafterdel1b",
         ],
     )
     # _TIED_TIMESTAMPS: archived, unarchived, and re-archived inside ONE outer
@@ -454,6 +492,27 @@ def test_v060_ignores_archive_evidence_superseded_by_a_deleted_row(
     """
     run_migration(pre_v060_db, migrate)
     archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_UNDO_DELETE)
+    assert archived_at is None
+    assert include is True
+
+
+def test_v060_ignores_archive_evidence_superseded_by_a_genuine_delete(
+    pre_v060_db: Database,
+) -> None:
+    """A genuine account_settings.delete row ends an archived streak too.
+
+    Codex PR #596 P2 (comment 3998603780): the prior action filter,
+    ``action LIKE 'account_settings.set%'``, excludes ``account_settings.delete``
+    entirely -- a different action family, not one of ``.set``'s undo suffixes.
+    But deleting an archived settings row produces ``before_value.archived =
+    true, after_value = NULL``, which returns the account to the default
+    active state exactly as an audited unarchive does. Without matching this
+    action too, the migration can't see the intervening deletion and would
+    pick the superseded 2026-01-01 archive as current evidence, dating the
+    account before the un-audited re-archive that actually holds today.
+    """
+    run_migration(pre_v060_db, migrate)
+    archived_at, include = _settings_row(pre_v060_db, _STALE_AFTER_GENUINE_DELETE)
     assert archived_at is None
     assert include is True
 
