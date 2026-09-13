@@ -3328,6 +3328,53 @@ def test_currency_integrity_overlap_message_names_a_fallback_for_every_pair(
     assert_published_commands_resolve("`moneybin accounts links run DUP_F DUP_E`")
 
 
+@pytest.mark.unit
+def test_currency_integrity_review_pairs_cap_and_overflow_are_counted(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """More than 5 qualifying review pairs: only 5 shown, the rest counted.
+
+    The spec commits to "capped at 5, with the remainder counted rather than
+    silently dropped" as designed behavior. Builds 6 genuinely independent
+    overlapping pairs (not a mocked cap) so ``review_pairs`` holds 6 entries.
+
+    Hand-derived expectation, before running: 6 qualifying pairs built,
+    cap is 5, so shown = 5 and overflow = 6 - 5 = 1.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    pair_count = 6
+    for i in range(pair_count):
+        unknown_id, known_id = f"CAPU{i}", f"CAPK{i}"
+        _insert_overlap_account(doctor_db, unknown_id, institution_slug="chase")
+        _insert_overlap_account(doctor_db, known_id, institution_slug="chase")
+        # first_index spaced by 100 (rows defaults to 10) keeps every pair's
+        # amounts disjoint from every other pair's, so none of the 6 pairs
+        # accidentally mirror each other's transactions.
+        _insert_amount_ladder(doctor_db, unknown_id, rows=rows, first_index=100 * i + 1)
+        _insert_amount_ladder(
+            doctor_db,
+            known_id,
+            rows=rows,
+            first_index=100 * i + 1,
+            day_offset=settings.matching.date_window_days,
+        )
+        doctor_db.execute(
+            "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+            [unknown_id],
+        )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    expected_shown = 5
+    expected_overflow = pair_count - expected_shown
+    assert expected_overflow == 1  # hand-derived: 6 built, cap 5
+    assert detail.count("% overlap)") == expected_shown, detail
+    assert f", plus {expected_overflow} more pair(s) not shown" in detail, detail
+
+
 def _setup_overlap_pair_with_unknown_currency(
     doctor_db: Database, *, unknown_id: str = "DUP_B"
 ) -> None:
@@ -4085,6 +4132,12 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     # would have offered, and offering it here is exactly the dead end.
     assert "accounts links run DUP_A DUP_B" not in detail, detail
     assert "accounts links run DUP_B DUP_A" not in detail, detail
+    # Regression: the advice used to say "re-run moneybin system doctor; once
+    # it reports clean, assign a currency" — circular, because this very
+    # check cannot report clean until the currency is assigned. The condition
+    # to wait for must be this check's own duplicate verdict, not the report.
+    assert "reports clean" not in detail, detail
+    assert "check no longer names an unresolved duplicate" in detail, detail
 
 
 @pytest.mark.unit
@@ -4209,6 +4262,72 @@ def test_currency_integrity_merged_away_branch_explains_an_altered_id(
 
 
 @pytest.mark.unit
+def test_currency_integrity_transform_ready_pairs_cap_and_overflow_are_counted(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """More than 5 merged-away pairs: only 5 shown, the rest counted.
+
+    Sibling of the ``review_pairs`` cap test above, for the
+    ``transform_ready_pairs`` branch (every pair merged-away, none left in
+    ``review_pairs``). Builds 6 genuinely independent merged-away pairs, each
+    via a real accepted ``AccountLinksService.set`` merge — not a mocked cap.
+
+    Hand-derived expectation, before running: 6 merged-away pairs built,
+    cap is 5, so shown = 5 and overflow = 6 - 5 = 1.
+    """
+    _mock_rematch_refresh(mocker)
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    pair_count = 6
+    for i in range(pair_count):
+        provisional_id, survivor_id = f"MRGU{i}", f"MRGK{i}"
+        _insert_overlap_account(doctor_db, provisional_id, institution_slug="chase")
+        _insert_overlap_account(doctor_db, survivor_id, institution_slug="chase")
+        # Disjoint amount ranges per pair, same reasoning as the review_pairs
+        # cap test — none of the 6 pairs may mirror each other.
+        _insert_amount_ladder(
+            doctor_db, provisional_id, rows=rows, first_index=100 * i + 1
+        )
+        _insert_amount_ladder(
+            doctor_db,
+            survivor_id,
+            rows=rows,
+            first_index=100 * i + 1,
+            day_offset=settings.matching.date_window_days,
+        )
+        doctor_db.execute(
+            "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+            [provisional_id],
+        )  # test input, not user data
+        _insert_source_native_link(
+            doctor_db,
+            link_id=f"link_cap_{i}",
+            account_id=provisional_id,
+            ref_value=f"native-ref-cap-{i}",
+        )
+        _insert_pending_decision(
+            doctor_db,
+            decision_id=f"dec_cap_{i}",
+            provisional_account_id=provisional_id,
+            candidate_account_id=survivor_id,
+        )
+        AccountLinksService(doctor_db, actor="cli").set(
+            f"dec_cap_{i}", target_account_id=survivor_id
+        )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "moneybin transform" in detail, detail
+    expected_shown = 5
+    expected_overflow = pair_count - expected_shown
+    assert expected_overflow == 1  # hand-derived: 6 built, cap 5
+    assert detail.count("% overlap)") == expected_shown, detail
+    assert f", plus {expected_overflow} more pair(s) not shown" in detail, detail
+
+
+@pytest.mark.unit
 def test_duplicate_account_overlap_still_warns_after_standalone_decision(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4278,6 +4397,13 @@ def test_currency_integrity_fails_closed_when_overlap_probe_errors(
     assert (
         "Their amounts are segmented out of every total until you assign" not in detail
     ), detail
+    # Regression: the advice used to say "re-run moneybin system doctor;
+    # once it reports clean, assign a currency" — circular, because this
+    # very check cannot report clean until the currency is assigned. The
+    # condition to wait for must be this account's own duplicate risk, not
+    # the whole report.
+    assert "reports clean" not in detail, detail
+    assert "no unresolved duplicate risk for the account" in detail, detail
     assert_published_commands_resolve(detail)
 
 

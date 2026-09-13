@@ -3618,10 +3618,12 @@ class DoctorService:
                         "is exactly the case whose rows a currency "
                         "assignment would admit into every total. Run "
                         "`moneybin accounts links run` to check for a "
-                        "duplicate manually, then re-run `moneybin system "
-                        "doctor`; once it reports clean, assign a currency with "
-                        "`moneybin accounts set <account> --currency "
-                        "<ISO 4217>` and re-run `moneybin transform`."
+                        "duplicate manually — once that shows no unresolved "
+                        "duplicate risk for the account (no candidate, or a "
+                        "decision already merged or declared standalone), "
+                        "assign a currency with `moneybin accounts set "
+                        "<account> --currency <ISO 4217>` and re-run "
+                        "`moneybin transform`."
                     ),
                     affected_ids=[
                         *_masked_account_affected_ids(unknown_accounts),
@@ -3671,11 +3673,12 @@ class DoctorService:
                             "show as two accounts. Run `moneybin transform` "
                             "to apply it (`moneybin accounts links run` would "
                             "refuse — a decision already covers this pair), "
-                            "then re-run `moneybin system doctor`; once it "
-                            "reports clean, assign a currency with `moneybin "
-                            "accounts set <account> --currency <ISO 4217>` "
-                            "and re-run `moneybin transform` again if one is "
-                            f"still needed.{masked_note}"
+                            "then re-run `moneybin system doctor`; once this "
+                            "check no longer names an unresolved duplicate "
+                            "for the account, assign a currency with "
+                            "`moneybin accounts set <account> --currency "
+                            "<ISO 4217>` and re-run `moneybin transform` "
+                            f"again if one is still needed.{masked_note}"
                         ),
                         affected_ids=[
                             *_masked_account_affected_ids(unknown_accounts),
