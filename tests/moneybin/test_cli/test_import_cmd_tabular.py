@@ -526,17 +526,15 @@ class TestPreview:
     def test_preview_header_position_ambiguous_uses_shared_recovery_text(
         self, tmp_path: Path, caplog: LogCaptureFixture
     ) -> None:
-        """`import preview` has no --confirm flag (Codex P2, round 10).
+        """`import preview` has no --confirm flag.
 
         The hand-rolled warning this replaced told the user to "re-run with
         --confirm to proceed" — a flag `import preview` itself does not
         register (it lives on `import files` / `import confirm`). Reusing
         the shared ``header_position_ambiguous_recovery`` helper names the
-        commands that actually clear the gate.
-
-        Round 12 (claude CONSIDER / Codex P1): also pins that this warning
-        now shows the actual disputed row(s) — the evidence behind the
-        ambiguity, not just the fact of it — matching the MCP preview.
+        commands that actually clear the gate. The helper's own text stays
+        row-free (it can reach the log pipeline); the disputed row(s) go
+        through ``echo_disputed_rows`` on stderr only, never a log record.
         """
         import logging
 
@@ -557,11 +555,14 @@ class TestPreview:
             result = runner.invoke(app, ["preview", str(csv_file)])
 
         assert result.exit_code == 0
-        expected = header_position_ambiguous_recovery(
-            str(csv_file),
-            [["2026-01-01", "42.50", "Coffee"], ["2026-01-02", "10.00", "Tea"]],
-        )
+        expected = header_position_ambiguous_recovery(str(csv_file))
         assert any(expected in r.message for r in caplog.records), caplog.text
+        # The disputed rows appear in the CLI's stderr-mixed output...
+        assert "2026-01-01, 42.50, Coffee" in result.output
+        assert "2026-01-02, 10.00, Tea" in result.output
+        # ...and in no log record — a row can carry an account number, and
+        # log_to_file defaults to True.
+        assert not any("2026-01-01, 42.50, Coffee" in r.message for r in caplog.records)
 
     def test_preview_maps_native_date_excel_column_correctly(
         self, tmp_path: Path
@@ -601,10 +602,10 @@ class TestPreview:
     ) -> None:
         """A caller --override transaction_date=<col> must scope normalization.
 
-        Review finding (same shape as the MCP `_import_preview_tabular` fix,
-        not itself flagged by either reviewer): first-contact `import
-        preview` (no saved/matched format) never passed `date_column` to
-        `normalize_excel_date_columns_before_mapping`, so an unrelated
+        Same shape as the MCP `_import_preview_tabular` fix: first-contact
+        `import preview` (no saved/matched format) never passed
+        `date_column` to `normalize_excel_date_columns_before_mapping`, so
+        an unrelated
         second native-date column ("Memo", auto-typed by some spreadsheet
         tool) got normalized too whenever a broad scan found it — even
         though the caller named the actual date column via `--override`.

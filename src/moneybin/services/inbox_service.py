@@ -813,6 +813,17 @@ class InboxService:
         # it every surface rendering these entries has to re-derive the file
         # type from a name, and would get a .pdf holding OFX text wrong.
         entry["channel"] = outcome_obj.channel
+        # The live drain summary, not the persisted sidecar (which stays
+        # row-free) — carries the disputed row so import_inbox.py's text and
+        # JSON renderers can show it. Masked per value shape, same masker the
+        # agent-safe SQL surface applies to raw/prep.
+        if outcome_obj.header_position_ambiguous_rows:
+            from moneybin.log_sanitizer import mask_pii_shaped
+
+            entry["header_position_ambiguous_rows"] = [
+                [mask_pii_shaped(cell)[0] for cell in row]
+                for row in outcome_obj.header_position_ambiguous_rows
+            ]
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)

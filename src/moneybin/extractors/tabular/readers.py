@@ -719,36 +719,46 @@ def normalize_excel_date_columns(
     return normalized, frozenset(date_cols)
 
 
-# A cell already collapsed to a bare date by normalize_excel_date_columns
-# (or genuine text already in that shape) — the only shape
-# _reformat_iso_dates_to reformats; anything else (dirty text, a real
-# timestamp) passes through untouched.
-_ISO_DATE_ONLY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-def _reformat_iso_dates_to(
-    df: pl.DataFrame, columns: list[str], target_format: str
+def _normalize_mapped_date_cells(
+    df: pl.DataFrame, columns: list[str], target_format: str | None
 ) -> pl.DataFrame:
-    """Re-render every bare-ISO-shaped cell in ``columns`` into ``target_format``.
+    """Rewrite exactly the native-midnight cells in mapped date columns.
 
-    The second half of the two-step sequence
-    ``normalize_excel_date_columns_before_mapping`` runs on a mapped date
-    column: collapse a native cell to ISO, then re-render it into the
-    format the caller actually declared — so the declared format never has
-    to change (no "flip"), and a column the collapse step never touched
-    (already correct text) is left alone by this step too, since it isn't
-    bare-ISO-shaped.
+    Matches ``_EXCEL_MIDNIGHT_DATETIME_RE`` per cell — the shape a native
+    Excel date renders as — and re-renders the captured date into
+    ``target_format`` (bare ISO when ``target_format`` is ``None``, since no
+    format is known yet). A cell whose captured date fails to parse
+    (calendar-invalid, e.g. day 30 in February) is left byte-identical
+    rather than raising. Every other cell — already-correct text, a
+    non-midnight timestamp, anything not matching the pattern — passes
+    through untouched. Unlike a column-wide regex collapse followed by a
+    separate ISO-rescan, this never re-touches a cell the rewrite didn't
+    itself produce, so a dirty or ambiguous cell that was never native
+    cannot get silently reparsed under a different format.
     """
     for column in columns:
         if column not in df.columns:
             continue
-        reformatted = [
-            datetime.datetime.strptime(value, "%Y-%m-%d").strftime(target_format)
-            if value is not None and _ISO_DATE_ONLY_RE.match(value)
-            else value
-            for value in df[column].to_list()
-        ]
-        df = df.with_columns(pl.Series(column, reformatted, dtype=pl.Utf8))
+        rewritten: list[str | None] = []
+        for value in df[column].to_list():
+            if value is None:
+                rewritten.append(value)
+                continue
+            match = _EXCEL_MIDNIGHT_DATETIME_RE.match(value)
+            if match is None:
+                rewritten.append(value)
+                continue
+            iso_date = match.group(1)
+            if target_format is None:
+                rewritten.append(iso_date)
+                continue
+            try:
+                parsed = datetime.datetime.strptime(iso_date, "%Y-%m-%d")
+            except ValueError:
+                rewritten.append(value)
+                continue
+            rewritten.append(parsed.strftime(target_format))
+        df = df.with_columns(pl.Series(column, rewritten, dtype=pl.Utf8))
     return df
 
 
@@ -839,48 +849,25 @@ def normalize_excel_date_columns_before_mapping(
     additional_date_columns: list[str] | None = None,
     native_date_columns: frozenset[str] | None = None,
 ) -> tuple[pl.DataFrame, str | None]:
-    """Shared normalize-then-map sequence for every ``read_file`` caller.
+    """Normalize the date columns known before column mapping resolves.
 
-    There are three such callers — ``import_service.py``'s
-    ``_import_tabular``, the MCP ``import_preview_coarse`` tool
-    (``import_tools.py``), and the CLI ``import preview`` command
-    (``import_cmd.py``) — and each needs the identical decision: whether to
-    normalize at all, and if so, whether to scope it to the known date
-    columns. Duplicating that decision at three call sites is exactly how one
-    of them drifted and regressed (a native-date Excel column reaching
-    column mapping unnormalized doesn't just fail to detect the date column —
-    it gets misidentified as ``description`` while the real description
-    column drops out of the mapping entirely, a worse failure than refusing
-    to detect a date at all). All three now build ``date_column``/
-    ``additional_date_columns`` via ``mapped_date_columns`` rather than
-    naming destination fields by hand, so a third date-typed field would
-    only need to be added there.
-
-    No-op for non-Excel file types. When the mapping is still unknown (no
-    ``date_column``), this is a pure auto-detect scan — see
+    No-op for non-Excel file types. When no mapping is known yet
+    (``date_column`` and ``additional_date_columns`` both empty), this is a
+    pure auto-detect scan over every date-shaped column — see
     ``date_format_has_time_component`` for why a declared time-bearing
-    format short-circuits it, and ``mapping_result.date_format`` (detected
-    AFTER this call, from the now-normalized text) for what actually
-    governs downstream in that case.
+    format short-circuits it. When a caller already names ``date_column``/
+    ``additional_date_columns`` (a first-contact ``--mapping`` override, a
+    saved format, or a replayed preview), every one of those columns is
+    rewritten cell-by-cell via ``_normalize_mapped_date_cells``, regardless
+    of its own native/text mix.
 
-    Once the mapping is known, EVERY mapped date column (``date_column``
-    plus ``additional_date_columns`` — ``transaction_date`` and
-    ``post_date``, see ``mapped_date_columns``) normalizes the same way,
-    regardless of its own native/text mix: a native cell collapses to ISO,
-    then — when ``date_format`` is known — re-renders into that declared
-    shape. The declared format therefore never has to change to
-    accommodate a rewrite; every mapped column ends up in the ONE
-    representation ``transform_dataframe`` already parses every date-typed
-    field under (transforms.py). ``date_format_has_time_component`` is not
-    consulted here: collapsing a native cell to ISO and then re-rendering
-    it into any declared format — time-bearing or not — reproduces
-    whatever raw text that format actually expects, so there is nothing
-    left for a skip to protect.
-
-    When ``date_format`` is unknown, cells stay in bare ISO — the shape
-    ``map_columns``'s own detection will scan next — applied to every
-    mapped column alike, so two differently-typed sibling columns can't
-    desync from each other before a format is even chosen.
+    A column that only becomes a mapped date column *after* this call —
+    e.g. an aliased ``post_date`` column ``map_columns`` resolves later, on
+    a partial first-contact override that named only ``transaction_date`` —
+    is not in scope here by construction (the mapping isn't known yet).
+    ``normalize_excel_date_columns_after_mapping`` is the second pass that
+    covers it, once the final mapping and format are both resolved; every
+    caller of this function must also call that one.
 
     Returns:
         ``(possibly-rewritten df, date_format)`` — the input format,
@@ -898,10 +885,37 @@ def normalize_excel_date_columns_before_mapping(
             df, native_date_columns=native_date_columns
         )
         return normalized, date_format
-    normalized, _ = normalize_excel_date_columns(df, columns=mapped_columns)
-    if date_format is not None:
-        normalized = _reformat_iso_dates_to(normalized, mapped_columns, date_format)
-    return normalized, date_format
+    return _normalize_mapped_date_cells(df, mapped_columns, date_format), date_format
+
+
+def normalize_excel_date_columns_after_mapping(
+    df: pl.DataFrame,
+    *,
+    file_type: str,
+    field_mapping: dict[str, str] | None,
+    date_format: str | None,
+) -> pl.DataFrame:
+    """Re-run the mapped-column rewrite against the FINAL resolved mapping.
+
+    Every one of the three ``read_file`` callers (``import_service.py``'s
+    ``_import_tabular``, the MCP ``import_preview_coarse`` tool, the CLI
+    ``import preview`` command) must call this once column mapping and the
+    effective date format are both fully resolved, in addition to the
+    before-mapping pass above. A column that only becomes mapped via
+    ``map_columns``'s own alias detection — never named by the caller up
+    front — never reached that first pass, since it scopes to the columns
+    the caller already knew. Idempotent against a column the first pass
+    already normalized: ``_normalize_mapped_date_cells`` only rewrites
+    cells still in the native-midnight shape, so an already-reformatted
+    column is left alone on this second call.
+    """
+    if file_type != "excel":
+        return df
+    date_column, additional_date_columns = mapped_date_columns(field_mapping)
+    mapped_columns = ([date_column] if date_column else []) + additional_date_columns
+    if not mapped_columns:
+        return df
+    return _normalize_mapped_date_cells(df, mapped_columns, date_format)
 
 
 def _excel_cell_text(value: object) -> str:
@@ -1071,11 +1085,11 @@ def _excel_native_date_columns(
     that almost never runs (openpyxl failing to open the file at all), while
     the ordinary case — openpyxl succeeding — silently lost the tolerance.
 
-    Scans only the first ``sample_rows`` data rows, not the whole column
-    (review finding: an unconditional full-sheet ``openpyxl`` pass cost
-    ~8.0s of a ~14.0s ``read_file()`` call on a real 49,999-row x 15-column
-    file — see ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS`` for the measurement behind
-    the 2,000-row default). This changes what "majority" means: it is now a
+    Scans only the first ``sample_rows`` data rows, not the whole column —
+    an unconditional full-sheet ``openpyxl`` pass cost ~8.0s of a ~14.0s
+    ``read_file()`` call on a real 49,999-row x 15-column file (see
+    ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS`` for the measurement behind the
+    2,000-row default). This changes what "majority" means: it is now a
     majority over the SAMPLE, not the whole column. Cost this pays: a
     dirty run at the very START of the column longer than ``sample_rows``
     (e.g. 2,000+ leading "pending" placeholders followed by genuine native
@@ -1249,8 +1263,8 @@ def _classify_excel_headerless_via_fastexcel(
     try:
         # n_rows caps the read itself (fastexcel/calamine stops parsing
         # once it has this many rows) rather than materializing the whole
-        # sheet and slicing afterward — review finding: the old
-        # materialize-then-.head(30) paid for the WHOLE sheet here, then
+        # sheet and slicing afterward — the old materialize-then-.head(30)
+        # paid for the WHOLE sheet here, then
         # _read_excel's real read parses the whole sheet again below, so a
         # large supported .xls paid for two complete parses even when
         # destined for the row-limit refusal. 30 matches

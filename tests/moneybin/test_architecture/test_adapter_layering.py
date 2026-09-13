@@ -213,6 +213,15 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_before_mapping",
     ),
+    # why: pure DataFrame transform (no writes) — the second pass against the
+    # FINAL resolved mapping, once map_columns has run; same reason as the
+    # before-mapping entry above, needed so a column only aliased into the
+    # mapping after the first pass still normalizes before display.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_after_mapping",
+    ),
     # why: pure dict lookup (no writes) — picks the date-typed destination
     # fields out of a mapping so this adapter's normalize call scopes the
     # same columns import_service.py's service layer does; the one place
@@ -253,6 +262,13 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_before_mapping",
+    ),
+    # why: pure DataFrame transform (no writes) — same reason as the CLI
+    # after-mapping entry above.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_after_mapping",
     ),
     # why: same reason as the CLI preview entry above — the one place
     # date-typed destination fields are named, so this adapter's normalize

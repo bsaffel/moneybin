@@ -162,6 +162,11 @@ class ImportConfirmationPayload(TypedDict, total=False):
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
     sign_sample_rows: list[ImportConfirmationSignSample]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # The disputed row(s) behind reason='header_position_ambiguous', masked
+    # per value shape (mask_pii_shaped, applied in confirmation_payload_dict)
+    # the same way the agent-safe SQL surface masks raw/prep. DESCRIPTION
+    # like samples above — already masked, not relying on the tier alone.
+    header_position_ambiguous_rows: Annotated[list[list[str]], DataClass.DESCRIPTION]
 
 
 @row_set(NO_ROW_SET)
@@ -208,6 +213,9 @@ class CLIConfirmationRequiredPayload:
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
     sign_sample_rows: list[ImportConfirmationSignSample]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # Mirrors ImportConfirmationPayload's field of the same name; already
+    # value-shape masked by confirmation_payload_dict.
+    header_position_ambiguous_rows: Annotated[list[list[str]], DataClass.DESCRIPTION]
 
 
 @row_set(NO_ROW_SET)
@@ -718,6 +726,12 @@ class ImportInboxPendingEntry(TypedDict, total=False):
     moved_to: Annotated[str, DataClass.RECORD_ID]
     sidecar: Annotated[str, DataClass.RECORD_ID]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # Present only for reason='header_position_ambiguous'; already value-shape
+    # masked (mask_pii_shaped) where the entry is built, same as
+    # ImportConfirmationPayload's field of the same name. This is the live
+    # drain summary, not the persisted sidecar — the sidecar itself stays
+    # row-free (see header_position_ambiguous_recovery_sidecar).
+    header_position_ambiguous_rows: Annotated[list[list[str]], DataClass.DESCRIPTION]
 
 
 @row_set(NO_ROW_SET)
@@ -969,6 +983,15 @@ class ImportConfirmRequiredPayload(BaseModel):
     account_proposals: list[ImportConfirmationAccountProposal] = Field(
         default_factory=list
     )
+    # The disputed row(s) behind reason='header_position_ambiguous', already
+    # value-shape masked by confirmation_payload_dict. Declared here because
+    # header_position_ambiguous_recovery_mcp() names this exact field — a
+    # Pydantic model silently drops an undeclared kwarg (its default
+    # extra='ignore'), so omitting this would let that recovery text point
+    # at a field this response never carries.
+    header_position_ambiguous_rows: Annotated[
+        list[list[str]], DataClass.DESCRIPTION
+    ] = Field(default_factory=list)
 
     # No sign_* fields: this payload is built only where the reason is NOT
     # sign_convention, so the proposal is never a SignConventionProposal and

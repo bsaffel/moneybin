@@ -764,11 +764,11 @@ class TestTabularConfirmationFlow:
         `classify_unconfirmable_plan` now reclassifies that generic outcome
         into `header_position_ambiguous` whenever the signal is present, so
         the caller's FIRST message already names the header inference
-        instead of a generic "unknown layout, pass --confirm" (Codex P1,
-        round 9: that generic message let confirm=True get accepted as
-        ratification of a risk the user was never shown — dismissible, but
-        uninformative, which design-principles.md "Magic stays visible"
-        treats as equivalent to silent).
+        instead of a generic "unknown layout, pass --confirm" — that generic
+        message let confirm=True get accepted as ratification of a risk the
+        user was never shown, dismissible but uninformative, which
+        design-principles.md "Magic stays visible" treats as equivalent to
+        silent.
         `test_matched_format_header_position_ambiguous_is_dismissible`
         below isolates the LATER, Resolved-outcome gate via a
         matched_format import, which bypasses resolve_or_confirm entirely.
@@ -1099,18 +1099,16 @@ class TestTabularConfirmationFlow:
         Must reformat the native cells into the override's own shape and
         import cleanly — not refuse, and not silently import zero rows.
 
-        Round 12: normalize_excel_date_columns_before_mapping now re-renders
-        every mapped column's native cells into the declared format
-        (cell-by-cell) instead of flipping the format to ISO, so a saved/
-        overridden non-ISO format like "%m/%d/%Y" is exactly as valid
-        against a native-typed column as it always was against a text one —
-        there is no "flip" left for a caller-declared bare format to be
-        wrong about. (An earlier PR revision flipped the format instead,
-        which made this exact override incorrectly refuse — see git history
-        for that superseded behavior; a real format/data mismatch is still
-        covered by test_a_date_format_override_that_cannot_read_the_column_
-        is_refused and its sibling, both CSV-based and unaffected by this
-        Excel-only normalization step.)
+        normalize_excel_date_columns_before_mapping re-renders every mapped
+        column's native cells into the declared format cell-by-cell instead
+        of flipping the format to ISO, so a saved/overridden non-ISO format
+        like "%m/%d/%Y" is exactly as valid against a native-typed column as
+        it always was against a text one — there is no "flip" left for a
+        caller-declared bare format to be wrong about. A real format/data
+        mismatch is still covered by
+        test_a_date_format_override_that_cannot_read_the_column_is_refused
+        and its sibling, both CSV-based and unaffected by this Excel-only
+        normalization step.
         """
         import openpyxl
 
@@ -1250,6 +1248,63 @@ class TestTabularConfirmationFlow:
             ).fetchall()
         ]
         assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+
+    def test_partial_override_post_date_aliased_later_is_not_null(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A first-contact partial ``--mapping`` must not orphan post_date.
+
+        The caller names only ``transaction_date`` via an explicit override;
+        no saved/matched format exists. ``post_date`` is resolved later, by
+        ``map_columns``'s own alias detection over "Posted Date" — a column
+        that was NOT in the caller's override and so never reached the
+        pre-mapping normalization pass. Without the post-mapping pass,
+        ``post_date`` stays raw "<date> 00:00:00" text, ``_parse_dates``
+        fails on it non-fatally, and every row's ``post_date`` silently
+        becomes NULL.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted Date", "Amount", "Description"])
+        ws.append([
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            -4.50,
+            "Coffee",
+        ])
+        ws.append([
+            datetime.date(2026, 1, 2),
+            datetime.date(2026, 1, 4),
+            100.00,
+            "Salary",
+        ])
+        xlsx = tmp_path / "partial_override_post_date.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            overrides={"transaction_date": "Date"},
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+        assert None not in post_dates
 
     def test_time_bearing_date_format_override_still_imports_native_date_xlsx(
         self, db: Database, tmp_path: Path

@@ -817,13 +817,13 @@ async def test_import_preview_coarse_keeps_header_position_warning_with_real_pre
 ) -> None:
     """A header-position warning must survive the placeholder-actions rewrite.
 
-    Codex P1, round 10: ``import_preview_coarse`` appends
+    ``import_preview_coarse`` appends
     ``header_position_ambiguous_recovery_mcp()`` to ``actions`` when the
     signal is present and the plan is otherwise confirmable, but the later
-    step that swaps the placeholder ``preview_id`` for the real one used to
+    step that swaps the placeholder ``preview_id`` for the real one must not
     REASSIGN the whole ``actions`` list to a single-element list containing
-    only the confirm hint — silently discarding the warning the agent needs
-    to see before ratifying.
+    only the confirm hint — that would silently discard the warning the
+    agent needs to see before ratifying.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     csv = tmp_path / "data_before_header.csv"
@@ -857,12 +857,12 @@ async def test_import_preview_coarse_discloses_the_disputed_rows(
 ) -> None:
     """The preview must show the actual disputed row(s), not just the flag.
 
-    Round 12 (claude CONSIDER / Codex P1): a confirm that asks "is this a
-    transaction?" without showing the row it's asking about is functionally
-    silent even though a warning appeared (design-principles.md, "Magic
-    stays visible"). ``data.header_position_ambiguous_rows`` carries the
-    actual cells, through the same DataClass.DESCRIPTION path
-    ``sample_values`` already uses -- no new disclosure class.
+    A confirm that asks "is this a transaction?" without showing the row
+    it's asking about is functionally silent even though a warning appeared
+    (design-principles.md, "Magic stays visible").
+    ``data.header_position_ambiguous_rows`` carries the actual cells,
+    through the same DataClass.DESCRIPTION path ``sample_values`` already
+    uses -- no new disclosure class.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     csv = tmp_path / "data_before_header.csv"
@@ -888,6 +888,41 @@ async def test_import_preview_coarse_discloses_the_disputed_rows(
     assert response.summary.sensitivity == "medium"
 
 
+async def test_import_preview_coarse_masks_disputed_row_account_numbers(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """An account-number-shaped cell in a disputed row must come back masked.
+
+    ``DataClass.DESCRIPTION`` drives sensitivity-tier classification only
+    (privacy/redaction.py's ``_TRANSFORMS`` maps it to ``_passthrough``), not
+    value masking, so ``header_position_ambiguous_rows`` needs its own
+    masking pass -- ``mask_pii_shaped``, the same value-shape masker the
+    agent-safe SQL surface applies to ``raw``/``prep``.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,1234567890123456\n"
+        "2026-01-02,10.00,Tea\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed[0][0] == "2026-01-01"
+    assert disputed[0][1] == "42.50"
+    # The 16-digit cell is masked (account-number-shaped), never returned raw.
+    assert disputed[0][2] != "1234567890123456"
+    assert "1234567890123456" not in disputed[0][2]
+    assert disputed[0][2].endswith("3456")
+
+
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     mcp_db: object,
     tmp_path: Path,
@@ -895,10 +930,11 @@ async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
 ) -> None:
     """A caller-supplied transaction_date mapping must scope normalization.
 
-    Review finding (Codex P2 / claude[bot]): ``_import_preview_tabular`` used
-    to call ``normalize_excel_date_columns_before_mapping`` with
-    ``date_column=None`` regardless of a caller-supplied ``mapping``,
-    normalizing every native-date column it finds instead of just the one
+    ``_import_preview_tabular`` must not call
+    ``normalize_excel_date_columns_before_mapping`` with
+    ``date_column=None`` regardless of a caller-supplied ``mapping`` —
+    that would normalize every native-date column it finds instead of just
+    the one
     the caller named. ``Memo`` here is a SECOND, genuinely native-date Excel
     column (a spreadsheet tool auto-typed it, unrelated to the transaction
     date) that maps to the ``memo`` destination by header alias. With the

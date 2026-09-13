@@ -12,12 +12,12 @@ invoked only when a confirm decision is needed.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence, Tier
 from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.log_sanitizer import mask_pii_shaped
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
@@ -210,6 +210,11 @@ class ConfirmationRequired:
     # deliberately absent from confirmation_payload_dict: no transport consumer
     # needs it, and MCP's actions[] never replays a caller's bindings at all.
     ratified_bindings: dict[str, str] = field(default_factory=dict)
+    # Populated only for reason='header_position_ambiguous', from the same
+    # ReadResult.header_position_ambiguous_rows the preview surfaces — so a
+    # caller who never previewed still gets to see the disputed row before
+    # deciding whether to ratify. Empty for every other reason.
+    header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
@@ -268,6 +273,15 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "sign_evidence": sign_evidence,
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
+        # Value-shape masked (mask_pii_shaped — the same masker the
+        # agent-safe SQL surface applies to raw/prep) rather than left
+        # unredacted: this dict feeds both the CLI recovery renderer and
+        # MCP's confirmation_required envelope, and an account-number-shaped
+        # cell must not reach either unmasked.
+        "header_position_ambiguous_rows": [
+            [mask_pii_shaped(cell)[0] for cell in row]
+            for row in outcome.header_position_ambiguous_rows
+        ],
     }
 
 
@@ -343,8 +357,8 @@ def classify_unconfirmable_plan(
     still-missing required field) and back onto a question the caller
     already answered.
 
-    Codex P1 (round 9): before this parameter existed, `resolve_or_confirm`'s
-    own `ConfirmationRequired` (reason="unknown_layout", the ordinary "first
+    Before this parameter existed, `resolve_or_confirm`'s own
+    `ConfirmationRequired` (reason="unknown_layout", the ordinary "first
     contact always confirms" outcome for a human caller with no signal) was
     raised as-is, so a first-contact file with leading transaction-like rows
     showed a generic "pass --confirm" message that never mentioned them.
@@ -405,18 +419,7 @@ def header_row_consumed_recovery_mcp() -> str:
     )
 
 
-def _format_disputed_rows(disputed_rows: Sequence[Sequence[str]]) -> str:
-    """Render disputed row(s) as one readable clause, or "" when none given."""
-    if not disputed_rows:
-        return ""
-    return (
-        " Disputed row(s): " + "; ".join(", ".join(row) for row in disputed_rows) + "."
-    )
-
-
-def header_position_ambiguous_recovery(
-    file_path: str, disputed_rows: Sequence[Sequence[str]] = ()
-) -> str:
+def header_position_ambiguous_recovery(file_path: str) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
     UNLIKE `header_row_consumed_recovery`, this names a command that actually
@@ -426,20 +429,17 @@ def header_position_ambiguous_recovery(
     above the header is a real transaction, not a balance summary, the fix
     is in the source file, and no flag changes that.
 
-    `disputed_rows` (round 12, Codex P1 / claude CONSIDER) is the actual row
-    content behind the ambiguity, from `ReadResult.header_position_
-    ambiguous_rows` — a confirm asking "is this a transaction?" without
-    showing the row in question is functionally silent even though a
-    warning appeared (design-principles.md, "Magic stays visible"). Omitted
-    (the default) at call sites that don't have it yet — the row is missing
-    evidence, not a lie, so the recovery still names the correct commands.
+    Deliberately row-free: this text can reach the log pipeline
+    (`log_to_file` defaults to True), so the disputed row's own content
+    never belongs here. A caller showing the evidence renders it separately
+    — the CLI via `echo_disputed_rows` (stderr only), MCP via
+    `data.header_position_ambiguous_rows`.
     """
     import shlex
 
     quoted = shlex.quote(file_path)
     return (
-        "A row before the detected header also reads as a transaction."
-        f"{_format_disputed_rows(disputed_rows)} If "
+        "A row before the detected header also reads as a transaction. If "
         "it is a balance summary or similar preamble, the detected header is "
         "correct — re-run with `moneybin import files "
         f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
@@ -456,7 +456,7 @@ def header_position_ambiguous_recovery_mcp() -> str:
     one has a command to offer, because confirming the SAME preview ratifies
     the detected header position rather than restaging an unconfirmable plan.
     The disputed row's own content lives in `data.header_position_ambiguous_
-    rows` (round 12) rather than inlined here — the same reason `data.sample_
+    rows` rather than inlined here — the same reason `data.sample_
     values` isn't inlined into this text either.
     """
     return (
@@ -478,22 +478,21 @@ def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
     source and its sidecar there — the next inbox sync reprocesses a
     finished item and duplicates every transaction it just loaded. `import
     confirm --accept` both ratifies and archives, and needs no second
-    command mentioned.
+    command mentioned. Both `inbox_service.py` (the persisted sidecar) and
+    `import_inbox.py` (the drain's own summary) call this one function.
 
-    The one recovery string for this lifecycle context — round 12 (Codex
-    P2) found `import_inbox.py`'s drain summary printing the generic
-    low-tier "--accept would be rejected" text for this reason (routed on
-    tier, not reason), contradicting this exact sidecar recovery. Both
-    `inbox_service.py` (the persisted sidecar) and `import_inbox.py` (the
-    drain's own immediate summary) call this one function now, instead of
-    each hand-writing the command.
+    Row-free by design, like the CLI variant: names `import preview`, which
+    is read-only and shows the disputed row via the same
+    `echo_disputed_rows` path — the sidecar file itself never carries the
+    row content.
     """
     import shlex
 
     quoted = shlex.quote(file_path)
     return (
         f"moneybin import confirm {quoted} --accept (ratifies the detected "
-        "header position and archives this file)"
+        "header position and archives this file); "
+        f"moneybin import preview {quoted} shows the disputed row first"
     )
 
 

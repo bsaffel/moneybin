@@ -848,10 +848,10 @@ def _gate_header_position_ambiguous(
     Override handling: an override answers "is this COLUMN MAPPING
     correct", a question this ambiguity never asked. Treating any
     unrelated --mapping correction as ratification let a caller silently
-    self-accept a header-position guess they were never shown (Codex P1 —
+    self-accept a header-position guess they were never shown —
     design-principles.md "Magic stays visible": "a weak or ambiguous
     inference always surfaces — and is never eligible for agent
-    self-accept, regardless of confidence score"). Checked the other two
+    self-accept, regardless of confidence score". Checked the other two
     bool(overrides)-as-ratification sites in this file for the same
     defect: resolve_or_confirm's own Override signal IS the mapping answer
     it asked for, and user_ratified_via_override (auto-save-format gate)
@@ -860,11 +860,11 @@ def _gate_header_position_ambiguous(
 
     Callers must invoke this BEFORE recording any resolution-outcome
     counter (self-accept/override/accepted) for the branch it gates:
-    a refusal here must not first count as a resolved import (Codex P2 —
-    on the first-contact branch, resolve_or_confirm's own accept/override
+    a refusal here must not first count as a resolved import — on the
+    first-contact branch, resolve_or_confirm's own accept/override
     counters used to fire before this check ran, so one refused import was
     counted as both "overridden" and "declined", poisoning the
-    calibration data those confirmation counters exist to produce). One
+    calibration data those confirmation counters exist to produce. One
     function, called once per branch at that branch's own earliest point
     with a field_mapping to show, is what keeps this true structurally —
     a shared "gate" called late cannot un-record a counter an earlier call
@@ -919,6 +919,11 @@ def _gate_header_position_ambiguous(
                 ),
                 reason="header_position_ambiguous",
                 samples=gate_samples,
+                # reviewed_plan is always None on this branch (see the
+                # docstring above: a reviewed_plan is unconditionally
+                # ratified), so read_result is the live detection this
+                # refusal describes.
+                header_position_ambiguous_rows=read_result.header_position_ambiguous_rows,
             )
         )
     # Ratified: proceed with the detected header position, but stay visible
@@ -2931,6 +2936,7 @@ class ImportService:
         )
         from moneybin.extractors.tabular.readers import (
             mapped_date_columns,
+            normalize_excel_date_columns_after_mapping,
             normalize_excel_date_columns_before_mapping,
             read_file,
         )
@@ -3407,6 +3413,9 @@ class ImportService:
                     observations=observations,
                     disposition="rollback",
                 )
+                _unreadable_date_ambiguous_header = (
+                    read_result.header_position_ambiguous and not confirm
+                )
                 raise ImportConfirmationRequiredError(
                     ConfirmationRequired(
                         channel="tabular",
@@ -3426,11 +3435,18 @@ class ImportService:
                             date_format=None,
                             field_mapping=proposed.field_mapping,
                             flagged_fields=list(mapping_result.flagged_fields),
-                            header_position_ambiguous=(
-                                read_result.header_position_ambiguous and not confirm
-                            ),
+                            header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
                         samples=dict(proposed.sample_values),
+                        # header_position_ambiguous outranks unreadable_date
+                        # in classify_unconfirmable_plan's precedence, so this
+                        # reason can resolve to header_position_ambiguous —
+                        # carry the same evidence the preview would show.
+                        header_position_ambiguous_rows=(
+                            read_result.header_position_ambiguous_rows
+                            if _unreadable_date_ambiguous_header
+                            else ()
+                        ),
                     )
                 )
             outcome = resolve_or_confirm(
@@ -3478,10 +3494,12 @@ class ImportService:
                 #
                 # read_result.header_position_ambiguous, by contrast, IS
                 # reachable here — auto-detection's own red flag, unrelated
-                # to an explicit skip_rows — which is exactly the gap Codex
-                # P1 (round 9) found: this branch's ordinary first-contact
-                # confirmation request named no reason at all for it before
+                # to an explicit skip_rows — so this branch's ordinary
+                # first-contact confirmation request must name it before
                 # this classify_unconfirmable_plan call could see it.
+                _first_contact_ambiguous_header = (
+                    read_result.header_position_ambiguous and not confirm
+                )
                 raise ImportConfirmationRequiredError(
                     dataclasses.replace(
                         outcome,
@@ -3495,25 +3513,24 @@ class ImportService:
                             else dict(mapping_result.field_mapping),
                             flagged_fields=list(mapping_result.flagged_fields),
                             # Gated to "not confirm" — see
-                            # classify_unconfirmable_plan's docstring. This
-                            # is the site Codex P1 (round 9) named directly:
-                            # a first-contact file with leading transaction-
-                            # like rows and NO signal always reaches here
+                            # classify_unconfirmable_plan's docstring. A
+                            # first-contact file with leading transaction-
+                            # like rows and no signal always reaches here
                             # with outcome.reason == "unknown_layout" (rule
                             # 5's ordinary "first contact always confirms"
-                            # fallback, per resolve_or_confirm's own
-                            # docstring — not something a low tier or a
-                            # missing field caused). Reclassifying HERE, as
-                            # part of naming the reason, means the caller's
-                            # first message already names the header
+                            # fallback). Reclassifying here means the
+                            # caller's first message names the header
                             # inference instead of a generic "unknown
-                            # layout, pass --confirm" that never mentions
-                            # it — closing the gap where confirm=True was
-                            # accepted as ratification of a risk the user
-                            # was never shown.
-                            header_position_ambiguous=(
-                                read_result.header_position_ambiguous and not confirm
-                            ),
+                            # layout, pass --confirm" that never mentions it.
+                            header_position_ambiguous=_first_contact_ambiguous_header,
+                        ),
+                        # Carry the evidence whenever the reclassified reason
+                        # can resolve to header_position_ambiguous — same
+                        # precedence rule as the unreadable-date raise above.
+                        header_position_ambiguous_rows=(
+                            read_result.header_position_ambiguous_rows
+                            if _first_contact_ambiguous_header
+                            else ()
                         ),
                     )
                     if outcome.reason == "unknown_layout"
@@ -3525,10 +3542,10 @@ class ImportService:
             # --mapping correction (which just cleared resolve_or_confirm's
             # OWN gate above, recording nothing yet) must not let this
             # different gate's refusal get counted as an accepted or
-            # overridden resolution too (Codex P2 — the ordering this
-            # function replaces recorded both "overridden" and "declined"
-            # for one refused import, poisoning the confirmation counters
-            # used to calibrate self-accept policy).
+            # overridden resolution too — the ordering this function
+            # replaces recorded both "overridden" and "declined" for one
+            # refused import, poisoning the confirmation counters used to
+            # calibrate self-accept policy.
             _gate_header_position_ambiguous(
                 read_result=read_result,
                 reviewed_plan=None,
@@ -3635,14 +3652,25 @@ class ImportService:
         # "%Y-%m-%d" against the rewritten column, then ran "%m/%d/%Y"
         # against that same (still-ISO) text, and the transform's per-row
         # rejection silently dropped every row: reported success,
-        # rows_loaded=0, no error, no warning (Codex P1 — the PR's original
-        # failure mode returning through a different path). Reusing this one
+        # rows_loaded=0, no error, no warning. Reusing this one
         # variable for both the validation and the later assignment (below)
         # is the structural fix: nothing between the two can compute a
         # different value, so the parser that runs is always the parser that
         # was checked.
         final_date_format = date_format_override or resolved.date_format
         _validate_date_format_override(df, resolved.field_mapping, final_date_format)
+
+        # Second normalization pass, against the FINAL mapping and format —
+        # covers a column (e.g. an aliased post_date) that map_columns only
+        # resolved after the pre-mapping pass above already ran scoped to a
+        # narrower, first-contact override. No-op for every branch that
+        # already normalized the same columns with the same format.
+        df = normalize_excel_date_columns_after_mapping(
+            df,
+            file_type=format_info.file_type,
+            field_mapping=resolved.field_mapping,
+            date_format=final_date_format,
+        )
 
         # All three branches converge here, and it sits ABOVE the success
         # metrics below, because a refusal must not first record a silent
@@ -3733,7 +3761,7 @@ class ImportService:
         # header_position_ambiguous is now gated per-branch, above, at each
         # branch's own earliest point with a field_mapping to show — see
         # _gate_header_position_ambiguous's docstring for why it must run
-        # before that branch's own resolution-outcome counters (Codex P2).
+        # before that branch's own resolution-outcome counters.
 
         # Record format match and detection confidence metrics
         if matched_format:

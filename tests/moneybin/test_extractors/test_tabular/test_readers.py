@@ -15,6 +15,7 @@ from moneybin.extractors.tabular.readers import (
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     date_format_has_time_component,
     normalize_excel_date_columns,
+    normalize_excel_date_columns_after_mapping,
     normalize_excel_date_columns_before_mapping,
     read_file,
 )
@@ -637,13 +638,10 @@ class TestExcelReader:
     ) -> None:
         """A dirty placeholder must not void the typed native-date probe.
 
-        Review finding: openpyxl opening the file successfully (the ordinary
-        ``.xlsx`` case) used to disqualify a column from
-        ``excel_native_date_columns`` on its FIRST non-``datetime.date``
-        value, with no majority tolerance — reintroducing the class of bug
-        this PR fixes, but only for the path that almost never runs
-        (openpyxl failing to open the file at all). A real Date column with
-        3 genuine dates and one "pending" placeholder must still qualify.
+        ``excel_native_date_columns`` must not disqualify a column on its
+        FIRST non-``datetime.date`` value with no majority tolerance — a
+        real Date column with 3 genuine dates and one "pending" placeholder
+        must still qualify.
         """
         import datetime
 
@@ -1048,16 +1046,16 @@ class TestExcelReader:
     ) -> None:
         """A genuinely headerless legacy .xls must not lose its first row.
 
-        Review finding: when openpyxl can't open the container at all (a
-        real legacy .xls — openpyxl never supported the binary format) AND
-        no explicit skip_rows or sheet is supplied, ``sheet_used`` stays
-        ``None`` through auto-detection. Before this fix that unconditionally
-        set ``skip_rows = 0`` with no classification signal at all —
-        reintroducing MB-449 for exactly this one file variant, since a
-        headerless file's real first transaction row would be eaten as the
-        header. The fix classifies via a raw unheadered fastexcel/calamine
-        read instead (the engine that CAN open a legacy .xls), giving the
-        same ``_classify_header_rows`` signal the openpyxl-backed path gets.
+        When openpyxl can't open the container at all (a real legacy .xls —
+        openpyxl never supported the binary format) AND no explicit
+        skip_rows or sheet is supplied, ``sheet_used`` stays ``None``
+        through auto-detection. Unconditionally setting ``skip_rows = 0``
+        with no classification signal at all would reintroduce MB-449 for
+        exactly this one file variant, since a headerless file's real first
+        transaction row would be eaten as the header. Classifying via a raw
+        unheadered fastexcel/calamine read instead (the engine that CAN open
+        a legacy .xls) gives the same ``_classify_header_rows`` signal the
+        openpyxl-backed path gets.
 
         Drives the real (unmocked) openpyxl.load_workbook with the actual
         leading bytes of an OLE2 compound file (legacy .xls's real container
@@ -1097,10 +1095,10 @@ class TestExcelReader:
     ) -> None:
         """A headerless legacy .xls with native-date cells must not be eaten.
 
-        Review finding (Codex P1): pl.read_excel(infer_schema_length=0)
-        renders a native Excel date/datetime cell as calamine's own text
-        shape ("2026-01-01 00:00:00", NOT the bare "2026-01-01" the sibling
-        test above stubs), but the rows are passed to _classify_header_rows
+        pl.read_excel(infer_schema_length=0) renders a native Excel
+        date/datetime cell as calamine's own text shape
+        ("2026-01-01 00:00:00", NOT the bare "2026-01-01" the sibling test
+        above stubs), but the rows are passed to _classify_header_rows
         unnormalized. _DATE_FORMATS is date-only, so that time suffix defeats
         date detection exactly as it would for the openpyxl-backed probe
         (_excel_cell_text exists for precisely this reason) — the classifier
@@ -1131,8 +1129,8 @@ class TestExcelReader:
     ) -> None:
         """The explicit-``--sheet`` legacy-.xls path needs the same classification.
 
-        Review finding (Codex P1): the calamine-based headerless
-        classification above only runs when ``sheet_used is None`` (no
+        The calamine-based headerless classification above only runs when
+        ``sheet_used is None`` (no
         ``--sheet``/saved-format sheet given). A caller-supplied sheet name
         skips straight to ``_excel_sample_rows``, which raises
         InvalidFileException/BadZipFile on a genuine legacy .xls same as
@@ -1165,10 +1163,9 @@ class TestExcelReader:
     ) -> None:
         """An invalid --sheet name must raise a classified error, not KeyError.
 
-        Review finding (MUST FIX): the auto-detect classification branch
-        added by this PR calls ``_excel_sample_rows`` whenever ``sheet_used``
-        is non-None and no explicit ``skip_rows`` is given.
-        ``_excel_sample_rows`` does ``wb[sheet_name]`` with no KeyError
+        The auto-detect classification branch calls ``_excel_sample_rows``
+        whenever ``sheet_used`` is non-None and no explicit ``skip_rows`` is
+        given. ``_excel_sample_rows`` does ``wb[sheet_name]`` with no KeyError
         guard, and openpyxl's ``Workbook.__getitem__`` raises a bare
         ``KeyError`` for an unknown sheet name — which
         ``src/moneybin/errors.py`` deliberately excludes from its generic
@@ -1278,12 +1275,11 @@ class TestNormalizeExcelDateColumns:
     def test_majority_shape_fallback_tolerates_one_dirty_value(self) -> None:
         """A dirty minority must not void normalization for the whole column.
 
-        Review finding: the old ``.all()`` gate meant one stray non-date
-        value (e.g. "pending") disqualified an otherwise-native-date column,
-        silently reverting the file to the "no recognized date format"
-        refusal this PR exists to eliminate. The fallback heuristic (no
-        ``native_date_columns`` — openpyxl couldn't type the file) now
-        qualifies a column when a STRICT MAJORITY of its non-null values
+        A single stray non-date value (e.g. "pending") must not disqualify
+        an otherwise-native-date column and revert the file to a "no
+        recognized date format" refusal. The fallback heuristic (no
+        ``native_date_columns`` — openpyxl couldn't type the file) qualifies
+        a column when a STRICT MAJORITY of its non-null values
         match, matching the dirty-minority tolerance ``_parse_dates``/
         ``_validate_date_format_override`` already apply downstream.
         """
@@ -1338,8 +1334,8 @@ class TestNormalizeExcelDateColumns:
     ) -> None:
         """Typed selection never touches a column that only LOOKS like a date.
 
-        Review finding: an unscoped whole-column shape scan can truncate a
-        genuine text column (e.g. Memo) if every value happens to render in
+        An unscoped whole-column shape scan can truncate a genuine text
+        column (e.g. Memo) if every value happens to render in
         the "<date> 00:00:00" shape. When ``native_date_columns`` is
         supplied (openpyxl typed the file), selection is exact-identity —
         driven by which columns openpyxl reports as natively date-typed, not
@@ -1535,15 +1531,144 @@ def _render_role(dates: list[datetime.date], role: str, text_format: str) -> lis
     return [native(d) if i % 2 == 0 else text(d) for i, d in enumerate(dates)]
 
 
+_CELL_KINDS = (
+    "native_midnight",
+    "valid_text_declared_shape",
+    "iso_text",
+    "iso_text_invalid",
+    "midnight_invalid",
+    "none",
+)
+
+
+def _cell_kind_case(
+    kind: str, declared_format: str | None, *, month: int, day: int
+) -> tuple[str | None, str | None]:
+    """(input cell text, expected output text) for one cell kind.
+
+    ``month`` has 30 days (April/June) so ``day=31`` is unambiguously
+    calendar-invalid for the two "invalid" kinds, without touching February.
+    """
+    valid_date = datetime.date(2026, month, day)
+    if kind == "native_midnight":
+        value = f"{valid_date.isoformat()} 00:00:00"
+        if declared_format is None:
+            return value, valid_date.isoformat()
+        return value, valid_date.strftime(declared_format)
+    if kind == "valid_text_declared_shape":
+        rendered = (
+            valid_date.strftime(declared_format)
+            if declared_format is not None
+            else valid_date.isoformat()
+        )
+        return rendered, rendered
+    if kind == "iso_text":
+        return valid_date.isoformat(), valid_date.isoformat()
+    if kind == "iso_text_invalid":
+        invalid = f"2026-{month:02d}-31"
+        return invalid, invalid
+    if kind == "midnight_invalid":
+        invalid_iso = f"2026-{month:02d}-31"
+        value = f"{invalid_iso} 00:00:00"
+        if declared_format is None:
+            return value, invalid_iso
+        return value, value
+    assert kind == "none"
+    return None, None
+
+
+class TestNormalizeExcelDateCellInvariant:
+    """Cell-level grid: cell kind x declared format x column role.
+
+    The invariant: in every mapped date column of the FINAL mapping,
+    rewrite exactly the cells whose text matches the native-midnight
+    rendering. Render them into the effective date_format, or bare ISO
+    when no format is known yet. Every other cell -- already-correct text,
+    ISO-shaped text (valid or calendar-invalid), an invalid midnight cell --
+    passes through byte-identical, and nothing ever raises.
+    """
+
+    @pytest.mark.parametrize(
+        "declared_format",
+        [None, "%Y-%m-%d", "%m/%d/%Y", "%Y-%d-%m", "%m/%d/%Y %H:%M:%S"],
+    )
+    @pytest.mark.parametrize(
+        "column_role",
+        [
+            "transaction_date_only",
+            "post_date_mapped_upfront",
+            "post_date_mapped_later",
+        ],
+    )
+    def test_every_cell_kind_survives_or_rewrites_correctly(
+        self, column_role: str, declared_format: str | None
+    ) -> None:
+        cases = {
+            kind: _cell_kind_case(kind, declared_format, month=4, day=5)
+            for kind in _CELL_KINDS
+        }
+        date_col = [cases[k][0] for k in _CELL_KINDS]
+        expected_date = [cases[k][1] for k in _CELL_KINDS]
+
+        if column_role == "transaction_date_only":
+            df = pl.DataFrame({"Date": date_col})
+            normalized, effective_format = normalize_excel_date_columns_before_mapping(
+                df, file_type="excel", date_format=declared_format, date_column="Date"
+            )
+            assert normalized["Date"].to_list() == expected_date
+            assert effective_format == declared_format
+            return
+
+        # post_date uses a different month/day so a transposition bug
+        # between the two columns is visible in the assertion.
+        posted_cases = {
+            kind: _cell_kind_case(kind, declared_format, month=6, day=6)
+            for kind in _CELL_KINDS
+        }
+        posted_col = [posted_cases[k][0] for k in _CELL_KINDS]
+        posted_expected = [posted_cases[k][1] for k in _CELL_KINDS]
+
+        if column_role == "post_date_mapped_upfront":
+            df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+            normalized, _ = normalize_excel_date_columns_before_mapping(
+                df,
+                file_type="excel",
+                date_format=declared_format,
+                date_column="Date",
+                additional_date_columns=["Posted"],
+            )
+            assert normalized["Date"].to_list() == expected_date
+            assert normalized["Posted"].to_list() == posted_expected
+            return
+
+        assert column_role == "post_date_mapped_later"
+        df = pl.DataFrame({"Date": date_col, "Posted": posted_col})
+        # Only transaction_date is known before mapping resolves (a partial
+        # first-contact --mapping override names just the one column).
+        stage1, _ = normalize_excel_date_columns_before_mapping(
+            df, file_type="excel", date_format=declared_format, date_column="Date"
+        )
+        assert stage1["Date"].to_list() == expected_date
+        # Posted is untouched -- it wasn't a known mapped column yet.
+        assert stage1["Posted"].to_list() == posted_col
+        # map_columns later aliases "Posted" to post_date; the after-mapping
+        # pass must finish normalizing it against the final mapping.
+        stage2 = normalize_excel_date_columns_after_mapping(
+            stage1,
+            file_type="excel",
+            field_mapping={"transaction_date": "Date", "post_date": "Posted"},
+            date_format=declared_format,
+        )
+        assert stage2["Date"].to_list() == expected_date
+        assert stage2["Posted"].to_list() == posted_expected
+
+
 class TestNormalizeExcelDateColumnsBeforeMappingGrid:
     """Parametrized grid: transaction_date shape x post_date shape x format.
 
-    Round 12 (claude MUST FIX + Codex P1): the prior implementation flipped
-    the shared format unconditionally when any known column was rewritten,
-    and separately, a mapped column whose native cells were a minority
-    failed the native-typed majority gate. Both left some mapped column (or
-    some cell within one) in a shape the eventual format could not parse,
-    silently NULLing it. This grid exercises every combination once.
+    Exercises every combination of column-level native/text/mixed shape
+    against format known/unknown, so no mapped column (or cell within one)
+    is left in a shape the eventual format cannot parse.
     """
 
     @pytest.mark.parametrize(
@@ -1606,8 +1731,8 @@ class TestNormalizeExcelDateColumnsBeforeMappingGrid:
     ) -> None:
         """A mapped column normalizes regardless of ``native_date_columns`` membership.
 
-        Codex P1: ``_excel_native_date_columns`` excludes a column from its
-        frozenset when native cells are a MINORITY of the sample, so a
+        ``_excel_native_date_columns`` excludes a column from its frozenset
+        when native cells are a MINORITY of the sample, so a
         mapped date column with SOME (but not most) native cells used to
         fail the same membership check here — those native cells stayed
         ``"YYYY-MM-DD 00:00:00"`` and failed the saved ``"%m/%d/%Y"``,

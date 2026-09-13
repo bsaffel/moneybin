@@ -52,6 +52,7 @@ from moneybin.adapters.rematch_report import retired_transfers_action
 from moneybin.config import get_settings
 from moneybin.database import get_database
 from moneybin.errors import RecoveryAction, UserError
+from moneybin.log_sanitizer import mask_pii_shaped
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -853,6 +854,7 @@ def _import_preview_tabular(
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
         mapped_date_columns,
+        normalize_excel_date_columns_after_mapping,
         normalize_excel_date_columns_before_mapping,
         read_file,
     )
@@ -979,6 +981,29 @@ def _import_preview_tabular(
             t_med=bands.t_med,
         )
 
+    # Second normalization pass, against the FINAL mapping — covers a column
+    # (e.g. an aliased post_date) map_columns only resolved after the
+    # pre-mapping pass above ran scoped to a narrower known mapping. No
+    # --date-format parameter exists on this preview path, so the detector's
+    # own mapping_result.date_format is always the effective one.
+    read_result.df = normalize_excel_date_columns_after_mapping(
+        read_result.df,
+        file_type=format_info.file_type,
+        field_mapping=field_mapping,
+        date_format=mapping_result.date_format,
+    )
+    # Keep previewed samples for the date-typed destinations in sync with
+    # what actually imports, rather than showing pre-normalization native
+    # text for a column the pass above just rewrote.
+    for dest in ("transaction_date", "post_date"):
+        column = field_mapping.get(dest)
+        if column and column in read_result.df.columns:
+            sample_values[dest] = [
+                value
+                for value in collect_samples(read_result.df, column)
+                if value is not None
+            ]
+
     return build_envelope(
         data=ImportPreviewPayload(
             file=path.name,
@@ -1004,8 +1029,16 @@ def _import_preview_tabular(
             rows_in_file=read_result.rows_in_file,
             header_row_looks_like_data=read_result.header_row_looks_like_data,
             header_position_ambiguous=read_result.header_position_ambiguous,
+            # DataClass.DESCRIPTION drives sensitivity-tier classification only
+            # (privacy/redaction.py's _TRANSFORMS maps it to _passthrough), not
+            # value masking — so an account-number-shaped cell in a disputed
+            # row needs its own masking pass before this field is populated.
+            # mask_pii_shaped is the same value-shape masker the agent-safe
+            # SQL surface (sql_query) applies to raw/prep, reused rather than
+            # writing a second one.
             header_position_ambiguous_rows=[
-                list(row) for row in read_result.header_position_ambiguous_rows
+                [mask_pii_shaped(cell)[0] for cell in row]
+                for row in read_result.header_position_ambiguous_rows
             ],
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps

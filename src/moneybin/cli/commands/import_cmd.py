@@ -989,6 +989,27 @@ def _accounts_created_payload(
     ]
 
 
+def echo_disputed_rows(rows: Sequence[Sequence[str]]) -> None:
+    """Show the row(s) behind a header_position_ambiguous confirm.
+
+    Same routing as ``echo_accounts_created``: row content is file data, not
+    static text, so it goes through ``typer.echo(err=True)`` rather than the
+    log pipeline — ``log_to_file`` defaults to True. Masks each cell via
+    ``mask_pii_shaped`` (the same value-shape masker the agent-safe SQL
+    surface applies to raw/prep) unconditionally — cli.md: "never assume CLI
+    users are 'trusted enough to skip redaction'" — so a caller can never
+    forget it by passing an already-masked row (idempotent) or a raw one.
+    """
+    if not rows:
+        return
+    from moneybin.log_sanitizer import mask_pii_shaped
+
+    typer.echo("   Disputed row(s):", err=True)
+    for row in rows:
+        masked = [mask_pii_shaped(cell)[0] for cell in row]
+        typer.echo(f"     {', '.join(masked)}", err=True)
+
+
 def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
     """Name the accounts an import created, and how to correct one.
 
@@ -1713,6 +1734,9 @@ def _render_confirmation_prompt(
     typer.echo(f"\n{tier_icon}  Confirmation required ({tier} confidence)")
     typer.echo(f"   File: {file_path_str}")
     typer.echo(f"   Reason: {outcome.reason}")
+    # No-op for every reason but header_position_ambiguous, whose evidence
+    # this is: a caller ratifying with --confirm must see the disputed row.
+    echo_disputed_rows(outcome.header_position_ambiguous_rows)
     if outcome.error_message:
         typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
 
@@ -2159,6 +2183,7 @@ def import_confirm_command(
             logger.error(
                 "❌ A row before the detected header looks like a transaction."
             )
+            echo_disputed_rows(outcome.header_position_ambiguous_rows)
             logger.info(f"💡 {header_position_ambiguous_recovery(str(file_path))}")
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
@@ -2574,6 +2599,7 @@ def import_preview(
     from moneybin.extractors.tabular.format_detector import detect_format
     from moneybin.extractors.tabular.readers import (
         mapped_date_columns,
+        normalize_excel_date_columns_after_mapping,
         normalize_excel_date_columns_before_mapping,
         read_file,
     )
@@ -2666,27 +2692,18 @@ def import_preview(
                     matched_format = fmt
                     break
 
-        # This command has no --date-format flag, so the only declared
-        # format that can ever reach here is a matched format's own
-        # persisted one (explicit --format or the implicit header-signature
-        # match just above). See
-        # normalize_excel_date_columns_before_mapping's docstring: skipping
-        # this for a native-date Excel column doesn't just miss the date
-        # column when map_columns runs below — it misidentifies it as
+        # This command has no --date-format flag, so the only declared format
+        # that can ever reach here is a matched format's own persisted one.
+        # Skipping this for a native-date Excel column doesn't just miss the
+        # date column when map_columns runs below — it misidentifies it as
         # `description` while the real description column drops out
-        # entirely. matched_date_format is the corrected format to DISPLAY
-        # (below) when normalization rewrote the mapped column — showing
-        # the persisted format unchanged would misreport what this file
-        # will actually parse against once imported. mapped_date_columns
-        # falls back to the caller's own --override mapping when no format
-        # matched — mirrors the equivalent first-contact scoping in
-        # import_service.py's _import_tabular (known_mapping = overrides),
-        # via the same helper, so this preview normalizes the same
-        # date-typed columns the later confirm/replay will.
+        # entirely. mapped_date_columns falls back to the caller's own
+        # --override mapping when no format matched, mirroring the
+        # first-contact scoping in import_service.py's _import_tabular.
         date_column, additional_date_columns = mapped_date_columns(
             matched_format.field_mapping if matched_format else overrides
         )
-        df, matched_date_format = normalize_excel_date_columns_before_mapping(
+        df, _ = normalize_excel_date_columns_before_mapping(
             df,
             file_type=format_info.file_type,
             date_format=matched_format.date_format if matched_format else None,
@@ -2724,30 +2741,32 @@ def import_preview(
             # header position unblocks it. `import preview` has no --confirm
             # option of its own — use the shared helper, which names the
             # commands that actually clear this gate (`import files
-            # --confirm` / `import confirm --accept`). Passes the actual
-            # disputed row(s) (round 12, Codex P1 / claude CONSIDER) so this
-            # warning shows the evidence it's asking about, not just the
-            # fact that some row is in dispute.
+            # --confirm` / `import confirm --accept`). The recovery text
+            # stays static (safe for the log pipeline); the disputed row's
+            # own content goes through echo_disputed_rows, stderr-only, so
+            # this warning's evidence never reaches a log file.
             from moneybin.services.import_confirmation import (
                 header_position_ambiguous_recovery,
             )
 
-            recovery = header_position_ambiguous_recovery(
-                str(source), read_result.header_position_ambiguous_rows
-            )
-            logger.warning(f"⚠️  {recovery}")
+            logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
+            echo_disputed_rows(read_result.header_position_ambiguous_rows)
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
+        final_field_mapping: dict[str, str]
+        final_effective_date_format: str | None
         if matched_format:
             typer.echo(
                 f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
             )
             typer.echo(f"Sign convention: {matched_format.sign_convention}")
-            typer.echo(f"Date format: {matched_date_format}")
+            typer.echo(f"Date format: {matched_format.date_format}")
             typer.echo(f"Number format: {matched_format.number_format}")
             typer.echo("\nColumn mapping:")
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
+            final_field_mapping = matched_format.field_mapping
+            final_effective_date_format = matched_format.date_format
         else:
             from moneybin.config import get_settings
 
@@ -2785,6 +2804,18 @@ def import_preview(
                 )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
+            final_field_mapping = mapping_result.field_mapping
+            final_effective_date_format = mapping_result.date_format
+
+        # Second normalization pass, against the FINAL mapping — covers a
+        # column (e.g. an aliased post_date) map_columns only resolved after
+        # the pre-mapping pass above ran scoped to a narrower known mapping.
+        df = normalize_excel_date_columns_after_mapping(
+            df,
+            file_type=format_info.file_type,
+            field_mapping=final_field_mapping,
+            date_format=final_effective_date_format,
+        )
 
         # Show sample rows
         sample_n = min(5, len(df))

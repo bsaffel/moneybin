@@ -232,15 +232,15 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
 ) -> None:
     """header_position_ambiguous must recommend --accept despite tier="low".
 
-    Codex P2, round 12: _gate_header_position_ambiguous always packs this
-    reason with tier="low" (Confidence(score=0.0, tier="low", ...) —
-    import_service.py), so before this fix the generic low-tier branch
-    claimed "--accept would be rejected" — exactly backwards, since
-    --accept is the recovery this reason's own gate ratifies on, and the
-    one the persisted sidecar (inbox_service.py) already recommends. Must
-    also NOT recommend `import files ... --confirm`: that command never
-    archives the pending file, so the next inbox sync would reprocess it
-    and duplicate every transaction just loaded.
+    ``_gate_header_position_ambiguous`` always packs this reason with
+    tier="low" (Confidence(score=0.0, tier="low", ...)), so a generic
+    low-tier branch would wrongly claim "--accept would be rejected" —
+    exactly backwards, since --accept is the recovery this reason's own
+    gate ratifies on, and the one the persisted sidecar
+    (inbox_service.py) already recommends. Must also NOT recommend
+    `import files ... --confirm`: that command never archives the
+    pending file, so the next inbox sync would reprocess it and
+    duplicate every transaction just loaded.
     """
     patch_inbox.sync.return_value = InboxSyncResult(
         processed=[],
@@ -254,6 +254,7 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
                 "reason": "header_position_ambiguous",
                 "moved_to": "pending/2026-05/data_before_header.csv",
                 "sidecar": "pending/2026-05/data_before_header.csv.pending.yml",
+                "header_position_ambiguous_rows": [["2026-01-01", "42.50", "Coffee"]],
             }
         ],
     )
@@ -265,6 +266,9 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
     assert "would be rejected" not in result.stderr
     assert "--mapping" not in result.stderr
     assert "import files" not in result.stderr
+    # The disputed row is live drain-summary data, not part of the
+    # row-free persisted sidecar — the drain must still show it.
+    assert "2026-01-01, 42.50, Coffee" in result.stderr
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:

@@ -69,6 +69,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # because one wrong-account recovery hint is hard enough to keep correct.
     from moneybin.cli.commands.import_cmd import (
         echo_accounts_created,
+        echo_disputed_rows,
         format_account_candidate,
     )
 
@@ -135,21 +136,18 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                         err=True,
                     )
         elif reason == "header_position_ambiguous":
-            # Routed on the reason, not the tier (Codex P2, round 12):
-            # _gate_header_position_ambiguous always packs tier="low" for
-            # this reason (Confidence(score=0.0, tier="low", ...) —
-            # import_service.py), so the generic low-tier branch below
-            # printed "--accept would be rejected" — exactly backwards, since
-            # --accept is the recovery this reason's own gate ratifies on.
-            # The sidecar variant, not the general CLI/MCP one: this file is
-            # already in pending/, so the same lifecycle constraint the
-            # persisted sidecar's own recovery text observes applies here
-            # too (see header_position_ambiguous_recovery_sidecar's
-            # docstring) — one recovery string for both surfaces now.
+            # Routed on the reason, not the tier: the gate always packs
+            # tier="low" for this reason, so the generic low-tier branch
+            # below would print the wrong recovery. Sidecar variant, not the
+            # general CLI/MCP one — see its own docstring for why.
             from moneybin.services.import_confirmation import (
                 header_position_ambiguous_recovery_sidecar,
             )
 
+            raw_rows: Any = item.get("header_position_ambiguous_rows")
+            echo_disputed_rows(
+                cast("list[list[str]]", raw_rows) if isinstance(raw_rows, list) else []
+            )
             typer.echo(
                 f"   {header_position_ambiguous_recovery_sidecar(str(moved_to))}",
                 err=True,
