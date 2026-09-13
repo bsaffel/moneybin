@@ -112,8 +112,11 @@ outside. Three rules follow:
 
   The third is `currency_integrity`'s duplicate-overlap remediation
   (`doctor_service.py::_run_currency_integrity`), which masks the `account_id`
-  of each overlapping pair in its `detail` text and in the
-  `accounts links run <a> <b>` fallback it publishes. Taken on the same
+  of each overlapping pair in its `detail` text. An altered (masked or
+  sanitized) id is never pasted into the `accounts links run <a> <b>`
+  fallback it publishes, either — that command substitutes a `<...>`
+  placeholder for it instead, so the fallback shows neither the raw id nor
+  its masked form. Taken on the same
   arithmetic, not read off the two above: `core.dim_accounts.account_id` is
   `COALESCE(links.account_id, a.account_id)`, so an *unresolved* account
   surfaces its source-native key there — and that check's entire subject is the

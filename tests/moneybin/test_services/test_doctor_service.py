@@ -4149,6 +4149,66 @@ def test_currency_integrity_transform_routing_is_per_account_not_per_pair(
 
 
 @pytest.mark.unit
+def test_currency_integrity_merged_away_branch_explains_an_altered_id(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """The merged-away branch's altered-id note must actually fire here, not just exist.
+
+    Mirrors ``test_currency_integrity_points_to_transform_for_an_accepted_
+    awaiting_pair``, but names the merged-away (provisional) account with an
+    account-number-shaped id so ``_publishable_account_id`` masks it. Every
+    masked/sanitized/dashed-id fixture elsewhere in this file routes through
+    the sibling review-pairs branch (``commands_use_placeholders=True``); this
+    one pins that ``_altered_id_note`` also reaches ``detail`` from THIS call
+    site (``commands_use_placeholders=False``), where the only published
+    command is ``moneybin transform`` and carries no ids at all.
+    """
+    _mock_rematch_refresh(mocker)
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "987654321098", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_CANON", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "987654321098", rows=rows)
+    _insert_amount_ladder(
+        doctor_db,
+        "DUP_CANON",
+        rows=rows,
+        day_offset=settings.matching.date_window_days,
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+        ["987654321098"],
+    )  # test input, not user data
+    _insert_source_native_link(
+        doctor_db,
+        link_id="link_masked",
+        account_id="987654321098",
+        ref_value="native-ref-masked",
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge_masked",
+        provisional_account_id="987654321098",
+        candidate_account_id="DUP_CANON",
+    )
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_merge_masked", target_account_id="DUP_CANON"
+    )
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "moneybin transform" in detail, detail
+    assert "987654321098" not in detail, detail
+    assert "****1098" in detail, detail
+    assert "DUP_CANON" in detail, detail
+    # Proves the note fired: this phrase belongs to _altered_id_note alone,
+    # nothing else in this branch's text names where to read the real id.
+    assert "moneybin accounts list" in detail, detail
+
+
+@pytest.mark.unit
 def test_duplicate_account_overlap_still_warns_after_standalone_decision(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -357,6 +357,18 @@ def _orient_overlap_pair(
     When both ids are unknown-currency, either order absorbs an account with
     no currency to protect either way, so the incoming ``(a, b)`` order is
     kept as-is for determinism rather than for correctness.
+
+    A third outcome is not an orientation question at all: if NEITHER id
+    holds an accepted ``source_native`` link, ``propose_pair`` does not fall
+    through to the other side — it raises ``UserError`` outright, and no
+    order named here changes that. This does not arise for this check's own
+    callers: every account ``AccountResolver`` mints is given its own
+    accepted ``source_native`` link at mint time on every ladder branch
+    (``_write_native_mapping``), and the only way to lose that status is an
+    accepted merge repointing it — which is exactly the "merged away" state
+    ``_run_currency_integrity`` already routes to the ``moneybin transform``
+    branch before this function ever runs. A pair reaching here is therefore
+    guaranteed to have at least one mergeable side.
     """
     if b in unknown_currency_ids and a not in unknown_currency_ids:
         return b, a
@@ -3701,6 +3713,11 @@ class DoctorService:
                 # The placeholders keep the positions meaningful when both
                 # ids are altered; they reuse the label vocabulary the opening
                 # clause already establishes for this pair.
+                #
+                # Every pair here has at least one mergeable side, so
+                # `propose_pair`'s "neither account holds an accepted
+                # source_native link" refusal cannot fire for this published
+                # command — see _orient_overlap_pair's docstring for why.
                 fallback_commands = "; ".join(
                     "`moneybin accounts links run "
                     f"{_command_account_id(absorbed, '<unknown-currency-account-id>')} "
