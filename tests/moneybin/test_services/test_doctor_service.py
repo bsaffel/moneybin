@@ -3033,13 +3033,23 @@ def test_currency_integrity_counts_past_the_reported_id_cap(
 
 
 def _insert_overlap_account(
-    db: Database, account_id: str, *, institution_slug: str
+    db: Database, account_id: str, *, institution_slug: str, mergeable: bool = True
 ) -> None:
     """Insert one core.dim_accounts row carrying an institution slug.
 
     The `doctor_db` fixture's own ACC1 leaves `institution_slug` NULL, which
     the check scopes out — these tests supply their own accounts so the
     fixture's rows cannot contribute to a pair.
+
+    ``mergeable=True`` (default) also gives the account its own accepted
+    ``source_native`` link, mirroring what every real import unconditionally
+    writes via ``AccountResolver._write_native_mapping`` — matching
+    production keeps every other currency_integrity fixture in the
+    ``review_pairs``/``transform_ready_pairs`` buckets the check has always
+    tested. Pass ``mergeable=False`` to build the one state that skips it: a
+    sync pull whose account resolution failed after loading raw rows
+    (``SyncService.pull``'s swallowed exception around ``_resolve_accounts``)
+    leaves an account with zero ``app.account_links`` rows at all.
     """
     db.execute(
         """
@@ -3053,6 +3063,13 @@ def _insert_overlap_account(
         """,  # test input, not user data
         [account_id, institution_slug, account_id],
     )
+    if mergeable:
+        _insert_source_native_link(
+            db,
+            link_id=f"link_native_{account_id}",
+            account_id=account_id,
+            ref_value=f"native-{account_id}",
+        )
 
 
 def _insert_amount_ladder(
@@ -4325,6 +4342,101 @@ def test_currency_integrity_transform_ready_pairs_cap_and_overflow_are_counted(
     assert expected_overflow == 1  # hand-derived: 6 built, cap 5
     assert detail.count("% overlap)") == expected_shown, detail
     assert f", plus {expected_overflow} more pair(s) not shown" in detail, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_neither_side_mergeable_avoids_the_dead_end_command(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Neither account holding a completed identity link must not publish a dead-end command.
+
+    Reachable via ``SyncService.pull``'s swallowed exception around
+    ``_resolve_accounts`` (``sync_service.py``): a resolver failure partway
+    through its per-account loop leaves that account's raw/staged rows
+    durable with zero ``app.account_links`` rows at all — not merged away
+    (that has its own, already-tested routing), never linked in the first
+    place. ``propose_pair`` refuses outright ("neither account holds an
+    accepted source_native link") for such a pair regardless of order, so
+    the two-id ``accounts links run`` fallback must never name it.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(
+        doctor_db, "NOLINK_A", institution_slug="chase", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_B", institution_slug="chase", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "NOLINK_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'NOLINK_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "NOLINK_A:NOLINK_B" in detail or "NOLINK_B:NOLINK_A" in detail, detail
+    # The dead-end command this fix exists to prevent — neither account can
+    # be absorbed, so no two-id `accounts links run` may be published.
+    assert "`moneybin accounts links run NOLINK_A NOLINK_B`" not in detail, detail
+    assert "`moneybin accounts links run NOLINK_B NOLINK_A`" not in detail, detail
+    assert "would refuse either order" in detail, detail
+    assert "moneybin sync pull" in detail, detail
+    assert_published_commands_resolve(detail)
+
+
+@pytest.mark.unit
+def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A no-link pair coexisting with an actionable one must not be dropped silently.
+
+    DUP_A/DUP_B are a normal, actionable review pair (both mergeable);
+    NOLINK_A/NOLINK_B are a separate, unrelated overlap where neither side
+    is mergeable. The actionable pair's fallback command must still publish,
+    and the stuck pair must be named separately rather than vanish from the
+    report.
+    """
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _insert_overlap_account(doctor_db, "DUP_A", institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_B", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, "DUP_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "DUP_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'DUP_B'"
+    )  # test input, not user data
+    _insert_overlap_account(
+        doctor_db, "NOLINK_A", institution_slug="wells", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_B", institution_slug="wells", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "NOLINK_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'NOLINK_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "`moneybin accounts links run DUP_B DUP_A`" in detail, detail
+    assert "`moneybin accounts links run NOLINK_A NOLINK_B`" not in detail, detail
+    assert "`moneybin accounts links run NOLINK_B NOLINK_A`" not in detail, detail
+    assert "moneybin sync pull" in detail, detail
+    assert "neither account holding a completed identity link" in detail, detail
 
 
 @pytest.mark.unit
