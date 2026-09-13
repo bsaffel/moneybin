@@ -1475,6 +1475,83 @@ class TestTabularConfirmationFlow:
         assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
         assert None not in post_dates
 
+    def test_date_format_override_validates_against_rendered_frame(
+        self, db: Database, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """A declared --date-format must validate against what gets imported.
+
+        Round 15 E2: the early first-contact override validation read
+        detection_df, not a render copy. R1 already unions
+        ``native_date_columns`` into the detection copy's own candidates, so
+        an accurately-typed native column no longer exposes this on its own
+        -- this test forces the residual gap: openpyxl failing to type the
+        column at all (an empty ``excel_native_date_columns``, the same
+        return this reader gives for legacy .xls or a genuine typing miss).
+        With no --mapping override either, detection_df's candidate set is
+        then completely empty for this column, so it stays raw native
+        midnight text there while ``map_columns`` still maps it via header
+        alias ("Date" -> transaction_date). Validating "%m/%d/%Y" against
+        that untouched text fails (0% parse rate); the real render
+        (normalize_excel_date_columns_after_mapping, which never consulted
+        native_date_columns to begin with) converts it correctly regardless.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular import readers as readers_module
+        from moneybin.extractors.tabular.format_detector import FormatInfo
+        from moneybin.services.import_service import ImportService
+
+        # import_service._import_tabular imports read_file locally (inside
+        # the function body, re-resolved on every call), so patching the
+        # SOURCE attribute on the readers module -- not a module-level name
+        # on import_service, which doesn't have one -- is what actually
+        # intercepts it. Capture the real function first so the wrapper
+        # doesn't recurse into its own patch.
+        real_read_file = readers_module.read_file
+
+        def _blank_native_date_columns(
+            path: Path, info: FormatInfo, **kwargs: object
+        ) -> readers_module.ReadResult:
+            result = real_read_file(path, info, **kwargs)  # pyright: ignore[reportArgumentType]
+            result.excel_native_date_columns = frozenset()
+            return result
+
+        mocker.patch(
+            "moneybin.extractors.tabular.readers.read_file",
+            side_effect=_blank_native_date_columns,
+        )
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_date_format_override_no_mapping.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%m/%d/%Y",
+        )
+
+        assert result.rows_loaded == 2
+        transaction_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT transaction_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert transaction_dates == [
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 2),
+        ]
+
     def test_time_bearing_date_format_override_still_imports_native_date_xlsx(
         self, db: Database, tmp_path: Path
     ) -> None:

@@ -1130,6 +1130,82 @@ async def test_import_preview_post_date_only_override_matches_what_import_stores
     assert None not in stored_post_dates
 
 
+async def test_import_preview_post_date_only_override_with_native_transaction_date(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """E1 (round 15, Codex P2 readers.py:921): a native, unmapped column.
+
+    Must not orphan itself. The caller's ``mapping`` names ONLY
+    ``post_date`` (native); ``Date`` (transaction_date) is ALSO native
+    but not in the override -- the exact counterexample. The prior
+    mapping-scoped detection copy left ``Date``
+    in raw "<date> 00:00:00" text, so ``map_columns`` (whose
+    ``detect_date_format`` only recognizes date-only shapes) could never
+    read a format from it, staging an unconfirmable ``unreadable_date``
+    plan for a file the real render converts fine.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append([date(2026, 1, 1), date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append([date(2026, 1, 2), date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_only_native_transaction_date.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"post_date": "Posted"}
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.mapping.get("transaction_date") == "Date"
+    assert preview.data.mapping.get("post_date") == "Posted"
+    assert preview.data.date_format is not None, (
+        "map_columns could not detect a format for the native, unmapped "
+        "transaction_date column -- the exact E1 regression"
+    )
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "e1_native_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored = db.execute(
+            "SELECT transaction_date, post_date FROM raw.tabular_transactions "
+            "ORDER BY transaction_date"
+        ).fetchall()
+
+    assert [row[0] for row in stored] == [date(2026, 1, 1), date(2026, 1, 2)]
+    assert [row[1] for row in stored] == [date(2026, 1, 3), date(2026, 1, 4)]
+
+
 @pytest.mark.parametrize(
     ("suffix", "limit_field"),
     [

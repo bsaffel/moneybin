@@ -3389,9 +3389,25 @@ class ImportService:
             # Ahead of resolve_or_confirm, which records an accepted or
             # overridden confirmation below — a counter the CLI path applies
             # immediately, so a later refusal cannot take it back.
-            _validate_date_format_override(
-                detection_df, mapping_result.field_mapping, date_format_override
-            )
+            #
+            # Validated against a RENDER copy, never detection_df (round 15
+            # E2): detection_df only normalizes what map_columns/format
+            # detection needed and can still leave a column this override
+            # was never told about — e.g. a native transaction_date the
+            # caller didn't name via --mapping — in raw midnight text no
+            # declared format is meant to parse, refusing a file the real
+            # render converts fine. Skipped entirely when there's nothing to
+            # validate, matching this validation's own no-op guard.
+            if date_format_override is not None:
+                validation_df = normalize_excel_date_columns_after_mapping(
+                    df,
+                    file_type=format_info.file_type,
+                    field_mapping=mapping_result.field_mapping,
+                    date_format=date_format_override,
+                )
+                _validate_date_format_override(
+                    validation_df, mapping_result.field_mapping, date_format_override
+                )
             date_format_effective = date_format_override or mapping_result.date_format
             if date_format_effective is None:
                 # A date column nothing could parse makes the plan unloadable at

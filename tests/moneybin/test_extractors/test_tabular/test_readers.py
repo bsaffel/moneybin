@@ -7,14 +7,13 @@ import polars as pl
 import pytest
 from pytest_mock import MockerFixture
 
+from moneybin.extractors.tabular.column_mapper import map_columns
 from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _classify_excel_headerless_via_fastexcel,  # pyright: ignore[reportPrivateUsage]
     _detect_header,  # pyright: ignore[reportPrivateUsage]
     _excel_native_date_columns,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
-    date_format_has_time_component,
-    normalize_excel_date_columns,
     normalize_excel_date_columns_after_mapping,
     normalize_excel_date_columns_for_detection,
     read_file,
@@ -1251,216 +1250,24 @@ class TestExcelReader:
         assert kwargs["read_options"].get("n_rows") == 30
 
 
-class TestNormalizeExcelDateColumns:
-    """Unit tests for readers.normalize_excel_date_columns.
+class TestTimeBearingFormatRenderIsIdempotent:
+    """A declared time-bearing format needs no detection-time special-casing.
 
-    This is Excel-only and public (no leading underscore): import_service.py's
-    _import_tabular calls it after Stage 3 resolves column mapping and the
-    effective date format, NOT this module's own _read_excel (which cannot
-    decide correctly — see the function's docstring for why). These tests
-    exercise the pure function directly rather than through read_file.
+    Round 15: ``date_format_has_time_component`` (and the detection-copy
+    skip it drove) is deleted — its only caller was the auto-detect branch
+    of ``normalize_excel_date_columns_for_detection``, and rendering a
+    native midnight cell through ``strftime`` into a time-bearing format
+    reproduces the exact raw text (parse the captured ISO date, then
+    ``strftime`` back through the same directives/literals that produced
+    the "00:00:00" suffix in the first place), so unioning a time-bearing
+    column into the scan is always safe — at worst a no-op. These two tests
+    (kept from the deleted helper's own end-to-end coverage) prove that
+    directly against ``normalize_excel_date_columns_after_mapping``, which
+    was never guarded by the deleted helper and is unaffected by its removal.
     """
 
-    def test_non_midnight_timestamp_text_passes_through_unmodified(self) -> None:
-        """A real (non-midnight) timestamp string must not be truncated.
-
-        normalize_excel_date_columns only collapses the exact
-        "<date> 00:00:00" shape fastexcel renders for a native Excel *date*
-        cell (always midnight — Excel has no separate date type). A string
-        cell that happens to hold a genuine timestamp with a real time of
-        day must be left alone: pinning this stops the regex from silently
-        re-widening to match any time, which would mutate a raw column value
-        AGENTS.md's data-layer contract says loaders must leave untouched.
-        """
-        df = pl.DataFrame({
-            "Posted At": ["2026-01-01 14:30:00"],
-            "Amount": ["42.5"],
-            "Description": ["Coffee"],
-        })
-
-        result, rewritten = normalize_excel_date_columns(df)
-
-        assert result["Posted At"].to_list() == ["2026-01-01 14:30:00"]
-        assert rewritten == frozenset()
-
-    def test_minority_midnight_match_column_left_untouched(self) -> None:
-        """A column where midnight-shaped values are the MINORITY is untouched.
-
-        No ``native_date_columns`` is supplied here, so this exercises the
-        tolerant-MAJORITY text-shape fallback (openpyxl couldn't type the
-        file). A 1-of-2 match is not a majority, so the Description column
-        must be left alone — raw is untouched data from loaders (AGENTS.md's
-        Data Layers table) — while a genuine all-midnight native date column
-        beside it is still normalized.
-        """
-        df = pl.DataFrame({
-            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-            "Amount": ["42.5", "10"],
-            "Description": ["2026-01-01 00:00:00", "Coffee"],
-        })
-
-        result, rewritten = normalize_excel_date_columns(df)
-
-        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
-        assert result["Description"].to_list() == ["2026-01-01 00:00:00", "Coffee"]
-        assert rewritten == frozenset({"Date"})
-
-    def test_majority_shape_fallback_tolerates_one_dirty_value(self) -> None:
-        """A dirty minority must not void normalization for the whole column.
-
-        A single stray non-date value (e.g. "pending") must not disqualify
-        an otherwise-native-date column and revert the file to a "no
-        recognized date format" refusal. The fallback heuristic (no
-        ``native_date_columns`` — openpyxl couldn't type the file) qualifies
-        a column when a STRICT MAJORITY of its non-null values
-        match, matching the dirty-minority tolerance ``_parse_dates``/
-        ``_validate_date_format_override`` already apply downstream.
-        """
-        df = pl.DataFrame({
-            "Date": [
-                "2026-01-01 00:00:00",
-                "2026-01-02 00:00:00",
-                "2026-01-03 00:00:00",
-                "pending",
-            ],
-        })
-
-        result, rewritten = normalize_excel_date_columns(df)
-
-        assert result["Date"].to_list() == [
-            "2026-01-01",
-            "2026-01-02",
-            "2026-01-03",
-            "pending",
-        ]
-        assert rewritten == frozenset({"Date"})
-
-    def test_columns_restriction_protects_a_qualifying_column_outside_it(
-        self,
-    ) -> None:
-        """Scoping to the resolved date column protects an unrelated match.
-
-        import_service.py passes columns=[mapped_date_col] once Stage 3
-        knows the mapping, so an all-midnight-shaped column that ISN'T the
-        mapped date field (e.g. a coincidentally uniform second export
-        column) is never touched, even though it would qualify under a
-        broad scan — the auto-detect case (no mapping yet) still passes
-        columns=None and scans broadly, matching what map_columns itself
-        needs to find an unaliased date column via content.
-        """
-        df = pl.DataFrame({
-            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-            "Memo": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-        })
-
-        result, rewritten = normalize_excel_date_columns(df, columns=["Date"])
-
-        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
-        assert result["Memo"].to_list() == [
-            "2026-01-01 00:00:00",
-            "2026-01-02 00:00:00",
-        ]
-        assert rewritten == frozenset({"Date"})
-
-    def test_native_date_columns_ignores_shape_and_uses_typed_identity(
-        self,
-    ) -> None:
-        """Typed selection never touches a column that only LOOKS like a date.
-
-        An unscoped whole-column shape scan can truncate a genuine text
-        column (e.g. Memo) if every value happens to render in
-        the "<date> 00:00:00" shape. When ``native_date_columns`` is
-        supplied (openpyxl typed the file), selection is exact-identity —
-        driven by which columns openpyxl reports as natively date-typed, not
-        by scanning rendered text — so a coincidentally uniform Memo column
-        is left alone even though it would qualify under the shape-based
-        fallback.
-        """
-        df = pl.DataFrame({
-            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-            "Memo": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-        })
-
-        result, rewritten = normalize_excel_date_columns(
-            df, native_date_columns=frozenset({"Date"})
-        )
-
-        assert result["Date"].to_list() == ["2026-01-01", "2026-01-02"]
-        assert result["Memo"].to_list() == [
-            "2026-01-01 00:00:00",
-            "2026-01-02 00:00:00",
-        ]
-        assert rewritten == frozenset({"Date"})
-
-    def test_native_date_columns_empty_set_normalizes_nothing(self) -> None:
-        """Openpyxl typing the file but finding no date column normalizes nothing.
-
-        An empty ``frozenset`` (as opposed to ``None``) means openpyxl
-        opened the file fine and found no natively-typed date column — even
-        a perfectly shaped midnight-text column must not be rewritten from
-        shape alone once a typed answer is available.
-        """
-        df = pl.DataFrame({
-            "Date": ["2026-01-01 00:00:00", "2026-01-02 00:00:00"],
-        })
-
-        result, rewritten = normalize_excel_date_columns(
-            df, native_date_columns=frozenset()
-        )
-
-        assert result["Date"].to_list() == [
-            "2026-01-01 00:00:00",
-            "2026-01-02 00:00:00",
-        ]
-        assert rewritten == frozenset()
-
-
-class TestDateFormatHasTimeComponent:
-    """Unit tests for readers.date_format_has_time_component."""
-
-    def test_locale_dependent_x_directive_counts_as_time_bearing(self) -> None:
-        """``%X`` (locale time representation) must count as a time directive.
-
-        Reviewer NIT: the original check only recognized %H/%M/%S/%I/%p, so
-        a declared format using the locale-dependent %X directive would be
-        misjudged as date-only and have its native-date column normalized
-        (and truncated) out from under it.
-        """
-        assert date_format_has_time_component("%Y-%m-%d %X") is True
-
-    def test_bare_date_format_has_no_time_component(self) -> None:
-        assert date_format_has_time_component("%m/%d/%Y") is False
-
-    def test_none_has_no_time_component(self) -> None:
-        assert date_format_has_time_component(None) is False
-
-    def test_literal_midnight_suffix_counts_as_time_bearing(self) -> None:
-        """A LITERAL time suffix (no strptime directive) must count too.
-
-        Codex finding: the prior implementation only scanned for known
-        directives (%H/%M/%S/%I/%p/%X), so a format like
-        ``"%Y-%m-%d 00:00:00"`` — spelling the time as literal characters,
-        not a directive, e.g. built by formatting a sample value rather
-        than hand-written — was misjudged as date-only. That let the
-        auto-detect scan (normalize_excel_date_columns_for_detection, when
-        no mapping is known yet) rewrite the column to a bare date, after
-        which the declared format could no longer parse it (a trailing
-        literal "00:00:00" the rewritten text no longer has). The fix
-        tries the actual parse against the representative raw
-        shape (``_excel_cell_text``'s "2026-01-01 00:00:00") instead of
-        scanning for substrings, so any spelling of a time-bearing raw
-        shape is caught, not just known directives.
-        """
-        assert date_format_has_time_component("%Y-%m-%d 00:00:00") is True
-
-    def test_literal_midnight_suffix_skips_normalization(self) -> None:
-        """End-to-end: the literal-suffix format must survive rendering.
-
-        Exercises normalize_excel_date_columns_after_mapping directly (not
-        just the boolean helper): collapsing the native cell to ISO and
-        re-rendering into this literal-suffix format reproduces the exact
-        raw text, so the round-trip is a no-op here regardless.
-        """
+    def test_literal_midnight_suffix_round_trips(self) -> None:
+        """A literal (non-directive) time suffix reproduces the raw text."""
         df = pl.DataFrame({"Date": ["2026-01-01 00:00:00"], "Amount": ["1.00"]})
         normalized = normalize_excel_date_columns_after_mapping(
             df,
@@ -1471,43 +1278,15 @@ class TestDateFormatHasTimeComponent:
         # Unchanged: the literal-suffix format expects the raw text as-is.
         assert normalized["Date"].to_list() == ["2026-01-01 00:00:00"]
 
-    def test_fractional_seconds_format_recognized_via_actual_column(self) -> None:
-        """A raw shape neither prior probe carries must still be recognized.
+    def test_fractional_seconds_format_leaves_non_matching_cells_untouched(
+        self,
+    ) -> None:
+        """A raw shape with fractional seconds never matches the midnight regex.
 
-        Codex finding: the representative-shape probe ("2000-01-02
-        00:00:00") has no fractional-second suffix, so a declared
-        "%Y-%m-%d %H:%M:%S.%f" — a real raw shape for a native Excel
-        datetime with sub-second precision — tested False against it. This
-        is the fourth iteration on this helper (directive list -> %X ->
-        synthetic-probe -> now this), and each fix left the same residual
-        weakness: guessing the raw shape instead of reading it. The fix
-        reads the actual column instead of guessing: when date_column names
-        a real df column, it checks whether date_format parses that
-        column's own text (format_parses), so any raw shape is recognized,
-        not just ones a probe author anticipated.
-        """
-        assert date_format_has_time_component("%Y-%m-%d %H:%M:%S.%f") is False, (
-            "sanity check: the synthetic-probe fallback (no column given) "
-            "still can't recognize this shape -- confirms the old behavior "
-            "is unchanged when no column is available, per this function's "
-            "own documented fallback."
-        )
-        df = pl.DataFrame({
-            "Date": ["2026-01-02 00:00:00.123000", "2026-01-03 00:00:00.456000"],
-            "Amount": ["42.5", "10"],
-        })
-        assert (
-            date_format_has_time_component(
-                "%Y-%m-%d %H:%M:%S.%f", df=df, date_column="Date"
-            )
-            is True
-        )
-
-    def test_fractional_seconds_format_skips_normalization(self) -> None:
-        """End-to-end: the fractional-seconds format must survive rendering.
-
-        Mirrors test_literal_midnight_suffix_skips_normalization for the
-        raw shape the representative-probe approach could never anticipate.
+        ``_EXCEL_MIDNIGHT_DATETIME_RE`` anchors on an exact "00:00:00" with
+        nothing after it, so a cell carrying fractional seconds was never a
+        rewrite candidate in the first place -- passes through untouched
+        regardless of the declared format.
         """
         df = pl.DataFrame({
             "Date": ["2026-01-02 00:00:00.123000", "2026-01-03 00:00:00.456000"],
@@ -1523,6 +1302,122 @@ class TestDateFormatHasTimeComponent:
             "2026-01-02 00:00:00.123000",
             "2026-01-03 00:00:00.456000",
         ]
+
+
+class TestExcelDateCandidateColumnsFindEveryDateColumn:
+    """R1 grid: mapped-upfront state x native/text role x declared format.
+
+    ``normalize_excel_date_columns_for_detection`` must render EVERY date
+    candidate into one representation regardless of mapping state — the
+    prior mapping-scoped design left an unmapped native column untouched
+    whenever a caller had already named some OTHER date field via override
+    (E1: ``overrides={"post_date": "Posted"}`` with a native, unmapped
+    ``transaction_date`` orphaned it). Proven against the REAL
+    ``map_columns``, not a stand-in, since that's the actual consumer E1
+    broke — every combination below must produce an identical, successful
+    outcome: transaction_date mapped with a non-None format, and the real
+    (after-mapping) render leaves no NULLs in either date column.
+    """
+
+    @pytest.mark.parametrize(
+        "declared_format", [None, "%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"]
+    )
+    @pytest.mark.parametrize("post_date_role", ["native", "text"])
+    @pytest.mark.parametrize("transaction_date_role", ["native", "text"])
+    @pytest.mark.parametrize(
+        "mapped_upfront", ["none", "transaction_date", "post_date", "both"]
+    )
+    def test_transaction_date_is_always_found_with_a_format(
+        self,
+        mapped_upfront: str,
+        transaction_date_role: str,
+        post_date_role: str,
+        declared_format: str | None,
+    ) -> None:
+        text_shape = declared_format or "%Y-%m-%d"
+        df = pl.DataFrame({
+            "Date": _render_role(_ROLE_DATES, transaction_date_role, text_shape),
+            "Post Date": _render_role(_POST_DATES, post_date_role, text_shape),
+            "Amount": ["-4.50", "10.00", "42.50", "5.00"],
+        })
+        native_date_columns: frozenset[str] = frozenset(
+            ({"Date"} if transaction_date_role == "native" else set[str]())
+            | ({"Post Date"} if post_date_role == "native" else set[str]())
+        )
+        # The caller's own known-mapped columns BEFORE map_columns runs --
+        # simulates a first-contact --mapping override naming zero, one, or
+        # both date fields ahead of time. Header aliases ("date", "post
+        # date") let map_columns discover either field on its own too, so
+        # this axis isolates what the detection copy was TOLD versus what
+        # it independently renders via native_date_columns.
+        date_column = "Date" if mapped_upfront in ("transaction_date", "both") else None
+        additional_date_columns = (
+            ["Post Date"] if mapped_upfront in ("post_date", "both") else []
+        )
+        overrides: dict[str, str] = {}
+        if date_column:
+            overrides["transaction_date"] = date_column
+        if additional_date_columns:
+            overrides["post_date"] = additional_date_columns[0]
+
+        detection_df = normalize_excel_date_columns_for_detection(
+            df,
+            file_type="excel",
+            date_format=declared_format,
+            date_column=date_column,
+            additional_date_columns=additional_date_columns or None,
+            native_date_columns=native_date_columns,
+        )
+
+        mapping_result = map_columns(detection_df, overrides=overrides or None)
+
+        # (a) map_columns finds transaction_date, and -- when NOTHING is
+        # already declared -- a non-None auto-detected format. This is E1's
+        # exact scenario: no --date-format, so mapping_result.date_format is
+        # the ONLY source of a format, and _DATE_FORMATS (date_detection.py)
+        # is date-only, so it can only succeed if the detection copy handed
+        # it recognizable (rendered) content. A time-bearing declared_format
+        # is never in _DATE_FORMATS's fixed candidate list regardless of
+        # rendering -- that's a disclosed, pre-existing limit of
+        # auto-detection, not this candidate-selection fix -- so once a
+        # caller already declares a format, detect_date_format's own guess
+        # no longer matters: date_format_override wins outright downstream
+        # (see import_service.py's date_format_effective).
+        assert mapping_result.field_mapping.get("transaction_date") == "Date"
+        if declared_format is None:
+            assert mapping_result.date_format is not None, (
+                f"map_columns could not auto-detect a format for "
+                f"{transaction_date_role} transaction_date "
+                f"(mapped_upfront={mapped_upfront!r}) -- the exact E1 "
+                "regression"
+            )
+
+        # (b) the imported frame parses with no NULLs in either date column.
+        final_format = declared_format or mapping_result.date_format
+        assert final_format is not None, (
+            "declared_format is None only when the (a) assertion above "
+            "already proved mapping_result.date_format is not None"
+        )
+        rendered = normalize_excel_date_columns_after_mapping(
+            df,
+            file_type="excel",
+            field_mapping=mapping_result.field_mapping,
+            date_format=final_format,
+        )
+        for dest_field, expected in (
+            ("transaction_date", _ROLE_DATES),
+            ("post_date", _POST_DATES),
+        ):
+            column = mapping_result.field_mapping.get(dest_field)
+            if column is None:
+                continue
+            values = rendered[column].to_list()
+            assert None not in values, f"{dest_field} lost a value to NULL"
+            for value, expected_date in zip(values, expected, strict=True):
+                assert (
+                    datetime.datetime.strptime(value, final_format).date()
+                    == expected_date
+                )
 
 
 # Case grid for normalize_excel_date_columns_after_mapping's core invariant:

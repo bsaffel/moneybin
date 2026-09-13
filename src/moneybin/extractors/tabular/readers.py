@@ -641,106 +641,73 @@ def _excel_sample_rows(
 _EXCEL_MIDNIGHT_DATETIME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) 00:00:00$")
 
 
-def normalize_excel_date_columns(
+def _excel_date_candidate_columns(
     df: pl.DataFrame,
-    *,
-    columns: list[str] | None = None,
-    native_date_columns: frozenset[str] | None = None,
-) -> tuple[pl.DataFrame, frozenset[str]]:
-    """Collapse a native-date column's rendered text to its date.
+    mapped_columns: list[str],
+    native_date_columns: frozenset[str] | None,
+) -> list[str]:
+    """Every column the detection copy must render into one representation.
 
-    ``_excel_cell_text`` closes this gap for the header-classification
-    sample, which reads cells directly via openpyxl and sees the original
-    ``datetime`` object. The real data ``pl.read_excel`` returns never goes
-    through that path — fastexcel stringifies a native date cell as
-    ``"2026-01-01 00:00:00"`` on its own, and every ``_DATE_FORMATS`` entry
-    (date_detection.py) is date-only, so without this a spreadsheet-native
-    date column never reaches ``detect_date_format`` as a recognized date and
-    a correctly-headered file is refused as having none. A genuine timestamp
-    column (a real, non-midnight time) does not match and is left as-is —
-    that shape still isn't recognized by any ``_DATE_FORMATS`` entry, which
-    is a separate, disclosed gap for ``date_detection`` to close, not this
-    reader.
+    R1 (round 15): a first-contact override naming only ``post_date`` left
+    an unmapped, native ``transaction_date`` untouched under the old
+    mapping-scoped selection — still raw ``"<date> 00:00:00"`` text, which
+    no ``_DATE_FORMATS`` entry (date_detection.py) recognizes as a date, so
+    ``map_columns`` could never detect its format even though the real
+    render converts it fine. Candidates are therefore the UNION of the
+    caller's own known-mapped columns (a mapped date column is a date
+    column by construction, native/text mix irrelevant) and whichever set
+    independently says a column holds dates:
 
-    Public (no leading underscore) and Excel-only: called only from
-    ``normalize_excel_date_columns_for_detection``'s auto-detect branch
-    (no known mapping yet), not from this module's own ``_read_excel``.
-    Normalization can't run at read time and still be correct — column
-    mapping is unresolved during the Stage 2 read, and a real destination
-    column isn't known yet, so this only ever produces a throwaway
-    detection copy feeding ``map_columns``'s own content-based discovery
-    (which needs a recognized shape to identify a native-date column at
-    all, by name alias or by scanning unclaimed columns) — never the real
-    imported frame, which ``normalize_excel_date_columns_after_mapping``
-    renders separately once the final mapping is known.
+    - ``native_date_columns`` given (openpyxl typed the file): its members,
+      EXCLUDING any whose HEADER already aliases to some OTHER (non-date)
+      destination field (checked against the same alias table
+      ``map_columns`` itself matches headers against). A header with no
+      alias match at all still qualifies — ``map_columns``'s own content
+      discovery (``_discover_by_content``) is the only way such a column
+      ever becomes ``transaction_date``, and that discovery needs
+      recognizable (rendered) content to find it, exactly like a header-
+      aliased native column does. What must NOT qualify is a column
+      openpyxl also typed as a date but whose header already claims a
+      DIFFERENT field — e.g. ``Memo``, a real, unrelated Excel column,
+      genuinely native, but destined for the ``memo`` field. Sweeping it
+      in would render it in the detection copy too, and its
+      ``sample_values`` would show a preview the real (mapping-scoped)
+      ``normalize_excel_date_columns_after_mapping`` render never
+      reproduces for a non-date-typed field — the exact preview/replay
+      divergence this whole redesign exists to close, just moved to a
+      different field.
+    - ``native_date_columns`` is ``None`` (openpyxl couldn't open the
+      container at all — legacy ``.xls``): a tolerant-MAJORITY text-shape
+      guess over every string column — more than half its non-null values
+      match the anchored midnight pattern — matching the dirty-minority
+      tolerance ``_parse_dates``/``_validate_date_format_override`` apply
+      elsewhere (a dirty prefix must not disqualify an otherwise-native
+      column). Unscoped by header, unchanged from the pre-round-15 auto-
+      detect fallback: this heuristic already only ever ran when no
+      mapping was known at all.
 
-    Two selection strategies currently reachable in production (a third,
-    ``columns`` given, is exercised directly by this function's own unit
-    tests but has no live caller — ``_normalize_mapped_date_cells`` now
-    covers a known mapping's columns instead):
-
-    - ``columns`` given (a caller already knows which columns are mapped
-      date fields — see ``mapped_date_columns``): every one of them
-      qualifies, full stop. A mapped date column is a date column by
-      construction, so a native/text mix within it is irrelevant — unlike
-      the two shape-guessing strategies below, this one needs no evidence,
-      because the caller already supplied the answer. ``native_date_columns``
-      is ignored in this mode.
-    - ``columns`` is ``None`` and ``native_date_columns`` given (a
-      frozenset — openpyxl opened the file and reported which columns are
-      natively date/datetime-typed): normalizes exactly those columns.
-      Deterministic — no shape inference, so a ``Description``/``Memo``
-      column that happens to render like a date is never touched (it was
-      never *typed* as one).
-    - Both ``None`` (openpyxl could not open the container at all — legacy
-      ``.xls``, the one case a native-type probe is unavailable): falls
-      back to a tolerant-MAJORITY text-shape heuristic — a column qualifies
-      when more than half of its non-null values match the anchored
-      midnight pattern, matching the dirty-minority tolerance
-      ``_parse_dates``/``_validate_date_format_override`` already apply
-      elsewhere in this pipeline (a dirty prefix must not refuse a file
-      whose remaining rows parse).
-
-    In every strategy, the per-cell ``str.replace`` only ever rewrites
-    values that actually match the anchored midnight pattern, so a
-    qualifying column's non-matching cells (dirty minority, or genuine text
-    in some other shape) pass through unchanged rather than being coerced.
-
-    Args:
-        df: DataFrame to normalize.
-        columns: The caller's own known date-typed columns (see
-            ``mapped_date_columns``) — every match rewrites regardless of
-            shape. ``None`` (the auto-detect case, where no mapping exists
-            yet) considers every qualifying string column via
-            ``native_date_columns`` or the shape fallback, matching
-            ``map_columns``'s own need to find the date column before it
-            is known.
-        native_date_columns: See above. Ignored when ``columns`` is given.
-
-    Returns:
-        The possibly-rewritten DataFrame, and the frozenset of column names
-        actually rewritten (empty if none).
+    Only string columns qualify in either branch.
     """
-    if columns is not None:
-        date_cols = [col for col in columns if col in df.columns]
-    elif native_date_columns is not None:
-        candidates = df.select(cs.string()).columns
-        date_cols = [col for col in candidates if col in native_date_columns]
-    else:
-        candidates = df.select(cs.string()).columns
-        date_cols = [
+    string_columns = set(df.select(cs.string()).columns)
+    candidates = {col for col in mapped_columns if col in string_columns}
+    if native_date_columns is not None:
+        from moneybin.extractors.tabular.field_aliases import match_header_to_field
+
+        candidates |= {
             col
-            for col in candidates
+            for col in native_date_columns
+            if col in string_columns
+            and match_header_to_field(col) in (None, *DATE_TYPED_TABULAR_FIELDS)
+        }
+    else:
+        candidates |= {
+            col
+            for col in string_columns
             if (non_null := df[col].drop_nulls()).len() > 0
             and non_null.str.contains(_EXCEL_MIDNIGHT_DATETIME_RE.pattern).sum() * 2
             > non_null.len()
-        ]
-    if not date_cols:
-        return df, frozenset()
-    normalized = df.with_columns(
-        pl.col(date_cols).str.replace(_EXCEL_MIDNIGHT_DATETIME_RE.pattern, "${1}")
-    )
-    return normalized, frozenset(date_cols)
+        }
+    return [col for col in df.columns if col in candidates]
 
 
 def _normalize_mapped_date_cells(
@@ -784,65 +751,6 @@ def _normalize_mapped_date_cells(
             rewritten.append(parsed.strftime(target_format))
         df = df.with_columns(pl.Series(column, rewritten, dtype=pl.Utf8))
     return df
-
-
-def date_format_has_time_component(
-    date_format: str | None,
-    *,
-    df: pl.DataFrame | None = None,
-    date_column: str | None = None,
-) -> bool:
-    """True if the declared format expects the raw Excel timestamp shape.
-
-    Two prior fixes each tried a representative synthetic raw shape (a bare
-    probe string, then one adding ``%X`` support) and each closed exactly
-    the one instance of this bug it was written for: a literal suffix, then
-    a fractional-seconds suffix (``"%Y-%m-%d %H:%M:%S.%f"``) neither probe
-    carries. Guessing the raw shape is the actual defect — a fifth shape
-    would reopen this the same way.
-
-    Ends the class instead: when ``date_column`` names a column present in
-    ``df``, check whether ``date_format`` actually parses that column's own
-    raw text via ``format_parses`` (the same dirty-tolerant, majority-rate
-    check ``_validate_date_format_override`` already uses for the identical
-    question at a later point in the pipeline). Any format that reads the
-    real values expects that raw shape, directive or literal, fractional
-    seconds or not, and the column must not be normalized out from under
-    it; a format that doesn't (a plain ``"%Y-%m-%d"`` against
-    ``"2026-01-01 00:00:00"``) declares a bare date and normalizing is safe.
-
-    Falls back to the synthetic probe only when there is no column to
-    check: ``date_column`` is ``None`` or absent from ``df.columns`` — the
-    first-contact case where the caller supplied ``--date-format`` without
-    ``--mapping transaction_date=<column>`` to say which column it governs
-    (see ``normalize_excel_date_columns_for_detection``'s auto-detect
-    branch, this function's only caller — ``date_column`` is always
-    ``None`` there in practice), so there is genuinely no raw text to read
-    yet. ``pl.read_excel(infer_schema_length=0)`` renders a native Excel
-    date/datetime cell as Python's ``str(datetime)`` — a midnight-suffixed
-    timestamp (``"2026-01-01 00:00:00"``; see ``_excel_cell_text``'s
-    docstring) absent a real time-of-day — so that stays a faithful
-    stand-in for this one narrow case where the real column is unavailable.
-
-    Only ever consulted against the throwaway detection copy, never the
-    real imported frame — the real frame's date columns are always
-    rendered exactly once, later, by ``normalize_excel_date_columns_
-    after_mapping`` against the FINAL mapping, so this check no longer
-    protects the imported data itself from a premature rewrite; it only
-    decides whether the detection copy's broad auto-detect scan runs at
-    all, which affects what ``map_columns`` can discover by content.
-    """
-    if date_format is None:
-        return False
-    if df is not None and date_column is not None and date_column in df.columns:
-        from moneybin.extractors.tabular.date_detection import format_parses
-
-        return format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format)
-    try:
-        datetime.datetime.strptime("2000-01-02 00:00:00", date_format)
-    except ValueError:
-        return False
-    return True
 
 
 # The tabular schema's only date-typed destination fields (raw_tabular_
@@ -893,32 +801,32 @@ def normalize_excel_date_columns_for_detection(
     columns_after_mapping`` renders them, once, against the FINAL mapping
     and format — never here, and never twice.
 
-    No-op for non-Excel file types. When no mapping is known yet
-    (``date_column`` and ``additional_date_columns`` both empty), this is a
-    pure auto-detect scan over every date-shaped column — see
-    ``date_format_has_time_component`` for why a declared time-bearing
-    format with no column reference short-circuits it. When a caller
-    already names ``date_column``/``additional_date_columns`` (a
-    first-contact ``--mapping`` override, a saved format, or a replayed
-    preview), every one of those columns is rewritten cell-by-cell via
-    ``_normalize_mapped_date_cells``, regardless of its own native/text mix
-    — needed even for an already-named column, since ``map_columns`` still
-    detects that column's actual date FORMAT from its (here, normalized)
-    values regardless of how the column itself was identified.
+    No-op for non-Excel file types. Every DATE CANDIDATE — the caller's own
+    ``date_column``/``additional_date_columns`` UNIONED with whichever
+    columns ``native_date_columns`` names (or, when that's ``None``, the
+    ``_excel_date_candidate_columns`` shape-majority guess) — renders into
+    ONE representation regardless of mapping state (round 15 R1): the
+    prior mapping-scoped design left an unmapped native column untouched,
+    so ``map_columns`` could never recognize it by content once a caller
+    had already named some *other* date field (see this function's
+    ``_excel_date_candidate_columns`` helper for the exact bug). The
+    representation is ``date_format`` when known, else bare ISO — the same
+    per-cell rule ``_normalize_mapped_date_cells`` applies for the real
+    render, reused here unchanged. A time-bearing ``date_format`` needs no
+    special-casing: re-rendering a midnight cell via ``strftime`` reproduces
+    the exact raw text (see ``normalize_excel_date_columns_after_mapping``'s
+    docstring), so including such a column in the scan is always safe —
+    at worst a no-op.
     """
     if file_type != "excel":
         return df
     mapped_columns = ([date_column] if date_column else []) + list(
         additional_date_columns or []
     )
-    if not mapped_columns:
-        if date_format_has_time_component(date_format, df=df, date_column=date_column):
-            return df
-        normalized, _ = normalize_excel_date_columns(
-            df, native_date_columns=native_date_columns
-        )
-        return normalized
-    return _normalize_mapped_date_cells(df, mapped_columns, date_format)
+    candidates = _excel_date_candidate_columns(df, mapped_columns, native_date_columns)
+    if not candidates:
+        return df
+    return _normalize_mapped_date_cells(df, candidates, date_format)
 
 
 def normalize_excel_date_columns_after_mapping(
@@ -1108,16 +1016,17 @@ def _excel_native_date_columns(
 
     ``pl.read_excel(infer_schema_length=0)`` reads every cell as text,
     discarding whether the source workbook typed it as a date —
-    ``normalize_excel_date_columns``'s whole reason for existing is
-    recovering that fact for the real read, the same way ``_excel_cell_text``
-    recovers it for the header-classification sample. openpyxl's
-    ``iter_rows(values_only=True)`` returns the untouched Python object (a
-    ``datetime.date``/``datetime.datetime`` for a native date cell, since
-    ``datetime.datetime`` is itself a ``date`` subclass), so a column
-    qualifies when a STRICT MAJORITY of its non-null data-row values are one
-    of those types — an exact, typed count, not a text-shape guess. This is
-    the same dirty-minority tolerance ``normalize_excel_date_columns``'s own
-    fallback heuristic applies (see its docstring): a "pending" placeholder
+    ``_excel_date_candidate_columns``'s whole reason for consulting this
+    frozenset is recovering that fact for the real read, the same way
+    ``_excel_cell_text`` recovers it for the header-classification sample.
+    openpyxl's ``iter_rows(values_only=True)`` returns the untouched Python
+    object (a ``datetime.date``/``datetime.datetime`` for a native date
+    cell, since ``datetime.datetime`` is itself a ``date`` subclass), so a
+    column qualifies when a STRICT MAJORITY of its non-null data-row values
+    are one of those types — an exact, typed count, not a text-shape guess.
+    This is the same dirty-minority tolerance
+    ``_excel_date_candidate_columns``'s own shape-majority fallback applies
+    (see its docstring): a "pending" placeholder
     or similar one-off in an otherwise all-native-date column must not
     disqualify the column outright, or the majority-tolerant fallback this
     function's ``None`` return triggers would be reachable only on the path
@@ -1191,12 +1100,18 @@ def _excel_native_date_columns(
     except _openpyxl_sheet_access_errors():
         return None
     try:
-        # sheet_name not existing (a caller-supplied --sheet/saved-format
-        # sheet) raises the same bare KeyError _openpyxl_sheet_access_
-        # errors names — degrade to the shape heuristic the same as a
-        # container openpyxl can't open at all, rather than propagating an
-        # unclassified exception.
-        ws = wb[sheet_name]
+        try:
+            # sheet_name not existing (a caller-supplied --sheet/saved-
+            # format sheet) raises the same bare KeyError
+            # _openpyxl_sheet_access_errors names — degrade to the shape
+            # heuristic the same as a container openpyxl can't open at all,
+            # rather than propagating an unclassified exception. Narrowly
+            # scoped to this one access so an unrelated KeyError from the
+            # scan logic below (a real bug) still propagates instead of
+            # being silently read as "no native date columns."
+            ws = wb[sheet_name]
+        except KeyError:
+            return None
         num_cols = len(column_names)
         physical_indices = _excel_column_physical_indices(
             path,
@@ -1226,8 +1141,6 @@ def _excel_native_date_columns(
             for i in range(num_cols)
             if non_null_counts[i] > 0 and date_counts[i] * 2 > non_null_counts[i]
         )
-    except KeyError:
-        return None
     finally:
         wb.close()
 
@@ -1499,11 +1412,13 @@ def _read_excel(
         infer_schema_length=0,
         read_options=read_options,
     )
-    # Native-date column normalization (normalize_excel_date_columns) does
-    # NOT run here. It needs Stage 3's resolved column mapping and effective
-    # date format to decide correctly, and neither is known during this
-    # read — see that function's docstring. The caller (import_service.py's
-    # _import_tabular) applies it after Stage 3, before map_columns. But the
+    # Native-date column rendering (normalize_excel_date_columns_for_
+    # detection / _after_mapping) does NOT run here. It needs Stage 3's
+    # resolved column mapping and effective date format to decide
+    # correctly, and neither is known during this read — see those
+    # functions' docstrings. The caller (import_service.py's
+    # _import_tabular) applies them after Stage 3, before/after map_columns
+    # respectively. But the
     # FACT of which columns openpyxl reports as natively date/datetime-typed
     # is a property of the file, discoverable now — probe it here so the
     # caller can normalize exactly those columns instead of guessing from
