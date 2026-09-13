@@ -228,6 +228,13 @@ def _publishable_account_id(account_id: str) -> str:
     ``_`` rather than a more visible marker because it is inert in both a shell
     word and a Markdown span; a ``?`` or ``*`` would glob.
 
+    A ``-`` stays in the allowed set — a source-native key carries interior
+    hyphens routinely — but a *leading* one is rewritten, because an argument is
+    parsed as an option when it starts with ``-``. That is a hard failure, not a
+    cosmetic one: ``accounts links run -1234 SURV`` exits 2 with ``No such
+    option: -1`` before the command body runs. Only the first character decides,
+    so that is all this touches.
+
     **Order is load-bearing: sanitize first, then mask.** The mask emits its own
     ``****`` prefix, which is MoneyBin's canonical masked form and must survive
     — but ``*`` is a glob, so it cannot be in the allowed set. Sanitizing the
@@ -235,9 +242,10 @@ def _publishable_account_id(account_id: str) -> str:
     are added afterward and never scanned. Reversing these two lines either
     re-admits the glob or mangles ``****1234`` into ``____1234``.
     """
-    return mask_embedded_account_number(
-        _PUBLISHABLE_ACCOUNT_ID_CHARS.sub("_", account_id)
-    )
+    sanitized = _PUBLISHABLE_ACCOUNT_ID_CHARS.sub("_", account_id)
+    if sanitized.startswith("-"):
+        sanitized = "_" + sanitized[1:]
+    return mask_embedded_account_number(sanitized)
 
 
 def _masked_account_affected_ids(account_ids: Iterable[str]) -> list[str]:
@@ -3628,12 +3636,20 @@ class DoctorService:
                     f"{_publishable_account_id(survivor)}`"
                     for absorbed, survivor, _ in shown_pairs
                 )
-                # A masked id cannot be pasted back, so say where the real one
-                # is rather than unmasking to keep the command convenient.
+                # An altered id cannot be pasted back, so say where the real
+                # one is rather than restoring it to keep the command
+                # convenient. Both transformations _publishable_account_id can
+                # make are described, because the condition below fires for
+                # either: naming only the masking left a merely-sanitized id
+                # (`AB_C`) shown beside a note that explains `****NNNN`.
                 masked_note = (
-                    " An id shown as `****NNNN` is masked because it is the "
-                    "account's source-native key; run `moneybin accounts list` "
-                    "to read the full id from your own database."
+                    " An id shown here can differ from the one in your "
+                    "database: a run of five or more digits is masked to "
+                    "`****NNNN` because it is the account's source-native key, "
+                    "and a character that would break the command it appears "
+                    "in is replaced with `_`. Either way that command needs the "
+                    "real id — run `moneybin accounts list` to read it from "
+                    "your own database."
                     if any(
                         _publishable_account_id(account_id) != account_id
                         for absorbed, survivor, _ in shown_pairs

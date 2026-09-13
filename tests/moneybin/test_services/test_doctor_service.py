@@ -3902,6 +3902,62 @@ def test_currency_integrity_neutralizes_injection_chars_in_a_published_id(
 
 
 @pytest.mark.unit
+def test_currency_integrity_publishes_a_runnable_command_for_a_dashed_id(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source-native key beginning with `-` breaks the command it is put in.
+
+    `-` has to stay in the allowed set — an interior hyphen is ordinary in a
+    source-native key — so an id that *begins* with one reaches the published
+    command intact, where the CLI parses it as an option rather than an
+    argument: `accounts links run -1234 SURV` exits 2 on `No such option: -1`
+    before the command body runs. That makes it unlike a mangled label, which
+    only reads wrong; here the remediation this check exists to hand the user
+    does not run at all.
+
+    `assert_published_commands_resolve` is the half that proves it: it invokes
+    what the detail published, so it reds on the parse failure itself rather
+    than on the rendered string.
+    """
+    from tests.cli_command_helpers import assert_published_commands_resolve
+
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    # Leading AND interior hyphen, so this also pins that only the first
+    # character is rewritten — sanitizing every hyphen would mangle far more
+    # ids than it protects.
+    dashed = "-12-34"
+    _insert_overlap_account(doctor_db, dashed, institution_slug="chase")
+    _insert_overlap_account(doctor_db, "DUP_SAFE", institution_slug="chase")
+    _insert_amount_ladder(doctor_db, dashed, rows=rows)
+    _insert_amount_ladder(
+        doctor_db,
+        "DUP_SAFE",
+        rows=rows,
+        day_offset=settings.matching.date_window_days,
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = ?",
+        [dashed],
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "`moneybin accounts links run _12-34 DUP_SAFE`" in detail, detail
+    assert_published_commands_resolve("`moneybin accounts links run _12-34 DUP_SAFE`")
+    assert result.affected_ids is not None
+    assert "account:_12-34" in result.affected_ids, result.affected_ids
+    # The altered-id note fires for a substitution as well as for a mask. Its
+    # condition always did; its wording described only masking, so a reader of
+    # this pair saw `_12-34` explained by a sentence about `****NNNN`.
+    # The note names `****NNNN` too — it explains both mechanisms — so this
+    # asserts the substitution half is described, not that masking is absent.
+    assert "replaced with `_`" in detail, detail
+
+
+@pytest.mark.unit
 def test_currency_integrity_mixed_branches_enumerate_the_same_accounts(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
 ) -> None:
