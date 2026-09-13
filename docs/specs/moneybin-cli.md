@@ -453,8 +453,8 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
-|   |   # The six view-backed reports below (cash-flow, spending-trend, recurring-subscriptions,
-|   |   # merchant-activity, large-transactions, balance-drift) are framework-generated
+|   |   # The seven view-backed reports below (cash-flow, spending-trend, recurring-subscriptions,
+|   |   # merchant-activity, large-transactions, balance-drift, realized-fx) are framework-generated
 |   |   # from `@report` runners in src/moneybin/reports/definitions/. Command
 |   |   # names and result shapes are unchanged; each flag is auto-derived from
 |   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
@@ -527,6 +527,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- uncategorized              -- Uncategorized transactions roll-up
 |   +-- large-transactions         -- Outlier amounts [--top] [--anomaly]
 |   +-- balance-drift              -- Reconciliation drift across accounts [--account] [--status] [--since]
+|   +-- realized-fx                -- Realized FX gain/loss per consumed Currency lot [--from-date] [--to-date] [--currency] [--coverage]
 |
 +-- system                         -- System / data status meta-view
 |   +-- status                     -- What data exists, freshness, pending review queues
@@ -725,7 +726,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports — per-report commands (networth, networth-history, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
+Reports:        reports — per-report commands (networth, networth-history, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift, realized-fx; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -1254,6 +1255,7 @@ These were identified during design and should be added to the spec index:
 
 | Date | Version | Summary |
 |---|---|---|
+| 2026-09-13 | v2 audit | Added `reports realized-fx` (`core:realized_fx`) — the seventh view-backed report, framework-generated from an `@report` runner exactly like its six siblings, exposing realized foreign-exchange gain/loss per consumed Currency lot: `--from-date`, `--to-date`, `--currency`, `--coverage`. |
 | 2026-07-26 | v2 audit | Added seven tier-spanning `reports` verbs for user-created reports ([`reports-dynamic.md`](reports-dynamic.md) R5/R6): `list`, `run`, and `explain` serve built-in, extension, and user tiers; `create`, `set`, `delete`, and `reclassify` own the user tier. All seven are CLI-only — no MCP identity is named for a lifecycle or inspection verb, and `reports(report_id=..., parameters=...)` remains the only MCP identity in this area. `HANDLE` resolves a `report_id` first, then a name, on every verb that takes one. |
 | 2026-07-19 | v2 audit | Executable capability/outcome parity replaces canonical-name parity. Added `accounts summary`; implemented the formerly-placeholder `categories list/create/set` and `merchants list/create` routes through `CategorizationService`; `sync logout` now clears both credentials and pending profile-scoped device-auth sessions. The MCP peers consolidate under `accounts`, `taxonomy`/`taxonomy_set`, and the existing sync quartet. |
 | 2026-07-04 | v2 audit | Added `transactions categorize improve-ai` — upgrades AI-guessed (`categorized_by='ai'`) transactions to confident Plaid `provider_native` categories via the category-source bridge (`>=MEDIUM` confidence gate); never overrides user, rule, or merchant categorizations. Its MCP sibling is `transactions_categorize_run(operation="improve_ai")`. |

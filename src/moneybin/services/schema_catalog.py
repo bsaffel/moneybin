@@ -543,9 +543,9 @@ EXAMPLES: dict[str, list[Example]] = {
         Example(
             question="Realized FX gain/loss by disposal and lot allocation",
             sql="""
-                SELECT account_name, currency_code, home_currency, coverage_status,
-                       acquisition_date, disposal_date, disposed_amount, proceeds,
-                       cost_basis, fee_amount, gain_loss
+                SELECT realized_fx_gain_id, account_name, currency_code, home_currency,
+                       coverage_status, acquisition_date, disposal_date, disposed_amount,
+                       proceeds, cost_basis, fee_amount, gain_loss
                 FROM reports.realized_fx
                 ORDER BY disposal_date DESC, conversion_id, currency_lot_id
             """,

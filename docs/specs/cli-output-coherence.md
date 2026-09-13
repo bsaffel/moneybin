@@ -273,7 +273,17 @@ Numbered, each independently testable.
     two distinct payees collapse into one string. Where the two bars conflict,
     drop the column from `DEFAULT_COLUMNS` and disclose the omission under
     requirement 10 — a named absence beats a present-but-uninformative
-    column.
+    column. **Exception:** `core:realized_fx` is bound to 106 columns instead
+    of 80 (`_MAX_WIDTH_BY_REPORT` in the contract test). Its default set leads
+    with `realized_fx_gain_id`, the row's own stable identifier, because one
+    disposal can allocate across several same-day lots that land on identical
+    values in every other default column, including the date — no narrower
+    column distinguishes them. Dropping the identifier would satisfy the width
+    bound while destroying the distinction this requirement exists to protect,
+    so per the "two bars conflict" rule above, the width bound yields instead.
+    This is the only recorded exception; a new one needs the same reasoning
+    documented here, not a silent second entry in
+    `_MAX_WIDTH_BY_REPORT`.
 10. When columns are omitted, `render_rows` emits one **result-framing** line
     naming the count and the flag: `12 of 23 columns shown — --wide for all`.
     Silent truncation is prohibited. This line is part of the result, not
