@@ -21,6 +21,7 @@ from moneybin import error_codes
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.matching.aliasing import resolve_curation_transaction_ids
 from moneybin.metrics.registry import (
     AUTO_RULE_BROAD_ACCEPT_BLOCKED_TOTAL,
     AUTO_RULE_BROAD_PENDING,
@@ -1380,8 +1381,25 @@ class AutoRuleService:
         # guard (categorization-matching-mechanics.md §Source precedence) fires
         # on the auto-rule backfill path; a direct INSERT would let auto_rule
         # silently overwrite a higher-priority existing categorization.
+        #
+        # transaction_id is bulk-resolved once for the whole scan rather than
+        # once per row inside the loop (issue #538 perf follow-up: a per-row
+        # resolve_curation_transaction_id() call here would cost one
+        # execute() per iteration, dominated by call overhead rather than
+        # table size — see that function's docstring). Every id above is
+        # sourced fresh from core.fct_transactions in the same scan, so the
+        # bulk liveness check resolves the whole set in one query with no
+        # per-id alias walk needed; an id it still can't resolve (a race
+        # between the scan and this write) is simply skipped, the same as
+        # any other row this loop declines.
+        resolved_ids = resolve_curation_transaction_ids(
+            self._db, (str(row[0]) for row in rows)
+        )
         applied = 0
         for txn_id, description, amount, account_id, memo in rows:
+            resolved_id = resolved_ids.get(str(txn_id))
+            if resolved_id is None:
+                continue
             winner = CategorizationService.match_first_rule(
                 active_rules,
                 str(description) if description else "",
@@ -1394,7 +1412,7 @@ class AutoRuleService:
             if winner[0] != rule_id:
                 continue
             outcome = self._categorization.write_categorization(
-                transaction_id=str(txn_id),
+                transaction_id=resolved_id,
                 category=category,
                 subcategory=subcategory,
                 categorized_by="auto_rule",
@@ -1403,6 +1421,7 @@ class AutoRuleService:
                 # Runs inside approve()'s open transaction (DuckDB has no nested
                 # txns), so the repo joins it rather than opening its own.
                 in_outer_txn=True,
+                resolve_transaction_id=False,
             )
             if outcome.written:
                 applied += 1

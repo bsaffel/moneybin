@@ -15,7 +15,6 @@ from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
-from io import BytesIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
 
@@ -66,7 +65,6 @@ from moneybin.services.account_resolution_types import (
     ResolvedAccount,
     SourceAccount,
     is_reserved_account_name,
-    normalize_account_identifier,
 )
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.audit_service import AuditService
@@ -85,9 +83,6 @@ from moneybin.services.ledger_overlap import (
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
-    OFX_ACCOUNTS,
-    OFX_BALANCES,
-    OFX_INSTITUTIONS,
     OFX_TRANSACTIONS,
     TABULAR_TRANSACTIONS,
 )
@@ -1247,6 +1242,7 @@ def _detect_file_type(file_path: Path) -> str:
     Raises:
         ValueError: If the file cannot be classified.
     """
+    from moneybin.extractors.ofx.extractor import sniff_ofx_content
     from moneybin.extractors.tabular.format_detector import TABULAR_EXTENSIONS
 
     suffix = file_path.suffix.lower()
@@ -1258,7 +1254,7 @@ def _detect_file_type(file_path: Path) -> str:
     # Magic-byte sniff wins over ambiguous extensions — a .pdf-named file
     # carrying OFX content gets the clear "ofx" route instead of an opaque
     # pdfplumber error downstream.
-    if _sniff_ofx_content(file_path):
+    if sniff_ofx_content(file_path):
         return "ofx"
 
     if suffix == ".pdf":
@@ -1270,28 +1266,6 @@ def _detect_file_type(file_path: Path) -> str:
         f"Unsupported file type: {suffix}. "
         f"Supported: .ofx, .qfx, .qbo, .pdf, .csv, .tsv, .xlsx, .parquet, .feather"
     )
-
-
-def _sniff_ofx_content(file_path: Path) -> bool:
-    """Return True if the file's first 1024 bytes look like OFX/QFX/QBO content."""
-    try:
-        with open(file_path, "rb") as f:
-            head = f.read(1024)
-    except PermissionError:
-        # "Could not look" is not "is not OFX". Returning False here sends an
-        # unreadable file on to the extension checks, where a missing or unknown
-        # suffix reports "Unsupported file type" — blaming the file for a
-        # permission problem the caller can actually fix. Let it propagate so
-        # `classify_user_error` produces the permission code and its hint.
-        raise
-    except OSError:
-        return False
-    head_lstripped = head.lstrip()
-    if head_lstripped.startswith(b"OFXHEADER:"):
-        return True
-    if head_lstripped.startswith(b"<?xml") and b"<OFX>" in head:
-        return True
-    return False
 
 
 # Fields a caller may capture for a freshly-minted ("new"-bound) account at
@@ -1881,99 +1855,6 @@ def _pdf_source_account(
     return PdfAccountIdentity(source=source, identity_unknown=not anchored)
 
 
-def _ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccount]:
-    """Enumerate the account identities an OFX file presents, without resolving.
-
-    Reads the parsed ofxparse object rather than the extractor's DataFrame so it
-    can run *before* ``begin_import`` — the confirm gate has to stop the import
-    before any batch is opened or any row is ingested.
-
-    One list serves both the gate and the resolve pass. Deriving them separately
-    would let the gate propose one identity while resolve binds another; the
-    field derivation is shared with the extractor (``none_if_blank``,
-    ``ofx_account_type``) for the same reason.
-
-    Deduped by ``<ACCTID>``, because ofxparse emits one ``Account`` per statement
-    response with no de-dup of its own: an export that splits one card across two
-    ``<STMTRS>`` blocks would otherwise surface it as two independent identities,
-    ask about each, and let two different answers write one native key under two
-    canonical accounts. ACCTID alone is the right key — it *is* the
-    ``source_account_key`` every downstream link and staging JOIN uses, so two
-    entries sharing one cannot resolve to different accounts by design.
-    """
-    from moneybin.extractors.institution_resolution import (
-        display_name_for_fid,
-        slug_for_fid,
-    )
-    from moneybin.extractors.ofx.extractor import none_if_blank, ofx_account_type
-
-    accounts: list[SourceAccount] = []
-    seen: set[str] = set()
-    for account in parsed_ofx.accounts:
-        acctid: str | None = account.account_id
-        if not acctid or acctid in seen:
-            continue
-        seen.add(acctid)
-        routing = none_if_blank(account.routing_number)
-        normalized_acctid = normalize_account_identifier(acctid)
-        institution = account.institution
-        fid = none_if_blank(institution.fid if institution else None)
-        accounts.append(
-            SourceAccount(
-                source_type="ofx",
-                source_origin=source_origin,
-                source_account_key=acctid,
-                account_name=f"{source_origin} {ofx_account_type(account) or ''}".strip(),
-                # OFX has no account-name element at all (see account_label's
-                # NULL arm in dim_accounts.sql) -- this is always the
-                # generated institution+type fallback, never a person's own
-                # label, so it must never drive the resolver's name rung.
-                account_name_is_user_set=False,
-                # full_number is a strong ref ONLY when institution/routing-scoped
-                # (contains ':'); a bare number is demoted to a candidate signal.
-                account_number=(
-                    f"{routing}:{normalized_acctid}"
-                    if routing and normalized_acctid
-                    else None
-                ),
-                last_four=acctid[-4:],
-                # The FID slug, not source_origin. source_origin comes from <ORG>,
-                # which is a routing code for some issuers ("B1" = Chase), and it
-                # must stay untouched because downstream identity keys on it.
-                # Matching needs the same canonical slug
-                # core.dim_accounts.institution_slug carries, so resolve it from
-                # the FID and fall back to source_origin when the FID is
-                # unregistered.
-                institution=slug_for_fid(fid) or source_origin,
-                # What core.dim_accounts will name this account: the registry's
-                # display name for the FID, else the file's own <ORG> — the
-                # model's COALESCE(seeds.institutions.display_name,
-                # institution_org), and the extractor's `inst_org or
-                # source_origin` for the raw column it reads. Not
-                # `source_origin` on its own, which is a routing code ("B1" =
-                # Chase); not `<ACCTTYPE>` raw, which the type map normalizes;
-                # and last four by DIGITS, because the model strips non-digits
-                # before taking four.
-                # The <ORG> arm is deliberately not none_if_blank'd: the
-                # extractor stores `inst_org or source_origin` untrimmed, so a
-                # whitespace-only <ORG> is written, staging NULLIFs it, and the
-                # dim falls through to the type rung. Normalizing it here would
-                # reach source_origin instead and report a name the dim will
-                # not store. AccountNameFacts trims what it is given.
-                name_facts=AccountNameFacts(
-                    institution_name=(
-                        display_name_for_fid(fid)
-                        or (institution.organization if institution else None)
-                        or source_origin
-                    ),
-                    category=account_category(ofx_account_type(account)),
-                    last_four=derived_last_four(acctid),
-                ),
-            )
-        )
-    return accounts
-
-
 @dataclass(frozen=True, slots=True)
 class RawTableStat:
     """One row of :meth:`ImportService.raw_data_summary` — per-table row count and date span."""
@@ -2182,14 +2063,16 @@ class ImportService:
             ImportConfirmationRequiredError: When an account identity in the file
                 is not yet ratified. Raised before any batch is opened.
         """
-        import ofxparse  # type: ignore[import-untyped]
-
         from moneybin.extractors.institution_resolution import (
             InstitutionResolutionError,
             resolve_institution,
         )
         from moneybin.extractors.ofx import OFXExtractor
-        from moneybin.extractors.ofx.extractor import preprocess_ofx_content
+        from moneybin.extractors.ofx.extractor import (
+            OFXLoadError,
+            ofx_source_accounts,
+            parse_ofx_content,
+        )
         from moneybin.loaders import import_log
         from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
@@ -2200,16 +2083,13 @@ class ImportService:
         result = ImportResult(file_path=str(canonical_path), file_type="ofx")
         _t0 = time.monotonic()
 
-        # Parse once for institution resolution; the extractor parses again
-        # internally. These files are small — the duplicate parse is fine and
-        # avoids leaking a parser-internal type into the extractor signature.
-        # Wrap read+parse failures as ValueError so MCP's error envelope catches
-        # them; otherwise OSError leaks as an internal tool error.
-        # PermissionError is deliberately re-raised intact: `classify_user_error`
-        # keys the `infra_permission_denied` code and its Full-Disk-Access hint
-        # off the exception type, so flattening it to ValueError here would
-        # downgrade a TCC/chmod denial to `infra_invalid_input` with no recovery
-        # advice — the affordance would work for tabular files but not OFX.
+        # Wrap read failures as ValueError so MCP's error envelope catches them;
+        # otherwise OSError leaks as an internal tool error. PermissionError is
+        # deliberately re-raised intact: `classify_user_error` keys the
+        # `infra_permission_denied` code and its Full-Disk-Access hint off the
+        # exception type, so flattening it to ValueError here would downgrade a
+        # TCC/chmod denial to `infra_invalid_input` with no recovery advice —
+        # the affordance would work for tabular files but not OFX.
         try:
             with open(canonical_path, "rb") as f:
                 raw = f.read()
@@ -2219,18 +2099,11 @@ class ImportService:
         except OSError as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="read").inc()
             raise ValueError(f"Could not read OFX file: {e}") from e
-        # One read serves both identities: hashing these bytes rather than
-        # reopening the path makes the digest describe exactly what gets parsed
-        # below. Hash BEFORE the decode — `errors="replace"` is lossy, so a
-        # digest taken from `content` would disagree with every other channel's
-        # digest for the same file, and they all hash raw bytes.
+        # Hash the raw bytes, not anything decoded from them — decoding is
+        # lossy on non-UTF-8 content, so a digest taken after it would disagree
+        # with every other channel's digest for the same file, and they all
+        # hash raw bytes.
         digest = source_sha256(canonical_path, raw)
-        content = raw.decode("utf-8", errors="replace")
-        if "�" in content:
-            logger.warning(
-                f"OFX file contained non-UTF-8 bytes; replaced with U+FFFD: "
-                f"{canonical_path.name}"
-            )
 
         # Re-import detection: content first, path as the fallback for batches
         # imported before file_sha256 existed. The check sits below the read
@@ -2255,20 +2128,19 @@ class ImportService:
                     f"Use --force to re-import."
                 )
 
-        content = preprocess_ofx_content(content)
+        # Parse once for institution resolution and account-identity gating;
+        # OFXExtractor.load() (below) parses again internally via
+        # extract_from_file. These files are small — the duplicate parse is
+        # fine and avoids leaking a parser-internal type into load()'s signature.
         try:
-            parsed_ofx: Any = ofxparse.OfxParser.parse(  # type: ignore[reportUnknownMemberType]
-                BytesIO(content.encode("utf-8"))
-            )
+            parsed_ofx: Any = parse_ofx_content(raw, source_label=str(canonical_path))
         except Exception as e:
             IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="parse").inc()
             # Type name, never `e`: ofxparse exception strings can embed
             # payee/amount/memo content from the statement, and this message is
             # no longer log-only — `per_file_failure` puts the classified
             # message on the wire in `PerFileResult.error`, so interpolating
-            # `e` here publishes statement contents. Matches the identical
-            # guard in extractors/ofx/extractor.py. The `from e` chain keeps
-            # the full detail available in a local traceback.
+            # `e` here publishes statement contents.
             raise ValueError(f"Invalid OFX file format: {type(e).__name__}") from e
 
         # Resolve institution (raises InstitutionResolutionError on non-interactive failure)
@@ -2293,7 +2165,7 @@ class ImportService:
         resolver = AccountResolver(self._db, actor="system")
         source_accounts = self._gate_account_proposals(
             resolver,
-            _ofx_source_accounts(parsed_ofx, source_origin),
+            ofx_source_accounts(parsed_ofx, source_origin),
             account_bindings,
             channel="ofx",
         )
@@ -2315,9 +2187,13 @@ class ImportService:
         )
         result.import_id = import_id
 
-        extractor = OFXExtractor()
+        # Extract and write all four raw.ofx_* tables through the encrypted
+        # ingest path (OFXExtractor.load(), matching PlaidExtractor's
+        # extract+write shape). Wrapped so a failure anywhere inside marks the
+        # batch 'failed' instead of leaving raw.import_log.status='importing'
+        # and blocking re-imports.
         try:
-            data = extractor.extract_from_file(
+            load_result = OFXExtractor(db=self._db).load(
                 canonical_path,
                 import_id=import_id,
                 source_origin=source_origin,
@@ -2327,44 +2203,48 @@ class ImportService:
                 # version reads as a duplicate of the old.
                 source_bytes=raw,
             )
-        except Exception:
+        except Exception as e:
+            # load() writes each of the four raw.ofx_* tables via
+            # on_conflict="upsert" (INSERT OR REPLACE, load-bearing for the
+            # FITID-collision repair) and none of their primary keys include
+            # import_id. A failure partway through (e.g. institutions/accounts
+            # landed, then transactions raised) therefore does NOT mean "this
+            # import_id's rows are safe to delete" the way tabular/PDF's
+            # on_conflict="ignore" writes do: a row already present under an
+            # older import_id gets replaced in place and re-stamped with THIS
+            # import_id, so a DELETE WHERE import_id = ? here would destroy
+            # data from a prior, unrelated import — raw.ofx_institutions most
+            # sharply, since its PK (organization, fid) has no source_file at
+            # all. Finalize with the real partial counts OFXLoadError carries
+            # instead of a hardcoded zero or a destructive cleanup.
+            #
+            # OFXLoadError is raised only once extraction has succeeded and a
+            # raw-table write failed, so it is also what keeps the error metric
+            # honest now that load() fuses the two phases behind one except:
+            # without it, a schema rejection during extraction — which never
+            # touches the database — would be counted as a write failure.
+            write_failed = isinstance(e, OFXLoadError)
+            partial_total = e.rows_loaded.total_rows if write_failed else 0
             import_log.finalize_import(
                 self._db,
                 import_id,
                 status="failed",
-                rows_total=0,
-                rows_imported=0,
+                rows_total=partial_total,
+                rows_imported=partial_total,
             )
             OFX_IMPORT_BATCHES.labels(status="failed").inc()
-            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="extract").inc()
+            IMPORT_ERRORS_TOTAL.labels(
+                source_type="ofx",
+                error_type="load" if write_failed else "extract",
+            ).inc()
             raise
 
-        # Write all four DataFrames through the encrypted ingest path. Wrapped
-        # in try/except so a load failure marks the batch as failed instead of
-        # leaving raw.import_log.status='importing' and blocking re-imports.
-        rows_loaded: dict[str, int] = {}
-        try:
-            for table_key, qualified in (
-                ("institutions", OFX_INSTITUTIONS.full_name),
-                ("accounts", OFX_ACCOUNTS.full_name),
-                ("transactions", OFX_TRANSACTIONS.full_name),
-                ("balances", OFX_BALANCES.full_name),
-            ):
-                df = data[table_key]
-                if len(df) > 0:
-                    self._db.ingest_dataframe(qualified, df, on_conflict="upsert")
-                rows_loaded[table_key] = len(df)
-        except Exception:
-            import_log.finalize_import(
-                self._db,
-                import_id,
-                status="failed",
-                rows_total=sum(rows_loaded.values()),
-                rows_imported=sum(rows_loaded.values()),
-            )
-            OFX_IMPORT_BATCHES.labels(status="failed").inc()
-            IMPORT_ERRORS_TOTAL.labels(source_type="ofx", error_type="load").inc()
-            raise
+        rows_loaded: dict[str, int] = {
+            "institutions": load_result.institutions_loaded,
+            "accounts": load_result.accounts_loaded,
+            "transactions": load_result.transactions_loaded,
+            "balances": load_result.balances_loaded,
+        }
 
         # Resolve each OFX account to a canonical account_id, populating
         # app.account_links (source_native + scoped full_number strong refs) so

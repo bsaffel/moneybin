@@ -362,7 +362,7 @@ def test_sync_review_prompt_content_includes_required_elements() -> None:
 
     text = sync_review()
     assert "sync_status" in text
-    assert "reports(report_id='core:spending'" in text
+    assert "reports(report_id='core:spending_trend'" in text
     assert "spending_summary" not in text
     assert "stale" in text.lower()
     assert "error" in text.lower()

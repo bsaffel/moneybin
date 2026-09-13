@@ -10,6 +10,7 @@ Marker: ``@pytest.mark.integration``
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -249,6 +250,10 @@ class TestQueryFormatFlag:
         monkeypatch.setattr(
             "moneybin.cli.commands.db._create_init_script",
             lambda _path: init_script,  # type: ignore[reportUnknownLambdaType]
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.db._duckdb_cli_environment",
+            lambda: os.environ.copy(),  # type: ignore[reportUnknownLambdaType]
         )
 
         captured_cmd: list[str] = []
