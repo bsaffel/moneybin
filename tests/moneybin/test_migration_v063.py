@@ -1,14 +1,14 @@
-"""V062: retire the archive cascade; backfill app.account_settings.archived_at.
+"""V063: retire the archive cascade; backfill app.account_settings.archived_at.
 
-Populated-fixture pattern per ``.claude/rules/database.md`` — V062 both adds a
-column and backfills existing data (UPDATE), so the fixture is pre-V062
+Populated-fixture pattern per ``.claude/rules/database.md`` — V063 both adds a
+column and backfills existing data (UPDATE), so the fixture is pre-V063
 shaped (no ``archived_at`` column) and realistically populated, including
 ``app.audit_log`` evidence for the backfill and accounts with no evidence at
 all (the one-way door named in
 docs/specs/reports-net-worth-sql-surface.md §Prerequisites).
 
 ``include_in_net_worth`` is never restored by this migration (see the module
-docstring on ``V062__add_account_settings_archived_at``): the audit image the
+docstring on ``V063__add_account_settings_archived_at``): the audit image the
 retired cascade produced is indistinguishable from a caller who explicitly
 passed ``archived=True`` and ``include_in_net_worth=False`` in the same call,
 so every fixture below keeps ``include_in_net_worth`` exactly as it was
@@ -22,7 +22,7 @@ from datetime import date
 import pytest
 
 from moneybin.database import Database
-from moneybin.sql.migrations.V062__add_account_settings_archived_at import migrate
+from moneybin.sql.migrations.V063__add_account_settings_archived_at import migrate
 from tests.moneybin.migration_helpers import column_exists, insert_rows, run_migration
 
 _SETTINGS_COLUMNS = (
@@ -73,8 +73,8 @@ def _audit_row_sql(action: str = "account_settings.set") -> str:
 
 
 @pytest.fixture()
-def pre_v062_db(db: Database) -> Database:
-    """Pre-V062 app.account_settings (no archived_at) + realistic audit evidence."""
+def pre_v063_db(db: Database) -> Database:
+    """Pre-V063 app.account_settings (no archived_at) + realistic audit evidence."""
     db.execute("DROP TABLE app.account_settings")
     db.execute("""
         CREATE TABLE app.account_settings (
@@ -382,67 +382,67 @@ def _settings_row(db: Database, account_id: str) -> tuple[object, bool]:
     return row
 
 
-def test_v062_adds_archived_at_column(pre_v062_db: Database) -> None:
-    assert not column_exists(pre_v062_db, "app", "account_settings", "archived_at")
-    run_migration(pre_v062_db, migrate)
-    assert column_exists(pre_v062_db, "app", "account_settings", "archived_at")
+def test_v063_adds_archived_at_column(pre_v063_db: Database) -> None:
+    assert not column_exists(pre_v063_db, "app", "account_settings", "archived_at")
+    run_migration(pre_v063_db, migrate)
+    assert column_exists(pre_v063_db, "app", "account_settings", "archived_at")
 
 
-def test_v062_never_restores_include_despite_cascade_signature(
-    pre_v062_db: Database,
+def test_v063_never_restores_include_despite_cascade_signature(
+    pre_v063_db: Database,
 ) -> None:
     """Cascade's audit signature == an explicit archived+exclude call; leave alone."""
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _AMBIGUOUS_SIGNATURE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _AMBIGUOUS_SIGNATURE)
     assert archived_at == date(2026, 1, 10)
     assert include is False
 
 
-def test_v062_leaves_user_exclusion_alone(pre_v062_db: Database) -> None:
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _USER_EXCLUDED)
+def test_v063_leaves_user_exclusion_alone(pre_v063_db: Database) -> None:
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _USER_EXCLUDED)
     assert archived_at == date(2026, 2, 5)
     assert include is False
 
 
-def test_v062_no_evidence_leaves_archived_at_null_and_include_untouched(
-    pre_v062_db: Database,
+def test_v063_no_evidence_leaves_archived_at_null_and_include_untouched(
+    pre_v063_db: Database,
 ) -> None:
     """The one-way door: no audit row means no guess — archived_at stays NULL."""
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _NO_EVIDENCE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _NO_EVIDENCE)
     assert archived_at is None
     assert include is False
 
 
-def test_v062_backfills_archived_at_when_archiving_was_the_first_write(
-    pre_v062_db: Database,
+def test_v063_backfills_archived_at_when_archiving_was_the_first_write(
+    pre_v063_db: Database,
 ) -> None:
     """before_value IS NULL on a first write still counts as FALSE->TRUE evidence."""
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _FIRST_WRITE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _FIRST_WRITE)
     assert archived_at == date(2026, 4, 1)
     assert include is True
 
 
-def test_v062_active_account_untouched(pre_v062_db: Database) -> None:
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _ACTIVE)
+def test_v063_active_account_untouched(pre_v063_db: Database) -> None:
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _ACTIVE)
     assert archived_at is None
     assert include is True
 
 
-def test_v062_uses_most_recent_archive_transition(pre_v062_db: Database) -> None:
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _RE_ARCHIVED)
+def test_v063_uses_most_recent_archive_transition(pre_v063_db: Database) -> None:
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _RE_ARCHIVED)
     assert archived_at == date(2026, 3, 20)
     # before.include_in_net_worth on the winning (most recent) row is False,
     # but this migration never restores it regardless.
     assert include is False
 
 
-def test_v062_uses_most_recent_transition_including_undo(
-    pre_v062_db: Database,
+def test_v063_uses_most_recent_transition_including_undo(
+    pre_v063_db: Database,
 ) -> None:
     """A re-archival performed via undo (action='...set.undo') must win.
 
@@ -450,14 +450,14 @@ def test_v062_uses_most_recent_transition_including_undo(
     and fall back to the earlier direct archive, dating the account before
     its actual latest active period.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _UNDO_REARCHIVED)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _UNDO_REARCHIVED)
     assert archived_at == date(2026, 3, 15)
     assert include is True
 
 
-def test_v062_ignores_archive_evidence_superseded_by_a_later_unarchive(
-    pre_v062_db: Database,
+def test_v063_ignores_archive_evidence_superseded_by_a_later_unarchive(
+    pre_v063_db: Database,
 ) -> None:
     """An audited unarchive invalidates every archive row before it as evidence.
 
@@ -470,18 +470,18 @@ def test_v062_ignores_archive_evidence_superseded_by_a_later_unarchive(
     TRUE row exists at all -- so this must leave archived_at NULL, matching
     an account with no evidence whatsoever.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _STALE_AFTER_UNARCHIVE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _STALE_AFTER_UNARCHIVE)
     assert archived_at is None
     assert include is True
 
 
-def test_v062_ignores_archive_evidence_superseded_by_a_deleted_row(
-    pre_v062_db: Database,
+def test_v063_ignores_archive_evidence_superseded_by_a_deleted_row(
+    pre_v063_db: Database,
 ) -> None:
     """A NULL after_value (undo-of-first-write) ends an archived streak too.
 
-    Undoing a pre-V062 account's first-ever settings write deletes the row --
+    Undoing a pre-V063 account's first-ever settings write deletes the row --
     BaseRepo.undo_event emits that reversal with after_value SQL NULL, never
     a JSON ``{"archived": false}`` object, because there was no prior row to
     restore to. Absence of a row is the documented archived=FALSE default on
@@ -490,14 +490,14 @@ def test_v062_ignores_archive_evidence_superseded_by_a_deleted_row(
     archive it undoes -- leaving archived_at NULL for the un-audited
     re-archive that follows, not the superseded first-write date.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _STALE_AFTER_UNDO_DELETE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _STALE_AFTER_UNDO_DELETE)
     assert archived_at is None
     assert include is True
 
 
-def test_v062_ignores_archive_evidence_superseded_by_a_genuine_delete(
-    pre_v062_db: Database,
+def test_v063_ignores_archive_evidence_superseded_by_a_genuine_delete(
+    pre_v063_db: Database,
 ) -> None:
     """A genuine account_settings.delete row ends an archived streak too.
 
@@ -511,14 +511,14 @@ def test_v062_ignores_archive_evidence_superseded_by_a_genuine_delete(
     pick the superseded 2026-01-01 archive as current evidence, dating the
     account before the un-audited re-archive that actually holds today.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _STALE_AFTER_GENUINE_DELETE)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _STALE_AFTER_GENUINE_DELETE)
     assert archived_at is None
     assert include is True
 
 
-def test_v062_orders_tied_transitions_by_append_position(
-    pre_v062_db: Database,
+def test_v063_orders_tied_transitions_by_append_position(
+    pre_v063_db: Database,
 ) -> None:
     """A tied occurred_at (one outer transaction) must not reject the re-archive.
 
@@ -529,14 +529,14 @@ def test_v062_orders_tied_transitions_by_append_position(
     NULL -- the exact blanket exclusion this migration exists to remove.
     The rowid tiebreak (append order) must resolve the tie correctly.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _TIED_TIMESTAMPS)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _TIED_TIMESTAMPS)
     assert archived_at == date(2026, 5, 1)
     assert include is True
 
 
-def test_v062_dates_an_account_with_no_unarchive_evidence(
-    pre_v062_db: Database,
+def test_v063_dates_an_account_with_no_unarchive_evidence(
+    pre_v063_db: Database,
 ) -> None:
     """The NOT EXISTS rewrite must still date an account with zero unarchives.
 
@@ -546,33 +546,33 @@ def test_v062_dates_an_account_with_no_unarchive_evidence(
     pins the correct behavior: no unarchive evidence at all still dates the
     account from its one archive row.
     """
-    run_migration(pre_v062_db, migrate)
-    archived_at, include = _settings_row(pre_v062_db, _NEVER_UNARCHIVED)
+    run_migration(pre_v063_db, migrate)
+    archived_at, include = _settings_row(pre_v063_db, _NEVER_UNARCHIVED)
     assert archived_at == date(2026, 6, 1)
     assert include is True
 
 
-def test_v062_idempotent_on_replay(pre_v062_db: Database) -> None:
-    run_migration(pre_v062_db, migrate)
-    first = _settings_row(pre_v062_db, _AMBIGUOUS_SIGNATURE)
-    run_migration(pre_v062_db, migrate)
-    second = _settings_row(pre_v062_db, _AMBIGUOUS_SIGNATURE)
+def test_v063_idempotent_on_replay(pre_v063_db: Database) -> None:
+    run_migration(pre_v063_db, migrate)
+    first = _settings_row(pre_v063_db, _AMBIGUOUS_SIGNATURE)
+    run_migration(pre_v063_db, migrate)
+    second = _settings_row(pre_v063_db, _AMBIGUOUS_SIGNATURE)
     assert first == second
 
 
 @pytest.mark.fresh_db
-def test_v062_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
+def test_v063_upgrade_column_order_matches_fresh_schema(db: Database) -> None:
     """An upgraded table has the same ordered schema as a fresh install."""
     fresh_schema = [
         (row[1], row[2])
         for row in db.execute("PRAGMA table_info('app.account_settings')").fetchall()
     ]
     db.execute(
-        "CREATE TABLE app._pre_v062_account_settings AS "
+        "CREATE TABLE app._pre_v063_account_settings AS "
         "SELECT * EXCLUDE (archived_at) FROM app.account_settings LIMIT 0"
     )
     db.execute("DROP TABLE app.account_settings CASCADE")  # isolated test database
-    db.execute("ALTER TABLE app._pre_v062_account_settings RENAME TO account_settings")
+    db.execute("ALTER TABLE app._pre_v063_account_settings RENAME TO account_settings")
 
     run_migration(db, migrate)
 

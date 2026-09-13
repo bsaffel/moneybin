@@ -918,9 +918,9 @@ approved as a footnote rather than reviewed on its own terms.
 - **Retire the archive cascade** — **closed**, ahead of this spec, the same
   sequencing as the margin-loan defect below. `AccountService.settings_update`
   no longer forces `include_in_net_worth=False` when `archived=True`;
-  `archived_at DATE` (migration V062) carries the exclusion instead,
+  `archived_at DATE` (migration V063) carries the exclusion instead,
   date-scoped, stamped with today's date on the archived FALSE→TRUE transition
-  and cleared on unarchive. V062 backfilled every already-archived account's
+  and cleared on unarchive. V063 backfilled every already-archived account's
   `archived_at` from the most recent `archived` FALSE→TRUE audit row (direct
   or via an undo of a prior unarchive). `include_in_net_worth` is left exactly
   as stored throughout — never restored, even when
@@ -929,7 +929,7 @@ approved as a footnote rather than reviewed on its own terms.
   explicitly passed `archived=True` *and* `include_in_net_worth=False` in one
   call produces a byte-identical audit image, and the repo records full row
   snapshots, not the kwargs a caller passed — there is no way to tell the two
-  apart from history alone, so V062 does not guess. An archived account with
+  apart from history alone, so V063 does not guess. An archived account with
   no audit evidence for the transition was left untouched rather than guessed
   at either — `archived_at` stays NULL, preserving today's behavior for that
   account: still excluded at every date, because `archived` alone (with no

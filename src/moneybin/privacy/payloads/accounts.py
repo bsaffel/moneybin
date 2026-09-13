@@ -248,7 +248,7 @@ class AccountSettingsPayload:
     archived_at: Annotated[date | None, DataClass.TXN_DATE]
     """The date the account stopped being part of the position; NULL while active.
 
-    Published because ``V062`` *infers* it for an account archived before this
+    Published because ``V063`` *infers* it for an account archived before this
     field existed, reading the ``archived`` FALSE->TRUE transition out of
     ``app.audit_log``. An inferred date a caller cannot read back is an
     inference nobody can check."""

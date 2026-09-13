@@ -168,7 +168,7 @@ class TestListAccounts:
         assert len(actions) > 0
 
 
-class TestPreV062SchemaToleranceOnReadOnlyOpen:
+class TestPreV063SchemaToleranceOnReadOnlyOpen:
     """A read-only open must tolerate core.dim_accounts predating archived_at.
 
     ``Database.__init__``'s ``read_only=True`` branch skips schema init,
@@ -184,7 +184,7 @@ class TestPreV062SchemaToleranceOnReadOnlyOpen:
     """
 
     @pytest.fixture()
-    def pre_v062_ro_db(
+    def pre_v063_ro_db(
         self, db: Database, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
         """A real read-only Database reopened over a dim_accounts missing archived_at."""
@@ -193,7 +193,7 @@ class TestPreV062SchemaToleranceOnReadOnlyOpen:
         db.execute(
             "INSERT INTO core.dim_accounts "
             "(account_id, display_name, archived) "
-            "VALUES ('acct_pre_v062', 'Pre-V062 Account', FALSE)"
+            "VALUES ('acct_pre_v063', 'Pre-V063 Account', FALSE)"
         )
         db_path = db.path
         db.close()
@@ -202,20 +202,20 @@ class TestPreV062SchemaToleranceOnReadOnlyOpen:
         ro_db.close()
 
     @pytest.mark.unit
-    def test_list_accounts_succeeds(self, pre_v062_ro_db: Database) -> None:
-        result = AccountService(pre_v062_ro_db).list_accounts()
+    def test_list_accounts_succeeds(self, pre_v063_ro_db: Database) -> None:
+        result = AccountService(pre_v063_ro_db).list_accounts()
         assert len(result.rows) == 1
-        assert result.rows[0].account_id == "acct_pre_v062"
+        assert result.rows[0].account_id == "acct_pre_v063"
         assert result.rows[0].archived_at is None
 
     @pytest.mark.unit
-    def test_get_account_succeeds(self, pre_v062_ro_db: Database) -> None:
-        detail = AccountService(pre_v062_ro_db).get_account("acct_pre_v062")
+    def test_get_account_succeeds(self, pre_v063_ro_db: Database) -> None:
+        detail = AccountService(pre_v063_ro_db).get_account("acct_pre_v063")
         assert detail is not None
         assert detail.archived_at is None
 
 
-class TestPreV062SchemaToleranceOnAccountSettingsWrite:
+class TestPreV063SchemaToleranceOnAccountSettingsWrite:
     """A write-mode open must tolerate account_settings predating archived_at.
 
     Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1iuP``, anchored
@@ -224,12 +224,12 @@ class TestPreV062SchemaToleranceOnAccountSettingsWrite:
     calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
     existing table) unconditionally in EVERY open, before the explicit
     ``no_auto_upgrade`` gate decides whether pending migrations run at all --
-    so a profile opened with ``no_auto_upgrade=True`` never gets V062 applied,
+    so a profile opened with ``no_auto_upgrade=True`` never gets V063 applied,
     not just transiently until the next migration run.
     """
 
     @pytest.fixture()
-    def pre_v062_rw_db(
+    def pre_v063_rw_db(
         self, test_db: Database, mock_secret_store: MagicMock
     ) -> Generator[Database, None, None]:
         """A real write-mode Database reopened over account_settings missing archived_at."""
@@ -246,8 +246,8 @@ class TestPreV062SchemaToleranceOnAccountSettingsWrite:
         rw_db.close()
 
     @pytest.mark.unit
-    def test_load_settings_succeeds(self, pre_v062_rw_db: Database) -> None:
-        repo = AccountSettingsRepo(pre_v062_rw_db)
+    def test_load_settings_succeeds(self, pre_v063_rw_db: Database) -> None:
+        repo = AccountSettingsRepo(pre_v063_rw_db)
         repo.set(
             account_id="acct_a",
             display_name="Checking",
@@ -263,18 +263,18 @@ class TestPreV062SchemaToleranceOnAccountSettingsWrite:
             default_cost_basis_method=None,
             actor="cli",
         )
-        loaded = AccountService(pre_v062_rw_db)._load_settings("acct_a")
+        loaded = AccountService(pre_v063_rw_db)._load_settings("acct_a")
         assert loaded is not None
         assert loaded.archived_at is None
 
     @pytest.mark.unit
-    def test_settings_update_succeeds(self, pre_v062_rw_db: Database) -> None:
+    def test_settings_update_succeeds(self, pre_v063_rw_db: Database) -> None:
         """The full `accounts set` path -- Codex's exact reported entry point.
 
         `_load_or_default` reaches `_load_settings` before the write, and the
         write itself flows through `AccountSettingsRepo.set`.
         """
-        svc = AccountService(pre_v062_rw_db)
+        svc = AccountService(pre_v063_rw_db)
         settings, warnings = svc.settings_update(
             "acct_a", actor="cli", display_name="Renamed"
         )
@@ -283,7 +283,7 @@ class TestPreV062SchemaToleranceOnAccountSettingsWrite:
 
     @pytest.mark.unit
     def test_settings_update_archive_reports_persisted_state(
-        self, pre_v062_rw_db: Database
+        self, pre_v063_rw_db: Database
     ) -> None:
         """archived_at in the response must match what was actually written.
 
@@ -300,7 +300,7 @@ class TestPreV062SchemaToleranceOnAccountSettingsWrite:
         renamed ``display_name`` and never drove an ``archived=True``
         transition, so nothing caught this.
         """
-        svc = AccountService(pre_v062_rw_db)
+        svc = AccountService(pre_v063_rw_db)
         settings, warnings = svc.settings_update("acct_a", actor="cli", archived=True)
         assert warnings == []
         assert settings.archived is True
