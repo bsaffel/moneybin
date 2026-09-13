@@ -414,47 +414,49 @@ def _capped_pair_descriptions(
     return shown, pair_descriptions, overflow_note
 
 
-def _currency_assignment_closing(
-    *, no_link_pairs: list[tuple[str, str, float]], when_clear: str
-) -> str:
-    """The message's final step: assign a currency, or clear the no-link pairs first.
+_ASSIGN_ONCE_CLEAR = (
+    " Then re-run `moneybin system doctor`; once this check no longer "
+    "names the account, assign a currency with `moneybin accounts set "
+    "<account> --currency <ISO 4217>` and re-run `moneybin transform`."
+)
 
-    Structural gate for an ordering defect this one message has hit three
-    times: a currency-assignment sentence written unconditionally, with a
-    separately-tracked bucket's blocking note appended after it — an order
-    that mattered and was gotten wrong every time it was hand-threaded
-    through a branch's own string. Every branch that would otherwise end by
-    offering currency assignment must call this function for its ending
-    instead of concatenating its own, so the offer is structurally
-    impossible whenever a blocking bucket remains — today only
-    ``no_link_pairs``, but a future bucket only has to be OR'd into the
-    condition below, not re-threaded by hand through every branch again.
 
-    ``when_clear`` is the branch's own achievable condition and command,
-    used only when no blocking bucket remains (see design-principles.md:
-    name the specific thing to re-check, never "once the whole report is
-    clean"). When a blocking bucket does remain, the currency-assignment
-    text is not merely moved after the blocking note within the same
-    return value — it is generated from a DIFFERENT, narrower condition
-    (this bucket clearing) than ``when_clear`` names, so widening the
-    blocking condition below can never silently drop the gate a bucket
-    needs.
+def _currency_assignment_closing(*, no_link_pairs: list[tuple[str, str, float]]) -> str:
+    """The message's final step, converged onto the one sound clearance signal.
+
+    This check's own duplicate-overlap risk is cleared by exactly one
+    thing: this check's own next verdict. Nothing else qualifies, and this
+    message has offered three different wrong proxies for it across as
+    many review rounds:
+
+    - A weak-signal ``accounts links run`` sweep returning no candidate —
+      that sweep matches institution/last-four/name, a DIFFERENT signal
+      than the transaction overlap ``_query_duplicate_account_pairs``
+      measures, so "no candidate" is not evidence the overlap cleared
+      (Codex P1, doctor_service.py:3761 on commit 2367a66e).
+    - "The whole report is clean" — unreachable, since this very check
+      cannot pass until the currency is assigned in the first place.
+    - A bucket's blocking note sequenced after the offer instead of
+      before it.
+
+    So every branch that would otherwise end by offering currency
+    assignment calls this ONE function for its ending, and gets the
+    IDENTICAL closing sentence — never a per-branch proxy for "safe to
+    assign," always the same instruction to re-run doctor and read its own
+    next verdict. A future bucket only has to be OR'd into the
+    ``no_link_pairs``-style condition below; there is exactly one place
+    left to introduce a fourth variant of this defect, and exactly one
+    place to fix it.
     """
     if no_link_pairs:
         return (
             f" {len(no_link_pairs)} pair(s) still have neither account "
             "holding a completed identity link, so `accounts links run` "
             "would refuse either order — a sync whose account resolution "
-            "failed after loading is the current cause. Resolve that "
-            "first: re-run `moneybin sync pull` to retry it, then re-run "
-            "`moneybin system doctor` — once it no longer shows one of "
-            "these, assign a currency with `moneybin accounts set "
-            "<account> --currency <ISO 4217>` and re-run `moneybin "
-            "transform`. An unchecked duplicate risk is exactly the case "
-            "an assignment would admit into every total, so do not assign "
-            "one before then."
-        )
-    return when_clear
+            "failed after loading is the current cause. Re-run `moneybin "
+            "sync pull` to retry it."
+        ) + _ASSIGN_ONCE_CLEAR
+    return _ASSIGN_ONCE_CLEAR
 
 
 @dataclass(frozen=True)
@@ -3744,6 +3746,10 @@ class DoctorService:
                     review_pairs = []
                     no_link_pairs = []
             if overlap_probe_failed:
+                # No _currency_assignment_closing(no_link_pairs=...) call: the
+                # probe itself crashed, so there is no pair population to
+                # partition into buckets — only its converged clearance
+                # sentence applies (_ASSIGN_ONCE_CLEAR).
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3756,12 +3762,11 @@ class DoctorService:
                         "is exactly the case whose rows a currency "
                         "assignment would admit into every total. Run "
                         "`moneybin accounts links run` to check for a "
-                        "duplicate manually — once that shows no unresolved "
-                        "duplicate risk for the account (no candidate, or a "
-                        "decision already merged or declared standalone), "
-                        "assign a currency with `moneybin accounts set "
-                        "<account> --currency <ISO 4217>` and re-run "
-                        "`moneybin transform`."
+                        "duplicate manually — its no-argument sweep matches "
+                        "institution/last-four/name, not the transaction "
+                        "overlap this check measures, so a clean sweep does "
+                        "not by itself clear this."
+                        f"{_ASSIGN_ONCE_CLEAR}"
                     ),
                     affected_ids=[
                         *_masked_account_affected_ids(unknown_accounts),
@@ -3818,16 +3823,6 @@ class DoctorService:
                     ),
                     commands_use_placeholders=True,
                 )
-                # Own achievable condition for _currency_assignment_closing:
-                # identity resolution for review_pairs is the user's own act
-                # (accounts links set), confirmed by its own merge preview —
-                # no doctor re-run gate needed, unlike the transform-ready
-                # branch below.
-                assign_when_clear = (
-                    " Only then assign a currency with `moneybin accounts "
-                    "set <account> --currency <ISO 4217>` and re-run "
-                    "`moneybin transform`."
-                )
                 # transform_ready_pairs can be non-empty here too (a mix of
                 # decided and undecided pairs) — named separately rather than
                 # folded into fallback_commands, which only ever names pairs
@@ -3840,9 +3835,7 @@ class DoctorService:
                     if transform_ready_pairs
                     else ""
                 )
-                closing = _currency_assignment_closing(
-                    no_link_pairs=no_link_pairs, when_clear=assign_when_clear
-                )
+                closing = _currency_assignment_closing(no_link_pairs=no_link_pairs)
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3905,16 +3898,7 @@ class DoctorService:
                     (account_id for a, b, _ in shown for account_id in (a, b)),
                     commands_use_placeholders=False,
                 )
-                closing = _currency_assignment_closing(
-                    no_link_pairs=no_link_pairs,
-                    when_clear=(
-                        " Once this check no longer names an unresolved "
-                        "duplicate for the account, assign a currency with "
-                        "`moneybin accounts set <account> --currency "
-                        "<ISO 4217>` and re-run `moneybin transform` again "
-                        "if one is still needed."
-                    ),
-                )
+                closing = _currency_assignment_closing(no_link_pairs=no_link_pairs)
                 return InvariantResult(
                     name=name,
                     status="fail",
@@ -3928,8 +3912,7 @@ class DoctorService:
                         "complete after it, so the transactions still "
                         "show as two accounts. Run `moneybin transform` "
                         "to apply it (`moneybin accounts links run` would "
-                        "refuse — a decision already covers this pair), "
-                        f"then re-run `moneybin system doctor`.{masked_note}"
+                        f"refuse — a decision already covers this pair).{masked_note}"
                         f"{closing}"
                     ),
                     affected_ids=[

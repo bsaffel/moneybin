@@ -4153,8 +4153,11 @@ def test_currency_integrity_points_to_transform_for_an_accepted_awaiting_pair(
     # it reports clean, assign a currency" — circular, because this very
     # check cannot report clean until the currency is assigned. The condition
     # to wait for must be this check's own duplicate verdict, not the report.
+    # Converged wording (doctor_service.py:_ASSIGN_ONCE_CLEAR): "this check
+    # no longer names the account" — the same self-referential condition
+    # every branch now uses, not a per-branch restatement of it.
     assert "reports clean" not in detail, detail
-    assert "check no longer names an unresolved duplicate" in detail, detail
+    assert "this check no longer names the account" in detail, detail
 
 
 @pytest.mark.unit
@@ -4449,7 +4452,74 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
     no_link_idx = detail.index("neither account holding a completed identity link")
     sync_pull_idx = detail.index("moneybin sync pull")
     doctor_recheck_idx = detail.index(
-        "re-run `moneybin system doctor` — once it no longer shows one of these"
+        "Then re-run `moneybin system doctor`; once this check no longer "
+        "names the account"
+    )
+    currency_idx = detail.index(
+        "assign a currency with `moneybin accounts set <account> --currency"
+    )
+    assert no_link_idx < sync_pull_idx < doctor_recheck_idx < currency_idx, detail
+
+
+@pytest.mark.unit
+def test_currency_integrity_no_link_pair_note_appears_beside_transform_ready_pairs(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    """The transform-ready branch's own no-link combination must sequence correctly too.
+
+    claude[bot] flagged (doctor_service.py:3908, 2367a66e) that only the
+    sibling `review_pairs` branch's no-link combination was pinned — this
+    branch (`transform_ready_pairs` non-empty, `review_pairs` empty) calls
+    the same `_currency_assignment_closing`, but nothing exercised it with
+    `no_link_pairs` also non-empty. DUP_A/DUP_B is an accepted-but-
+    untransformed pair; NOLINK_A/NOLINK_B is a separate, never-linked
+    overlap. Pins the same both-buckets-nonempty ordering by index
+    comparison as the review_pairs sibling test above.
+    """
+    _mock_rematch_refresh(mocker)
+    settings = get_settings()
+    rows = settings.doctor.duplicate_account_min_distinct_amounts
+    _setup_overlap_pair_with_unknown_currency(doctor_db)  # DUP_A/DUP_B, DUP_B unknown
+    _insert_source_native_link(
+        doctor_db, link_id="link_dup_a", account_id="DUP_A", ref_value="native-ref-a"
+    )
+    _insert_pending_decision(
+        doctor_db,
+        decision_id="dec_merge",
+        provisional_account_id="DUP_A",
+        candidate_account_id="DUP_B",
+    )
+    AccountLinksService(doctor_db, actor="cli").set(
+        "dec_merge", target_account_id="DUP_B"
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_A", institution_slug="wells", mergeable=False
+    )
+    _insert_overlap_account(
+        doctor_db, "NOLINK_B", institution_slug="wells", mergeable=False
+    )
+    _insert_amount_ladder(doctor_db, "NOLINK_A", rows=rows)
+    _insert_amount_ladder(
+        doctor_db, "NOLINK_B", rows=rows, day_offset=settings.matching.date_window_days
+    )
+    doctor_db.execute(
+        "UPDATE core.dim_accounts SET currency_code = NULL WHERE account_id = 'NOLINK_A'"
+    )  # test input, not user data
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status == "fail"
+    detail = result.detail or ""
+    assert "moneybin transform" in detail, detail
+    assert "`moneybin accounts links run NOLINK_A NOLINK_B`" not in detail, detail
+    assert "`moneybin accounts links run NOLINK_B NOLINK_A`" not in detail, detail
+    assert "neither account holding a completed identity link" in detail, detail
+    assert "moneybin sync pull" in detail, detail
+    no_link_idx = detail.index("neither account holding a completed identity link")
+    sync_pull_idx = detail.index("moneybin sync pull")
+    doctor_recheck_idx = detail.index(
+        "Then re-run `moneybin system doctor`; once this check no longer "
+        "names the account"
     )
     currency_idx = detail.index(
         "assign a currency with `moneybin accounts set <account> --currency"
@@ -4529,11 +4599,18 @@ def test_currency_integrity_fails_closed_when_overlap_probe_errors(
     ), detail
     # Regression: the advice used to say "re-run moneybin system doctor;
     # once it reports clean, assign a currency" — circular, because this
-    # very check cannot report clean until the currency is assigned. The
-    # condition to wait for must be this account's own duplicate risk, not
-    # the whole report.
+    # very check cannot report clean until the currency is assigned.
     assert "reports clean" not in detail, detail
-    assert "no unresolved duplicate risk for the account" in detail, detail
+    # Regression (Codex P1, doctor_service.py:3761 on commit 2367a66e): a
+    # later revision claimed "no candidate" from the no-argument sweep
+    # cleared the risk — unsound, since that sweep matches
+    # institution/last-four/name, a different signal than the transaction
+    # overlap this check measures. The message must not make that claim,
+    # and must instead route through the converged, self-referential
+    # clearance condition (_currency_assignment_closing).
+    assert "no candidate" not in detail, detail
+    assert "does not by itself clear this" in detail, detail
+    assert "this check no longer names the account" in detail, detail
     assert_published_commands_resolve(detail)
 
 
