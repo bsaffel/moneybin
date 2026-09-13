@@ -804,22 +804,42 @@ anchored row inside the same unranged read, so it never pushes
 lacks, which is why this rung needed the fix above and the day-grain rung did
 not.
 
-**Two different date rules govern two different paths here, and they must
-not be confused.** The rule above governs the *unranged* read: the view's own
-arm, evaluated fresh on every query with no bound parameters, dated by the
-spine-maximum rule stated above in this section, not restated here. A
-specific historical range with no balance-spine rows in it for one of these
-accounts is a different path entirely — it inherits `reports.net_worth`'s own
-*runner* fallback (§Data Model's `synthesis_date` rule), applied once per
-eligible unanchored candidate rather than once per row: each such account is
-dated independently by that same rule, with `archived_at_floor` computed over
-that one candidate alone — so it reduces to that account's own `archived_at`
-— unlike the aggregate rung, no `archived_at_floor` across candidates is
-needed here, because there is no shared row whose single date
-has to stay honest for more than one account at a time. The two rules never
-fire on the same query: the view's own arm only ever answers an unranged
-"now" read, and the runner's fallback only ever answers a bounded range the
-view cannot see, so a given query is dated by exactly one rule, never both.
+**One synthesis rule, reached by a per-candidate anti-join — not two rules
+split by ranged versus unranged.** An earlier round of this section claimed
+the view's own arm "only ever answers an unranged 'now' read," the runner's
+fallback "only ever answers a bounded range the view cannot see," and
+concluded the two "never fire on the same query." That conclusion was false,
+and it contradicted this section's own "unconditional per candidate" text
+above: a `kind VIEW` has no notion of "ranged" versus "unranged" at all, so
+the view's arm's row — dated by the spine-maximum rule stated above, present
+in the view's raw output on every read — survives the runner's ordinary date
+filter exactly like any other row whenever the requested range happens to
+include that date. Running the old per-candidate fallback unconditionally
+on top of that would double-emit the same `(account_id, balance_date)`;
+gating the fallback on the *whole* filtered result being empty — the
+day-grain rung's own, correct trigger, confirmed above — would instead drop
+the candidate from a range that contains other accounts' anchored rows but
+excludes the spine's own maximum.
+
+The runner instead runs a **per-candidate anti-join against its own
+range-filtered output**: for each eligible unanchored candidate, check
+whether that output already contains a row for the candidate's `account_id`.
+Skip a candidate already present — the view's own row already answered it
+inside the requested range, and Requirement 14's own definition of an
+eligible unanchored candidate (above) means that row is the *only* row this
+account can ever produce, since the account carries no balance observation
+of any kind for a real row to compete with it. Synthesize one otherwise,
+dated independently by `reports.net_worth`'s own *runner* fallback rule
+(§Data Model's `synthesis_date` formula), with `archived_at_floor` computed
+over that one candidate alone — so it reduces to that account's own
+`archived_at` — unlike the aggregate rung, no `archived_at_floor` across
+candidates is needed here, because there is no shared row whose single date
+has to stay honest for more than one account at a time. The anti-join, not a
+shared trigger condition, is what keeps both directions correct: no
+duplicate, because a candidate the view already answered inside the range is
+excluded; no omission, because every remaining candidate is still checked on
+its own, regardless of what the rest of the profile's accounts are doing in
+that same range.
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
 invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
@@ -1479,13 +1499,14 @@ settles the account exactly as the marker would.
   `net_worth.sql` itself, not here.
 - `src/moneybin/reports/definitions/net_worth_accounts.py` — the same
   range-filter and inverted-range-rejection shape as `net_worth.py`, plus the
-  per-candidate synthesized-row fallback for a historical range with no
-  balance-spine rows in it, one row per eligible unanchored account dated
-  independently rather than one row for the whole result. The guard's own
-  NULL-column arm and its synthesized-row `UNION ALL` arm — dated per
-  §`reports.net_worth_accounts`'s own rule, not unconditionally at
-  `CURRENT_DATE` the way `net_worth.sql`'s arm above is — live in
-  `net_worth_accounts.sql` itself, not here.
+  per-candidate anti-join fallback described in §`reports.net_worth_accounts`:
+  for each eligible unanchored candidate missing from the runner's own
+  range-filtered output, one row synthesized independently — never gated on
+  the whole filtered result being empty, unlike `net_worth.py`'s own
+  fallback above. The guard's own NULL-column arm and its synthesized-row
+  `UNION ALL` arm — dated per §`reports.net_worth_accounts`'s own rule, not
+  unconditionally at `CURRENT_DATE` the way `net_worth.sql`'s arm above is —
+  live in `net_worth_accounts.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
   (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; see
@@ -1793,6 +1814,21 @@ restated here: the balance spine's own maximum for the first, second, and
 seventh scenarios' mixed anchored/unanchored profiles, and `CURRENT_DATE`
 only for the third scenario's wholly-unanchored persona, where the spine is
 empty and the rule's fallback applies.
+
+**An eighth case pins the account-rung anti-join directly** — the regression
+guard for the defect this thread (comment `3998757935`) found in an earlier
+round of this section. The first scenario's mixed persona, queried over a
+historical range that includes `core.fct_balances_daily`'s own spine maximum: the
+eligible unanchored candidate's view-arm row (dated at that maximum,
+§`reports.net_worth_accounts`) already satisfies the range, so the account
+appears exactly once in the result, never twice — pinning that the runner's
+per-candidate anti-join skips a candidate its own range-filtered output
+already contains. The same persona queried again over a range that excludes
+the spine maximum but still contains other accounts' anchored rows: the
+candidate still appears, now synthesized independently and dated by the
+runner's own `synthesis_date` rule (§Data Model) — pinning that the fallback
+is evaluated per candidate, never gated on the whole filtered result being
+empty, which a range containing other accounts' rows never is.
 
 ### Tier 3 — Integration
 
