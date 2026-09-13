@@ -163,10 +163,14 @@ class ConfirmationRequired:
     data-like row somewhere before it (see `ReadResult.header_position_
     ambiguous`'s docstring in readers.py), and nothing is lost yet — unlike
     `header_row_consumed`, no row has been read as column names. Confirming
-    (`confirm=True`, an Override, or replaying a `reviewed_plan` that showed
-    this in its preview) ratifies the detected header position and the
-    import proceeds; it exists as its own reason, not folded into
-    `header_row_consumed`, precisely so it stays confirmable.
+    (`confirm=True`, or replaying a `reviewed_plan` that showed this in its
+    preview) ratifies the detected header position and the import proceeds;
+    it exists as its own reason, not folded into `header_row_consumed`,
+    precisely so it stays confirmable. Deliberately NOT ratified by a bare
+    mapping `Override` — a column correction answers a different question
+    than "is this header position right", and treating it as an answer here
+    let an unrelated `--mapping` fix self-accept an unshown inference
+    (design-principles.md "Magic stays visible").
 
     `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
     `transaction_date` column is mapped and nothing could read its values.

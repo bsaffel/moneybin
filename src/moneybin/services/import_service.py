@@ -3396,13 +3396,30 @@ class ImportService:
 
         # Covers the branches that reach here without one — the first-contact
         # branch validates earlier, before it records a confirmation outcome.
-        # Validates resolved.date_format (what will actually parse this
-        # column), not the raw date_format_override parameter: the latter is
-        # None for reviewed_plan/matched_format whenever no fresh override
-        # accompanies a saved/reviewed format, which made this call a silent
-        # no-op for exactly the branches that persist their own date format
-        # — the class of bug this function's docstring names outright.
-        _validate_date_format_override(df, resolved.field_mapping, resolved.date_format)
+        #
+        # Validates final_date_format, not resolved.date_format alone: the
+        # "Apply CLI overrides" block below replaces resolved.date_format
+        # with date_format_override (when the caller supplies a fresh one)
+        # via the identical `date_format_override or resolved.date_format`
+        # expression — so final_date_format IS what actually reaches
+        # transform_dataframe. Validating resolved.date_format here instead
+        # (as a prior fix did, to stop this call being a silent no-op for
+        # reviewed_plan/matched_format when no fresh override exists) checked
+        # the ISO format normalize_excel_date_columns_before_mapping's rewrite
+        # already made readable, then let an unvalidated fresh override
+        # silently replace it afterward — a native-date Excel file matching a
+        # saved format, with a non-ISO --date-format override, validated
+        # "%Y-%m-%d" against the rewritten column, then ran "%m/%d/%Y"
+        # against that same (still-ISO) text, and the transform's per-row
+        # rejection silently dropped every row: reported success,
+        # rows_loaded=0, no error, no warning (Codex P1 — the PR's original
+        # failure mode returning through a different path). Reusing this one
+        # variable for both the validation and the later assignment (below)
+        # is the structural fix: nothing between the two can compute a
+        # different value, so the parser that runs is always the parser that
+        # was checked.
+        final_date_format = date_format_override or resolved.date_format
+        _validate_date_format_override(df, resolved.field_mapping, final_date_format)
 
         # All three branches converge here, and it sits ABOVE the success
         # metrics below, because a refusal must not first record a silent
@@ -3496,19 +3513,33 @@ class ImportService:
         # transaction from a legitimate balance-summary preamble apart. UNLIKE
         # header_row_looks_like_data above, nothing is lost yet: the rows in
         # question were classified as preamble, not consumed as a header. So
-        # this reason IS confirmable — ratified by confirm=True, an Override,
-        # or (for the reviewed_plan branch) the mere act of calling
-        # import_confirm on a preview that already showed it. reviewed_plan
-        # replays an EXPLICIT skip_rows, so read_result never recomputes this
-        # for that branch — the persisted plan value is the only source there.
+        # this reason IS confirmable — but ONLY by confirm=True, or (for the
+        # reviewed_plan branch) the mere act of calling import_confirm on a
+        # preview that already showed it (reviewed_plan replays an EXPLICIT
+        # skip_rows, so read_result never recomputes this for that branch —
+        # the persisted plan value is the only source there, and by
+        # construction it can only be True here if that preview surfaced it).
+        #
+        # Deliberately NOT bool(overrides), unlike resolve_or_confirm's own
+        # Override handling above: an override answers "is this COLUMN
+        # MAPPING correct", a question this ambiguity never asked. Treating
+        # any unrelated --mapping correction as ratification let a caller
+        # silently self-accept a header-position guess they were never shown
+        # (Codex P1 — design-principles.md "Magic stays visible": "a weak or
+        # ambiguous inference always surfaces — and is never eligible for
+        # agent self-accept, regardless of confidence score"). Checked the
+        # other two bool(overrides)-as-ratification sites in this file for
+        # the same defect: line ~3175's Override signal IS the mapping
+        # answer resolve_or_confirm asked for, and line ~4207's
+        # user_ratified_via_override gates auto-saving the detected mapping
+        # as a format — both stay scoped to the mapping question overrides
+        # actually answers, so neither reopens this bug.
         header_position_ambiguous = (
             reviewed_plan.header_position_ambiguous
             if reviewed_plan is not None
             else read_result.header_position_ambiguous
         )
-        ratified_header_position = (
-            confirm or bool(overrides) or reviewed_plan is not None
-        )
+        ratified_header_position = confirm or reviewed_plan is not None
         if header_position_ambiguous:
             if not ratified_header_position:
                 from moneybin.extractors.confidence import Confidence
@@ -3629,7 +3660,14 @@ class ImportService:
                 sign_convention=cast(SignConventionType, sign)
                 if sign
                 else resolved.sign_convention,
-                date_format=date_format_override or resolved.date_format,
+                # Reuses final_date_format (computed and validated above) —
+                # not a fresh `date_format_override or resolved.date_format`
+                # recomputation. Two expressions that happen to agree today
+                # is exactly the gap that shipped the bug this replaced: the
+                # single shared variable is what makes it structurally
+                # impossible for the validated value and the applied value to
+                # diverge, not that today's logic happens to match.
+                date_format=final_date_format,
                 number_format=cast(NumberFormatType, number_format_override)
                 if number_format_override
                 else resolved.number_format,
