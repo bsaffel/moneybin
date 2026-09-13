@@ -175,6 +175,18 @@ this spec's to close.
     check that Defect 4 deferred — see §"`moneybin system doctor`: balance
     staleness" for its full specification.
 
+    **The guard applies at both grains it can reach, not only the one that
+    aggregates.** `reports.net_worth_accounts` reads the same
+    `core.fct_balances_daily` spine as `reports.net_worth`, so an eligible
+    unanchored account would otherwise produce no row there either — the
+    identical silent-zero failure this requirement exists to close, one
+    rung down, where it is arguably worse: that rung is the one that answers
+    "which accounts do I have," so an account vanishing from it is a more
+    direct breach of the accuracy guarantee than a wrong aggregate is. The
+    account rung's own signal is a row, not a count — see
+    §`reports.net_worth_accounts` for why the finer grain needs no count of
+    its own.
+
     **The qualifier, and why one is needed.** "No balance observation" alone
     is not sufficient to flag an account. An account with no balance, no
     holdings, and no transaction of any kind is not demonstrably holding
@@ -535,42 +547,72 @@ question first: is there a date inside the requested window the fallback
 can honestly date the row at.
 
 **The general rule governing every variant of this fallback: a synthesized
-row is never dated later than today, and it is only emitted when that date
-falls inside the caller's own window.** The guard reports what is known
-now or was known on a past date — never a forecast — so the candidate
-synthesis date is `synthesis_date = LEAST(effective_to, CURRENT_DATE)`, the
-most recent point in the window that is not in the future. The row is
-emitted, dated `balance_date = synthesis_date`, every measure NULL,
-`account_count = 0`, `unanchored_account_count` set to the candidate count,
-**only when `synthesis_date` also clears the window's lower edge**:
-`effective_from IS NULL OR effective_from <= synthesis_date`. When it does
-not — the entire requested window lies strictly after `CURRENT_DATE`, e.g.
-an explicit `from_date` next month with no `to_date`, or a `from_date`/
-`to_date` pair that are both future dates — no date inside the window
-qualifies, and the runner returns no row at all: the same honest emptiness
-a real historical range with no eligible candidate already returns, never
-a row dated outside the bounds the caller actually asked for.
+row's date must lie in the intersection of three windows, and the row is
+emitted only when that intersection is non-empty.** The three windows are the
+caller's own requested range (`effective_from`/`effective_to`), present-or-past
+knowledge (the guard reports what is known now or was known on a past date —
+never a forecast, so no later than `CURRENT_DATE`), and the eligible window of
+every candidate the row is about to count — which Requirement 9 already bounds
+above by that candidate's own `archived_at`. A row that counts several
+candidates has to sit inside all of their windows at once, not just the first
+two; that is the same per-account eligibility rule Requirement 9 already
+applies to every ordinary row, extended to the one row that has no
+`balance_date` of its own to apply it at.
 
-This single two-sided test — `synthesis_date = LEAST(effective_to,
-CURRENT_DATE)`, emit only if `effective_from IS NULL OR effective_from <=
-synthesis_date` — is what the fallback checks in every case, not one rule
-per shape of range:
+Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
+accounts satisfying the eligible-candidate predicate already stated above
+(`include_in_net_worth AND (archived_at IS NULL OR archived_at >=
+effective_from)`) — NULL, and therefore unbounded, when none of them carry an
+`archived_at` at all. Then:
+
+```
+synthesis_date = LEAST(effective_to, CURRENT_DATE, archived_at_floor)
+```
+
+taking the least of only the bounds that are actually present — a NULL
+`archived_at_floor` drops out of the `LEAST`, exactly as a NULL `effective_from`
+already drops out of the lower-edge test below. The row is emitted, dated
+`balance_date = synthesis_date`, every measure NULL, `account_count = 0`,
+`unanchored_account_count` set to the eligible-candidate count, **only when
+`synthesis_date` also clears the window's lower edge**: `effective_from IS
+NULL OR effective_from <= synthesis_date`. When it does not — the entire
+requested window lies strictly after `CURRENT_DATE`, e.g. an explicit
+`from_date` next month with no `to_date`, or a `from_date`/`to_date` pair that
+are both future dates, or (new here) every eligible candidate's own window
+closes before the requested range even opens — no date inside the window
+qualifies, and the runner returns no row at all: the same honest emptiness a
+real historical range with no eligible candidate already returns, never a row
+dated outside the bounds the caller actually asked for.
+
+Because `archived_at_floor` is computed from exactly the accounts the count
+sums, lowering the synthesis date to it never drops an account out of the
+count it dates: every account passing the eligible-candidate predicate has
+`archived_at IS NULL OR archived_at >= archived_at_floor >= synthesis_date`,
+which is Requirement 9's own per-row eligibility test (`balance_date <=
+archived_at`) evaluated at this row's own `balance_date`. The count and the
+date agree by construction, the same way every ordinary row's count and date
+already agree — not by a second rule bolted on beside the first.
+
+This single three-window test — `synthesis_date = LEAST(effective_to,
+CURRENT_DATE, archived_at_floor)`, emit only if `effective_from IS NULL OR
+effective_from <= synthesis_date` — is what the fallback checks in every case,
+not one rule per shape of range:
 
 - **An open lower edge, bounded or unbounded upper edge, both not in the
-  future** (the ordinary case this fallback exists for, and the historical
-  range from a prior round): `effective_to` is today or earlier, so
-  `synthesis_date = effective_to`; `effective_from` unset or no later than
-  it, so the row is emitted, dated at `effective_to`, exactly as before
-  this rule was stated.
-- **A future-only lower bound with no upper bound** (this thread, comment
+  future, no eligible candidate carrying an `archived_at`** (the ordinary case
+  this fallback exists for, and the historical range from a prior round):
+  `archived_at_floor` is NULL, so `synthesis_date = effective_to`;
+  `effective_from` unset or no later than it, so the row is emitted, dated at
+  `effective_to`, exactly as before this rule was stated.
+- **A future-only lower bound with no upper bound** (a prior round, comment
   `3998057569`'s sibling on `3998057567`): `to_date` unset resolves
   `effective_to` to `CURRENT_DATE`, so `synthesis_date = CURRENT_DATE`; the
   supplied `from_date` is later than `CURRENT_DATE`, so the lower-edge test
-  fails and no row is emitted — the out-of-window row this thread flagged
-  no longer synthesizes.
+  fails and no row is emitted — the out-of-window row that thread flagged no
+  longer synthesizes.
 - **A single-day window that is itself in the future**
-  (`from_date == to_date`, both after today — a fourth, harder variant than
-  the reported one, since even the emitted date can no longer coincide with
+  (`from_date == to_date`, both after today — a harder variant than the
+  reported one, since even the emitted date can no longer coincide with
   either bound): `effective_to` is that future day, so
   `synthesis_date = CURRENT_DATE` (today, earlier than the window); the
   window's lower edge is that same future day, later than
@@ -580,19 +622,31 @@ per shape of range:
 - **An inverted range** (`from_date > to_date`, both given) never reaches
   this fallback at all — the validation above rejects it before
   `effective_from`/`effective_to` are computed.
+- **An eligible candidate archived partway through the window** (this thread,
+  comment `3998387459`): a no-spine range that starts before the candidate's
+  `archived_at` and ends after it. The candidate still satisfies the
+  eligible-candidate predicate (`archived_at >= effective_from`), so
+  `archived_at_floor` equals that `archived_at` — earlier than `effective_to`
+  whenever the range extends past it — and `synthesis_date` drops to the
+  floor instead of staying at `effective_to`. The row is emitted dated at the
+  candidate's own `archived_at`, the last date inside its eligible window,
+  never at a later date Requirement 9 already says it stopped counting on.
 
 Dating the row at `synthesis_date` rather than unconditionally at
-`effective_to` changes nothing for a window that includes `CURRENT_DATE`
-or lies wholly in the past — `synthesis_date` and `effective_to` are the
-same date there — and the `effective_from IS NULL` arm inside the
+`effective_to` changes nothing for a window that includes `CURRENT_DATE` or
+lies wholly in the past and carries no eligible candidate with an
+`archived_at` earlier than that bound — `synthesis_date` and `effective_to`
+are the same date there — and the `effective_from IS NULL` arm inside the
 eligible-candidate predicate above is untouched: it still governs which
 *accounts* count as eligible against an unbounded lower edge, a separate
 question from whether the window contains a legitimate synthesis date at
-all. The only behavioral change is that a window lying wholly in the
-future no longer synthesizes a row dated outside it. An out-of-range query
-against a profile with *no* eligible candidate still correctly returns
-zero rows, exactly like any other `@report` — the count is zero, so
-neither the view's arm nor the runner's fallback fires.
+all. The behavioral change is that a window lying wholly in the future no
+longer synthesizes a row dated outside it, and a synthesized row can no
+longer be dated past the point Requirement 9 already excludes one of its own
+counted candidates. An out-of-range query against a profile with *no*
+eligible candidate still correctly returns zero rows, exactly like any other
+`@report` — the count is zero, so neither the view's arm nor the runner's
+fallback fires.
 
 **The runner's conditional-append filter inherits the same lower/upper
 asymmetry as `cash_flow.py`'s, and that is intentional, not a gap this
@@ -666,6 +720,53 @@ account_balance_home  DECIMAL(18,2)  -- In home_currency_code; NULL when the pai
 [`asset-tracking.md`](asset-tracking.md) and implemented by
 [`investments-price-feeds.md`](investments-price-feeds.md); it is the same
 concept and must not acquire a second spelling.
+
+**An eligible unanchored account is `M2B.3`'s addition to this rung too, and
+it needs no count column of its own.** `reports.net_worth`'s guard needs
+`unanchored_account_count` because one row there aggregates every account on
+a date; this rung's grain is already `(account_id, balance_date)`, so the
+account IS the row — the guard's signal is the row's own presence with its
+balance-derived columns NULL, not a number carried beside it. The view gains
+a second `UNION ALL` arm reading the same four evidence sources joined to
+`core.dim_accounts` (§Data Model): one row per eligible unanchored account,
+dated `balance_date = CURRENT_DATE`, with `account_balance`,
+`account_balance_home`, `rate_published_date`, `rate_source`,
+`observation_source`, `days_since_observed`, and `reconciliation_delta` all
+NULL, `is_observed = FALSE`, and `currency_code` NULL (the unknown segment
+this column's own comment already reserves for exactly this case — an
+account with no balance observation has no observed denomination either).
+`account_id`, `account_name`, `account_type`, and `home_currency_code` are
+not balance-derived, so they still populate from `core.dim_accounts` and
+`app.profile_settings` on this synthesized row, the same as on every
+ordinary one.
+
+**Unconditional per candidate, unlike `reports.net_worth`'s own arm.**
+`reports.net_worth`'s `CURRENT_DATE` arm fires only when the whole
+balance-driven result is empty, because an ordinary row there already
+carries the correlated count for a mixed profile — the arm exists only to
+cover the wholly-empty case a correlated subquery has no row to attach to.
+This rung has no such correlated column to fall back on: an eligible
+unanchored account produces zero rows of its own whether or not every other
+account in the profile is anchored and observed today. The arm therefore
+emits its one row per eligible unanchored candidate regardless of what the
+rest of the profile's accounts are doing, so a single unanchored account
+inside an otherwise ordinary, fully-anchored profile still appears here —
+not only in the wholly-unanchored case `reports.net_worth`'s own arm is
+scoped to.
+
+A specific historical range with no balance-spine rows in it for one of
+these accounts inherits `reports.net_worth`'s own runner fallback (§Data
+Model's `synthesis_date` rule), applied once per eligible unanchored
+candidate rather than once per row: each such account is dated
+independently at its own `LEAST(effective_to, CURRENT_DATE, archived_at)`,
+so — unlike the aggregate rung — no `archived_at_floor` across candidates is
+needed here, because there is no shared row whose single date has to stay
+honest for more than one account at a time.
+
+**This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
+invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
+because it is the one relation in this spec that names the affected accounts
+by id rather than only a count.
 
 #### `reports.net_worth_currencies`
 
@@ -1016,6 +1117,54 @@ alongside `investment_stale_prices`, with `balance_staleness_threshold_days`
 added to `DoctorSettings` (`src/moneybin/config.py`) and the check's row and
 threshold documented in `docs/specs/moneybin-doctor.md`'s invariant table.
 
+### `moneybin system doctor`: unanchored accounts — `M2B.3`
+
+Requirement 14's own text says the unanchored-account guard makes a release
+artifact fail; nothing above does that, because `net_worth_stale_balance` is
+`warn` by design and no other invariant reads this guard's signal. This is
+the check that closes that gap — the one Requirement 14 was actually
+describing when it said "an eligible account ... must not contribute zero in
+silence," stated at the same level of detail as the staleness check above.
+
+`net_worth_unanchored_accounts` reads `reports.net_worth_accounts` for
+`balance_date = CURRENT_DATE AND account_balance IS NULL` — exactly the
+synthesized-row signal §`reports.net_worth_accounts` states above, never a
+NULL-total read off `reports.net_worth`'s own aggregate rung. The account
+rung is the one relation in this spec that names the affected accounts by
+id; `reports.net_worth`'s `unanchored_account_count` is a number with
+nothing to attach `affected_ids` to, while several existing `fail`
+invariants in this file already return the specific rows they flag rather
+than only a count — `investment_source_overlap`, `orphan_app_state`,
+`app_audit_coverage_*`, `currency_integrity` all do (`dedup_reconciliation`
+is the exception, and only because a global count mismatch genuinely has no
+individual row to name). The affected accounts here are individually
+addressable, so this check follows the row-naming pattern rather than
+`dedup_reconciliation`'s. A row surviving the filter means `core.dim_holdings`,
+`core.dim_holdings_broker_reported`, `core.fct_transactions`, or
+`core.fct_investment_transactions` carries evidence for an eligible account
+`core.fct_balances` has no anchor for at all — Requirement 14's own
+predicate, already computed once by the view this check re-reads rather
+than duplicating.
+
+Severity is `fail`, not `warn` — the opposite of the staleness check just
+above, and deliberately so: the balance `net_worth_stale_balance` flags is
+still present and still contributes to the total, but the account this check
+flags contributes nothing, and `reports.net_worth.net_worth` is already NULL
+for exactly this profile per Requirement 14. `DoctorReport.failing` counts
+`fail` — and only `fail` — toward `moneybin system doctor`'s release-gating
+exit code (`doctor_service.py:228`, read at `cli/commands/system/doctor.py:68`
+and turned into `raise typer.Exit(1)` at both the JSON
+(`cli/commands/system/doctor.py:116`) and default-text
+(`cli/commands/system/doctor.py:190`) output paths), so a profile whose only
+accounts are eligible and unanchored now exits non-zero, closing the
+self-contradiction between this spec's own release-bar claim and its M2B.3
+implementation plan.
+
+Implemented as one more invariant in `DoctorService` (`doctor_service.py`)
+beside `net_worth_stale_balance`, needing no new `DoctorSettings` field —
+the check is a boolean presence test, not a threshold — and documented
+alongside it in `docs/specs/moneybin-doctor.md`'s invariant table.
+
 ## Report allocation
 
 ### One name per report
@@ -1125,12 +1274,12 @@ Report runners:
   `core:net_worth_accounts`
 
 Migration:
-- `src/moneybin/sql/migrations/V0NN__add_account_settings_archived_at.py`
+- `src/moneybin/sql/migrations/V060__add_account_settings_archived_at.py`
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
 tests named in §Testing Strategy, and four acceptance tests for
-`account_archive_intent_ambiguous`: an account backfilled by V0NN into the
+`account_archive_intent_ambiguous`: an account backfilled by V060 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
 per that method's own contract — still warns, pinning that the check is not
@@ -1156,6 +1305,9 @@ generic settings write is not what clears it.
   a profile with no balance-driven output at all but an eligible candidate.
   Only a historical range with no balance-spine rows in it still needs the
   runner (`net_worth.py`); see §Data Model.
+- `src/moneybin/sqlmesh/models/reports/net_worth_accounts.sql` — **`M2B.3`**
+  adds the identical second `UNION ALL` arm, one row per eligible unanchored
+  account rather than one aggregate row, per §`reports.net_worth_accounts`.
 - The four report definitions being renamed — `cash_flow`, `spending_trend`,
   `recurring_subscriptions`, `merchant_activity` — plus every test, guide, and
   fixture naming an old id or command. Mechanical, but repo-wide; see
@@ -1166,7 +1318,7 @@ generic settings write is not what clears it.
   `agg_net_worth` model (`:362-363`); correct them while in the file.
 - `src/moneybin/services/doctor_service.py` — the
   `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
-  severity, flagging an account the V0NN backfill left ambiguous with no
+  severity, flagging an account the V060 backfill left ambiguous with no
   audit row carrying the `confirms_include_in_net_worth` marker.
 - `src/moneybin/repositories/account_settings_repo.py` — `set()` gains a
   `context: dict[str, Any] | None = None` parameter, forwarded to the
@@ -1211,10 +1363,19 @@ generic settings write is not what clears it.
   for a historical range with no balance-spine rows in it. The guard's
   per-row count, NULL gate, and `CURRENT_DATE` `UNION ALL` arm live in
   `net_worth.sql` itself, not here.
+- `src/moneybin/reports/definitions/net_worth_accounts.py` — the same
+  range-filter and inverted-range-rejection shape as `net_worth.py`, plus the
+  per-candidate synthesized-row fallback for a historical range with no
+  balance-spine rows in it, one row per eligible unanchored account dated
+  independently rather than one row for the whole result. The guard's own
+  NULL-column arm and `CURRENT_DATE` `UNION ALL` arm live in
+  `net_worth_accounts.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
-  invariant.
-- `docs/specs/moneybin-doctor.md` — the invariant table entry.
+  (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; see
+  §"`moneybin system doctor`: unanchored accounts" for why the second one is
+  `fail` and the first stays `warn`.
+- `docs/specs/moneybin-doctor.md` — both invariants' table entries.
 
 ### Files to Delete
 
@@ -1407,9 +1568,19 @@ AGENTS.md's AX bias both point at.
   eligible unanchored candidate, queried with `from_date` set to a day after
   `CURRENT_DATE` and no `to_date`, returns zero rows — not a row dated
   before the requested lower bound. This pins the general synthesis-date
-  rule in §Data Model: `synthesis_date = LEAST(effective_to, CURRENT_DATE)`
-  must also clear `effective_from` before the runner emits anything, and
-  the case that surfaced the omission has to stay failing.
+  rule in §Data Model: `synthesis_date = LEAST(effective_to, CURRENT_DATE,
+  archived_at_floor)` must also clear `effective_from` before the runner
+  emits anything, and the case that surfaced the omission has to stay
+  failing.
+- **A synthesized row respects an archived candidate's own window.** A
+  no-spine historical range that starts before an eligible candidate's
+  `archived_at` and ends after it: the candidate still satisfies the
+  eligible-candidate predicate, but the runner dates the synthesized row at
+  the candidate's own `archived_at` (`archived_at_floor`), never at
+  `effective_to`. This pins `archived_at_floor` in the general
+  synthesis-date rule — the regression this thread (comment `3998387459`)
+  found: dating the row past a counted candidate's own eligible window would
+  report it unanchored on a date Requirement 9 already excludes it from.
 - **Staleness invariant: entirely stale profile.** A persona whose every
   eligible account's most recent *observed* balance
   (`reports.net_worth_accounts.is_observed = TRUE`) is 45 days before
@@ -1496,6 +1667,14 @@ is a dividend or fee in `core.fct_investment_transactions` — no
 `core.fct_transactions` row, no holding, no balance — asserted to drive the
 guard through that arm alone.
 
+The first, second, third, and seventh scenarios above also assert
+`reports.net_worth_accounts`'s own signal for the same fixture: the
+eligible unanchored account appears as a row (never absent), dated
+`CURRENT_DATE` for the wholly-unanchored persona, with `account_balance` and
+`account_balance_home` NULL and `is_observed = FALSE` — never zero rows for
+that account on that rung, which is the failure §`reports.net_worth_accounts`
+states this addition closes.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -1511,6 +1690,14 @@ guard through that arm alone.
   guard (a NULL total from a wholly unanchored account) may turn the
   release-gating exit code red, and this must stay true even as
   `net_worth_stale_balance` gains the affected-account cases above.
+- **The unanchored-account guard does fail the release gate.** `moneybin
+  system doctor` against a profile carrying only an eligible unanchored
+  account (the wholly-unanchored fixture from Tier 2's third scenario)
+  exits `1`, with `net_worth_unanchored_accounts` at `fail` and
+  `affected_ids` naming that account. This is the release-blocking claim
+  Requirement 14 makes about itself, verified end to end rather than left
+  as a stated intention — the self-contradiction closed by
+  §"`moneybin system doctor`: unanchored accounts."
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
