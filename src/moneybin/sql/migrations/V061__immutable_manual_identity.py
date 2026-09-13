@@ -82,7 +82,7 @@ def _preflight_account_activation(conn: object) -> None:
             break
         affected.update(reachable)
     if any(
-        account is None
+        (account is None and frozen_account is None)
         or account in affected
         or lot_account in affected
         or frozen_account in affected

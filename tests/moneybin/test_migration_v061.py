@@ -125,3 +125,84 @@ def test_historical_activation_cannot_ignore_survivor_selections(db: Database) -
     )
     with pytest.raises(RuntimeError, match="lot selection"):
         _migrate(db)
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "unrelated",
+        "absorbed",
+        "survivor",
+        "chained_survivor",
+        "unknown",
+        "lot",
+        "frozen_lot",
+    ],
+)
+def test_historical_activation_scopes_missing_core_disposal_from_frozen_account(
+    db: Database, scope: str
+) -> None:
+    seed_legacy_manual_identity_schema(db)
+    create_core_dim_stub_views(db)
+    db.execute("""
+        INSERT INTO app.account_link_decisions (
+            decision_id, provisional_account_id, candidate_account_id, status,
+            decided_by, decided_at
+        ) VALUES ('historical_ab', 'a', 'b', 'accepted', 'user', CURRENT_TIMESTAMP),
+                 ('historical_bc', 'b', 'c', 'accepted', 'user', CURRENT_TIMESTAMP)
+    """)
+    if scope != "unknown":
+        account = {"absorbed": "a", "survivor": "b", "chained_survivor": "c"}.get(
+            scope, "unrelated"
+        )
+        db.execute(
+            """
+            INSERT INTO raw.manual_investment_transactions (
+                source_transaction_id, investment_transaction_id, import_id,
+                account_id, security_id, type, trade_date, quantity, amount, created_by
+            ) VALUES ('unmaterialized_source', 'unmaterialized', 'fixture_import', ?,
+                      'security_one', 'sell', '2026-02-01', -1, 10, 'cli')
+            """,
+            [account],
+        )
+    db.execute(
+        """
+        INSERT INTO core.fct_investment_lots (
+            lot_id, account_id, security_id, source_transaction_id
+        ) VALUES ('selected', ?, 'security_one', ?)
+        """,
+        [
+            "a" if scope == "lot" else "unrelated",
+            "itx_one" if scope == "frozen_lot" else "unrelated_buy",
+        ],
+    )
+    db.execute("""
+        INSERT INTO app.lot_selections (investment_transaction_id, lot_id, quantity)
+        VALUES ('unmaterialized', 'selected', 1)
+    """)
+    before = {
+        table: db.execute(f"SELECT * FROM {table} ORDER BY ALL").fetchall()  # noqa: S608  # fixed migration fixture table names
+        for table in (
+            "raw.manual_investment_transactions",
+            "app.account_links",
+            "app.account_link_decisions",
+            "app.security_links",
+            "app.lot_selections",
+            "app.audit_log",
+        )
+    }
+    if scope == "unrelated":
+        _migrate(db)
+        _migrate(db)
+    else:
+        with pytest.raises(RuntimeError, match="lot selection"):
+            _migrate(db)
+    for table, rows in before.items():
+        assert db.execute(f"SELECT * FROM {table} ORDER BY ALL").fetchall() == rows  # noqa: S608  # fixed migration fixture table names
+    constraints = db.execute("""
+        SELECT constraint_text FROM duckdb_constraints()
+        WHERE schema_name = 'app' AND table_name = 'security_links'
+    """).fetchall()
+    assert any("manual_investment_transaction_id" in row[0] for row in constraints) == (
+        scope == "unrelated"
+    )
