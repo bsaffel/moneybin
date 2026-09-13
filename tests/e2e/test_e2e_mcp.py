@@ -204,10 +204,18 @@ class TestReportsTool:
         _, tool_names = mcp_server_tools
 
         removed = {
+            # Pre-rename spellings: the per-report tools were retired outright
+            # before this rename, so these are the names a legacy re-registration
+            # would actually use — the post-rename spellings below never existed
+            # as tools.
             "reports_spending",
             "reports_cashflow",
             "reports_recurring",
             "reports_merchants",
+            "reports_spending_trend",
+            "reports_cash_flow",
+            "reports_recurring_subscriptions",
+            "reports_merchant_activity",
             "reports_large_transactions",
             "reports_balance_drift",
         }

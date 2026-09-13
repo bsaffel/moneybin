@@ -592,7 +592,9 @@ def test_a_runner_backed_built_in_is_already_materialized(saved_db: Database) ->
     before, which is service-backed and has no model at all — so it pinned the
     wrong verdict in place instead of proving this one.
     """
-    explanation = explain_report(saved_db, handle="core:merchants", parameters={})
+    explanation = explain_report(
+        saved_db, handle="core:merchant_activity", parameters={}
+    )
 
     assert explanation.graduation == "already_materialized"
     assert explanation.graduation_blockers == ()
@@ -713,7 +715,7 @@ def test_a_contested_name_stays_inspectable_by_report_id(
     with.
     """
     event = UserReportsRepo(saved_db).create(
-        name="spending",
+        name="spending_trend",
         query_sql="SELECT account_id FROM core.dim_accounts",
         classes={"account_id": DataClass.RECORD_ID.value},
         semantics={"kind": "unknown"},
@@ -727,7 +729,7 @@ def test_a_contested_name_stays_inspectable_by_report_id(
     assert explanation.report_id == report_id
 
     with pytest.raises(UserError):
-        explain_report(saved_db, handle="spending", parameters={})
+        explain_report(saved_db, handle="spending_trend", parameters={})
 
 
 def test_the_explanation_reports_the_tier_the_report_came_from(
@@ -738,7 +740,7 @@ def test_the_explanation_reports_the_tier_the_report_came_from(
         service,
         sql="SELECT account_id FROM core.dim_accounts",
     )
-    built_in = explain_report(saved_db, handle="core:spending", parameters={})
+    built_in = explain_report(saved_db, handle="core:spending_trend", parameters={})
 
     assert saved.tier == "user"
     assert built_in.tier == "builtin"
@@ -748,7 +750,7 @@ def test_a_built_in_report_carries_no_fingerprint_or_update_time(
     saved_db: Database,
 ) -> None:
     """Freshness is a property of a stored row; a repo file has neither field."""
-    explanation = explain_report(saved_db, handle="core:spending", parameters={})
+    explanation = explain_report(saved_db, handle="core:spending_trend", parameters={})
 
     assert explanation.class_fingerprint is None
     assert explanation.updated_at is None

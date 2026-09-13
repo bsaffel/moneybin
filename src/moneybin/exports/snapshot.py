@@ -14,6 +14,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid4
 
+from moneybin.build_info import get_build_info
 from moneybin.exports.catalog import BUNDLE_TABLES
 from moneybin.exports.models import RedactionMode
 from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass
@@ -51,16 +52,31 @@ class ExportSubject:
 
 
 @dataclass(frozen=True, slots=True)
-class ReportExportProvenance:
-    """A report execution receipt, populated by report exports."""
+class ExportProvenance:
+    """The build that produced an export, plus a report execution receipt.
 
-    report_id: str
-    receipt: Mapping[str, object]
+    ``build`` names the version and revision ``system_status.overview.build``
+    reports — every export's only record of which code wrote it, once the
+    artifact leaves this machine. Populated for both subject kinds.
+    ``report_id``/``receipt`` add the execution receipt for a report subject
+    only; a bundle subject has neither.
+    """
+
+    build: Mapping[str, object]
+    report_id: str | None = None
+    receipt: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
-        """Freeze nested report receipt metadata."""
-        frozen = cast(Mapping[str, object], _freeze_metadata(self.receipt))
-        object.__setattr__(self, "receipt", frozen)
+        """Freeze nested provenance metadata."""
+        object.__setattr__(
+            self, "build", cast(Mapping[str, object], _freeze_metadata(self.build))
+        )
+        if self.receipt is not None:
+            object.__setattr__(
+                self,
+                "receipt",
+                cast(Mapping[str, object], _freeze_metadata(self.receipt)),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +115,7 @@ class PreparedExport:
     redaction_mode: RedactionMode
     tables: tuple[PreparedTable, ...]
     _data_dictionary: Mapping[str, object] = field(repr=False)
-    provenance: ReportExportProvenance | None
+    provenance: ExportProvenance | None
 
     def __init__(
         self,
@@ -110,7 +126,7 @@ class PreparedExport:
         redaction_mode: RedactionMode,
         tables: tuple[PreparedTable, ...],
         data_dictionary: Mapping[str, object] | None = None,
-        provenance: ReportExportProvenance | None = None,
+        provenance: ExportProvenance | None = None,
         export_id: str | None = None,
         *,
         _data_dictionary: Mapping[str, object] | None = None,
@@ -209,6 +225,7 @@ def build_bundle_snapshot(
         )
 
     prepared_tables = tuple(tables)
+    build = get_build_info()
     return PreparedExport(
         artifact_version=ARTIFACT_VERSION,
         profile=profile,
@@ -217,7 +234,9 @@ def build_bundle_snapshot(
         redaction_mode="unredacted",
         tables=prepared_tables,
         data_dictionary=build_data_dictionary(prepared_tables),
-        provenance=None,
+        provenance=ExportProvenance(
+            build={"version": build.version, "revision": build.revision}
+        ),
         export_id=None,
     )
 
@@ -290,8 +309,12 @@ def _json_safe(value: object) -> object:
     if isinstance(value, (list, tuple)):
         sequence = cast(list[object] | tuple[object, ...], value)
         return [_json_safe(item) for item in sequence]
-    if isinstance(value, ReportExportProvenance):
-        return {"report_id": value.report_id, "receipt": _json_safe(value.receipt)}
+    if isinstance(value, ExportProvenance):
+        return {
+            "build": _json_safe(value.build),
+            "report_id": value.report_id,
+            "receipt": _json_safe(value.receipt),
+        }
     raise TypeError(f"Unsupported export metadata value: {type(value).__name__}")
 
 

@@ -1,4 +1,4 @@
-"""core:recurring / `reports recurring` — likely-recurring subscriptions."""
+"""core:recurring_subscriptions / `reports recurring-subscriptions` — likely-recurring subscriptions."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from moneybin.tables import REPORTS_RECURRING_SUBSCRIPTIONS
 
 
 @report(
-    report_id="core:recurring",
-    name="recurring",
+    report_id="core:recurring_subscriptions",
+    name="recurring_subscriptions",
     view=REPORTS_RECURRING_SUBSCRIPTIONS,
     classes={
         "merchant_id": DataClass.RECORD_ID,
@@ -180,8 +180,8 @@ def recurring_subscriptions(
             (None returns all).
 
     Examples:
-        reports(report_id="core:recurring", parameters={"min_confidence": 0.7})
-        reports(report_id="core:recurring", parameters={"cadence": "monthly", "status": "all"})
+        reports(report_id="core:recurring_subscriptions", parameters={"min_confidence": 0.7})
+        reports(report_id="core:recurring_subscriptions", parameters={"cadence": "monthly", "status": "all"})
     """
     if status not in RECURRING_STATUSES:
         raise ValueError(f"Unknown status: {status}")

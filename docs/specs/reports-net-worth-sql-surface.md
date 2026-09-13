@@ -1075,7 +1075,7 @@ eligible unanchored account was live throughout that range. This is the one
 remaining place `reports.net_worth`'s runner does work the view genuinely
 cannot: it holds `from_date`/`to_date` as bound parameters, the way
 `src/moneybin/reports/definitions/cash_flow.py:172-181` already holds
-`from_month`/`to_month` for `core:cashflow` — there a `WHERE 1=1`
+`from_month`/`to_month` for `core:cash_flow` — there a `WHERE 1=1`
 conditionally extended with `>=`/`<=` comparisons on a derived string
 column, here a `BETWEEN` on a date column; the predicate shapes differ, the
 architectural move (a Python-built predicate over bound parameters the view
