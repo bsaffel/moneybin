@@ -131,7 +131,7 @@ position of an `AGGREGATE` column at all** — placing one is a review judgement
 against the sentences above, not a checked rule.
 
 **The headline measure goes last.** Among a report's measures, the one that
-answers the report's question is the final column. `core:cashflow` ends on
+answers the report's question is the final column. `core:cash_flow` ends on
 `net`, not on `txn_count`. This is the other half of Rule B a guard cannot
 check — see Enforcement.
 
@@ -176,7 +176,7 @@ first clause is about *composition* — line items and the subtotal that sums
 them. The third is about where a reader stops. They usually name different
 columns and never meet, but when a report's headline measure is also the base
 its comparatives are measured against, they demand opposite ends of the block.
-The base leads. `core:spending` is that case: `total_spend` is what
+The base leads. `core:spending_trend` is that case: `total_spend` is what
 `prev_month_spend` is compared against *and* the figure the report exists to
 report, so it opens the measure block rather than closing it. Printing
 `mom_delta` before the quantity it is a delta of is the more expensive of the
@@ -186,7 +186,7 @@ so the subtotal-last reading never reached it.
 
 Two reports already satisfy this and are the models to copy:
 
-- `core:cashflow` — `inflow`, `outflow`, `net`. Components, then the figure.
+- `core:cash_flow` — `inflow`, `outflow`, `net`. Components, then the figure.
 - `core:balance_drift` — `asserted_balance`, `computed_balance`, `drift`. The
   two positions being reconciled, then the discrepancy.
 
@@ -195,7 +195,7 @@ Two inverted it before this rule, and are why it is written down:
 - `core:networth` — `net_worth`, `total_assets`, `total_liabilities`. The bottom
   line leads and its components trail, so the row reads backwards and the
   fitter's kept tail is a component rather than the answer.
-- `core:merchants` — `total_spend` precedes `total_inflow` and `total_outflow`.
+- `core:merchant_activity` — `total_spend` precedes `total_inflow` and `total_outflow`.
 
 **A runtime-attached column obeys Rule B too.** A display-currency conversion
 adds `original_currency_code` to a result no report declares it in. It is
@@ -284,7 +284,7 @@ actually returned.
 **The guard checks labels and dimensions as one block.** Which of the two a
 name column is depends on whether it names the report's own grain, and no
 declaration carries the grain: `merchant_normalized` is the label on
-`core:merchants` and a dimension on `core:large_transactions`, which is grained
+`core:merchant_activity` and a dimension on `core:large_transactions`, which is grained
 by transaction. Separating them would enforce a distinction the guard cannot
 see, so it checks only that both precede the dates. Their relative order is
 review's call, against the sentence above.

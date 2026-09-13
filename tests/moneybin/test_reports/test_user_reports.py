@@ -148,10 +148,10 @@ def test_create_refuses_a_name_a_builtin_report_already_holds(
 ) -> None:
     """R5: names are unique across the whole registry, not just this tier."""
     with pytest.raises(UserError) as raised:
-        _create(service, name="spending")
+        _create(service, name="spending_trend")
 
     assert raised.value.code == "report_name_taken"
-    assert "spending" in str(raised.value)
+    assert "spending_trend" in str(raised.value)
 
 
 def test_create_refuses_a_name_another_saved_report_holds(
@@ -279,7 +279,7 @@ def test_catalog_entries_carry_their_tier(
     catalog = get_report_catalog(saved_db)
 
     assert report_tier(catalog.resolve(report_id)) == "user"
-    assert report_tier(catalog.resolve("core:spending")) == "builtin"
+    assert report_tier(catalog.resolve("core:spending_trend")) == "builtin"
 
 
 def test_catalog_surfaces_a_contested_name_without_choosing_a_winner(
@@ -292,7 +292,7 @@ def test_catalog_surfaces_a_contested_name_without_choosing_a_winner(
     with. The user's report must stay reachable by ``report_id``.
     """
     event = UserReportsRepo(saved_db).create(
-        name="spending",
+        name="spending_trend",
         query_sql=_ACCOUNTS_SQL,
         classes={
             "account_id": DataClass.RECORD_ID.value,
@@ -308,11 +308,11 @@ def test_catalog_surfaces_a_contested_name_without_choosing_a_winner(
     catalog = get_report_catalog(saved_db)
 
     assert catalog.name_collisions() == {
-        "spending": ("core:spending", report_id),
+        "spending_trend": ("core:spending_trend", report_id),
     }
     assert catalog.resolve(report_id).report_id == report_id
     with pytest.raises(UserError) as raised:
-        catalog.resolve("spending")
+        catalog.resolve("spending_trend")
     assert raised.value.code == "report_id_ambiguous"
 
 
@@ -1815,7 +1815,7 @@ def test_update_refuses_a_rename_onto_a_name_the_registry_holds(
     report_id = _create(service)
 
     with pytest.raises(UserError) as raised:
-        service.update(report_id, name="spending", actor="cli")
+        service.update(report_id, name="spending_trend", actor="cli")
 
     assert raised.value.code == "report_name_taken"
 

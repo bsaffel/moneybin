@@ -84,7 +84,7 @@ Every tool returns this shape:
   "status": "ok",
   "summary": {"total_count": 247, "returned_count": 50, "has_more": true, "sensitivity": "medium", "display_currency": "EUR"},
   "data": [ ... ],
-  "actions": ["Use reports(report_id=\"core:spending\") for the breakdown"]
+  "actions": ["Use reports(report_id=\"core:spending_trend\") for the breakdown"]
 }
 ```
 

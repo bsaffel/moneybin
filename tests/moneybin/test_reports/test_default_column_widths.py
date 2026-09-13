@@ -101,15 +101,15 @@ _MONEY_SAMPLE = f"{MINUS}1,234,567.89"
 #: actually renders.
 _ENUM_VOCABULARIES: Mapping[tuple[str, str], Sequence[str]] = {
     ("core:balance_drift", "status"): DRIFT_STATUSES,
-    ("core:recurring", "status"): RECURRING_STATUSES,
-    ("core:recurring", "cadence"): RECURRING_CADENCES,
+    ("core:recurring_subscriptions", "status"): RECURRING_STATUSES,
+    ("core:recurring_subscriptions", "cadence"): RECURRING_CADENCES,
 }
 
 #: Parameter vocabularies that change a report's default column set. Only a
 #: report declaring a *callable* default needs an entry; the guard below fails
 #: if one appears without one, so this cannot go quietly stale.
 _COLUMN_BEARING_PARAMETERS: Mapping[str, Mapping[str, Sequence[object]]] = {
-    "core:spending": {"compare": SPENDING_COMPARES},
+    "core:spending_trend": {"compare": SPENDING_COMPARES},
 }
 
 

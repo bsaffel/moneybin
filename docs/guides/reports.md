@@ -17,10 +17,10 @@ That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactio
 |---|---|---|
 | [`reports networth`](../reference/cli/reports.md#moneybin-reports-networth) | `core:networth` | What am I worth on one date, per account? |
 | [`reports networth-history`](../reference/cli/reports.md#moneybin-reports-networth-history) | `core:networth_history` | How has that moved, period over period? |
-| [`reports spending`](../reference/cli/reports.md#moneybin-reports-spending) | `core:spending` | What goes out, by category and month, against last month, last year, and the trailing quarter? |
-| [`reports cashflow`](../reference/cli/reports.md#moneybin-reports-cashflow) | `core:cashflow` | In, out, and net, by month and account or category? |
-| [`reports recurring`](../reference/cli/reports.md#moneybin-reports-recurring) | `core:recurring` | What recurs, how often, and what does it cost a year? |
-| [`reports merchants`](../reference/cli/reports.md#moneybin-reports-merchants) | `core:merchants` | Who gets paid, how much, how often, how recently? |
+| [`reports spending-trend`](../reference/cli/reports.md#moneybin-reports-spending-trend) | `core:spending_trend` | What goes out, by category and month, against last month, last year, and the trailing quarter? |
+| [`reports cash-flow`](../reference/cli/reports.md#moneybin-reports-cash-flow) | `core:cash_flow` | In, out, and net, by month and account or category? |
+| [`reports recurring-subscriptions`](../reference/cli/reports.md#moneybin-reports-recurring-subscriptions) | `core:recurring_subscriptions` | What recurs, how often, and what does it cost a year? |
+| [`reports merchant-activity`](../reference/cli/reports.md#moneybin-reports-merchant-activity) | `core:merchant_activity` | Who gets paid, how much, how often, how recently? |
 | [`reports large-transactions`](../reference/cli/reports.md#moneybin-reports-large-transactions) | `core:large_transactions` | What is large, and what is large *for this account or category*? |
 | [`reports balance-drift`](../reference/cli/reports.md#moneybin-reports-balance-drift) | `core:balance_drift` | Where does a balance I asserted disagree with the transactions? |
 
@@ -81,7 +81,7 @@ Both bounds are required. `--interval` is `monthly` by default, or `weekly` or `
 ### Spending
 
 ```console
-$ uv run moneybin reports spending --from-month 2025-01 --to-month 2025-12
+$ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12
 Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ category            ┃ currency_code ┃ year_month ┃ total_spend ┃ yoy_pct                ┃
@@ -98,9 +98,9 @@ Using profile: demo
 │ Personal Care       │ USD           │ 2025-12    │        0.00 │ -1.0                   │
 └─────────────────────┴───────────────┴────────────┴─────────────┴────────────────────────┘
 5 of 12 columns shown — --wide for all
-💡 Run reports(report_id='core:spending', parameters={'category': '<name>'}) to filter to one category
-💡 Run reports(report_id='core:cashflow') for inflow, outflow, and net
-💡 Run reports(report_id='core:recurring') for recurring charge patterns
+💡 Run reports(report_id='core:spending_trend', parameters={'category': '<name>'}) to filter to one category
+💡 Run reports(report_id='core:cash_flow') for inflow, outflow, and net
+💡 Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
 ```
 
 The full year is 120 rows; the eleven earlier months are trimmed here. `total_spend` is a positive absolute outflow, biggest category first within each month. The blank category is money nobody has categorized yet, which on this persona is the largest line — the [categorization guide](categorization.md) is how it shrinks. `yoy_pct` is a fraction: `-0.05` is 5% less than the same month a year earlier, `-1.0` means the category spent nothing this month. The comparison columns are computed over all history, so narrowing the window never blanks them.
@@ -108,7 +108,7 @@ The full year is 120 rows; the eleven earlier months are trimmed here. `total_sp
 Omit both bounds for the last 12 calendar months. `--compare mom` or `--compare trailing` swaps the comparison column shown; `--category` keeps one line:
 
 ```console
-$ uv run moneybin reports spending --from-month 2025-01 --to-month 2025-12 --category "Food & Drink" --compare mom
+$ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12 --category "Food & Drink" --compare mom
 Using profile: demo
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ category     ┃ currency_code ┃ year_month ┃ total_spend ┃ mom_pct               ┃
@@ -127,15 +127,15 @@ Using profile: demo
 │ Food & Drink │ USD           │ 2025-12    │      967.39 │ -0.02461181689856826  │
 └──────────────┴───────────────┴────────────┴─────────────┴───────────────────────┘
 5 of 12 columns shown — --wide for all
-💡 Run reports(report_id='core:spending', parameters={'category': '<name>'}) to filter to one category
-💡 Run reports(report_id='core:cashflow') for inflow, outflow, and net
-💡 Run reports(report_id='core:recurring') for recurring charge patterns
+💡 Run reports(report_id='core:spending_trend', parameters={'category': '<name>'}) to filter to one category
+💡 Run reports(report_id='core:cash_flow') for inflow, outflow, and net
+💡 Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
 ```
 
 ### Cash flow
 
 ```console
-$ uv run moneybin reports cashflow --from-month 2025-07 --to-month 2025-12 --by category
+$ uv run moneybin reports cash-flow --from-month 2025-07 --to-month 2025-12 --by category
 Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
 ┃ category            ┃ currency_code ┃ year_month ┃        net ┃
@@ -152,8 +152,8 @@ Using profile: demo
 │ Healthcare          │ USD           │ 2025-12    │     −66.92 │
 └─────────────────────┴───────────────┴────────────┴────────────┘
 4 of 7 columns shown — --wide for all
-💡 Rerun reports(report_id='core:cashflow', parameters={'by': 'category'}) to regroup by category
-💡 Run reports(report_id='core:spending') for outflow-only MoM and YoY trends
+💡 Rerun reports(report_id='core:cash_flow', parameters={'by': 'category'}) to regroup by category
+💡 Run reports(report_id='core:spending_trend') for outflow-only MoM and YoY trends
 ```
 
 Six months is 64 rows; July through November are trimmed here. Cash flow is signed — income positive, spending negative — where `spending` is outflow only and unsigned. `--by account` groups by account instead, and the default `account-and-category` gives one row per pair. `inflow` and `outflow` are among the `--wide` columns.
@@ -161,14 +161,14 @@ Six months is 64 rows; July through November are trimmed here. Cash flow is sign
 ### Recurring
 
 ```console
-$ uv run moneybin reports recurring
+$ uv run moneybin reports recurring-subscriptions
 Using profile: demo
 ```
 
 Empty. `--status` defaults to `active`, and a stream counts as active while its last charge is within 60 days or two cadence intervals, whichever is longer; the demo's data ends on the last December 31, and this transcript was captured in September, when every stream had lapsed — rerun the demo in January and the same command lists them as active. On live data the default is what you want. Here, ask for everything:
 
 ```console
-$ uv run moneybin reports recurring --status all
+$ uv run moneybin reports recurring-subscriptions --status all
 Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┓
 ┃ merchant_normalized ┃ currency_code ┃ cadence ┃ status   ┃ annualized_cost ┃
@@ -191,7 +191,7 @@ A row is a merchant whose charges land at a steady interval; `cadence` names the
 ### Merchants
 
 ```console
-$ uv run moneybin reports merchants --top 10
+$ uv run moneybin reports merchant-activity --top 10
 Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━┓
 ┃ merchant_normalized ┃ currency_code ┃ last_seen  ┃ txn_count ┃ total_spend ┃
@@ -267,7 +267,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 ## Reading the output
 
 - **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on the six framework commands and on `reports run`; `networth` and `networth-history` have a fixed layout of their own and no `--wide`. JSON always carries all of them.
-- **Signs.** `spending`, `merchants`, and `recurring` report outflow as positive absolute amounts. `cashflow`, `large-transactions`, and every transaction listing are signed: negative is money out.
+- **Signs.** `spending-trend`, `merchant-activity`, and `recurring-subscriptions` report outflow as positive absolute amounts. `cash-flow`, `large-transactions`, and every transaction listing are signed: negative is money out.
 - **Currency.** Every row carries a `currency_code`, and a built-in never blends two known currencies into one figure; a saved report inherits whatever its own SQL does. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` followed by `moneybin refresh` or `moneybin transform apply` is the fix, because the account table is rebuilt rather than read live; set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` says the cap cut the result — a report has no page after the first, so raise the limit to see the rest. See [One display currency](#one-display-currency).
 - **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move — with one exception: a report that masked one of its columns adds a `Run moneybin reports explain <id>` hint, which names the CLI command by design. The parameter a tool-call hint names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
 - **Freshness.** Every built-in reads views over the canonical tables, so it reflects the last import or `moneybin refresh` the moment that finishes, and nothing is cached between runs. The one deferral is an import run with `--no-refresh`, whose rows reach the canonical tables only after `moneybin refresh` or `moneybin transform apply`. `balance-drift` has one live side: an `accounts balance assert` shows up on its next run, while the computed balance it is compared against comes from the last rebuild. A saved report is as fresh as what it reads: over `raw.*` or the `prep.*` views it sees an import at once, over `core.*` or `reports.*` it waits for that same transform.
@@ -277,7 +277,7 @@ Empty on the demo, because drift needs an assertion: a balance you typed from a 
 
 `reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the eight above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
 
-`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `networth`'s headline block or `spending`'s chosen comparison column, so the dedicated command is the better read when one exists:
+`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `networth`'s headline block or `spending-trend`'s chosen comparison column, so the dedicated command is the better read when one exists:
 
 ```console
 $ uv run moneybin reports run core:networth
@@ -300,9 +300,9 @@ Using profile: demo
 `reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form. `core:networth` and `core:networth_history` are executed by a service rather than a query, so for those two it prints the lineage and a `service_backed` line where the SQL would be:
 
 ```console
-$ uv run moneybin reports explain core:spending
+$ uv run moneybin reports explain core:spending_trend
 Using profile: demo
-core:spending  (builtin)
+core:spending_trend  (builtin)
 Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
 
 Defaults to the last 12 calendar months when both bounds are omitted. YoY columns come from the underlying view (all history), so narrowing the window does not null out yoy_pct. Spending amounts are positive absolute outflows; comparison deltas are current spend minus comparison-period spend. Monetary values are denominated in each row's own currency_code.
@@ -333,7 +333,7 @@ The SQL that follows is trimmed here. It reads the `reports.spending_trend` view
 `--output json` on any report returns the standard envelope with every column, not the default set:
 
 ```console
-$ uv run moneybin reports run core:recurring --param status=all --limit 2 --output json | jq .
+$ uv run moneybin reports run core:recurring_subscriptions --param status=all --limit 2 --output json | jq .
 {
   "status": "ok",
   "summary": {
@@ -496,7 +496,7 @@ Three reports convert, because each of their rows is one event on one date: `lar
 
 ## From an AI client
 
-The `reports` MCP tool is the same catalog. Called with no `report_id` it returns the catalog; with one it runs the report, taking `parameters` as a dictionary keyed by the names `reports explain` lists — `reports(report_id='core:spending', parameters={'category': 'Food & Drink', 'from_month': '2025-01'})` — plus `display_currency` and a row cap (`MONEYBIN_MCP__MAX_ROWS`, 1,000 by default). The response is the JSON envelope above. Saving, editing, and deleting reports is CLI-only; the tool reads the catalog and runs it. It never takes SQL — `sql_query` does, read-only, over `core`, `reports`, and `app`, plus `raw` and `prep` under the weaker value-shape masking described above. The [MCP server guide](mcp-server.md) covers the envelope and sensitivity tiers and the [tool reference](../reference/mcp-tools.md#reports) lists every parameter.
+The `reports` MCP tool is the same catalog. Called with no `report_id` it returns the catalog; with one it runs the report, taking `parameters` as a dictionary keyed by the names `reports explain` lists — `reports(report_id='core:spending_trend', parameters={'category': 'Food & Drink', 'from_month': '2025-01'})` — plus `display_currency` and a row cap (`MONEYBIN_MCP__MAX_ROWS`, 1,000 by default). The response is the JSON envelope above. Saving, editing, and deleting reports is CLI-only; the tool reads the catalog and runs it. It never takes SQL — `sql_query` does, read-only, over `core`, `reports`, and `app`, plus `raw` and `prep` under the weaker value-shape masking described above. The [MCP server guide](mcp-server.md) covers the envelope and sensitivity tiers and the [tool reference](../reference/mcp-tools.md#reports) lists every parameter.
 
 ## Export
 

@@ -1812,8 +1812,13 @@ def test_active_governance_does_not_teach_legacy_registry_names() -> None:
         MCP_SERVER_GUIDE,
     )
     stale_terms = (
+        # Both spellings stay: the per-report tools were retired outright, so
+        # the pre-rename names are the ones a stale document is most likely to
+        # still teach, and the post-rename spellings never existed as tools.
         "reports_spending",
         "reports_cashflow",
+        "reports_spending_trend",
+        "reports_cash_flow",
         "reports_networth",
         "transactions_get",
         "accounts_get",
@@ -2422,7 +2427,7 @@ def test_mcp_contract_scan_validates_assigned_calls() -> None:
         "transactions_categorize_rules_set(rules=[...])",
         'reviews(kind="matches", status="pending")',
         'refresh_run(steps=["match", "transform"])',
-        '{"actions":["Use reports(report_id=\\"core:spending\\")"]}',
+        '{"actions":["Use reports(report_id=\\"core:spending_trend\\")"]}',
     ],
 )
 def test_mcp_contract_scan_accepts_live_properties_and_enums(text: str) -> None:
@@ -2431,7 +2436,7 @@ def test_mcp_contract_scan_accepts_live_properties_and_enums(text: str) -> None:
 
 def test_mcp_contract_scan_accepts_escaped_quotes_in_multi_argument_calls() -> None:
     text = (
-        r'{"actions":["Use reports(report_id=\"core:spending\", '
+        r'{"actions":["Use reports(report_id=\"core:spending_trend\", '
         r'parameters={\"granularity\": \"month\"})"]}'
     )
 
@@ -2978,7 +2983,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     assert "system_audit_undo(operation_id=...)" in account_identity
     assert "include_closed is a read filter" in account_management
     assert "data.warnings" in account_management
-    assert 'reports(report_id="core:spending")' in privacy
+    assert 'reports(report_id="core:spending_trend")' in privacy
     assert 'reports(report_id="core:networth_history"' in privacy
     assert privacy.count("| high |") >= 2
     assert "Eight registered report routes" in index

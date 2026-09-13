@@ -28,18 +28,18 @@ def monthly_review() -> str:
         that needs attention.
 
         **Relevant tools:**
-        - reports(report_id='core:spending') — monthly spending trend
-        - reports(report_id='core:cashflow') — inflow/outflow/net
+        - reports(report_id='core:spending_trend') — monthly spending trend
+        - reports(report_id='core:cash_flow') — inflow/outflow/net
         - accounts_balances — current account balances
-        - reports(report_id='core:recurring') — recurring charge review
+        - reports(report_id='core:recurring_subscriptions') — recurring charge review
 
         **Workflow:**
-        1. Start with reports(report_id='core:spending') for the last 1-2 months
+        1. Start with reports(report_id='core:spending_trend') for the last 1-2 months
         2. If spending is above average, rerun reports with
-           report_id='core:spending' and a category parameter, or use
-           report_id='core:cashflow' for an account-and-category breakdown
+           report_id='core:spending_trend' and a category parameter, or use
+           report_id='core:cash_flow' for an account-and-category breakdown
         3. Review accounts_balances for current position
-        4. Optionally run reports(report_id='core:recurring')
+        4. Optionally run reports(report_id='core:recurring_subscriptions')
 
         **Guardrails:**
         - Present totals and trends, not individual transaction details unless asked
@@ -132,7 +132,7 @@ def onboarding() -> str:
         - import_status(sections=['formats']) — see supported formats
         - accounts — verify imported accounts
         - system_status(sections=['categorization']) — check coverage
-        - reports(report_id='core:spending') — first look at their data
+        - reports(report_id='core:spending_trend') — first look at their data
 
         **Workflow:**
         1. Ask the user what files they have (OFX/QFX, CSV)
@@ -140,7 +140,7 @@ def onboarding() -> str:
         3. Verify with accounts that accounts were created
         4. Check system_status(sections=['categorization']); if many are
            uncategorized, offer to help
-        5. Show reports(report_id='core:spending') as the first snapshot
+        5. Show reports(report_id='core:spending_trend') as the first snapshot
 
         Default categories are seeded automatically by `moneybin db init`
         and `moneybin transform apply`.
@@ -229,12 +229,12 @@ def sync_review() -> str:
         **Relevant tools:**
         - sync_status — list connected institutions with last-sync time, status,
           and error guidance.
-        - reports(report_id='core:spending') — optional,
+        - reports(report_id='core:spending_trend') — optional,
           aggregate context for recent transaction volume.
 
         **Workflow:**
         1. Call sync_status first.
-        2. Use reports(report_id='core:spending') only when
+        2. Use reports(report_id='core:spending_trend') only when
            aggregate volume context would clarify an anomaly.
         3. Report errors, stale institutions (last sync older than seven days),
            and material volume anomalies. Quote the relevant action hint and

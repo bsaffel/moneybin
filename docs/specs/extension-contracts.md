@@ -330,7 +330,7 @@ A Report is a single decorated **Python runner** over a `reports.*` view. The ru
 > never MCP tool count.
 
 ```python
-@report(name="cashflow", view=REPORTS_CASH_FLOW)
+@report(name="cash_flow", view=REPORTS_CASH_FLOW)
 def cash_flow(db, *, from_month=None, to_month=None, by="account-and-category") -> ReportQuery:
     """Google-style docstring: summary + Args + Examples."""
     ...validate params, resolve free-text→id, build SQL...
@@ -381,7 +381,7 @@ callers install a decorated runner explicitly through
 
 Report rows use `reports(report_id=..., parameters=...)`; domain-operation rows
 such as `accounts` keep their domain tool. For example, cash flow runs through
-`reports(report_id="core:cashflow", parameters={"by": "account"})`.
+`reports(report_id="core:cash_flow", parameters={"by": "account"})`.
 Report IDs are public contracts and must not collide. Registration may expose a
 short alias only when it resolves to exactly one stable ID.
 
@@ -415,11 +415,11 @@ not a default.
 
 A report contributor writes one `@report`-decorated runner. The framework introspects the runner's **signature** (parameter names, resolved types, defaults) and its **Google-style docstring** (summary, `Args:`, `Examples:`) into a `ReportSpec`, then registers the report-catalog entry and CLI command from that single definition. The spec carries the runner's declared `TableRef` for execution and provenance.
 
-Worked example — the shipped `cashflow` runner (`src/moneybin/reports/definitions/cash_flow.py`):
+Worked example — the shipped `cash_flow` runner (`src/moneybin/reports/definitions/cash_flow.py`):
 
 ```python
 @report(
-    name="cashflow",
+    name="cash_flow",
     view=REPORTS_CASH_FLOW,
     classes={  # declared output-column privacy contract (ADR-013)
         "year_month": DataClass.TXN_DATE,
@@ -457,8 +457,8 @@ def cash_flow(
         by: account | category | account-and-category — how to group.
 
     Examples:
-        moneybin reports cashflow --by category --from-month 2024-01
-        reports(report_id="core:cashflow", parameters={"by": "account"})
+        moneybin reports cash-flow --by category --from-month 2024-01
+        reports(report_id="core:cash_flow", parameters={"by": "account"})
     """
     if by not in CASHFLOW_GROUPINGS:
         raise ValueError(f"Unknown by: {by}")
@@ -498,6 +498,65 @@ unchanged and simply renders its amounts as plain text. Declare it when the
 column holds money. For in-repo reports it is not optional in practice: a
 guard fails any column classed `TXN_AMOUNT` or `BALANCE` that declares no kind
 (`tests/moneybin/test_cli/test_render.py`).
+
+### Declaring what currency a money column is already denominated in
+
+`OutputColumn` also carries an optional `currency_basis`, naming which
+currency a money column's amounts are *already* denominated in when that is
+not the row's own currency. `convert_records`
+(`src/moneybin/reports/_framework/convert.py`) prices every money-classed
+column FROM its declared basis: the row's own currency by default — the
+column named by `ReportSemantics.currency` — or, for a column whose basis is
+`"home"`, the profile's home currency. Pricing an already-home-converted
+column from the row's own currency instead — the row-basis default — reprices
+it a second time, silently; that is the defect this field exists to close.
+
+```python
+OutputColumn(
+    "account_balance_home",
+    "The account balance in the profile's home currency.",
+    DataClass.BALANCE,
+    money_kind="balance",
+    currency_basis="home",
+)
+```
+
+`currency_basis` takes exactly one value, `"home"`. Omitting it (`None`, the
+default) is what every column declared before this field existed still means:
+the amount is in the row's own currency, and `convert_records` prices it as
+it always has.
+
+**Every money column on a converted row ends up in the same target
+currency**, whichever basis it started from — that is the property the field
+exists to guarantee, not a side effect. Reading `to_currency` into the
+profile's home currency (Requirement 9's default, and the common case) makes
+a home-basis column's own rate an identity: `resolve_rate` answers `1` without
+a database lookup, so the column is left numerically unchanged at zero extra
+cost. Reading into any other display currency reprices it from the home
+currency like any other column, landing beside the row-basis columns in the
+same requested currency — never left behind in the home currency, which would
+publish one row holding two currencies under one label, the exact blended
+number `multi-currency.md` forbids.
+
+Pricing a home-basis column needs the profile's home currency itself, which
+`convert_records` has no row-level source for — unlike the row's own currency,
+it is report-level metadata the caller supplies via `home_currency`. A report
+declaring a `"home"`-basis column without a caller passing one degrades
+(segments) rather than guessing, the same way every other unpriceable case in
+this module does.
+
+`OutputColumn` checks `currency_basis` at construction the same way it checks
+`money_kind` and `polarity`, and for the same reason: a `Literal` binds a type
+checker, not the interpreter, and an author running none would otherwise get
+no signal that a misspelled value silently fell back to pricing the column
+from the row's own currency.
+
+The same check refuses a basis on a column whose `data_class` holds no money.
+`convert_records` prices only `MONEY_CLASSES` — `BALANCE`, `TXN_AMOUNT`,
+`INCOME_AMOUNT` — so a basis declared on, say, an `AGGREGATE` column is never
+consulted: the declaration reads as "already converted" and behaves as though
+it were absent, with nothing raised. That is the same silent no-op a misspelled
+value would be, so it fails the same way, at construction.
 
 ### Choosing which columns a text reader sees first
 
@@ -571,8 +630,8 @@ How the parts map (introspection rules, `src/moneybin/reports/_framework/introsp
 From the `ReportSpec`, the framework generates:
 
 - **`TableRef` wiring** — the runner declares `view=REPORTS_CASH_FLOW` (a `TableRef` constant); the spec carries it for execution and schema lineage.
-- **MCP report entry** — stable ID `core:cashflow`, parameter schema derived from the runner, and output/metric metadata consumed by the one generic `reports(report_id="core:cashflow", parameters={...})` contract after Plan 6. Installing the entry never generates a per-report MCP tool.
-- **CLI command** — `moneybin reports cashflow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
+- **MCP report entry** — stable ID `core:cash_flow`, parameter schema derived from the runner, and output/metric metadata consumed by the one generic `reports(report_id="core:cash_flow", parameters={...})` contract after Plan 6. Installing the entry never generates a per-report MCP tool.
+- **CLI command** — `moneybin reports cash-flow [--from-month ...] [--to-month ...] [--by ...]` (`src/moneybin/reports/_framework/cli_register.py`). The command name is `<name>` with underscores rendered as hyphens.
 
 At call time the framework validates parameters, executes the runner's
 `ReportQuery`, classifies each output column from the report's **declared
@@ -592,8 +651,8 @@ identical envelopes via the shared `ReportResult`.
 
 Report column classification is **declared, not lineage-derived** ([ADR-013](../decisions/013-report-classification-declared.md)). SQLMesh deploys each report view as a `SELECT * FROM <internal physical table>` pointer, so lineage on the deployed view body classifies the pointer (not the logic) and would leak; and provenance ≠ sensitivity for derived columns (a z-score of an amount is `AGGREGATE`, not `TXN_AMOUNT`). Reports are a fixed, first-party surface known at design time, so each declares its `column → DataClass` map on `@report` — on the same footing as the `CLASSIFICATION` registry that declares `core`/`app` base truth. A scenario test (`tests/scenarios/test_reports_classification.py`) asserts the declared map covers the real built view's columns and that `account_id` stays CRITICAL. (`sql_query` keeps using lineage — its correct home: an arbitrary agent query reading `core`/`app` directly. Its `raw`/`prep` reads resolve differently again, through the hand-written `INTERNAL_CRITICAL` map over a `FLOORED` value-shape floor, because those schemas have no per-column registry to trace back to.)
 
-The six in-tree view-backed reports — `core:cashflow`, `core:spending`,
-`core:recurring`, `core:merchants`, `core:large_transactions`, and
+The six in-tree view-backed reports — `core:cash_flow`, `core:spending_trend`,
+`core:recurring_subscriptions`, `core:merchant_activity`, `core:large_transactions`, and
 `core:balance_drift` — ship through this framework as `@report` runners in
 `src/moneybin/reports/definitions/`. They are wired via an explicit
 `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`;

@@ -239,7 +239,7 @@ supplies no map and every placeholder there fails closed.
 `[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*` (`_framework/contract.py:25`), so a bare
 `uuid4().hex[:12]` cannot construct a spec at all — the second constructor
 would raise on its first row. Every shipped report already carries the
-namespace (`core:spending`, `core:networth`), and `user:` extends the same
+namespace (`core:spending_trend`, `core:networth`), and `user:` extends the same
 scheme to this tier, which is also what keeps a user report from colliding with
 a built-in in the id space even when R5's name check is what users actually see.
 
