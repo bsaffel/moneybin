@@ -87,8 +87,8 @@ CREATE TABLE IF NOT EXISTS core.dim_accounts (
     currency_code VARCHAR,
     credit_limit DECIMAL(18, 2),
     archived BOOLEAN DEFAULT FALSE,
-    archived_at DATE,
-    include_in_net_worth BOOLEAN DEFAULT TRUE
+    include_in_net_worth BOOLEAN DEFAULT TRUE,
+    archived_at DATE
 );
 """
 

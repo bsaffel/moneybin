@@ -352,6 +352,54 @@ def test_undo_of_legacy_row_with_unchanged_archived_leaves_archived_at_alone(
     assert row == (True, date(2024, 3, 15))
 
 
+def test_undo_of_legacy_row_with_unchanged_archived_captures_live_value_in_own_audit(
+    db: Database,
+) -> None:
+    """A non-transition legacy undo's own audit row must still carry archived_at.
+
+    Codex PR #596 P2 round 2 (account_settings_repo.py:293): when the forward
+    event changed a field OTHER than ``archived``, this repo previously
+    returned without ever adding ``archived_at`` to either image -- leaving
+    the audit event ``undo_event`` emits from these same dicts (``before=
+    after``, ``after=before``) with an incomplete row capture even on a
+    migrated catalog that fully supports the column, so ``system_audit``
+    could not tell a persisted ``NULL`` from a genuinely missing legacy
+    field. The live column is never touched by the base class's ``UPDATE``
+    here (``archived_at`` isn't a key in ``before``), so the fix reads the
+    live value once and records it, unchanged, on both images instead of
+    leaving the key out.
+    """
+    repo = AccountSettingsRepo(db)
+    _set(repo, account_id="acct_legacy11", archived=True, archived_at=date(2024, 3, 15))
+
+    before_image = _legacy_row(account_id="acct_legacy11", archived=True)
+    after_image = dict(before_image)
+    after_image["display_name"] = "Legacy Account Renamed"
+    event = AuditEvent(
+        audit_id="aud-legacy11",
+        occurred_at="2025-06-01T00:00:00",
+        actor="cli",
+        action="account_settings.set",
+        target_schema="app",
+        target_table="account_settings",
+        target_id="acct_legacy11",
+        before_value=before_image,
+        after_value=after_image,
+        parent_audit_id=None,
+        operation_id="op-legacy11",
+    )
+    undo_result = repo.undo_event(event, actor="cli")
+
+    assert undo_result is not None
+    assert undo_result.before_value is not None
+    assert undo_result.after_value is not None
+    # undo_event emits before=after, after=before (swapped) -- both original
+    # images now carry the same live, unchanged archived_at instead of
+    # neither carrying the key.
+    assert undo_result.before_value["archived_at"] == "2024-03-15"
+    assert undo_result.after_value["archived_at"] == "2024-03-15"
+
+
 def test_undo_of_legacy_row_normalizes_archived_at_into_its_own_audit(
     db: Database,
 ) -> None:

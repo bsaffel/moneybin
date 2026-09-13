@@ -246,12 +246,17 @@ class AccountSettingsRepo(BaseRepo):
         ``archived_at`` existed, so neither its ``before`` nor ``after`` image
         carries the key -- ``BaseRepo._restore_row`` only sets columns present
         in ``before``, so undoing one of these rows would leave ``archived_at``
-        at whatever it currently holds. Deriving is only correct when this undo
-        actually flips ``archived`` -- comparing ``before`` to ``locate`` (the
-        event's captured after-image) is how we tell an archive/unarchive undo
-        from a legacy row whose ``archived`` was unchanged (some other field
-        moved); stamping either image would corrupt a real ``archived_at`` with
-        a guessed date.
+        at whatever it currently holds. GUESSING a date is only correct when
+        this undo actually flips ``archived`` -- comparing ``before`` to
+        ``locate`` (the event's captured after-image) is how we tell an
+        archive/unarchive undo from a legacy row whose ``archived`` was
+        unchanged (some other field moved); stamping either image with a
+        guessed date in that second case would corrupt a real ``archived_at``.
+        That second case still backfills both images with the row's actual
+        LIVE value (never a guess) rather than leaving the key absent --
+        omitting it would leave the post-V060 audit row ``undo_event`` emits
+        from these same dicts with an incomplete row capture, on a catalog
+        that fully supports the column.
 
         The two images need DIFFERENT derivations, not a shared one -- ``before``
         becomes the row's new live state, so a transition TO ``archived=True``
@@ -289,8 +294,6 @@ class AccountSettingsRepo(BaseRepo):
         super()._restore_row(before=before, locate=locate)
         if "archived_at" in before:
             return
-        if before.get("archived") == locate.get("archived"):
-            return
         if not self._archived_at_supported():
             # Pre-V060, no_auto_upgrade=True: the live catalog has no
             # archived_at column to derive a value into. Nothing to backfill,
@@ -298,18 +301,37 @@ class AccountSettingsRepo(BaseRepo):
             # _fetch_row would capture on this same catalog.
             return
         where, where_params = self._pk_where(locate)
-        # Read the row's CURRENT archived_at before the UPDATE below
-        # overwrites it -- on a migrated catalog this can be a genuine,
-        # recoverable date (V060's backfill, or any later write), and the
-        # guard must never destroy that (see the docstring above). Only when
-        # the live catalog holds nothing here does this degrade to the same
-        # "no guess beats a documented gap" NULL used elsewhere.
+        # Read the row's CURRENT archived_at before the transition branch's
+        # UPDATE below can overwrite it -- on a migrated catalog this can be
+        # a genuine, recoverable date (V060's backfill, or any later write),
+        # and the guard must never destroy that (see the docstring above).
+        # Only when the live catalog holds nothing here does this degrade to
+        # the same "no guess beats a documented gap" NULL used elsewhere.
         live_row = self._db.execute(
             f"SELECT archived_at FROM {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk
             f"WHERE {where}",
             where_params,
         ).fetchone()
         live_archived_at = live_row[0] if live_row is not None else None
+        if before.get("archived") == locate.get("archived"):
+            # Not an archive/unarchive undo -- some OTHER field moved on a
+            # legacy capture, so the base class's UPDATE above never touched
+            # archived_at (it isn't a key in `before`). The live value read
+            # above already describes both post-restore images equally --
+            # record it on both rather than leaving the key absent, so the
+            # audit event undo_event emits from these dicts (before=after,
+            # after=before, swapped) captures the full row instead of
+            # omitting it. Leaving it out here is what let a post-V060
+            # generated audit row silently regress to a partial capture even
+            # though the catalog fully supports it -- system_audit could not
+            # then tell a persisted NULL from a genuinely missing legacy
+            # field.
+            value = (
+                live_archived_at.isoformat() if live_archived_at is not None else None
+            )
+            before["archived_at"] = value
+            locate["archived_at"] = value
+            return
         derived_at = date.today() if before.get("archived") is True else None
         self._db.execute(
             f"UPDATE {self.table_ref.full_name} "  # noqa: S608  # TableRef + sqlglot-quoted pk; values parameterized
