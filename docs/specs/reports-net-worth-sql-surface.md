@@ -2246,9 +2246,14 @@ AGENTS.md's AX bias both point at.
   the 30-day default this spec chose to absorb a monthly statement cycle
   without over-firing.
 - **The naming rule has a guard.** For every runner in `ALL_REPORTS`, the name
-  half of `spec.report_id` equals `spec.view.name`. Requirement 13 is a
-  convention until a test enforces it, and the six mismatches this spec removes
-  are what an unenforced convention looks like after a year.
+  half of `spec.report_id`, `spec.view.name`, and `spec.name` are all equal —
+  three-way, not a pair. `spec.name` is the third because it is independent of
+  the other two and `ReportSpec.cli_name` derives the Typer command from it
+  (`src/moneybin/reports/_framework/contract.py:407-410`), so a pairwise guard
+  passes while a definition carries its old CLI command through a rename — the
+  one-name rule broken on the one surface a user actually types. Requirement 13
+  is a convention until a test enforces it, and the six mismatches this spec
+  removes are what an unenforced convention looks like after a year.
 
 ### Tier 2 — Synthetic scenarios
 
