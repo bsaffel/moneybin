@@ -119,10 +119,14 @@ The remote filesystems httpfs carries are then revoked on that same connection: 
 make format-sql
 ```
 
-Run it whenever you touch `src/moneybin/sqlmesh/models/**/*.sql`. Never the
-bare `uv run sqlmesh … format`, which forks a worker pool the encrypted-DB
-design disallows — AGENTS.md → Critical Rules and `.claude/rules/sandboxing.md`
-both carry the reason.
+`make format-sql` sets `MAX_FORK_WORKERS=1` before invoking the formatter. Run
+it whenever you touch `src/moneybin/sqlmesh/models/**/*.sql`. Never the bare
+`uv run sqlmesh -p src/moneybin/sqlmesh format`, which doesn't import
+`moneybin.database` (which sets that for all runtime) and so falls back to a
+forked worker pool — disallowed by the encrypted-DB design (orphan FDs vs the
+single-writer lock) and blocked by the macOS sandbox's denied semaphore
+syscall. AGENTS.md → Critical Rules and `.claude/rules/sandboxing.md` name the
+same prohibition, more briefly.
 
 ## File Types
 

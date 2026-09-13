@@ -82,6 +82,7 @@ When catching exceptions from external libraries (keyring, duckdb, argon2, base6
 
 - `SecretStr` for passwords/API keys in Pydantic Settings.
 - Subprocess commands as lists (`["cmd", "arg"]`), never `shell=True` with user input.
+- Log detailed errors internally; return generic messages to users.
 
 ## PII in Logs and Errors
 

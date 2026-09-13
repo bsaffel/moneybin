@@ -258,9 +258,11 @@ the derived `column_types` moves with it automatically.
 
 Two things are machine-checked, both at unit tier off `OutputColumn`:
 `ReportSpec.columns` and `default_columns` are each non-decreasing under Rule B.
-Each report's own execution test additionally asserts that the result's columns
-mirror its declared order — a stronger check than a static read, because it
-sees what the report actually returned. A green run still says nothing about
+Each **SQL-backed** report's own execution test additionally asserts that the
+result's columns mirror its declared order — a stronger check than a static
+read, because it sees what the report actually returned. Service-backed
+reports (`networth`, `networth_history`) have no equivalent execution test. A
+green run still says nothing about
 whether the declarations are right: the guard cannot notice a **mis-declared**
 class, and `balance_drift.days_since_assertion` is declared `TXN_DATE` while
 holding an integer day count, so the guard files it among the dates and is
