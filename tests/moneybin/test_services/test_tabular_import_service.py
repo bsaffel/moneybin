@@ -1163,6 +1163,87 @@ class TestTabularConfirmationFlow:
             )
         assert exc_info.value.code == error_codes.IMPORT_INVALID_DATE_FORMAT
 
+    def test_matched_format_two_native_date_columns_populates_post_date(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Every mapped date field must normalize together, not just one.
+
+        Codex P1/claude, round 10: normalize_excel_date_columns_before_mapping
+        was scoped to only the ``transaction_date`` column. When ``post_date``
+        ALSO maps to a native-Excel-date column, ``effective_date_format``
+        becomes ``"%Y-%m-%d"`` (from ``transaction_date``'s rewrite) while
+        ``post_date`` stays raw ``"<date> 00:00:00"`` text — ``_parse_dates``
+        then fails to parse it under that format and transforms.py stores it
+        as NULL, non-fatally and silently. The saved format's own persisted
+        ``date_format`` ("%m/%d/%Y", never the file's actual shape) proves the
+        fix does not depend on it matching either column's pre-rewrite text.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted", "Amount", "Description"])
+        ws.append([
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            -4.50,
+            "Coffee",
+        ])
+        ws.append([
+            datetime.date(2026, 1, 2),
+            datetime.date(2026, 1, 4),
+            100.00,
+            "Salary",
+        ])
+        xlsx = tmp_path / "two_native_dates.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="two_native_dates_fixture",
+                institution_name="Test",
+                file_type="excel",
+                delimiter=None,
+                encoding="utf-8",
+                header_signature=["Date", "Posted", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "post_date": "Posted",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%m/%d/%Y",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="two_native_dates_fixture",
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+
     def test_time_bearing_date_format_override_still_imports_native_date_xlsx(
         self, db: Database, tmp_path: Path
     ) -> None:

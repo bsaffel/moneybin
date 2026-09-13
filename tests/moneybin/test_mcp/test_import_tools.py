@@ -810,6 +810,46 @@ async def test_import_preview_coarse_maps_native_date_excel_column_correctly(
     assert response.data.mapping.get("description") != "Col1"
 
 
+async def test_import_preview_coarse_keeps_header_position_warning_with_real_preview_id(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A header-position warning must survive the placeholder-actions rewrite.
+
+    Codex P1, round 10: ``import_preview_coarse`` appends
+    ``header_position_ambiguous_recovery_mcp()`` to ``actions`` when the
+    signal is present and the plan is otherwise confirmable, but the later
+    step that swaps the placeholder ``preview_id`` for the real one used to
+    REASSIGN the whole ``actions`` list to a single-element list containing
+    only the confirm hint — silently discarding the warning the agent needs
+    to see before ratifying.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee\n"
+        "2026-01-02,10.00,Tea\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    assert response.data.header_position_ambiguous is True
+    assert response.data.confidence != "low"
+    preview_id = response.data.preview_id
+    assert any(f"preview_id='{preview_id}'" in action for action in response.actions)
+
+    from moneybin.services.import_confirmation import (
+        header_position_ambiguous_recovery_mcp,
+    )
+
+    assert header_position_ambiguous_recovery_mcp() in response.actions
+
+
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     mcp_db: object,
     tmp_path: Path,

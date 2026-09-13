@@ -1285,11 +1285,16 @@ def import_preview_coarse(
         # Only a confirmable plan gains anything from naming the real
         # preview_id; overwriting unconditionally discarded the correction hint
         # and sent the agent to a confirm call guaranteed to be refused.
+        # Replace only the placeholder entry (always actions[0] here — see the
+        # `not plan_is_unconfirmable` branch above) rather than the whole
+        # list: a header_position_ambiguous warning appended there is a
+        # second entry the agent must still see, and reassigning `actions`
+        # outright silently dropped it (Codex P1, round 10).
         if not plan_is_unconfirmable:
-            actions = [
-                f"Use import_confirm(preview_id='{preview_id}') before the preview "
-                "expires.",
-            ]
+            actions[0] = (
+                f"Use import_confirm(preview_id='{preview_id}') before the "
+                "preview expires."
+            )
     elif isinstance(final_payload, ImportPdfBridgePreviewPayload):
         actions = [
             f"Use import_confirm(preview_id='{preview_id}', "

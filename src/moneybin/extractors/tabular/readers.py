@@ -756,6 +756,7 @@ def normalize_excel_date_columns_before_mapping(
     file_type: str,
     date_format: str | None,
     date_column: str | None = None,
+    additional_date_columns: list[str] | None = None,
     native_date_columns: frozenset[str] | None = None,
 ) -> tuple[pl.DataFrame, str | None]:
     """Shared normalize-then-map sequence for every ``read_file`` caller.
@@ -764,8 +765,8 @@ def normalize_excel_date_columns_before_mapping(
     ``_import_tabular``, the MCP ``import_preview_coarse`` tool
     (``import_tools.py``), and the CLI ``import preview`` command
     (``import_cmd.py``) — and each needs the identical decision: whether to
-    normalize at all, and if so, whether to scope it to a single known
-    column. Duplicating that decision at three call sites is exactly how one
+    normalize at all, and if so, whether to scope it to the known date
+    columns. Duplicating that decision at three call sites is exactly how one
     of them drifted and regressed (a native-date Excel column reaching
     column mapping unnormalized doesn't just fail to detect the date column —
     it gets misidentified as ``description`` while the real description
@@ -775,34 +776,48 @@ def normalize_excel_date_columns_before_mapping(
     No-op for non-Excel file types. Skips normalization entirely when
     ``date_format`` declares a time component — see
     ``date_format_has_time_component`` and ``normalize_excel_date_columns``
-    for why. Otherwise normalizes, scoped to ``date_column`` when the caller
-    already knows which column maps to ``transaction_date`` (a saved/matched
-    format or a reviewed plan); ``None`` normalizes broadly, matching what
-    ``map_columns``'s own content-based discovery needs when no mapping
-    exists yet.
+    for why. Otherwise normalizes, scoped to ``date_column`` plus
+    ``additional_date_columns`` when the caller already knows the mapping (a
+    saved/matched format or a reviewed plan); both ``None`` normalizes
+    broadly, matching what ``map_columns``'s own content-based discovery
+    needs when no mapping exists yet.
+
+    ``additional_date_columns`` exists for ``post_date``: transform_dataframe
+    parses it with the same ``date_format`` used for ``transaction_date``
+    (transforms.py), so if both map to native-Excel-date columns and only
+    ``transaction_date`` is normalized, ``effective_date_format`` becomes
+    ``"%Y-%m-%d"`` while ``post_date`` stays raw ``"<date> 00:00:00"`` text —
+    a mismatch ``_parse_dates`` fails on non-fatally, so every ``post_date``
+    silently becomes ``NULL`` (Codex P1/claude, round 10). Every mapped
+    date-typed field must be normalized together, not just the one this
+    function originally scoped to.
 
     Returns:
         ``(possibly-rewritten df, effective_date_format)``. ``date_format``
         passes through unchanged UNLESS this step actually rewrote
-        ``date_column`` — a persisted/reviewed format was written for the
-        column's *pre-rewrite* text, so the parser must follow the rewrite
-        this step just made, not the format that no longer matches what's
-        in the column. These two outcomes are mutually exclusive: a
-        time-bearing ``date_format`` always skips normalization (returned
-        above), so a column is never both rewritten and still expected to
-        parse under its original format.
+        ``date_column`` or a member of ``additional_date_columns`` — a
+        persisted/reviewed format was written for the column's *pre-rewrite*
+        text, so the parser must follow the rewrite this step just made, not
+        the format that no longer matches what's in the column. These two
+        outcomes are mutually exclusive: a time-bearing ``date_format``
+        always skips normalization (returned above), so a column is never
+        both rewritten and still expected to parse under its original
+        format.
     """
     if file_type != "excel":
         return df, date_format
     if date_format_has_time_component(date_format, df=df, date_column=date_column):
         return df, date_format
+    known_columns = ([date_column] if date_column else []) + list(
+        additional_date_columns or []
+    )
     normalized, rewritten = normalize_excel_date_columns(
         df,
-        columns=[date_column] if date_column else None,
+        columns=known_columns or None,
         native_date_columns=native_date_columns,
     )
     effective_date_format = (
-        "%Y-%m-%d" if date_column and date_column in rewritten else date_format
+        "%Y-%m-%d" if rewritten & set(known_columns) else date_format
     )
     return normalized, effective_date_format
 
@@ -911,6 +926,21 @@ def _excel_column_physical_indices(
     real ``pl.read_excel`` call uses (translated to the low-level API), so
     this sees the identical column set fastexcel actually returned.
 
+    Bounded by ``n_rows=_EXCEL_NATIVE_DATE_SAMPLE_ROWS``, matching the
+    sibling openpyxl-based scans (Codex, round 10). Verified empirically
+    (three fixtures: a dense 49,999-row file, a blank-header column
+    populated only near the end, and a blank-header column that is always
+    blank) that ``available_columns()``'s column list and each
+    ``absolute_index`` are fixed by the header row alone and independent of
+    ``n_rows`` — it never implements ``pl.read_excel``'s own
+    ``drop_empty_cols`` (that already-blank-vs-dropped gap is exactly why
+    the length check below exists and fires on every truly-blank column,
+    not just a capped-window false positive). No correctness cost, and a
+    real one avoided: unlike this fastexcel/calamine call, whose full-height
+    scan already measured under a quarter-second even uncapped (see the
+    comment above ``_EXCEL_NATIVE_DATE_SAMPLE_ROWS``, whose openpyxl-backed
+    scan is the one that actually motivated that cap).
+
     Returns:
         The physical worksheet column index for each entry in
         ``column_names``, in the same order. Falls back to the identity
@@ -929,6 +959,7 @@ def _excel_column_physical_indices(
             sheet_name,
             header_row=(data_start_row - 1) if has_header else None,
             skip_rows=None if has_header else data_start_row,
+            n_rows=_EXCEL_NATIVE_DATE_SAMPLE_ROWS,
         )
         columns = sheet.available_columns()
     except fastexcel.FastExcelError:

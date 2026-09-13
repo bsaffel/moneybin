@@ -523,6 +523,39 @@ class TestPreview:
         assert "2 in file = 0 skipped + 0 header + 2 read" in result.output
         assert not any("parses as a transaction" in r.message for r in caplog.records)
 
+    def test_preview_header_position_ambiguous_uses_shared_recovery_text(
+        self, tmp_path: Path, caplog: LogCaptureFixture
+    ) -> None:
+        """`import preview` has no --confirm flag (Codex P2, round 10).
+
+        The hand-rolled warning this replaced told the user to "re-run with
+        --confirm to proceed" — a flag `import preview` itself does not
+        register (it lives on `import files` / `import confirm`). Reusing
+        the shared ``header_position_ambiguous_recovery`` helper names the
+        commands that actually clear the gate.
+        """
+        import logging
+
+        from moneybin.services.import_confirmation import (
+            header_position_ambiguous_recovery,
+        )
+
+        csv_file = tmp_path / "data_before_header.csv"
+        csv_file.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        expected = header_position_ambiguous_recovery(str(csv_file))
+        assert any(expected in r.message for r in caplog.records), caplog.text
+
     def test_preview_maps_native_date_excel_column_correctly(
         self, tmp_path: Path
     ) -> None:

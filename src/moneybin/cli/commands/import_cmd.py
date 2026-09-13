@@ -2718,14 +2718,18 @@ def import_preview(
                 "a header. Re-run with a corrected --format or check the source file."
             )
         if read_result.header_position_ambiguous:
-            # Dismissible, unlike the flag above: --confirm ratifies the
-            # detected header position rather than being permanently blocked.
-            logger.warning(
-                "⚠️  A row before the detected header also reads as a "
-                "transaction. If it is a balance summary, the detected "
-                "header is correct — re-run with --confirm to proceed. If "
-                "it is a real transaction, correct the source file first."
+            # Dismissible, unlike the flag above: ratifying the detected
+            # header position unblocks it. `import preview` has no --confirm
+            # option of its own (Codex P2, round 10) — the hand-rolled text
+            # this replaced told the user to pass a flag this command
+            # doesn't have. Use the shared helper, which names the commands
+            # that actually clear this gate (`import files --confirm` /
+            # `import confirm --accept`).
+            from moneybin.services.import_confirmation import (
+                header_position_ambiguous_recovery,
             )
+
+            logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
         if matched_format:
