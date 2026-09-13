@@ -380,7 +380,14 @@ snapshot (`source_origin` and `source_file` both), and publishes one
 nullable column, `has_position`, over the joined rows' own `quantity` and
 `institution_value` (never `cost_basis` — the raw table's own column comment
 marks it "reconciliation reference ONLY — never overwrites ledger-derived
-basis", `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`):
+basis", `src/moneybin/extractors/plaid/schema/raw_plaid_investment_holdings.sql:12`),
+plus one non-nullable column, `as_of` — the receipt's own `extracted_at::DATE`,
+carried straight from `newest_snapshot` (the same CTE `dim_holdings.sql:75-105`
+already computes for this identical receipt-scoped join, `extracted_at` itself
+sourced there at `:95`). `has_position` says what the receipt observed;
+`as_of` says when — the zero-snapshot override below needs both, because a
+definitive zero is only current evidence against ledger events it was taken
+after.
 
 - **`TRUE` — nonzero position or value evidence.** At least one row for the
   account in that newest snapshot satisfies `quantity <> 0 OR
@@ -491,19 +498,28 @@ workaround of the check.
 **The zero-snapshot override: a definitive zero-position snapshot from the
 newest pull overrides historical *security-position* evidence on the
 investment ledger — a new rule, stated once, here and referenced everywhere
-else that depends on it.** Reading the transaction arms existentially —
-*ever posted, regardless of amount* — is what makes a still-open position
-with no balance observation visible, but it also means a genuinely
-liquidated position, which posts real buy and sell events to
+else that depends on it, and derived below from an explicit state space
+rather than restated as a new ad hoc exception each time a case is found
+that the last revision missed.** Reading the transaction arms
+existentially — *ever posted, regardless of amount* — is what makes a
+still-open position with no balance observation visible, but it also means
+a genuinely liquidated position, which posts real buy and sell events to
 `core.fct_investment_transactions` before it is disposed, would qualify
 through that same arm forever: historical activity proves the account once
 held a security, never that it holds one *now*, and an unclearable `fail`
 on a correctly-liquidated position is worse than the silent zero this guard
-exists to prevent. The override fires on exactly one condition, read from
-the relation above rather than restated here: the account has a row in
-`core.dim_holdings_broker_reported` with `has_position = FALSE`. That is
-direct, current evidence there is no *security* to see, and it outranks
-indirect evidence that there once was one.
+exists to prevent. The override fires on exactly two conditions, both read
+from relations already established above rather than restated here: (1) the
+account has a row in `core.dim_holdings_broker_reported` with `has_position
+= FALSE`, and (2) that row's own `as_of` is at least as recent as the latest
+security-position event it would cancel. Condition (1) alone is direct,
+current evidence there is no *security* to see; condition (2) is what stops
+that evidence from outranking a security-position event the receipt never
+had the chance to observe — a definitive zero taken before a later unbound
+buy says nothing about a purchase it predates. §the state-space table below
+enumerates every combination of the dimensions that decide this and derives
+both conditions, plus the override's cancellation scope, as one predicate
+rather than as a growing list of exceptions.
 
 **The cash-versus-security discriminator on `core.fct_investment_transactions`:
 `quantity`, not `security_id` — named once here, referenced everywhere below
@@ -530,35 +546,121 @@ branch: "Signed units: + acquire, − dispose, NULL cash-only"
 cash-only event; `quantity IS NOT NULL` is a security-position event, bound
 or unbound.**
 
-**The override may cancel only the evidence it actually contradicts, and a
-zero-*position* snapshot contradicts nothing about cash — this is the scope
-rule the boundary above is drawn inside of.** `has_position` (above) is
-derived solely from the newest holdings snapshot's own `quantity` and
-`institution_value` columns: a broker's claim about *securities held*, not
-about cash sitting in the account or moving through it. A sale's retained
-proceeds, a later cash dividend, and a plain deposit are all invisible to
-that snapshot, so the override may cancel only `core.fct_investment_transactions`
-evidence that is itself about a security position — a row where `quantity
-IS NOT NULL` per the discriminator above. It never cancels: (1) any
-`core.fct_transactions` row, the cash ledger the holdings pull says nothing
-about at all; and (2) a `core.fct_investment_transactions` row where
-`quantity IS NULL` — a cash-only event that a securities-only snapshot was
-never in a position to contradict. This is a correction to an earlier round
-of this section, which read the override as canceling "historical
-transaction evidence on either ledger" with no such restriction (review
-thread `3998969090`), and a second correction to a predicate that read this
-same boundary off `security_id` instead of `quantity` (review thread
-`3999020022`). An investment account that sells
-its last security but retains the sale proceeds, or later receives a
-cash-only dividend or deposit, still resolves `has_position = FALSE` — it
-holds no security — but it still holds cash: `docs/specs/investments-overview.md:283`
-independently states that an investment account may hold uninvested cash
-with no security row. Letting the override reach that evidence would drop a
-cash-holding account from the candidate set for the same reason the override
-exists to correct on the security side — an unclearable false negative, just
-on the ledger's cash-only rows instead of its security-linked ones. Security
-position, not "this account's investment-ledger history," is therefore the
-override's actual scope.
+**The state space the override's predicate is derived from — enumerated
+once here, and referenced everywhere else that depends on it, instead of
+patched again the next time a case is found the last revision missed.**
+Four dimensions decide whether an investment account's ledger evidence
+still counts toward Requirement 14's candidate set:
+
+- **Securities held**, from the newest receipt
+  (`core.dim_holdings_broker_reported.has_position`): `TRUE` (nonzero
+  rows), a definitive `FALSE` (the zero-row or empty-receipt shape, above),
+  `NULL` (inconclusive), or *absent* — no row at all, because the item
+  never had a successful newest pull or the account falls outside the
+  relation's `account_type = 'investment'` universe (§ above).
+- **Cash held**, from `core.fct_investment_transactions`: the account's
+  **net cash effect**, `SUM(amount)` over *every* row on that ledger —
+  security-linked and cash-only alike, never gated on `quantity` — nonzero
+  or decisively zero (including no rows at all). This is a source
+  distinct from securities held: `has_position` is the broker's claim
+  about positions, and cannot speak to cash the same pull never reports.
+- **Temporal order**, only meaningful when a security-position row
+  (`quantity IS NOT NULL`, per the discriminator above) exists at all:
+  the receipt's own `as_of` compared against `MAX(trade_date)` over the
+  account's security-position rows — *current* (`as_of` on or after that
+  maximum) or *stale* (`as_of` before it). Vacuously current when no
+  security-position row exists, since there is then nothing later for the
+  receipt to have missed.
+- **Account coverage** — already scoped above (`account_type =
+  'investment'`, the item published in `newest_snapshot`): a precondition
+  for the *absent* state, not a fifth independent axis.
+
+| Securities held | Security-position row exists? | Temporal order | Net cash effect | Override fires? | Investment-ledger candidacy |
+|---|---|---|---|---|---|
+| `TRUE` | — | — | — | Never | Candidate — security-position arm (existential) |
+| `NULL` | — | — | — | Never | Candidate — ordinary existential rule, either arm |
+| *absent* | — | — | — | Never | Candidate — ordinary existential rule, either arm |
+| `FALSE` | No | vacuous | Zero | Fires (nothing to cancel) | Not a candidate |
+| `FALSE` | No | vacuous | Nonzero | Fires, cancels nothing (no security-position row exists) | Candidate — cash arm |
+| `FALSE` | Yes | current | Zero | Fires | Not a candidate |
+| `FALSE` | Yes | current | Nonzero | Fires — cancels the security-position arm only | Candidate — cash arm (buy-then-sell, proceeds retained) |
+| `FALSE` | Yes | stale | Zero | Does not fire — condition (2) below fails | Candidate — security-position arm survives (a later unbound buy or transfer-in the receipt predates) |
+| `FALSE` | Yes | stale | Nonzero | Does not fire | Candidate — both arms |
+
+**The predicate is a direct reading of this table, not a sixth row added
+by hand later.** The override fires — `override_applies` — exactly when:
+
+```
+override_applies :=
+  has_position = FALSE
+  AND as_of >= COALESCE(MAX(trade_date) FILTER (WHERE quantity IS NOT NULL), as_of)
+```
+
+`COALESCE(..., as_of)` is what makes the vacuous rows above resolve
+correctly: with no security-position row, the comparison falls back to
+`as_of >= as_of`, trivially true, so `override_applies` tracks
+`has_position = FALSE` alone in that case — there being nothing to be
+stale against. The account's standing on the investment ledger is then:
+
+```
+candidate_via_investment_ledger :=
+  SUM(amount) <> 0                                   -- cash arm
+  OR (EXISTS a row WHERE quantity IS NOT NULL         -- security-position arm
+      AND NOT override_applies)
+```
+
+The two arms read overlapping rows through two different aggregates, and
+`override_applies` reaches only the second. Canceling a row's standing as
+security-position evidence does not, and cannot by this construction,
+remove its contribution to `SUM(amount)` — the fix for the defect below.
+It never cancels any `core.fct_transactions` row either: that ledger is
+out of the override's scope entirely, not merely undercounted by it (§
+below).
+
+This corrects three defects across as many earlier rounds of this section,
+each one a predicate patched to fix the case in front of it rather than
+derived from the table above. Round one read the override as canceling
+"historical transaction evidence on either ledger" with no restriction to
+security-position rows at all (review thread `3998969090`). Round two
+restricted it correctly in principle but keyed the restriction on
+`security_id` instead of `quantity`, misreading an unbound buy or sell as
+cash evidence (review thread `3999020022`, the discriminator above).
+Round three keyed the cash arm on row *selection* — preserve `quantity IS
+NULL` rows, drop `quantity IS NOT NULL` rows from consideration entirely —
+which cancels a sell row's own cash credit along with its position
+evidence whenever the sale's proceeds are the account's only cash
+evidence: `core.fct_investment_transactions.amount` is the signed cash
+effect on *every* row regardless of `quantity`
+(`fct_investment_transactions.sql:110`, "Signed cash effect: − out (buy),
++ in (sell/dividend)"), so a sell that liquidates the account's last
+security still credits cash on the very row the security-position arm is
+entitled to cancel (review thread `3999065574`). An investment account
+that sells its last security but retains the sale proceeds, or later
+receives a cash-only dividend or deposit, still resolves `has_position =
+FALSE` — it holds no security — but its net cash effect is nonzero, so it
+still holds cash: `docs/specs/investments-overview.md:283` independently
+states that an investment account may hold uninvested cash with no
+security row. Reading the cash arm as an aggregate over every row, rather
+than as a filtered subset of rows, is what keeps the fourth round from
+becoming a rerun of the third on the next liquidation shape: the security
+and cash arms now differ in which *aggregate* they compute, never in
+which *rows* are visible to each.
+
+**The temporal precondition is not a correction to an earlier round of
+this section — no earlier round considered it at all — but a gap this
+round closes before it is found the same way the three above were: a
+receipt says nothing about a ledger event it predates.** A definitive-zero
+snapshot taken before a later unbound buy or transfer-in is current
+evidence about the security position observed *at the time of that pull*,
+not about a trade that had not happened yet. Firing the override anyway
+would cancel the one arm that can see that later trade at all: because an
+unbound buy has no `security_id`, `core.dim_holdings` cannot aggregate a
+lot against it (§"Evidence of holding value has four sources," above), so
+the security-position arm above is this shape's only source of evidence.
+`as_of >= COALESCE(MAX(trade_date) FILTER (WHERE quantity IS NOT NULL),
+as_of)` in the predicate above is what withholds the override until the
+receipt has actually had the chance to observe every security-position
+event it would otherwise cancel — the fix for review thread `3999065577`.
 
 **The boundary is drawn at the receipt, not at the row — a correction to an
 earlier round of this section, which drew it at the row and reintroduced the
@@ -600,13 +702,15 @@ because no snapshot happens to contradict it today: an account it flags is
 removed from the candidate set the same way every other account is —
 through Requirement 9's own date-scoped `archived_at` eligibility once the
 account is actually closed — not through a zero-snapshot override a cash
-ledger has no equivalent of. `core.fct_investment_transactions`'s own
-cash-only rows (`quantity IS NULL` per the discriminator above) are
+ledger has no equivalent of. `core.fct_investment_transactions`'s own cash
+arm — its net cash effect, `SUM(amount)` over every row on that ledger — is
 protected the same way and for the same reason: the newest holdings
-snapshot carries nothing that speaks to them. Only that ledger's
-security-linked rows (`quantity IS NOT NULL`) fall inside the override's
-scope, and `core.dim_holdings_broker_reported` is the source of the
-override itself, not a second place the defect could hide.
+snapshot carries nothing that speaks to cash, on any row, whether that row
+is also security-linked or not. Only that ledger's security-position arm
+(the existence of a `quantity IS NOT NULL` row) falls inside the override's
+scope, and even there only when the receipt is current per the temporal
+precondition above; `core.dim_holdings_broker_reported` is the source of
+the override itself, not a second place the defect could hide.
 
 **What the two transaction-activity arms catch together, and what they
 still miss.** Both ledgers carry their own transaction date, but the guard
@@ -616,23 +720,38 @@ holdings signal, not a second pattern beside it. This is what makes a
 tabular import with no balance column, a Plaid account whose
 `current_balance` or `account_type` never resolved, a manual account with
 postings and no assertion, and an investment account with a dividend, a
-fee, or a cash-only credit retained after its last security sale
-(`quantity IS NULL` on that row per the discriminator above, regardless of
-what its own buy/sell history looks like) all surface as unanchored rather
-than silently absent
+fee, or retained proceeds after its last security sale (via the net cash
+effect above, whether the credit lands on a separate cash-only row or on
+the sell row itself) all surface as unanchored rather than silently absent
 — every one of them has a row on one ledger or the other even though
-`core.fct_balances` has none, and a cash-only row is never in the
-zero-snapshot override's scope, so it surfaces even on an account whose
-security-linked rows alone would have been overridden. **The converse
-case — a fully-disposed position whose newest broker snapshot reports the
-same definitive zero, with no cash-only row of its own to fall back on —
-is deliberately absent from that list, because it is the one shape the
-override *does* reach**, and correctly does not surface: the account's
-only evidence was the disposed security's own buy/sell history, exactly
-what the override exists to stop from qualifying forever (§Data Model,
-"The zero-snapshot override," above). It does not reach an account with no
-transaction on either ledger,
-no holding, and no balance of any kind: nothing in `core.*` distinguishes
+`core.fct_balances` has none, and the cash arm is never in the
+zero-snapshot override's scope, so a nonzero net cash effect surfaces even
+on an account whose security-position arm alone would have been
+overridden. **The converse case — a fully-disposed position whose newest
+broker snapshot reports the same definitive zero, with a net cash effect
+of exactly zero — is deliberately absent from that list, because it is the
+one shape the override *does* reach**, and correctly does not surface: the
+account's only evidence was the disposed security's own buy/sell history,
+exactly what the override exists to stop from qualifying forever (§Data
+Model, "The zero-snapshot override," above).
+
+**A second converse case — a receipt whose `as_of` predates a later
+unbound buy or transfer-in — is also deliberately absent from the
+surfaces-as-unanchored list above, but for the opposite reason: it is
+never overridden in the first place.** The security-position arm's
+existential check still applies to it (§ state-space table, the `stale`
+rows), so it surfaces through the ordinary transaction arm exactly as an
+open position would, with no need for the cash arm or a separate
+cash-only row to rescue it. `core.dim_holdings` cannot see it either,
+because an unbound buy has no `security_id` for `core.fct_investment_lots`
+to aggregate against (§"Evidence of holding value has four sources,"
+above) — the security-position arm is this shape's only source of
+evidence, which is exactly why the temporal precondition has to hold it
+out of the override's reach rather than let a stale zero cancel the one
+arm that can see it.
+
+It does not reach an account with no transaction on either ledger, no
+holding, and no balance of any kind: nothing in `core.*` distinguishes
 "genuinely never funded" from "funded but nothing observed yet" for an
 account with zero rows anywhere, and guessing would reintroduce the
 false-positive risk Requirement 14's qualifier exists to avoid. That account
@@ -806,7 +925,7 @@ applies to every ordinary row, extended to the one row that has no
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
 accounts satisfying the eligible-candidate predicate stated once, above, at
-`:690-691` — not restated here, so the two cannot drift apart the way an
+`:767-768` — not restated here, so the two cannot drift apart the way an
 earlier round of this spec let them — NULL, and therefore unbounded, when
 none of them carry an `archived_at` at all. Then:
 
@@ -981,7 +1100,7 @@ core.fct_balances_daily), CURRENT_DATE)` — see below for why this date, not
 `observation_source`, `days_since_observed`, and `reconciliation_delta` all
 NULL, and `is_observed = FALSE`. `currency_code` populates from
 `core.dim_accounts.currency_code` rather than going NULL: that column is the
-account's own denomination, per this rung's own column comment at `:854`,
+account's own denomination, per this rung's own column comment at `:1069`,
 independent of whether a balance was ever observed, so a Plaid account with
 a populated `iso_currency_code` but no balance, or a manual/tabular account
 with a configured or source-derived currency, still carries its known
@@ -1092,7 +1211,7 @@ exactly the per-candidate `synthesis_date` this section already computes
 above, so ranged behavior is unchanged. For an unranged read — no
 `from_date` and no `to_date` supplied — every row this rung's read can
 produce, synthesized or not, is dated at exactly the one date this rung's
-own dating rule already names, stated once above at `:881`:
+own dating rule already names, stated once above at `:1096`:
 `COALESCE((SELECT MAX(balance_date) FROM core.fct_balances_daily),
 CURRENT_DATE)` — never at `effective_to`'s own general default of
 `CURRENT_DATE` (§Data Model), which is usually a few days ahead of it. An
@@ -1110,7 +1229,7 @@ that is the right reading for a genuinely open-below *range* — reads an
 unranged read's absent lower bound as unbounded history rather than "no
 range at all," and readmits exactly the candidate this fix excludes, dated
 at its own `archived_at` in place of the single date the unranged contract
-(`:1483`-ish, below) actually owes the read. That was the defect (comment
+(`:2236`, below) actually owes the read. That was the defect (comment
 `3998860437`).
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
@@ -1496,7 +1615,7 @@ Only an account that passes the join is then scanned in
 **no `balance_date` filter** — never a NULL-total read off
 `reports.net_worth`'s own aggregate rung, and never scoped to
 `CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:864`, "In currency_code," carries no NULL case);
+column's own comment at `:1079`, "In currency_code," carries no NULL case);
 the synthesized-row arm is the only source of a NULL there, so the bare
 predicate identifies it regardless of what date §`reports.net_worth_accounts`
 dates that row at — that date is stated once, where the row is produced,
@@ -2161,13 +2280,16 @@ fix is scoped to the unranged path and does not regress the ranged one.
   account is a liquidated investment account, its broker connection staying
   live and — realistically, not by omission —
   `core.fct_investment_transactions` carrying the account's real
-  buy-then-sell history ending in that disposal, tested twice against the
-  same persona shape: **zero-quantity row**, where the newest snapshot still
-  carries a holdings row for the account reporting `quantity = 0` and no
-  institution value; and **empty receipt**, where the newest snapshot's
-  receipt exists but carries no holdings row for the account at all — the
-  no-row form the boundary correction in §Data Model addresses. The account
-  has no balance observation of any kind in either case. Both exit `0` with
+  buy-then-sell history ending in that disposal, **sold at cost so the
+  pair's net cash effect is decisively zero** — not merely absent, which is
+  what distinguishes this fixture from the cash-arm-aggregate case below —
+  tested twice against the same persona shape: **zero-quantity row**, where
+  the newest snapshot still carries a holdings row for the account
+  reporting `quantity = 0` and no institution value; and **empty receipt**,
+  where the newest snapshot's receipt exists but carries no holdings row
+  for the account at all — the no-row form the boundary correction in
+  §Data Model addresses. The account has no balance observation of any
+  kind in either case. Both exit `0` with
   no `fail` entry naming that account. An earlier round of this fixture
   instead left the investment ledger empty, which made the zero-quantity-row
   case pass for the wrong reason: an account with no transaction history at
@@ -2240,6 +2362,49 @@ fix is scoped to the unranged path and does not regress the ranged one.
   `has_position = FALSE` with no holdings rows of its own, and had its own
   transaction evidence overridden — silently contributing zero for an
   account the holdings product never covered.
+- **The unanchored-account guard still fails when the sale that liquidates
+  the position is itself the account's only cash evidence — the cash arm's
+  aggregate boundary (§Data Model, `SUM(amount)`, review thread
+  `3999065574`).** `moneybin system doctor` against a persona whose only
+  account is the same liquidated investment account as above — live broker
+  connection, a definitive-zero newest snapshot in either shape — but with
+  `core.fct_investment_transactions` carrying only the buy-then-sell pair
+  itself, sold at a gain so the pair's amounts do not net to zero, and no
+  separate cash-only row of any kind. The account still has no balance
+  observation of any kind. Exits `1`, with `net_worth_unanchored_accounts`
+  at `fail` and `affected_ids` naming the account. This is the regression
+  guard for computing the cash arm as `SUM(amount)` over every row rather
+  than as a filtered subset of `quantity IS NULL` rows: a predicate that
+  drops every `quantity IS NOT NULL` row from the cash sum discards the
+  sell row's own credit along with the position it also carries, and this
+  fixture has no other row to fall back on, so the earlier predicate
+  silently contributed zero for it. Pair with the "does not fail" case
+  above, whose buy-then-sell pair is sold at cost and nets to exactly
+  zero, and with the cash-evidence-boundary case above, whose credit lands
+  on a separate `quantity IS NULL` row instead of the sell row itself — the
+  three together prove the predicate reads the ledger's arithmetic, never
+  a row's shape.
+- **The unanchored-account guard still fails for a definitive-zero receipt
+  that predates a later unbound buy — the override's temporal precondition
+  (§Data Model, review thread `3999065577`).** `moneybin system doctor`
+  against a persona whose only account is the same liquidated investment
+  account's item, but with one more `core.fct_investment_transactions` row
+  after the definitive-zero snapshot's own `as_of`: an unbound buy or
+  transfer-in (`security_id IS NULL`, `quantity IS NOT NULL`) trade-dated
+  later than the receipt. The account still has no balance observation of
+  any kind. Exits `1`, with `net_worth_unanchored_accounts` at `fail` and
+  `affected_ids` naming the account. This is the regression guard for the
+  `as_of >= MAX(trade_date)` precondition: without it, an unconditional
+  override would suppress this later buy's own security-position evidence,
+  and because the buy is unbound, `core.dim_holdings` cannot emit the
+  resulting open position either (§"Evidence of holding value has four
+  sources," above) — every candidate source would then miss the account,
+  `reports.net_worth.net_worth` would stay populated, and doctor would pass
+  on a profile that genuinely holds an unpriced security. Pair with the
+  discriminator-boundary case above, whose unbound row predates rather than
+  follows the definitive-zero receipt and is correctly overridden — the two
+  together prove the precondition is evaluated on dates, not merely on the
+  discriminator.
 - No old id or command survives: a search for `core:networth`,
   `core:cashflow`, `core:spending`, `core:recurring`, `core:merchants`, and
   their derived command names returns nothing outside prose describing the
@@ -2250,7 +2415,7 @@ fix is scoped to the unranged path and does not regress the ranged one.
 
 The `international` persona already supplies the shapes needed: several
 currencies, one of them unpriced. Two additions for Requirement 9 and
-multi-currency, and nine for `M2B.3`:
+multi-currency, and fifteen for `M2B.3`:
 
 - A persona account archived partway through its history, so the date-scoped
   exclusion is exercised end to end rather than only in unit tests.
@@ -2293,19 +2458,22 @@ multi-currency, and nine for `M2B.3`:
   the row reports `quantity = 0` and no institution value, the account
   carries no balance observation of any kind, and
   `core.fct_investment_transactions` carries its real buy-then-sell history
-  ending in that disposal — not an empty ledger, which would prove nothing
-  about the override this fixture exists to exercise. Added to the same
-  persona; the fixture the Tier 3 "does not fail for a broker-reported
-  definitive zero" case reads for its zero-quantity-row half.
+  ending in that disposal, **sold at cost so the pair's net cash effect is
+  decisively zero** — not an empty ledger, which would prove nothing about
+  the override this fixture exists to exercise, and not a nonzero net cash
+  effect, which the cash-arm-aggregate fixture below distinguishes it from.
+  Added to the same persona; the fixture the Tier 3 "does not fail for a
+  broker-reported definitive zero" case reads for its zero-quantity-row
+  half.
 - For `M2B.3`'s empty-receipt liquidation shape — the no-row twin of the
   fixture above, and the common case in practice: the same fully-liquidated
   persona account, broker connection live, but with its newest snapshot
   receipt carrying **zero holdings rows for the account** rather than one
   reporting `quantity = 0`. The account still carries no balance observation
   of any kind, and `core.fct_investment_transactions` still carries its real
-  buy-then-sell history ending in the disposal — not an empty ledger, for
-  the same reason as above. Added to the same persona; the fixture the Tier
-  3 "does not fail for a broker-reported definitive zero" case reads for its
+  buy-then-sell history ending in the disposal, sold at cost for the same
+  reason as above. Added to the same persona; the fixture the Tier 3 "does
+  not fail for a broker-reported definitive zero" case reads for its
   empty-receipt half.
 - For `M2B.3`'s discriminator boundary — the unbound-security shape: the
   same fully-liquidated persona account — live broker connection, a
@@ -2330,6 +2498,21 @@ multi-currency, and nine for `M2B.3`:
   `source_origin`, carrying its own recorded `core.fct_transactions`
   activity and no balance observation of any kind. Added as its own
   persona; the fixture the Tier 3 receipt-scope case reads.
+- For `M2B.3`'s cash-arm aggregate boundary — the sell-row-is-the-credit
+  shape: the same fully-liquidated persona account — live broker
+  connection, a definitive-zero newest snapshot in either shape above —
+  but with `core.fct_investment_transactions` carrying only the
+  buy-then-sell pair itself, sold at a gain so the pair's amounts do not
+  net to zero, and no separate cash-only row of any kind. The account
+  still carries no balance observation of any kind. Added to the same
+  persona; the fixture the Tier 3 cash-arm-aggregate case reads.
+- For `M2B.3`'s temporal-precondition boundary — the stale-receipt shape:
+  the same fully-liquidated persona account's item, but with one more
+  `core.fct_investment_transactions` row after the definitive-zero
+  snapshot's own `as_of`: an unbound buy or transfer-in (`security_id IS
+  NULL`, `quantity IS NOT NULL`) trade-dated later than the receipt. The
+  account still carries no balance observation of any kind. Added to the
+  same persona; the fixture the Tier 3 temporal-precondition case reads.
 
 Ground truth needs expected net worth per day in the home currency, the
 expected NULL dates for the unpriced currency, and — for `M2B.3` — the
