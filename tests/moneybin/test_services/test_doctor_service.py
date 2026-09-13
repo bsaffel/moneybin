@@ -3831,7 +3831,16 @@ def test_currency_integrity_masks_an_account_number_shaped_id(
     # intact — masking it would make the published command unusable for the
     # common case rather than only the leaking one.
     assert "DUP_CANON" in detail, detail
-    assert "`moneybin accounts links run ****1098 DUP_CANON`" in detail, detail
+    # The mask reaches the prose (asserted above) but NOT the command: a bare
+    # `****1098` is a glob, so a paste in a directory holding a file ending
+    # `1098` would expand to that filename and propose a different pair. The
+    # unaltered id keeps its place, so the command still says which account the
+    # placeholder has to be resolved against.
+    assert (
+        "`moneybin accounts links run <unknown-currency-account-id> DUP_CANON`"
+        in detail
+    ), detail
+    assert "links run ****1098" not in detail, detail
     # A masked id cannot be pasted back, so the message has to say where the
     # real one is.
     assert "moneybin accounts list" in detail, detail
@@ -3896,7 +3905,10 @@ def test_currency_integrity_neutralizes_injection_chars_in_a_published_id(
     assert hostile not in detail, detail
     assert "AB_C_D_E" in detail, detail
     assert "*" not in detail.split("each pair shown as ")[1].split(" (")[0], detail
-    assert "`moneybin accounts links run AB_C_D_E DUP_SAFE`" in detail, detail
+    assert (
+        "`moneybin accounts links run <unknown-currency-account-id> DUP_SAFE`" in detail
+    ), detail
+    assert "links run AB_C_D_E" not in detail, detail
     assert result.affected_ids is not None
     assert "account:AB_C_D_E" in result.affected_ids, result.affected_ids
 
@@ -3945,8 +3957,21 @@ def test_currency_integrity_publishes_a_runnable_command_for_a_dashed_id(
 
     assert result.status == "fail"
     detail = result.detail or ""
-    assert "`moneybin accounts links run _12-34 DUP_SAFE`" in detail, detail
-    assert_published_commands_resolve("`moneybin accounts links run _12-34 DUP_SAFE`")
+    assert (
+        "`moneybin accounts links run <unknown-currency-account-id> DUP_SAFE`" in detail
+    ), detail
+    # Drop the leading-dash rule and the id stops counting as altered, so the
+    # real `-12-34` is published instead of a placeholder and this reds.
+    assert "links run -12-34" not in detail, detail
+    # Scoped to `links run` rather than the whole detail: the sibling
+    # `accounts links set <decision_id> --into <account_id>` cannot go through
+    # this helper at all, because filtering its placeholders leaves `--into` to
+    # swallow the `--help` the helper appends. That is a gap in the helper, not
+    # in this message.
+    links_run_commands = re.findall(r"`moneybin accounts links run [^`]*`", detail)
+    assert links_run_commands, detail
+    for command in links_run_commands:
+        assert_published_commands_resolve(command)
     assert result.affected_ids is not None
     assert "account:_12-34" in result.affected_ids, result.affected_ids
     # The altered-id note fires for a substitution as well as for a mask. Its

@@ -274,6 +274,67 @@ def _masked_account_affected_ids(account_ids: Iterable[str]) -> list[str]:
     ]
 
 
+def _command_account_id(account_id: str, placeholder: str) -> str:
+    """The id to put in a runnable command, or a placeholder when there is none.
+
+    An altered id can never run: a masked one names no account, and a sanitized
+    one names a different one. A masked one is also unsafe to paste, which is
+    the sharper half — ``mask_embedded_account_number`` emits a literal ``****``
+    that the shell globs against the working directory before ``moneybin`` sees
+    it, so ``****1098`` beside a file ending ``1098`` expands to that filename
+    and proposes a *different* pair. ``design-principles.md`` names a silent
+    account merge as the case needing the highest bar, and this is one.
+
+    Sanitizing cannot fix it: the ``****`` is added *after* sanitization by
+    design, because that is MoneyBin's canonical masked form and has to reach
+    the reader. Quoting cannot fix it either — ``cli_command_helpers.py``'s
+    ``_INVOCATION`` pattern stops at the first quote, so quoting the ids would
+    silently reduce the published-command check to a bare
+    ``accounts links run`` and stop validating the ids at all.
+
+    So an altered id becomes a ``<...>`` placeholder, which is the shape that
+    file's ``_PLACEHOLDER`` already recognizes as a value the reader
+    substitutes. ``affected_ids`` keeps the masked form instead — that channel
+    identifies accounts rather than publishing commands, so a placeholder there
+    would name nothing.
+    """
+    published = _publishable_account_id(account_id)
+    return published if published == account_id else placeholder
+
+
+def _altered_id_note(
+    account_ids: Iterable[str], *, commands_use_placeholders: bool
+) -> str:
+    """Explain a published id that differs from the one in the database.
+
+    Empty unless some id was actually altered. Both transformations
+    :func:`_publishable_account_id` can make are described, because the trigger
+    cannot tell them apart and naming only the masking left a merely-sanitized
+    id (``AB_C``) beside a sentence explaining ``****NNNN``.
+
+    ``commands_use_placeholders`` is False on the branch whose only published
+    command is ``moneybin transform``, which carries no ids — pointing that
+    reader at a ``<...>`` they cannot see would be its own confusion.
+    """
+    if not any(
+        _publishable_account_id(account_id) != account_id for account_id in account_ids
+    ):
+        return ""
+    placeholder_clause = (
+        " Neither form names a real account, so any command above shows `<...>` "
+        "in its place."
+        if commands_use_placeholders
+        else ""
+    )
+    return (
+        " An id shown here can differ from the one in your database: a run of "
+        "five or more digits is masked to `****NNNN` because it is the "
+        "account's source-native key, and a character that would break a "
+        f"command is replaced with `_`.{placeholder_clause} Run `moneybin "
+        "accounts list` to read the real id from your own database."
+    )
+
+
 def _orient_overlap_pair(
     a: str, b: str, unknown_currency_ids: Collection[str]
 ) -> tuple[str, str]:
@@ -3577,6 +3638,13 @@ class DoctorService:
                         if overflow
                         else ""
                     )
+                    # pair_descriptions above can show an altered id here too,
+                    # and this branch used to leave it unexplained — the sibling
+                    # review-pairs branch carried the note alone.
+                    masked_note = _altered_id_note(
+                        (account_id for a, b, _ in shown for account_id in (a, b)),
+                        commands_use_placeholders=False,
+                    )
                     return InvariantResult(
                         name=name,
                         status="fail",
@@ -3595,7 +3663,7 @@ class DoctorService:
                             "reports clean, assign a currency with `moneybin "
                             "accounts set <account> --currency <ISO 4217>` "
                             "and re-run `moneybin transform` again if one is "
-                            "still needed."
+                            f"still needed.{masked_note}"
                         ),
                         affected_ids=[
                             *_masked_account_affected_ids(unknown_accounts),
@@ -3630,32 +3698,22 @@ class DoctorService:
                     f"({round(ratio * 100)}% overlap)"
                     for absorbed, survivor, ratio in shown_pairs
                 )
+                # The placeholders keep the positions meaningful when both
+                # ids are altered; they reuse the label vocabulary the opening
+                # clause already establishes for this pair.
                 fallback_commands = "; ".join(
                     "`moneybin accounts links run "
-                    f"{_publishable_account_id(absorbed)} "
-                    f"{_publishable_account_id(survivor)}`"
+                    f"{_command_account_id(absorbed, '<unknown-currency-account-id>')} "
+                    f"{_command_account_id(survivor, '<other-account-id>')}`"
                     for absorbed, survivor, _ in shown_pairs
                 )
-                # An altered id cannot be pasted back, so say where the real
-                # one is rather than restoring it to keep the command
-                # convenient. Both transformations _publishable_account_id can
-                # make are described, because the condition below fires for
-                # either: naming only the masking left a merely-sanitized id
-                # (`AB_C`) shown beside a note that explains `****NNNN`.
-                masked_note = (
-                    " An id shown here can differ from the one in your "
-                    "database: a run of five or more digits is masked to "
-                    "`****NNNN` because it is the account's source-native key, "
-                    "and a character that would break the command it appears "
-                    "in is replaced with `_`. Either way that command needs the "
-                    "real id — run `moneybin accounts list` to read it from "
-                    "your own database."
-                    if any(
-                        _publishable_account_id(account_id) != account_id
+                masked_note = _altered_id_note(
+                    (
+                        account_id
                         for absorbed, survivor, _ in shown_pairs
                         for account_id in (absorbed, survivor)
-                    )
-                    else ""
+                    ),
+                    commands_use_placeholders=True,
                 )
                 overflow = len(review_pairs) - len(shown_pairs)
                 overflow_note = (
