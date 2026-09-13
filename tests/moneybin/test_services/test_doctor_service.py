@@ -4402,6 +4402,13 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
     is mergeable. The actionable pair's fallback command must still publish,
     and the stuck pair must be named separately rather than vanish from the
     report.
+
+    Pins the both-buckets-nonempty ordering directly (Codex P2 on
+    doctor_service.py:3843, ecdea37c): the no-link bucket's note and its
+    `moneybin sync pull` / re-run-doctor instruction must appear BEFORE the
+    currency-assignment sentence, by index comparison — not mere presence,
+    which is exactly what let this ordering regress three times in one
+    message (see _currency_assignment_closing).
     """
     settings = get_settings()
     rows = settings.doctor.duplicate_account_min_distinct_amounts
@@ -4437,6 +4444,17 @@ def test_currency_integrity_no_link_pair_note_appears_beside_review_pairs(
     assert "`moneybin accounts links run NOLINK_B NOLINK_A`" not in detail, detail
     assert "moneybin sync pull" in detail, detail
     assert "neither account holding a completed identity link" in detail, detail
+    # The ordering pin: both substrings must be present AND the no-link
+    # block's re-run-doctor instruction must precede the currency sentence.
+    no_link_idx = detail.index("neither account holding a completed identity link")
+    sync_pull_idx = detail.index("moneybin sync pull")
+    doctor_recheck_idx = detail.index(
+        "re-run `moneybin system doctor` — once it no longer shows one of these"
+    )
+    currency_idx = detail.index(
+        "assign a currency with `moneybin accounts set <account> --currency"
+    )
+    assert no_link_idx < sync_pull_idx < doctor_recheck_idx < currency_idx, detail
 
 
 @pytest.mark.unit
