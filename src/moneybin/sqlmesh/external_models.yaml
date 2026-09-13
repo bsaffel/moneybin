@@ -41,6 +41,7 @@
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
+    archived_at: DATE
 - name: '"moneybin"."app"."audit_log"'
   columns:
     audit_id: TEXT

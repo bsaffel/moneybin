@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from moneybin.database import has_column
 from moneybin.sql.category_class import CATEGORY_CLASS_FROM_ID_CASE_SQL
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
@@ -37,7 +38,6 @@ from moneybin.tables import (
 
 if TYPE_CHECKING:
     from moneybin.database import Database
-    from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
@@ -128,25 +128,6 @@ def _ensure_seed_tables_exist(db: Database) -> None:
     )
 
 
-def _has_column(db: Database, table: TableRef, column: str) -> bool:
-    """True if *column* exists on *table*, per the live catalog.
-
-    Used to tolerate a pre-V032 ``seeds.categories`` / ``app.user_categories``
-    (no ``class`` column yet) without mutating the table — see
-    :func:`refresh_views`. An earlier version of this guard pre-added the
-    column via ``ALTER TABLE``, which broke V015's ``CREATE TABLE tmp AS
-    SELECT *`` rebuild (column-count mismatch on the historical 7-column
-    shape). Querying the catalog and branching in the view SQL instead means
-    ``refresh_views`` never writes to these tables.
-    """
-    row = db.execute(
-        "SELECT 1 FROM duckdb_columns() "
-        "WHERE schema_name = ? AND table_name = ? AND column_name = ?",
-        [table.schema, table.name, column],
-    ).fetchone()
-    return row is not None
-
-
 def refresh_views(db: Database) -> None:
     """Create or replace the resolved dim views and drop retired legacy views.
 
@@ -187,12 +168,12 @@ def refresh_views(db: Database) -> None:
     # CASE expression V032 uses to backfill it, computed on the fly.
     seed_class_expr = (
         "s.class"
-        if _has_column(db, SEED_CATEGORIES, "class")
+        if has_column(db, SEED_CATEGORIES, "class")
         else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
     )
     user_class_expr = (
         "class"
-        if _has_column(db, USER_CATEGORIES, "class")
+        if has_column(db, USER_CATEGORIES, "class")
         else f"({CATEGORY_CLASS_FROM_ID_CASE_SQL}) AS class"
     )
     db.execute(

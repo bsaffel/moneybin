@@ -52,6 +52,7 @@ from moneybin.secrets import (
     SecretStore,
     SecretUnavailableError,
 )
+from moneybin.tables import TableRef
 
 logger = logging.getLogger(__name__)
 
@@ -354,6 +355,7 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "currency_code",
         "credit_limit",
         "archived",
+        "archived_at",
         "include_in_net_worth",
     }),
     # src/moneybin/sqlmesh/models/core/fct_balances_daily.py — kind FULL
@@ -367,6 +369,30 @@ EXPECTED_CORE_COLUMNS: dict[str, frozenset[str]] = {
         "currency_code",
     }),
 }
+
+
+def has_column(db: "Database", table: TableRef, column: str) -> bool:
+    """True if *column* exists on *table*, per the live catalog.
+
+    A read-only open skips schema init, migrations, and SQLMesh model
+    materialization entirely (see ``Database.__init__``'s ``read_only``
+    branch), so a query against a materialized ``core.*`` table added by a
+    model change that hasn't been re-run yet -- or an ``app.*`` column added
+    by a migration that hasn't applied yet -- would otherwise raise a raw
+    DuckDB binder error before either mechanism catches up. Callers on a
+    read path that cannot assume a fresh materialization use this to build a
+    guarded projection instead: select the column when present, fall back to
+    a documented default (typically ``NULL``) when absent. Moved here from
+    ``seeds.py`` (originally added for a pre-V032 ``seeds.categories``
+    column) so both a read-only service query and the write-mode
+    ``refresh_views`` tolerate the same class of drift through one helper.
+    """
+    row = db.execute(
+        "SELECT 1 FROM duckdb_columns() "
+        "WHERE schema_name = ? AND table_name = ? AND column_name = ?",
+        [table.schema, table.name, column],
+    ).fetchone()
+    return row is not None
 
 
 def check_core_schema_drift(db: "Database") -> dict[str, list[str]]:
