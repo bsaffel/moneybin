@@ -24,6 +24,7 @@ from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.base import BaseRepo
 from moneybin.repositories.exchange_rate_repo import ExchangeRateOverridesRepo
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
+from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
 from moneybin.services.account_links_service import AccountLinksService
@@ -189,6 +190,47 @@ class TestUndo:
         UndoService(db).undo(op, actor="test")
 
         assert restated == [(db, True, "undo")]
+
+    def test_display_target_undo_does_not_restate_fx_accounting(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Undoing a report preference must not alter ledger accounting."""
+        restated: list[Database] = []
+
+        def record_restatement(target_db: Database, **_kwargs: object) -> None:
+            restated.append(target_db)
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+        with operation() as op:
+            ProfileSettingsRepo(db).set_display_currency_targets(["EUR"], actor="test")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == []
+
+    def test_home_currency_undo_still_restates_fx_accounting(
+        self, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Undoing the accounting-currency setting retains its existing refresh."""
+        ProfileSettingsRepo(db).set_home_currency("USD", actor="test")
+        restated: list[Database] = []
+
+        def record_restatement(target_db: Database, **_kwargs: object) -> None:
+            restated.append(target_db)
+
+        monkeypatch.setattr(
+            "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+            record_restatement,
+        )
+        with operation() as op:
+            ProfileSettingsRepo(db).set_home_currency("EUR", actor="test")
+
+        UndoService(db).undo(op, actor="test")
+
+        assert restated == [db]
 
     def test_transfer_decision_undo_triggers_post_commit_fx_restatement(
         self, db: Database, monkeypatch: pytest.MonkeyPatch

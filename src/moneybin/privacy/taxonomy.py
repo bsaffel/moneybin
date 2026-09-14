@@ -217,6 +217,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
     ("app", "profile_settings"): {
         "scope": DataClass.RECORD_ID,
         "home_currency": DataClass.CURRENCY,
+        "display_currency_targets": DataClass.CURRENCY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
     ("app", "ai_consent_grants"): {

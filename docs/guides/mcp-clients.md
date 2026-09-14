@@ -1,7 +1,7 @@
-<!-- Last reviewed: 2026-09-10 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Configuring MCP Clients
 
-MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
+MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the eight clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
 
 ## `moneybin mcp install` — one command per client
 

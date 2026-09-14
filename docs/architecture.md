@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Architecture
 
 This is the one-page distillation. The full reference — invariants, layer mechanics, the writer-coordination contract — lives in [`docs/specs/architecture-shared-primitives.md`](specs/architecture-shared-primitives.md). Read that when you need depth; read this when you need the shape.
@@ -84,7 +84,8 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 The MCP server exposes one 50-tool standard registry across 13 user-facing
 domain groups over stdio. Those groups organize 17 literal tool-name prefixes;
-for example, `identity_*` belongs to Reviews and `gsheet_*` belongs to Sync.
+for example, `identity_*` belongs to Reviews and `gsheet_*` belongs
+to Sync.
 The generic `reports` catalog and runner lists and executes registered reports;
 reports do not consume additional tool slots. Capable hosts may optionally defer
 schemas from that same registry without changing its tool names, approvals,

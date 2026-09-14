@@ -47,6 +47,15 @@ REPORT_DOWNGRADES_MAX_LEN = 8_000
 RULE_PRIORITY_MIN = 0
 RULE_PRIORITY_MAX = 10_000
 
+#: A profile's declared `display_currency_targets` (multi-currency Requirement
+#: 18/MB-148). MCP's generic `max_items` (500) bounds list-typed parameters at
+#: the transport, but this collection also feeds `plan_rate_backfill`'s
+#: Cartesian product of held currencies × targets — one provider call per pair
+#: per refresh — so it needs its own, much smaller bound. No real user manages
+#: more than a handful of report currencies; ISO 4217 currently lists under 180
+#: active codes, so this stays well short of even that ceiling.
+DISPLAY_CURRENCY_TARGETS_MAX_COUNT = 20
+
 
 #: The grain ``app.categorization_rules`` and ``app.rule_conflicts`` store an
 #: amount bound at (``DECIMAL(18,2)``).

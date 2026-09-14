@@ -594,9 +594,11 @@ def _patch_rates_step(
     monkeypatch: pytest.MonkeyPatch,
     *,
     home_currency: str | Exception | None,
+    display_currency_targets: tuple[str, ...] = (),
     backfill: RateBackfillResult | Exception,
     reached: list[str],
     through_seen: list[date] | None = None,
+    targets_seen: list[tuple[str, ...]] | None = None,
 ) -> None:
     """Stand in for the two collaborators `_run_rates_step` composes."""
     from moneybin.connectors.rates import frankfurter
@@ -608,12 +610,23 @@ def _patch_rates_step(
             raise home_currency
         return home_currency
 
+    def _get_display_currency_targets(_self: Any) -> tuple[str, ...]:
+        return display_currency_targets
+
     def _run(
-        _db: Database, *, home_currency: str, through: date, **_kw: Any
+        _db: Database,
+        *,
+        home_currency: str | None,
+        display_currency_targets: tuple[str, ...],
+        through: date,
+        **_kw: Any,
     ) -> RateBackfillResult:
-        reached.append(home_currency)
+        if home_currency is not None:
+            reached.append(home_currency)
         if through_seen is not None:
             through_seen.append(through)
+        if targets_seen is not None:
+            targets_seen.append(display_currency_targets)
         if isinstance(backfill, Exception):
             raise backfill
         return backfill
@@ -622,6 +635,11 @@ def _patch_rates_step(
         profile_settings_repo.ProfileSettingsRepo,
         "get_home_currency",
         _get_home_currency,
+    )
+    monkeypatch.setattr(
+        profile_settings_repo.ProfileSettingsRepo,
+        "get_display_currency_targets",
+        _get_display_currency_targets,
     )
     monkeypatch.setattr(rate_backfill, "run_rate_backfill", _run)
     # Keeps the step hermetic: the real constructor opens an httpx client that
@@ -682,10 +700,54 @@ def test_rates_step_returns_what_the_backfill_gathered(
 
 
 @pytest.mark.unit
-def test_rates_step_without_a_home_currency_never_calls_the_provider(
+def test_rates_step_passes_declared_display_targets_to_the_backfill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Nothing is ever converted without a home currency, so nothing is implied."""
+    """A target read in reports is fetched by refresh, never by the report."""
+    gathered = RateBackfillResult(rates_written=2, pairs_failed=())
+    reached: list[str] = []
+    targets_seen: list[tuple[str, ...]] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency="USD",
+        display_currency_targets=("EUR",),
+        backfill=gathered,
+        reached=reached,
+        targets_seen=targets_seen,
+    )
+
+    assert _run_rates_step(MagicMock()) == (gathered, None)
+    assert reached == ["USD"]
+    assert targets_seen == [("EUR",)]
+
+
+@pytest.mark.unit
+def test_rates_step_runs_for_declared_targets_without_a_home_currency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile can gather a read target before choosing its default target."""
+    gathered = RateBackfillResult(rates_written=1, pairs_failed=())
+    reached: list[str] = []
+    targets_seen: list[tuple[str, ...]] = []
+    _patch_rates_step(
+        monkeypatch,
+        home_currency=None,
+        display_currency_targets=("EUR",),
+        backfill=gathered,
+        reached=reached,
+        targets_seen=targets_seen,
+    )
+
+    assert _run_rates_step(MagicMock()) == (gathered, None)
+    assert reached == []
+    assert targets_seen == [("EUR",)]
+
+
+@pytest.mark.unit
+def test_rates_step_without_any_display_currency_never_calls_the_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A profile that reads no target currency does not imply a provider call."""
     reached: list[str] = []
     _patch_rates_step(
         monkeypatch,

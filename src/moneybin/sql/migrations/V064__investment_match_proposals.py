@@ -1,4 +1,4 @@
-"""V062: add durable review-only investment-match Proposals."""
+"""V064: add durable review-only investment-match Proposals."""
 
 from typing import Any
 

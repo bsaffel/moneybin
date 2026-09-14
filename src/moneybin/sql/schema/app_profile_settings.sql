@@ -7,5 +7,6 @@ CREATE TABLE IF NOT EXISTS app.profile_settings (
     scope         VARCHAR NOT NULL PRIMARY KEY DEFAULT 'profile'
                   CHECK (scope = 'profile'),  -- Singleton guard: one settings row per profile database
     home_currency VARCHAR,                    -- ISO 4217 (USD, EUR, ...); NULL means not yet chosen, never an implied USD
+    display_currency_targets VARCHAR[] NOT NULL DEFAULT [],  -- Explicit read targets; empty leaves refresh cost unchanged
     updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Last settings mutation timestamp
 );

@@ -46,7 +46,7 @@ def test_export_spec_locks_the_closed_bundle_and_local_artifact_contract() -> No
     text = _flat(EXPORT_SPEC)
 
     assert tuple(table.name for table in BUNDLE_TABLES) == CANONICAL_BUNDLE_TABLES
-    assert "closed catalog of 13 canonical" in text
+    assert f"closed catalog of {len(BUNDLE_TABLES)} canonical" in text
     assert all(f"`{name}`" in text for name in CANONICAL_BUNDLE_TABLES)
     assert "`~/Documents/MoneyBin/<profile>/exports/`" in text
     assert "CSV and Parquet use directory bundles" in text

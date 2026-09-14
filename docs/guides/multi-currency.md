@@ -99,7 +99,7 @@ The restatement rebuilds the currency-lot models that depend on which currency i
 
 ## Gather rates
 
-Rates are fetched during `moneybin refresh`, never during a report read, because a read opens the database read-only and a fetch has to write to the cache. The `rates` step runs last in the cascade and asks the provider for one span per foreign currency, from the earliest date that currency appears in your rows through today, into the home currency. `--step rates` runs that step alone:
+Rates are fetched during `moneybin refresh`, never during a report read, because a read opens the database read-only and a fetch has to write to the cache. The `rates` step runs last in the cascade and asks the provider for one span per foreign currency, from the earliest date that currency appears in your rows through today, into the home currency and into every currency declared with `profile set display_currency_targets` (see [Read a report in one currency](#read-a-report-in-one-currency) below). `--step rates` runs that step alone:
 
 ```console
 $ uv run moneybin refresh --step rates
@@ -117,7 +117,7 @@ Partial refresh complete (steps: rates; best-effort failures above)
 
 One warning line is trimmed above: `⚠️  No exchange rate series is published for AED/EUR. Record these rates yourself with moneybin fx set.` A pair the step could not fill is reported as one of three kinds, because the remedies differ. A *failed* pair is a provider call that raised; the next refresh retries it. An *unsupported* pair is a currency the provider does not publish at all, so it will answer the same way forever and the report points at `moneybin fx set`. A *discarded* pair answered, but the answer did not cover the whole window, or a rate in it fell outside the requested dates; the warning says coverage may be short rather than naming a remedy. Here AED is unsupported, and the two discards are single rates the provider returned for a date outside the window, which is routine.
 
-Only currency codes and dates leave the machine. The provider is Frankfurter, which republishes the ECB's daily reference rates without a credential, and a code that does not look like ISO 4217 is never sent. A profile with no home currency fetches nothing.
+Only currency codes and dates leave the machine. The provider is Frankfurter, which republishes the ECB's daily reference rates without a credential, and a code that does not look like ISO 4217 is never sent. A profile with neither a home currency nor a declared display target fetches nothing.
 
 ## Read one rate
 
@@ -234,7 +234,7 @@ Using profile: demo
 
 Seven of the ten rows are cut above. The AED rows are dated on days that carry no AED rate, since the one recorded so far covers 2025-12-19 only, so the report stays in original currencies. `--top` ranks within each currency and interleaves the results, so a truncated list still holds every currency; a converted read also returns the two z-score columns and `is_top_100` as `null` for every repriced row, because those were scored against the row's original currency and a per-date conversion is not one scaling of them.
 
-`refresh` gathers rates into the home currency only, and only for the currencies your rows hold. Any other target falls back until its own rates are stored, and `refresh` itself never reaches a non-home target — the warning below's "run `moneybin refresh`" half applies only when the target is the home currency, EUR here, not the USD asked for below. A supported pair still has a manual-free path around that: `fx rate <from> USD <date>` fetches and caches a live rate on demand, one pair and date at a time. AED is not that case — the provider does not publish it at all, so `fx rate AED USD` fails the same way `refresh` does, and `fx set` is the only remedy for AED specifically:
+`refresh` gathers rates into the home currency and into every currency declared with `profile set display_currency_targets` (comma-separated, e.g. `display_currency_targets USD`), and only for the currencies your rows hold. A target that has never been declared — home or otherwise — falls back until its own rates are stored: the warning below's "run `moneybin refresh`" half only helps once USD is a declared target or the home currency, and this profile has declared neither, so EUR, its home currency, is the only target refresh already reaches. Declaring USD and refreshing again would fetch USD rates for every currency the provider covers, without touching `fx rate` or `fx set`. Short of declaring a target, a supported pair still has a manual-free path: `fx rate <from> USD <date>` fetches and caches a live rate on demand, one pair and date at a time. AED is not that case — the provider does not publish it at all, so `fx rate AED USD` fails the same way `refresh` does even once USD is a declared target, and `fx set` is the only remedy for AED specifically:
 
 ```console
 $ uv run moneybin reports networth --as-of 2025-12-19 --display-currency USD

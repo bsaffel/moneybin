@@ -103,7 +103,8 @@ class RateWindow:
 def run_rate_backfill(
     db: Database,
     *,
-    home_currency: str,
+    home_currency: str | None,
+    display_currency_targets: Sequence[str] = (),
     through: date,
     adapter: RateAdapter,
 ) -> RateBackfillResult:
@@ -128,7 +129,12 @@ def run_rate_backfill(
     otherwise be reported exactly as a profile that needed no rates at all.
     """
     try:
-        windows = plan_rate_backfill(db, home_currency=home_currency, through=through)
+        windows = plan_rate_backfill(
+            db,
+            home_currency=home_currency,
+            display_currency_targets=display_currency_targets,
+            through=through,
+        )
     except (duckdb.CatalogException, duckdb.BinderException) as exc:
         # Raised here, rather than read off the exception type at the call site,
         # so that only *planning* can mean "core.* is not built yet". The store
@@ -275,15 +281,27 @@ def _core_is_built(db: Database) -> bool:
 
 
 def plan_rate_backfill(
-    db: Database, *, home_currency: str, through: date
+    db: Database,
+    *,
+    home_currency: str | None,
+    display_currency_targets: Sequence[str] = (),
+    through: date,
 ) -> tuple[RateWindow, ...]:
     """The rate windows this profile's own rows imply, newest bound at ``through``."""
-    home = _usable_currency(home_currency)
-    if home is None:
-        # The value never rides the log line, here or below: `currency_code` is
-        # untrusted source data, so whatever a mis-mapped cell held is what a
-        # malformed code contains.
-        logger.warning("Rate backfill skipped: the home currency is not a valid code")
+    targets = _usable_targets(home_currency, display_currency_targets)
+    if home_currency is not None and _usable_currency(home_currency) is None:
+        # Never echo the stored value: a historical operator bypass can leave
+        # arbitrary text here, and this warning reaches the durable log.
+        if targets:
+            logger.warning(
+                "Rate backfill: the home currency is not a valid code; "
+                "planning display targets"
+            )
+        else:
+            logger.warning(
+                "Rate backfill skipped: the home currency is not a valid code"
+            )
+    if not targets:
         return ()
     # The window is what the profile needs, never what the cache appears to
     # hold. Stored rows cannot answer the question: `raw.exchange_rates` records
@@ -346,14 +364,14 @@ def plan_rate_backfill(
             SELECT UPPER(TRIM(currency_code)) AS from_currency,
                    MIN(on_date) AS earliest
               FROM dated
-             WHERE currency_code IS NOT NULL AND UPPER(TRIM(currency_code)) <> ?
+             WHERE currency_code IS NOT NULL
              GROUP BY 1
         )
         SELECT from_currency, earliest
           FROM needed
          ORDER BY from_currency
         """,  # TableRef + parameterized values
-        [home],
+        [],
     ).fetchall()
     windows: list[RateWindow] = []
     unusable = 0
@@ -369,6 +387,11 @@ def plan_rate_backfill(
             # request would repeat on every refresh.
             unusable += 1
             continue
+        if not any(from_currency != target for target in targets):
+            # A profile can hold its home currency, or choose a display target
+            # equal to a held currency. Neither case implies an outbound pair,
+            # so it must leave neither a provider call nor a skipped-pair count.
+            continue
         # Every row this currency has is dated after the window ends — a
         # scheduled transaction, or a clock-skewed import. Dropping the pair
         # rather than letting it out as a backwards range matters because the
@@ -378,13 +401,15 @@ def plan_rate_backfill(
         if row[1] > through:
             future_dated += 1
             continue
-        windows.append(
+        windows.extend(
             RateWindow(
                 from_currency=from_currency,
-                to_currency=home,
+                to_currency=target,
                 start=row[1],
                 end=through,
             )
+            for target in targets
+            if from_currency != target
         )
     if unusable:
         logger.warning(f"Rate backfill skipped {unusable} unusable currency code(s)")
@@ -417,6 +442,22 @@ def _usable_currency(value: str) -> str | None:
     except ValueError:
         return None
     return candidate
+
+
+def _usable_targets(
+    home_currency: str | None, display_currency_targets: Sequence[str]
+) -> tuple[str, ...]:
+    """Return every valid requested target once, in deterministic order."""
+    values = (() if home_currency is None else (home_currency,)) + tuple(
+        display_currency_targets
+    )
+    return tuple(
+        sorted({
+            candidate
+            for value in values
+            if (candidate := _usable_currency(value)) is not None
+        })
+    )
 
 
 def _within_window(

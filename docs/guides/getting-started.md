@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Getting started
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.

@@ -23,7 +23,13 @@ import pytest
 from moneybin.connectors.rates.errors import RateFeedUnreachableError
 from moneybin.connectors.rates.protocol import RateObservation
 from moneybin.database import Database
-from moneybin.services.currency_service import MAX_BACKWARD_RESOLUTION_DAYS
+from moneybin.privacy.taxonomy import DataClass
+from moneybin.reports._framework.contract import ReportSemantics
+from moneybin.reports._framework.convert import convert_records
+from moneybin.services.currency_service import (
+    MAX_BACKWARD_RESOLUTION_DAYS,
+    CurrencyService,
+)
 from moneybin.services.rate_backfill import (
     RateBackfillNotReadyError,
     RateWindow,
@@ -131,6 +137,35 @@ def test_a_foreign_currency_yields_one_window_from_its_earliest_row(
     assert windows == (
         RateWindow(
             from_currency="EUR",
+            to_currency="USD",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+
+
+def test_declared_display_targets_add_held_to_target_windows_without_duplicates(
+    db: Database,
+) -> None:
+    """One held currency is covered for home and each distinct non-identity target."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="GBP")
+
+    windows = plan_rate_backfill(
+        db,
+        home_currency="USD",
+        display_currency_targets=("EUR", "GBP", "USD", "EUR"),
+        through=_TODAY,
+    )
+
+    assert windows == (
+        RateWindow(
+            from_currency="GBP",
+            to_currency="EUR",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+        RateWindow(
+            from_currency="GBP",
             to_currency="USD",
             start=date(2026, 3, 10),
             end=_TODAY,
@@ -365,6 +400,55 @@ def test_a_future_dated_currency_is_counted_rather_than_skipped_in_silence(
     assert "skipped 1 currency code(s) dated after the window" in caplog.text
 
 
+def test_a_future_home_currency_without_targets_is_not_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A home-only row has no provider pair, even when its date is in the future."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(db, home_currency="USD", through=_TODAY)
+
+    assert windows == ()
+    assert "dated after the window" not in caplog.text
+
+
+def test_a_future_currency_matching_its_only_target_is_not_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A target identical to the held currency also implies no provider pair."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency=None,
+            display_currency_targets=("USD",),
+            through=_TODAY,
+        )
+
+    assert windows == ()
+    assert "dated after the window" not in caplog.text
+
+
+def test_a_future_currency_with_a_distinct_target_is_still_counted(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Suppress only identity-only rows; an implied USD/EUR pair remains observable."""
+    _add_transaction(db, on=_TODAY + timedelta(days=30), currency="USD")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency=None,
+            display_currency_targets=("EUR",),
+            through=_TODAY,
+        )
+
+    assert windows == ()
+    assert "skipped 1 currency code(s) dated after the window" in caplog.text
+
+
 def test_a_fully_cached_pair_is_still_requested(db: Database) -> None:
     """The accepted cost of not trusting stored rows as coverage.
 
@@ -432,7 +516,9 @@ def test_a_malformed_currency_code_yields_no_window(db: Database) -> None:
     assert plan_rate_backfill(db, home_currency="USD", through=_TODAY) == ()
 
 
-def test_a_malformed_home_currency_plans_nothing(db: Database) -> None:
+def test_a_malformed_home_currency_warns_and_plans_nothing(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
     """The home currency is the other half of every pair the planner emits.
 
     `ProfileSettingsRepo.set_home_currency` validates on the way in, so this is
@@ -442,7 +528,50 @@ def test_a_malformed_home_currency_plans_nothing(db: Database) -> None:
     """
     _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
 
-    assert plan_rate_backfill(db, home_currency="dollars", through=_TODAY) == ()
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        assert plan_rate_backfill(db, home_currency="dollars", through=_TODAY) == ()
+
+    assert "Rate backfill skipped: the home currency is not a valid code" in caplog.text
+    assert "dollars" not in caplog.text
+
+
+def test_valid_display_targets_still_plan_when_home_currency_is_malformed(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An invalid home setting does not discard the profile's valid target work."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        windows = plan_rate_backfill(
+            db,
+            home_currency="dollars",
+            display_currency_targets=("GBP",),
+            through=_TODAY,
+        )
+
+    assert windows == (
+        RateWindow(
+            from_currency="EUR",
+            to_currency="GBP",
+            start=date(2026, 3, 10),
+            end=_TODAY,
+        ),
+    )
+    assert (
+        "the home currency is not a valid code; planning display targets" in caplog.text
+    )
+
+
+def test_absent_home_and_targets_leave_rate_planning_quiet(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An unconfigured profile implies no work and no warning."""
+    _add_transaction(db, on=date(2026, 3, 10), currency="EUR")
+
+    with caplog.at_level(logging.WARNING, logger="moneybin.services.rate_backfill"):
+        assert plan_rate_backfill(db, home_currency=None, through=_TODAY) == ()
+
+    assert caplog.text == ""
 
 
 # ------------------------------ running the plan ------------------------------
@@ -568,6 +697,74 @@ def test_a_planned_window_is_fetched_once_and_stored(db: Database) -> None:
     ]
     assert result.rates_written == 1
     assert result.pairs_failed == ()
+
+
+def test_declared_target_stores_the_provider_pair_a_report_names_as_evidence(
+    db: Database,
+) -> None:
+    """Display conversion reads the direct pair refresh gathered and names it."""
+    on = date(2026, 3, 10)
+    _add_transaction(db, on=on, currency="GBP")
+    adapter = _DatedAdapter(on)
+
+    run_rate_backfill(
+        db,
+        home_currency="USD",
+        display_currency_targets=("EUR",),
+        through=_TODAY,
+        adapter=adapter,
+    )
+
+    outcome = convert_records(
+        [
+            {
+                "txn_date": on,
+                "currency_code": "GBP",
+                "amount": Decimal("10.00"),
+            }
+        ],
+        classes={
+            "txn_date": DataClass.TXN_DATE,
+            "currency_code": DataClass.CURRENCY,
+            "amount": DataClass.TXN_AMOUNT,
+        },
+        semantics=ReportSemantics(
+            unit="currency",
+            currency="currency_code",
+            sign="negative expense; positive income",
+            kind="flow",
+            valuation_basis="transaction amount",
+            fx_basis="transaction date",
+            time_basis="transaction date",
+            denominator=None,
+            comparison_window=None,
+            exclusions=(),
+            provenance=("test",),
+            fx_date="txn_date",
+        ),
+        to_currency="EUR",
+        service=CurrencyService(db),
+    )
+
+    assert adapter.ranges == [
+        (
+            "GBP",
+            "EUR",
+            on - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        ),
+        (
+            "GBP",
+            "USD",
+            on - timedelta(days=MAX_BACKWARD_RESOLUTION_DAYS),
+            _TODAY,
+        ),
+    ]
+    assert outcome.degraded_reason is None
+    assert outcome.display_currency == "EUR"
+    assert [
+        (rate.from_currency, rate.to_currency) for rate in outcome.applied_rates
+    ] == [("GBP", "EUR")]
 
 
 def test_planning_against_an_unbuilt_core_raises_the_named_precondition(

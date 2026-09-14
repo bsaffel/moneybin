@@ -154,8 +154,14 @@ def _fx_restatement_requirement(events: list[AuditEvent]) -> tuple[bool, bool]:
     for event in events:
         if event.target_schema != "app":
             continue
-        if event.target_table in {"exchange_rate_overrides", "profile_settings"}:
+        if event.target_table == "exchange_rate_overrides":
             needs_restatement = True
+            continue
+        if event.target_table == "profile_settings":
+            before = event.before_value or {}
+            after = event.after_value or {}
+            if before.get("home_currency") != after.get("home_currency"):
+                needs_restatement = True
             continue
         if event.target_table == "match_decisions":
             before = event.before_value or {}

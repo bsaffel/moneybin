@@ -54,6 +54,30 @@ class _FakeContext:
         return self._frames.pop(0)
 
 
+class _ProfileFreshnessContext:
+    """Return both audit query shapes while the watermark implementation changes."""
+
+    def __init__(
+        self,
+        profile: pd.DataFrame,
+        generic_watermarks: pd.DataFrame,
+        profile_audits: pd.DataFrame,
+    ) -> None:
+        self._profile = profile
+        self._generic_watermarks = generic_watermarks
+        self._profile_audits = profile_audits
+
+    def fetchdf(self, sql: str) -> pd.DataFrame:
+        normalized = " ".join(sql.lower().split())
+        if "from app.profile_settings" in normalized:
+            return self._profile
+        if "select target_id, max(occurred_at)" in normalized:
+            return self._generic_watermarks
+        if "before_value::varchar" in normalized:
+            return self._profile_audits
+        raise AssertionError(f"unexpected freshness query: {normalized}")
+
+
 class _DatabaseContext:
     """ExecutionContext subset that runs loader SQL against the test database."""
 
@@ -138,11 +162,27 @@ def _missing() -> dict[str, object]:
     )
 
 
-def _profile(currency: str | None = "USD") -> pd.DataFrame:
+def _profile(
+    currency: str | None = "USD", updated_at: str = "2026-01-01 00:00:00"
+) -> pd.DataFrame:
     return pd.DataFrame({
         "home_currency": [currency],
-        "profile_updated_at": ["2026-01-01 00:00:00"],
+        "profile_updated_at": [updated_at],
     })
+
+
+def _profile_audits(*rows: Mapping[str, object]) -> pd.DataFrame:
+    return pd.DataFrame(
+        rows,
+        columns=t.cast(t.Any, ("occurred_at", "before_value", "after_value")),
+    )
+
+
+def _profile_watermarks(*rows: Mapping[str, object]) -> pd.DataFrame:
+    return pd.DataFrame(
+        rows,
+        columns=t.cast(t.Any, ("target_id", "mutation_updated_at")),
+    )
 
 
 def _overrides(*rows: Mapping[str, object]) -> pd.DataFrame:
@@ -191,6 +231,8 @@ def _context(
     missing: pd.DataFrame | None = None,
     single: pd.DataFrame | None = None,
     home_currency: str | None = "USD",
+    profile_updated_at: str = "2026-01-01 00:00:00",
+    profile_audits: pd.DataFrame | None = None,
     overrides: pd.DataFrame | None = None,
     provider_rates: pd.DataFrame | None = None,
     rate_watermarks: pd.DataFrame | None = None,
@@ -199,8 +241,8 @@ def _context(
         linked if linked is not None else _frame(),
         missing if missing is not None else _frame(),
         single if single is not None else _frame(),
-        _profile(home_currency),
-        pd.DataFrame(columns=t.cast(t.Any, ("target_id", "mutation_updated_at"))),
+        _profile(home_currency, profile_updated_at),
+        profile_audits if profile_audits is not None else _profile_audits(),
         overrides if overrides is not None else _overrides(),
         provider_rates if provider_rates is not None else _provider_rates(),
         rate_watermarks if rate_watermarks is not None else _rate_watermarks(),
@@ -699,13 +741,18 @@ def test_sent_currency_comes_from_canonical_account_for_single_row_shape(
     }
 
 
-def test_missing_home_currency_uses_profile_audit_freshness() -> None:
+def test_home_undo_to_unset_uses_home_audit_freshness() -> None:
     module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
-    context = _FakeContext(
+    context = _ProfileFreshnessContext(
         pd.DataFrame(columns=t.cast(t.Any, ["home_currency", "profile_updated_at"])),
-        pd.DataFrame({
-            "target_id": ["profile"],
-            "mutation_updated_at": ["2026-03-22 09:00:00"],
+        _profile_watermarks({
+            "target_id": "profile",
+            "mutation_updated_at": "2026-03-22 09:00:00",
+        }),
+        _profile_audits({
+            "occurred_at": "2026-03-22 09:00:00",
+            "before_value": '{"home_currency":"USD"}',
+            "after_value": '{"home_currency":null}',
         }),
     )
 
@@ -715,6 +762,123 @@ def test_missing_home_currency_uses_profile_audit_freshness() -> None:
 
     assert home_currency is None
     assert updated_at == datetime(2026, 3, 22, 9)
+
+
+def test_display_target_write_and_undo_keep_home_and_lot_freshness() -> None:
+    """Report-target events do not become FX-accounting input changes."""
+    profile_audits = _profile_audits(
+        {
+            "occurred_at": "2026-03-10 09:00:00",
+            "before_value": '{"home_currency":"EUR"}',
+            "after_value": '{"home_currency":"USD"}',
+        },
+        {
+            "occurred_at": "2026-03-20 09:00:00",
+            "before_value": '{"home_currency":"USD"}',
+            "after_value": '{"home_currency":"USD"}',
+        },
+        {
+            "occurred_at": "2026-03-21 09:00:00",
+            "before_value": '{"home_currency":"USD"}',
+            "after_value": '{"home_currency":"USD"}',
+        },
+    )
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    home_currency, home_updated_at = module._load_home_currency(  # pyright: ignore[reportPrivateUsage]
+        t.cast(
+            t.Any,
+            _ProfileFreshnessContext(
+                _profile("USD", "2026-03-21 09:00:00"),
+                _profile_watermarks({
+                    "target_id": "profile",
+                    "mutation_updated_at": "2026-03-21 09:00:00",
+                }),
+                profile_audits,
+            ),
+        )
+    )
+
+    assert (home_currency, home_updated_at) == ("USD", datetime(2026, 3, 10, 9))
+
+    rows = _load(
+        _context(
+            single=_frame(
+                _single(
+                    from_currency="USD",
+                    to_currency="EUR",
+                    from_amount="-100.00",
+                    to_amount="80.00",
+                    candidate_updated_at="2026-03-01 09:00:00",
+                )
+            ),
+            profile_updated_at="2026-03-20 09:00:00",
+            profile_audits=profile_audits,
+        )
+    )
+
+    assert rows[0].updated_at == datetime(2026, 3, 10, 9)
+    accounting = importlib.import_module(
+        "moneybin.currency_lots.sqlmesh_loader"
+    ).derive_currency_accounting(rows, (), {})
+    assert accounting.lots[0].updated_at == datetime(2026, 3, 10, 9)
+
+
+def test_legacy_home_freshness_survives_target_write_and_undo() -> None:
+    """The first target event retains a pre-audit profile's home watermark."""
+    module = importlib.import_module("moneybin.currency_lots.sqlmesh_loader")
+    legacy_updated_at = "2026-03-01 09:00:00"
+
+    no_audit_home, no_audit_updated_at = module._load_home_currency(  # pyright: ignore[reportPrivateUsage]
+        t.cast(
+            t.Any,
+            _ProfileFreshnessContext(
+                _profile("USD", legacy_updated_at),
+                _profile_watermarks(),
+                _profile_audits(),
+            ),
+        )
+    )
+    target_home, target_updated_at = module._load_home_currency(  # pyright: ignore[reportPrivateUsage]
+        t.cast(
+            t.Any,
+            _ProfileFreshnessContext(
+                _profile("USD", "2026-03-20 09:00:00"),
+                _profile_watermarks({
+                    "target_id": "profile",
+                    "mutation_updated_at": "2026-03-21 09:00:00",
+                }),
+                _profile_audits(
+                    {
+                        "occurred_at": "2026-03-20 09:00:00",
+                        "before_value": (
+                            '{"home_currency":"USD","updated_at":"2026-03-01 09:00:00"}'
+                        ),
+                        "after_value": (
+                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00"}'
+                        ),
+                    },
+                    {
+                        "occurred_at": "2026-03-21 09:00:00",
+                        "before_value": (
+                            '{"home_currency":"USD","updated_at":"2026-03-20 09:00:00"}'
+                        ),
+                        "after_value": (
+                            '{"home_currency":"USD","updated_at":"2026-03-21 09:00:00"}'
+                        ),
+                    },
+                ),
+            ),
+        )
+    )
+
+    assert (no_audit_home, no_audit_updated_at) == (
+        "USD",
+        datetime(2026, 3, 1, 9),
+    )
+    assert (target_home, target_updated_at) == (
+        "USD",
+        datetime(2026, 3, 1, 9),
+    )
 
 
 @pytest.mark.parametrize(

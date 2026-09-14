@@ -599,6 +599,19 @@ Numbered, testable. Tagged by phase.
     discards what it already holds: one provider call per foreign currency per
     refresh, spent to make the stranded-span case impossible rather than unlikely.
 
+    **Display targets (MB-148) — an elaboration of this requirement, not new
+    scope.** `app.profile_settings.display_currency_targets` is an
+    empty-by-default ordered collection of ISO-4217 codes, normalized and
+    deduplicated on write through the profile Repo. Refresh plans direct
+    `held -> home` and `held -> declared target` windows, omitting identity and
+    duplicate pairs; it never manufactures an inverse. An empty collection keeps
+    the existing home-only cost. These settings make report conversion ready and
+    leave the original-currency ledger untouched: only a home-currency change can
+    trigger the separate FX-accounting restatement. CLI `profile set
+    display_currency_targets EUR,GBP` and MCP
+    `profile_set(display_currency_targets=["EUR", "GBP"])` expose the same
+    persisted collection, which audit undo restores.
+
     Both directions across the provider boundary are bounded, because both carry
     untrusted values. Outbound, `currency_code` is source data — a CSV whose
     columns shifted by one puts an account label in it — so a code that fails the
@@ -620,7 +633,8 @@ Numbered, testable. Tagged by phase.
     sync held it. Refresh already holds that lock. The step runs after `transform`
     because the pairs and dates are derived from `core.*`, and last because nothing
     downstream consumes it, so a provider outage costs the run nothing that had
-    already succeeded. A profile with no home currency set fetches nothing.
+    already succeeded. A profile with neither a home currency nor declared
+    targets fetches nothing.
 
     A pair the step could not fill is reported as one of three kinds, because
     their remedies differ. A *failed* pair — the provider call raised — is
@@ -1043,6 +1057,9 @@ flowchart LR
   `profile show`), not a new `settings` group; exact invocation settles with `moneybin-cli.md`.
   Because `home_currency` is `app.*` state, the command routes through a `*Repo`, **not** the
   generic YAML `profile set` (whose `section.field` keys don't write `app.*`).
+- Set display targets with `profile set display_currency_targets EUR,GBP` (MB-148).
+  The empty value clears the collection; changing it gathers report-read pairs on
+  the next refresh and does not restate FX accounting.
 - Reports accept `--display-currency <ISO>` (M1K.2; default home).
 - `moneybin fx rate <FROM> <TO> [DATE]` (M1K.2) — inspect/seed a cached rate.
 - `moneybin fx list <FROM> <TO>` (M1K.2) — the stored series for one pair, read-only.
@@ -1087,6 +1104,9 @@ flowchart LR
   (`mcp-architecture.md`), and tool names use the noun=query / path-prefix-verb-suffix
   contract (no verb-first `get_*` / `record_*`); exact names settle with the surface specs.
   Same envelope, sensitivity, audit, and confirmation rules as every other tool.
+- `profile` reads `display_currency_targets`, and patch-style `profile_set` updates
+  that collection only when its argument is supplied; an omitted target collection
+  preserves it while setting the home currency.
 - Per-currency segmentation surfaces in report tool output under M1K.1 (so an agent
   can see *why* there is no single total yet).
 
