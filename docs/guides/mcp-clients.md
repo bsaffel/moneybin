@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-13 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Configuring MCP Clients
 
 MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-compliant client. This guide covers the eight clients we test against and the install steps for each. For the protocol-level details (envelope shape, tool catalog, sensitivity tiers), see the [MCP server guide](mcp-server.md).
@@ -11,7 +11,7 @@ MoneyBin's MCP server runs over stdio today and connects to any MCP-spec-complia
 # Default client is claude-desktop. -y skips the confirmation prompt.
 moneybin mcp install --client claude-desktop -y
 
-# Print the snippet without writing — useful for inspection or for clients
+# Print the snippet without writing, for inspection or for clients
 # with no programmatic install path.
 moneybin mcp install --client cursor --print
 
@@ -19,6 +19,11 @@ moneybin mcp install --client cursor --print
 # this way appears as a separate server (e.g. "MoneyBin (alice)").
 moneybin mcp install --client claude-code --profile alice -y
 ```
+
+Every option, its default, and its help text is in the
+[`moneybin mcp` reference](../reference/cli/mcp.md#moneybin-mcp-install). What
+the reference cannot carry is below: which file each client reads, whether it
+must restart, and how many server processes it runs.
 
 The supported `--client` values are:
 
@@ -41,19 +46,31 @@ moneybin mcp config path --client <name> [--profile <name>]
 
 ### Preview the snippet
 
-`--print` emits the exact bytes the command would write, without touching any file. Useful for review before merging into a shared config. The shape varies by client:
+`--print` emits the exact bytes the command would write, without touching any file — review it before merging into a shared config. Claude Desktop, Cursor, Windsurf, Gemini CLI, and Claude Code all take JSON under an `mcpServers` key:
 
-```json
-// Claude Desktop / Cursor / Windsurf / Gemini CLI / Claude Code — JSON, "mcpServers" key
+```console
+$ uv run moneybin mcp install --client cursor --print
+Using profile: demo
 {
   "mcpServers": {
-    "MoneyBin": {
+    "MoneyBin (demo)": {
       "command": "/opt/homebrew/bin/uv",
-      "args": ["run", "--directory", "/path/to/repo", "moneybin", "--profile", "default", "mcp", "serve"]
+      "args": [
+        "run",
+        "moneybin",
+        "--profile",
+        "demo",
+        "mcp",
+        "serve"
+      ],
+      "env": {
+      }
     }
   }
 }
 ```
+
+Three lines are trimmed from that block: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran.
 
 `command` is the **absolute path** to `uv`, resolved when you run install. That is deliberate: macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit your shell's `PATH`, so a bare `uv` resolves to nothing and the server dies at launch with an error the client reports as a generic failure. If `uv` isn't on your `PATH` at install time either, the bare name is emitted and the client will tell you it couldn't start.
 
@@ -70,17 +87,17 @@ Explicit connector calls are the exception to the local default.
 - **`moneybin mcp serve` (the server side).** Startup, local data tools, and idle sessions make no outbound calls. Explicit `sync_*` calls reach the opaque `moneybin-sync` API, and explicit `gsheet_*` calls reach Google OAuth/Sheets. There is no telemetry, update check, license ping, or enrichment lookup.
 
 - **The MCP client (Claude Desktop, Cursor, Codex, …).** Sends your prompt and the tool-result payloads MoneyBin returns to its own hosted LLM provider, per the client's privacy policy. When you ask "what did I spend on groceries?", the agent receives row-level transaction data from MoneyBin and forwards it upstream as ordinary tool-result context.
-- **Sensitivity tiers.** MoneyBin uses `low` / `medium` / `high` / `critical` per [`mcp-server.md`](mcp-server.md). Static tools derive classification from typed payloads; projection-varying tools classify dynamically under a declared maximum. Critical fields are masked now. A consent gate for other sensitive responses is planned; until it lands, **treat anything you ask the agent as if you sent it directly to the model provider**.
+- **Sensitivity tiers.** MoneyBin uses `low` / `medium` / `high` / `critical` per [`mcp-server.md`](mcp-server.md). Static tools derive classification from typed payloads; projection-varying tools classify dynamically under a declared maximum. Critical fields are masked now. No other sensitive response is gated on consent, so **treat anything you ask the agent as if you sent it directly to the model provider**.
 - **Other MoneyBin surfaces.** Plaid connector calls flow through `moneybin-sync`; Google Sheets uses its direct OAuth/API connector. Both are opt-in operations, not ambient server behavior. See [`docs/reference/server-api-contract.md`](../reference/server-api-contract.md).
 - **Local-LLM clients.** No first-class MCP-compatible local-LLM agent is shipping today (Ollama doesn't expose MCP; LM Studio's support is experimental). When one becomes stable, MoneyBin will connect to it the same way it connects to Claude Desktop — the server side doesn't care which LLM is on the other end of the stdio pipe.
 
 ## Bounded tool surface
 
 MoneyBin exposes one **50-tool standard registry**. Generic clients receive all
-50 tools. A capable host may optionally defer schemas from that same registry
+50 tools. A capable host may defer schemas from that same registry
 to reduce prompt cost, without reconnect, packs, or profiles; tool names,
-approvals, allowlists, annotations, and audit identity do not change. Observed
-host-native deferral evidence remains absent. Reports are catalog entries behind
+approvals, allowlists, annotations, and audit identity do not change. No host
+has been measured deferring them. Reports are catalog entries behind
 `reports`, not additional tool slots. The current registry advertises zero output schemas;
 a future schema or tool must pass the admission record in
 [`mcp-tool-surface-scaling.md`](../specs/mcp-tool-surface-scaling.md).
@@ -105,7 +122,7 @@ moneybin mcp install --client claude-desktop -y
 - **Server lifecycle:** One server process per app instance, spawned at launch and reused across all chats. Opening "New chat" does not spawn another server.
 - **Confirmation UI:** Renders Claude's standard tool-call approval prompt. Tools marked `destructiveHint=true` (categorization commits, rule deletes, refresh runs) render with a more explicit confirmation than read-only tools.
 
-**Cowork sessions can't see MoneyBin.** Claude's Cowork surface runs *remote* sessions in Anthropic's cloud, and a remote session cannot reach an MCP server running on your machine — it will behave as though MoneyBin isn't installed. Local Claude Desktop sessions see it normally. This is not a misconfiguration; a local stdio server is simply unreachable from a cloud session.
+**Cowork sessions can't see MoneyBin.** Claude's Cowork surface runs *remote* sessions in Anthropic's cloud, and a remote session cannot reach an MCP server running on your machine — it will behave as though MoneyBin isn't installed. Local Claude Desktop sessions see it normally. This is not a misconfiguration; a local stdio server is unreachable from a cloud session.
 
 **Managed / work devices.** If Claude Desktop is administered by an organization, two admin flags decide whether any of this is available to you: `isLocalDevMcpEnabled` (local MCP servers at all) and `isDesktopExtensionEnabled` (`.mcpb` extensions). With them off, MoneyBin cannot be installed into that Claude Desktop, and the failure looks like the server silently never appearing. Check with whoever administers the device before debugging further.
 
@@ -264,45 +281,94 @@ After installing and restarting the client, run one low-risk tool:
   This overview-only call is low sensitivity and contains no PII.
 - `accounts` — lists configured accounts.
 
-Both return the standard MoneyBin envelope. `system_status` looks roughly like:
+Both return the standard MoneyBin envelope. `system_status(sections=["overview"])` on the family demo profile, captured through an in-process FastMCP client with no host in the loop, returns every block the overview carries:
 
 ```json
 {
+  "status": "ok",
   "summary": {
     "total_count": 1,
     "returned_count": 1,
     "has_more": false,
     "sensitivity": "low",
-    "display_currency": "USD"
+    "display_currency": null
   },
   "data": {
     "kind": "sections",
-    "sections": [{
-      "kind": "overview",
-      "overview": {
-        "accounts": {"count": 6},
-        "transactions": {"count": 12483, "date_range": ["2023-01-04", "2026-05-14"], "last_import_at": "2026-05-17T09:12:33"},
-        "categorization": {"uncategorized": 17},
-        "transforms": {"pending": false, "last_apply_at": "2026-05-17T09:13:01"}
+    "sections": [
+      {
+        "kind": "overview",
+        "overview": {
+          "accounts": {
+            "count": 4
+          },
+          "transactions": {
+            "count": 2886,
+            "date_range": [
+              "2023-01-01",
+              "2025-12-31"
+            ],
+            "last_import_at": null
+          },
+          "matches": {
+            "pending_review": 108
+          },
+          "account_links": {
+            "pending_review": 0
+          },
+          "merchant_links": {
+            "pending_review": 0
+          },
+          "security_links": {
+            "pending_review": 0
+          },
+          "categorization": {
+            "uncategorized": 413
+          },
+          "transforms": {
+            "pending": false,
+            "last_apply_at": "2026-09-14T14:52:42.574010",
+            "missing_models": []
+          },
+          "schema_drift": null,
+          "gsheet": {
+            "total_connections": 0,
+            "by_status": {},
+            "needs_attention": []
+          },
+          "database_connections": {
+            "writers": [],
+            "readers": []
+          },
+          "build": {
+            "version": "0.1.0",
+            "revision": "692e4edfe0b743f7379a9654f112413e38dd3874"
+          }
+        }
       }
-    }]
+    ]
   },
-  "actions": ["Use reviews for per-queue review counts", "Use reports(report_id=\"core:spending_trend\") for a monthly spending trend snapshot"]
+  "actions": [
+    "Use reviews for per-queue review counts",
+    "Use reports(report_id='core:spending_trend') for a spending trend snapshot"
+  ]
 }
 ```
 
 If the response is missing `sections`, has `degraded: true` unexpectedly, or surfaces a raw error, check that the server actually started — each client writes its own log; consult that client's documentation for log paths, since MoneyBin's stderr is forwarded into the client's process logs.
 
-You can cross-check the same payload from the CLI:
+The CLI reaches the same inventory without a client in the loop:
 
-```bash
-moneybin system status --output json
-moneybin accounts list --output json
+```console
+$ uv run moneybin system status --output json
+Using profile: demo
+System status: 4 accounts, 2886 transactions, 108 matches pending, 413 uncategorized, transforms_pending=False
+{"status": "ok", "summary": {"total_count": 1, "returned_count": 1, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"accounts_count": 4, "transactions_count": 2886, "transactions_date_range": ["2023-01-01", "2025-12-31"], "last_import_at": null, "matches_pending": 108, "categorize_pending": 413, "exports": [{"name": "local:exports", "kind": "local", "ready": true, "write_capable": true, "reasons": []}]}, "actions": []}
 ```
 
-The envelope shape is identical. See the [CLI reference](cli-reference.md) for the full command list.
+The envelope is the same four keys — `status`, `summary`, `data`, `actions` — but `data` is not. The CLI returns one flat object; `system_status(sections=[...])` returns `{"kind": "sections", "sections": [...]}`, one entry per requested section, because the MCP tool takes a section selector and the CLI command does not. Compare counts across the two surfaces, not payload shapes. `moneybin accounts list --output json` is the CLI side of `accounts`; the [CLI reference](cli-reference.md) has the full command list.
 
-For direct stdio inspection without going through a client (useful for debugging tool schemas or reproducing client-side issues), run `moneybin mcp serve` in the foreground and drive it with the MCP inspector or any JSON-RPC client.
+For direct stdio inspection without going through a client — debugging tool schemas, reproducing a client-side issue — run `moneybin mcp serve` in the foreground and drive it with the MCP inspector or any JSON-RPC client.
 
 ## Uninstall and reset
 
@@ -370,3 +436,12 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 ## Stability and licensing
 
 Stability of the MCP surface (tool names, parameter shapes, envelope fields) is documented alongside the protocol in the [MCP server guide](mcp-server.md). MoneyBin is AGPL-licensed; see [`docs/licensing.md`](../licensing.md) for what that means for your deployment.
+
+## What is not built yet
+
+- **Stdio is the only transport an install writes.** `sse` and `streamable-http` exist in the FastMCP runtime and refuse to start without `--insecure`, which opens an unauthenticated port. Keep the client and the data on one host; see [Transport](#transport).
+- **No `.mcpb` bundle.** Claude Desktop's one-click extension install does not list MoneyBin. Run `moneybin mcp install --client claude-desktop -y` and restart the app.
+- **No `moneybin mcp uninstall`.** <!-- cli-invocation-ok: names a command that deliberately does not exist --> Removal is a hand edit; [Uninstall and reset](#uninstall-and-reset) gives the file and the key per client.
+- **Remote Cowork sessions cannot reach a local server.** A session running in Anthropic's cloud sees no MoneyBin tools. Use a local Claude Desktop session.
+- **Consent gating is not enforced.** Critical fields are masked; nothing else is withheld on the basis of a consent grant. Treat every answer as sent to the client's model provider, and read [`what-the-ai-sees.md`](what-the-ai-sees.md) before connecting real data.
+- **No local-model client is supported.** Ollama exposes no MCP interface and LM Studio's is experimental, so neither appears in the `--client` list above. Run a hosted client, or drive the CLI directly.

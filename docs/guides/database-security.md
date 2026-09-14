@@ -1,11 +1,9 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Database & Security
 
 MoneyBin encrypts every profile database at rest by default. This guide covers the encryption model, key lifecycle, headless and multi-machine deployments, backup and restore, disaster recovery, and what a stolen laptop or synced folder actually reveals. There is no unencrypted mode — every `.duckdb` file MoneyBin creates is AES-256-GCM encrypted from the moment it exists.
 
 If you only read one other doc on this topic, read the [Threat Model](threat-model.md). It is the honest one-pager about what encryption protects and what it doesn't.
-
----
 
 ## At-rest encryption
 
@@ -21,9 +19,7 @@ If you only read one other doc on this topic, read the [Threat Model](threat-mod
   So a typical install puts the database at `~/.moneybin/profiles/default/moneybin.duckdb`.
 - **File permissions.** On POSIX systems the database file is created with mode `0600` (user read/write only). If you re-open a database with looser permissions, MoneyBin logs a warning telling you to run `chmod 600 <path>`.
 
-You don't have to do anything to "turn encryption on" — it's always on, and there is no flag to disable it.
-
----
+Encryption is always on. There is no flag, config key, or build option that turns it off.
 
 ## Key storage and lifecycle
 
@@ -51,43 +47,41 @@ Parameter defaults live in `DatabaseConfig` (`src/moneybin/config.py`): `time_co
 
 ### Lifecycle commands
 
-```bash
-# First-time setup. Creates the profile DB and stores its key.
-moneybin db init                 # auto-key mode
-moneybin db init --passphrase    # passphrase mode
+Every flag and subcommand is in the generated [`db` CLI reference](../reference/cli/db.md). What the reference cannot carry is the semantics: `db init` creates the profile database and stores its key (`--passphrase` switches it to passphrase mode), `db lock` drops the key from the keychain so subsequent commands fail until `db unlock` re-derives it, and `db key rotate` mints a fresh key and re-encrypts the file in place. `db key export`, `import`, and `verify` are not implemented — see [What is not built yet](#what-is-not-built-yet).
 
-# Drop the key from the keychain. Subsequent commands fail until you re-unlock.
-moneybin db lock
+`db info` reports lock state, key mode, and row counts without unlocking a locked database:
 
-# Re-derive the key from a passphrase and cache it in the keychain.
-# (Only meaningful for passphrase-mode databases.)
-moneybin db unlock
+```console
+$ uv run moneybin db info
+Using profile: demo
+  File size: 13.8 MB
+  Encryption: AES-256-GCM (always on)
+  Key mode: auto
+  Lock state: unlocked
+  Tables: 81
+    app.audit_log: 2699 rows
+    app.metrics: 84 rows
+    app.transaction_categories: 2473 rows
+  DuckDB version: v1.5.4
+```
 
-# Show metadata without unlocking. Reports lock state and key mode.
-moneybin db info
+The line naming the database file (`<base>/profiles/demo/moneybin.duckdb`) is cut, and so are 78 of the 81 table rows.
 
-# Print the current key to stdout (treat as root password).
-moneybin db key show
+`db key show` prints the warning on stderr and the key on stdout. The 64-character hex key line is cut from the block below; the warning is what the block shows:
 
-# Generate a new key and re-encrypt the database in place.
-moneybin db key rotate
-
-# Reserved subcommands — hidden from `db key --help`. `export` and `verify`
-# take no arguments and report "not yet implemented" (exit 1). `import`
-# requires a path argument; called bare (as below) it exits 2 for the missing
-# argument before ever reaching the not-implemented body.
-moneybin db key export
-moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
-moneybin db key verify
+```console
+$ uv run moneybin db key show
+Using profile: demo
+⚠️  Security warning: this key provides full access to your database. Do not share it or store it in plain text.
 ```
 
 **What "unlock" means here.** `db unlock` writes the derived key into the OS keychain — so "unlocked" is a *system-wide* state, not a shell-session state. Every moneybin process running under the same user can read the key for as long as it's in the keychain. `db lock` clears it. Locking your laptop or rebooting does not automatically lock the MoneyBin database; the keychain entry survives until you explicitly run `db lock` or delete it from the OS keychain UI. The OS keychain itself may be encrypted at rest and gated on your login session — that's an OS-level property, not a MoneyBin one; check your platform's keychain documentation if you want tighter scoping.
 
 ### Key management
 
-- **`moneybin db key show`** prints the 64-character hex encryption key to stdout. Treat it like a root password — anyone with this string and the database file can read everything. The CLI emits a security warning to stderr alongside the key. Useful for: writing the key down somewhere durable before you can lose it.
+- **`moneybin db key show`** prints the 64-character hex encryption key to stdout. Treat it like a root password — anyone with this string and the database file can read everything. The CLI emits a security warning to stderr alongside the key. Write it down somewhere durable before you can lose it.
 - **`moneybin db key rotate`** generates a new random key, opens both old and new databases with DuckDB's `COPY FROM DATABASE old_db TO new_db`, and atomically replaces the file. The old key is invalidated. **Existing backups are still encrypted with the old key** — they don't get re-encrypted. If you rotate, save the new key (`db key show`) and consider taking a fresh backup right after. There is no `--passphrase` or `--auto` flag on `db key rotate`; it always emits a fresh random key.
-- **`moneybin db key export` / `import` / `verify`** are reserved subcommands that report "not yet implemented" and exit `1`. They are hidden from `db key --help` so the CLI does not advertise them, and they remain invocable so an existing script keeps its exit code. The intent is an encrypted-envelope export for off-machine recovery; until those ship, use `db key show` and store the output in a password manager or paper-in-a-safe.
+- **`moneybin db key export` / `import` / `verify`** are reserved subcommands that do nothing yet. Their exit codes and output are in [What is not built yet](#what-is-not-built-yet); until they ship, `db key show` plus a password manager or paper-in-a-safe is the off-machine recovery path.
 
 ### Headless and env-var key injection
 
@@ -98,8 +92,6 @@ For environments without an OS keychain — CI runners, headless Linux boxes, Do
 - **Argon2id is bypassed.** The env var *is* the derived key — no passphrase derivation happens. Anyone who can read your environment can read your database.
 - **First-init persistence.** When `db init` runs with the env var set and a working keyring backend, the env-supplied key is persisted to the keychain so subsequent commands still work after the env var is unset. With *no* keyring backend, `db init` refuses to mint a fresh random key (it would be lost on process exit) — the env var must stay set for every invocation.
 - **Where the key leaks from.** `/proc/<pid>/environ`, a systemd unit's `Environment=` line, a `.env` file on disk, shell history. Treat those locations like the key itself — mode `0600`, dedicated user, never in source control.
-
----
 
 ## Headless and cron deployments
 
@@ -133,8 +125,6 @@ docker run --rm \
 
 Most container images have no OS keyring running; the env var fallback is the supported path. `db init` refuses to mint a fresh key inside such a container — initialize the database on a machine that does have a keyring, capture the key with `db key show`, then move both the file and the env var to the container. The same applies to headless Debian, Alpine, or any Linux without GNOME Keyring / KWallet running: there is no fallback file-store, so unset env var + no keyring → every command fails with a clear "set `MONEYBIN_DATABASE__ENCRYPTION_KEY`" error.
 
----
-
 ## Multi-machine sync
 
 The encrypted DB file is portable; the key is not.
@@ -162,19 +152,18 @@ unset MONEYBIN_DATABASE__ENCRYPTION_KEY && shred -u ~/moneybin.key   # rm -P on 
 
 Machine B's keychain now holds the key; verify with `moneybin db info`.
 
----
-
 ## Backup and restore
 
 ### What `db backup` does
 
-```bash
-# Default: writes ~/.moneybin/profiles/<profile>/backups/moneybin_<timestamp>.duckdb
-moneybin db backup
+With no arguments it writes `<base>/profiles/<profile>/backups/moneybin_<timestamp>.duckdb`; `-o` takes an explicit destination. Flags are in the [`db` CLI reference](../reference/cli/db.md).
 
-# Custom destination
-moneybin db backup -o /path/to/snapshot.duckdb
+```console
+$ uv run moneybin db backup
+Using profile: demo
 ```
+
+The success line is cut: it names the snapshot path described above and its size, `13.8 MB` — the same size `db info` reports for the live file.
 
 It's a `shutil.copy2` of the encrypted file with `0600` permissions applied. The backup is **encrypted with the same key as the live database** — the file you copy off the machine is opaque without that key.
 
@@ -226,8 +215,6 @@ A backup you've never restored is an assumption, not a backup. Do this at least 
 
 **The keychain entry.** `db backup` copies the database file; it does not copy the OS keychain entry that holds the key. If you lose access to the keychain (new machine, deleted keychain, OS reinstall) and you don't have the key written down elsewhere, every backup you ever made is also unrecoverable. See **Disaster recovery** below.
 
----
-
 ## Disaster recovery
 
 The encryption is real. There is no vendor reset, no master key, no support email that can decrypt your file. Plan for the failure modes explicitly.
@@ -263,11 +250,9 @@ moneybin db key rotate                             # re-encrypt the restored byt
 
 The catch: `db restore` copies the snapshot file in place, so the restored bytes are still encrypted under the *old* key until `db key rotate` re-encrypts them. After rotation the file is protected by a fresh random key — full passphrase coverage of restored data requires the `db key import` / `db key export` envelopes that aren't shipped today.
 
----
-
 ## Threat model: what a stolen laptop or synced folder reveals
 
-Encryption is a layer, not a magic shield. The honest answers:
+What encryption at rest buys you depends on where the key is when the file leaves your control:
 
 ```mermaid
 flowchart LR
@@ -285,22 +270,29 @@ flowchart LR
 
 The full treatment (malware, AI-vendor data flow, the forgotten-passphrase trap) is in the [Threat Model](threat-model.md).
 
----
-
 ## Migrations and schema evolution
 
 MoneyBin applies schema migrations automatically on first open after a package update. You don't normally invoke the migration system; the power-user commands are there when you want to.
 
-```bash
-# Show applied, pending, and drift state
-moneybin db migrate status
+`db migrate status` reports applied, pending, and drift state; `db migrate apply` runs what is pending, and `--dry-run` previews it. The flags are in the [`db` CLI reference](../reference/cli/db.md). Status on a current profile:
 
-# Apply pending migrations
-moneybin db migrate apply
+```console
+$ uv run moneybin db migrate status
+Using profile: demo
+Applied migrations:
+  ✅ V001 V001__rename_ofx_transaction_id.py (2ms) — 2026-09-14 14:52:33.271673
+  ✅ V002 V002__backfill_gold_keys.sql (1ms) — 2026-09-14 14:52:33.275434
+  ✅ V003 V003__ofx_import_batch_columns.py (12ms) — 2026-09-14 14:52:33.277847
+  ✅ V063 V063__add_account_settings_archived_at.py (1ms) — 2026-09-14 14:52:33.424065
 
-# Preview pending without executing
-moneybin db migrate apply --dry-run
+No pending migrations
+
+Component versions:
+  moneybin: 0.1.0
+  sqlmesh: 0.235.3
 ```
+
+The 57 rows between `V003` and `V063` are cut; each has the same shape. Numbering is not contiguous — a purged migration leaves its number unused.
 
 Behavior:
 
@@ -311,30 +303,19 @@ Behavior:
 
 After a schema change, downstream views and reports are refreshed by the data pipeline; see the [Data Pipeline guide](data-pipeline.md) for what gets re-derived and when.
 
----
-
 ## Day-to-day operational commands
 
-```bash
-# Show processes holding the DB file open (useful before backup/restore)
-moneybin db ps
+`db ps` lists the processes holding the database file open; `db kill` sends them SIGTERM as a last resort for a stuck writer; `db shell` opens an interactive DuckDB shell with the encrypted database pre-attached as `moneybin`; `db query` runs one statement; `db info` reports profile, path, and encryption state without unlocking. The flags and output formats are in the [`db` CLI reference](../reference/cli/db.md).
 
-# Send SIGTERM to those processes (last resort for stuck writers)
-moneybin db kill
+Check `db ps` before a backup or restore — a snapshot taken mid-write is corrupt:
 
-# Interactive DuckDB SQL shell, encrypted DB pre-attached as "moneybin"
-moneybin db shell
-
-# One-shot SQL query, supports --output text|json|csv|markdown|box
-moneybin db query "SELECT COUNT(*) FROM core.fct_transactions"
-
-# Profile/path/encryption state, without unlocking if locked
-moneybin db info
+```console
+$ uv run moneybin db ps
+Using profile: demo
+No other processes have moneybin.duckdb open
 ```
 
 `db shell`, `db query`, and `db ui` build a short-lived, key-free init script (`0600` permissions) that runs `ATTACH '<path>' (..., ENCRYPTION_KEY getenv('MONEYBIN_DATABASE__ENCRYPTION_KEY'))` and then `USE moneybin`. MoneyBin supplies the key only through the DuckDB CLI child process environment, and removes the init script in a `finally` block. The DuckDB CLI binary must be installed separately (see [duckdb.org/docs/installation](https://duckdb.org/docs/installation/)) — `db shell` exits with a hint if it's missing. `db ui` provides browser-based read-only exploration with the same attach pattern.
-
----
 
 ## What's intentionally not protected
 
@@ -343,7 +324,27 @@ moneybin db info
 - **Logs.** `SanitizedLogFormatter` strips PII patterns (SSNs, account numbers, dollar amounts) at the formatter layer as a safety net. It is *not* a guarantee — an explicit `logger.error(f"description={user_description}")` against a non-pattern value still writes that value to disk. Treat the log directory (`<base>/profiles/<profile>/logs/`) as semi-trusted: don't paste log files into public bug reports without skimming them first.
 - **Anyone with a live unlocked keychain session on the same machine.** Encryption at rest is a defense against snapshots of your data — disk images, sync replicas, backup tapes. It is not a defense against an attacker who can already act as you on a machine that's unlocked and running. Use a screen lock and `db lock` when you walk away.
 
----
+## What is not built yet
+
+- **No key envelope: `db key export` and `db key verify` exit `1`, `db key import` needs an argument it can do nothing with.** All three are hidden from `db key --help` and stay invocable so an existing script keeps its exit code. Move a key by hand — `db key show` into a password manager, or `MONEYBIN_DATABASE__ENCRYPTION_KEY` on the target machine.
+
+  `db key export` and `db key verify` each print one line to stderr and exit `1`: ⚠️  This command is not yet implemented. Support for encryption key export (respectively, verification) is planned — run `moneybin --help` for what works today.
+
+  `db key import` takes a path, so a bare call exits `2` on the missing argument before reaching that body:
+
+  ```console
+  $ uv run moneybin db key import  # <!-- cli-invocation-ok: shown bare on purpose, exits 2 for the missing path -->
+  Usage: moneybin db key import [OPTIONS] ENVELOPE
+  Try 'moneybin db key import --help' for help.
+  ╭─ Error ──────────────────────────────────────────────────────────────────────╮
+  │ Missing argument 'ENVELOPE'.                                                 │
+  ╰──────────────────────────────────────────────────────────────────────────────╯
+  ```
+
+- **No `db restore --dry-run`.** Restore into a scratch profile instead — the sequence is in [Restore verification](#restore-verification-without-clobbering-live-data).
+- **No in-place conversion between auto-key and passphrase mode.** `db key rotate` always mints a fresh random key and `db init --passphrase` fails on an existing database. The backup-and-reinit workaround is in [Switching modes](#switching-modes-auto-key--passphrase); it leaves the restored bytes under the old key until `db key rotate` runs.
+- **No backup retention.** `db backup` is a one-shot copy; snapshots accumulate until you prune them. Use the `find -mtime` line in the cron pattern above, or your backup tool's own retention.
+- **The consent gate is not enforced.** Grants are recorded in `app.ai_consent_grants` and can be granted and revoked, but no tool withholds a `medium` or `high` sensitivity result for a missing grant. Control the exposure at the client: connect only the MCP hosts you accept sending data to, and read [What the AI Provider Sees](what-the-ai-sees.md) per tool.
 
 ## See also
 
