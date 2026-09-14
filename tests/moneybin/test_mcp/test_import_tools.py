@@ -932,6 +932,124 @@ async def test_import_preview_coarse_omits_unmapped_disputed_row_cells(
         assert "1234" not in row.values()
 
 
+async def test_import_preview_coarse_disputed_row_evidence_survives_quoted_header(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A quoted CSV header must not blank out the disputed-row evidence.
+
+    Round 18: ``_detect_header`` tokenized sample lines with a bare
+    ``line.split(delimiter)``, while ``pl.read_csv`` is quote-aware. A
+    quoted header (``"Date","Amount",...``) produced ``header_cells``
+    carrying literal quote characters (``'"Date"'``), which never equals a
+    value in ``df.columns`` (``'Date'``) -- so every disputed-row cell's
+    column identity looked unresolvable and ``disputed_row_fields`` omitted
+    the whole row, even though nothing in it was unsafe to show. This is
+    over-omission, not a leak, so no privacy test caught it -- but it
+    defeats "Magic stays visible" for one of the most common bank-export
+    shapes. Read through the real reader (no hand-built header_cells) to
+    prove the fix end-to-end.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_header.csv"
+    csv.write_text(
+        '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+        '"2026-01-02","10.00","Tea","1234"\n'
+        '"Date","Amount","Description","AccountNumber"\n'
+        '"2026-01-03","5.00","Snack","AB1234C"\n',
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_disputed_row_evidence_survives_fully_quoted_csv(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Same fix, every cell of every row quoted (not just the header).
+
+    Distinct from the quoted-header case: here the disputed rows' OWN
+    cells are quoted too, so this also proves the row cells themselves come
+    back unquoted (``pl.read_csv`` never shows a caller a literal quote
+    character for a plain quoted field either).
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_all.csv"
+    csv.write_text(
+        '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+        '"2026-01-02","10.00","Tea","1234"\n'
+        '"Date","Amount","Description","AccountNumber"\n'
+        '"2026-01-03","5.00","Snack","AB1234C"\n',
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    # No leftover quote characters -- the row cells themselves were quoted.
+    for row in disputed:
+        for value in row.values():
+            assert '"' not in value
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_quoted_description_with_delimiter_not_omitted(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A quoted description containing the delimiter must not length-mismatch.
+
+    Before the fix, a bare ``line.split(",")`` would split
+    ``"Coffee, large"`` into TWO cells, making the disputed row longer than
+    ``header_cells`` -- a length mismatch that ``disputed_row_fields`` omits
+    entirely (fail-closed). The real read (``pl.read_csv``) always counted
+    it as one cell, so this was pure over-omission: the row is shown, not
+    omitted.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_description_delimiter.csv"
+    csv.write_text(
+        '2026-01-01,42.50,"Coffee, large",ACCT-XY9Z\n'
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {
+            "transaction_date": "2026-01-01",
+            "amount": "42.50",
+            "description": "Coffee, large",
+        },
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+
+
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     mcp_db: object,
     tmp_path: Path,

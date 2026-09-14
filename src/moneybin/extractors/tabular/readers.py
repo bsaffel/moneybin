@@ -5,6 +5,7 @@ string column names. This is the format-agnostic boundary — everything
 downstream operates on DataFrames regardless of source format.
 """
 
+import csv
 import datetime
 import logging
 import re
@@ -24,6 +25,7 @@ from moneybin.extractors.tabular.format_detector import (
     FormatInfo,
     _read_sample_lines,  # pyright: ignore[reportPrivateUsage]  # shared package helper
 )
+from moneybin.extractors.tabular.formats import DATE_TYPED_TABULAR_FIELDS
 
 logger = logging.getLogger(__name__)
 
@@ -283,6 +285,34 @@ def _read_text(
     )
 
 
+def _tokenize_csv_line(line: str, delimiter: str) -> list[str]:
+    """Tokenize one sample line the way ``pl.read_csv``'s real read does.
+
+    A bare ``line.split(delimiter)`` disagrees with the real read whenever a
+    field is quoted: it leaves literal quote characters in a header cell
+    (``'"Date"'`` instead of ``'Date'``, so it can never equal a value in
+    ``df.columns``) and splits a quoted field containing the delimiter
+    (``"Coffee, large"``) into two cells instead of one. Both defects make
+    ``header_position_ambiguous_header_cells``/``_rows`` diverge from the
+    columns and cells the real ``pl.read_csv`` call produces, which is what
+    ``disputed_row_fields`` aligns them against — so a quoted-header or
+    quoted-description file silently loses its disputed-row evidence at
+    every surface even though nothing leaks. ``csv.reader`` with the same
+    delimiter and polars' default quote character (``"``) tokenizes
+    identically to the real read. One line at a time (never the whole
+    sample at once) keeps each result aligned with its own physical row
+    index — ``skip_rows``/the header row are physical indices, and a
+    multi-line parse could merge lines on an unterminated quote.
+    """
+    try:
+        return next(csv.reader([line], delimiter=delimiter))
+    except csv.Error:
+        # Pathological quoting the real read would also choke on (e.g. a
+        # delimiter that collides with the NUL-byte guard) — fall back to
+        # the naive split rather than raising out of a detection helper.
+        return line.split(delimiter)
+
+
 def _detect_header(
     path: Path,
     encoding: str,
@@ -320,7 +350,10 @@ def _detect_header(
     # any row with fewer than 2 cells, so this preserves the original
     # "if not line.strip(): continue" behavior while keeping physical row
     # indices intact (skip_rows / header_row is a physical row index).
-    rows = [[] if not line.strip() else line.split(delimiter) for line in lines]
+    rows = [
+        [] if not line.strip() else _tokenize_csv_line(line, delimiter)
+        for line in lines
+    ]
     return _classify_header_rows(rows)
 
 
@@ -392,11 +425,16 @@ def _classify_header_rows(
     # dropped) only ever feeds the header/data-row SCORING heuristics below —
     # `ambiguous_rows`/`header_cells` are built from `rows[i]` (the full,
     # position-preserving physical row) so a caller can align cells by index.
+    # No quote-stripping here: CSV callers already tokenize with the csv
+    # module (_tokenize_csv_line), which de-quotes a field itself, and Excel
+    # callers pass native cell values that were never CSV-quoted to begin
+    # with — a leftover .strip('"').strip("'") would instead mangle a
+    # genuine quote character an Excel cell holds as real content.
     qualifying: list[tuple[int, list[str]]] = []
     for i, parts in enumerate(rows):
         if len(parts) < 2:
             continue
-        non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+        non_empty = [p.strip() for p in parts if p.strip()]
         if not non_empty:
             continue
         qualifying.append((i, non_empty))
@@ -461,8 +499,8 @@ def _row_looks_like_data_at(
         return False
     # lstrip a leading BOM: a utf-8-sig file is decoded as utf-8 here
     # (polars-compatible), so physical line 0 may retain it.
-    parts = lines[row_index].lstrip("\ufeff").split(delimiter)
-    non_empty = [p.strip().strip('"').strip("'") for p in parts if p.strip()]
+    parts = _tokenize_csv_line(lines[row_index].lstrip("\ufeff"), delimiter)
+    non_empty = [p.strip() for p in parts if p.strip()]
     return _looks_like_data_row(non_empty) if non_empty else False
 
 
@@ -698,15 +736,6 @@ def _normalize_mapped_date_cells(
             rewritten.append(parsed.strftime(target_format))
         df = df.with_columns(pl.Series(column, rewritten, dtype=pl.Utf8))
     return df
-
-
-# The tabular schema's only date-typed destination fields (raw_tabular_
-# transactions.sql declares exactly these two as DATE). Single source of
-# truth for mapped_date_columns below — public so a caller refreshing
-# post-render samples per destination field (MCP/CLI previews) iterates
-# this list instead of repeating "transaction_date"/"post_date" by hand,
-# which is exactly the drift both normalize functions' docstrings warn about.
-DATE_TYPED_TABULAR_FIELDS: tuple[str, ...] = ("transaction_date", "post_date")
 
 
 def mapped_date_columns(

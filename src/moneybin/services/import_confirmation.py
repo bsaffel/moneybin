@@ -17,8 +17,11 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence, Tier
-from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
-from moneybin.extractors.tabular.readers import DATE_TYPED_TABULAR_FIELDS
+from moneybin.extractors.tabular.formats import (
+    DATE_TYPED_TABULAR_FIELDS,
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf", "ofx"]

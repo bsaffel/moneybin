@@ -262,14 +262,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "normalize_excel_date_columns_after_mapping",
     ),
-    # why: pure module-level constant (destination field names, not values)
-    # — the post-render sample refresh iterates it instead of hardcoding
-    # ("transaction_date", "post_date") by hand.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.extractors.tabular.readers",
-        "DATE_TYPED_TABULAR_FIELDS",
-    ),
     # FIELD_ALIASES is a pure module-level constant (destination field name ->
     # alias list) — import_preview's mapping= override validates against its
     # keys the same way the service layer's resolve_or_confirm does. No DB or

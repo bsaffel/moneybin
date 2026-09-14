@@ -575,6 +575,78 @@ class TestPreview:
             "transaction_date=2026-01-01" in r.message for r in caplog.records
         )
 
+    def test_preview_disputed_row_evidence_survives_quoted_header(
+        self, tmp_path: Path
+    ) -> None:
+        """A quoted CSV header must not blank out the disputed-row evidence.
+
+        Round 18: ``_detect_header`` tokenized sample lines with a bare
+        ``line.split(delimiter)``, while ``pl.read_csv`` is quote-aware. A
+        quoted header produced ``header_cells`` carrying literal quote
+        characters, which never equal a value in ``df.columns`` -- so every
+        cell's column identity looked unresolvable and the whole disputed
+        row was omitted, even though nothing in it was unsafe to show. Only
+        an unmapped account-shaped column (never a date/amount/description
+        cell) should ever be absent.
+        """
+        csv_file = tmp_path / "quoted_header.csv"
+        csv_file.write_text(
+            '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+            '"2026-01-02","10.00","Tea","1234"\n'
+            '"Date","Amount","Description","AccountNumber"\n'
+            '"2026-01-03","5.00","Snack","AB1234C"\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        # The exact-match itself proves omission: an included AccountNumber
+        # cell would change the string (an extra ", AccountNumber=..."
+        # suffix), so matching exactly this text is sufficient -- no need
+        # to additionally scan the whole output, which also renders the
+        # real (non-disputed) data row's own AccountNumber column value.
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
+
+    def test_preview_quoted_description_with_delimiter_not_omitted(
+        self, tmp_path: Path
+    ) -> None:
+        """A quoted description containing the delimiter must not length-mismatch.
+
+        Before the fix, a bare ``line.split(",")`` split
+        ``"Coffee, large"`` into two cells, making the disputed row longer
+        than ``header_cells`` -- a length mismatch that omits the whole row.
+        The real read always counts it as one cell, so the row must be
+        shown, not omitted.
+        """
+        csv_file = tmp_path / "quoted_description_delimiter.csv"
+        csv_file.write_text(
+            '2026-01-01,42.50,"Coffee, large",ACCT-XY9Z\n'
+            "2026-01-02,10.00,Tea,1234\n"
+            "Date,Amount,Description,AccountNumber\n"
+            "2026-01-03,5.00,Snack,AB1234C\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee, large"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
+
     def test_preview_maps_native_date_excel_column_correctly(
         self, tmp_path: Path
     ) -> None:
