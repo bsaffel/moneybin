@@ -268,7 +268,7 @@ def accounts_set(
     is_archived: bool | None = typer.Option(
         None,
         "--archive/--unarchive",
-        help="Archive (cascades --exclude) or unarchive (does not auto-restore include)",
+        help="Archive or unarchive this account (does not change --include/--exclude)",
     ),
     clear_official_name: bool = typer.Option(False, "--clear-official-name"),
     clear_last_four: bool = typer.Option(False, "--clear-last-four"),
@@ -294,8 +294,13 @@ def accounts_set(
     via --clear-FIELD). --default-cost-basis-method must be one of fifo,
     hifo, specific, average — an invalid value is rejected before any write.
     Behavioral: --display-name, --include/--exclude, --archive/--unarchive.
-    Archive cascades --exclude in the same write; unarchive does NOT restore
-    include. At least one field flag required.
+    --archive/--unarchive and --include/--exclude are independent flags with
+    different jobs. --archive today excludes the account from net worth
+    entirely, history included — the archive date is recorded so a future
+    release can make that exclusion date-scoped instead of retroactive, but
+    no report reads it that way yet. Use --exclude to exclude an account
+    from net worth regardless of its archived status, including one that
+    stays active and listed. At least one field flag required.
     """
     diff: dict[str, object] = {}
 
@@ -367,9 +372,8 @@ def accounts_set(
             )
     for w in warnings:
         typer.echo(f"⚠️  {w.get('message', w)}", err=True)
-    cascade_note = " (also excluded from net worth)" if is_archived is True else ""
     typer.echo(
-        f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}{cascade_note}",
+        f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
         err=True,
     )
 

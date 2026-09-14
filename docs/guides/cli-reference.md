@@ -346,10 +346,17 @@ account for duplicates, and with two ids proposes exactly that pair — the
 escape hatch for a duplicate no signal reaches. Commands:
 [`reference/cli/accounts.md`](../reference/cli/accounts.md).
 
-`accounts set` cascades atomically: `--archive` also sets `--exclude` for net
-worth in the same write; `--unarchive` does NOT auto-restore `--include`. At
-least one field flag is required, and each structural field has a
-`--clear-<field>` twin.
+`accounts set`'s `--archive`/`--unarchive` and `--include`/`--exclude` are
+independent flags with different jobs. `--archive` already excludes the
+account from net worth entirely today, history included, via the existing
+blanket filter; the archive date is recorded for a future release that will
+scope that exclusion by date, not applied yet. `--include`/`--exclude` toggle
+net-worth inclusion independently of archived status and persist through a
+later `--unarchive` — reach for `--exclude` alongside `--archive` only when
+the account should stay out of net worth at every date, even once it becomes
+active again; `--archive` alone already excludes it today and reverses
+cleanly on `--unarchive`. At least one field flag is required, and each
+structural field has a `--clear-<field>` twin.
 
 **Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
