@@ -10,6 +10,7 @@ from typing import Annotated, Literal, TypedDict
 import pytest
 from pydantic import BaseModel
 
+from moneybin.privacy.payloads.reviews import InvestmentMatchDetails
 from moneybin.privacy.redaction import (
     ConsentSet,
     MaskStrength,
@@ -262,43 +263,240 @@ def test_redacts_pydantic_nested_list() -> None:
     assert out.total_balance == Decimal("100.00")
 
 
-def test_investment_match_details_json_blobs_are_masked_not_passed_through() -> None:
-    """Regression: these fields were ``TXN_AMOUNT`` (HIGH), a passthrough class.
+def _make_investment_leg(**overrides: object) -> dict[str, object]:
+    """A complete ``InvestmentLegRecord``-shaped dict; override selectively."""
+    base: dict[str, object] = {
+        "source_event_key": "evt_1",
+        "native_reference": "native_1",
+        "observation_version": "obsver_1",
+        "original_investment_transaction_id": "itx_1",
+        "account_id": "raw_native_key_7890",
+        "security_id": "sec_1",
+        "source_group_reference": None,
+        "source_type": "manual",
+        "source_origin": "manual",
+        "account_identity_generation": "gen_a",
+        "security_identity_generation": "gen_s",
+        "type": "buy",
+        "subtype": None,
+        "event_type": "buy",
+        "leg_role": "acquisition",
+        "description": "Test leg",
+        "trade_date_basis": "explicit",
+        "quantity": Decimal("10.5"),
+        "price": Decimal("100.25"),
+        "amount": Decimal("-1052.63"),
+        "fees": Decimal("1.00"),
+        "source_currency_code": "USD",
+        "account_currency_code": "USD",
+        "currency_code": "USD",
+        "source_group_size": 1,
+        "supports_split": True,
+        "supports_native_relationships": False,
+        "supports_corrections": False,
+        "supports_reversals": False,
+        "is_unsupported_compound": False,
+        "has_source_security": True,
+        "has_resolved_identity": True,
+        "is_paired_reinvest": False,
+        "is_match_eligible": True,
+        "trade_date": date(2026, 1, 5),
+        "settlement_date": date(2026, 1, 7),
+        "original_acquisition_date": None,
+    }
+    base.update(overrides)
+    return base
 
-    ``legs``/``evidence``/``field_choices``/``supersession`` verbatim-copy
-    ``int_investment_events__legs`` rows, each carrying ``account_id`` — the raw
-    source-native key for a standalone/unlinked account. Reclassified to
-    ``COMPOSITE_IDENTIFIER`` (CRITICAL, whole-masked), matching
-    ``account_link_decisions.match_signals``. A passthrough transform would
-    leave the raw ``account_id`` inside ``legs`` readable; this pins that it
-    does not.
-    """
-    from moneybin.privacy.payloads.reviews import InvestmentMatchDetails
 
-    details = InvestmentMatchDetails(
-        members=["evt_1", "evt_2"],
-        confidence_band="exact",
-        is_competing=False,
-        auto_eligible=True,
-        relationship_fingerprint="fp_1",
-        candidate_graph_fingerprint="fp_2",
-        algorithm_version="v1",
-        legs=[{"source_event_key": "evt_1", "account_id": "raw_native_key_7890"}],
-        evidence=[
-            {"left_source_event_key": "evt_1", "right_source_event_key": "evt_2"}
+def _make_investment_evidence(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "left_source_event_key": "evt_1",
+        "right_source_event_key": "evt_2",
+        "left_native_reference": "native_1",
+        "right_native_reference": "native_2",
+        "left_observation_version": "obsver_1",
+        "right_observation_version": "obsver_2",
+        "left_source_type": "manual",
+        "right_source_type": "plaid",
+        "left_source_origin": "manual",
+        "right_source_origin": "plaid",
+        "left_account_identity_generation": "gen_a",
+        "right_account_identity_generation": "gen_a2",
+        "left_security_identity_generation": "gen_s",
+        "right_security_identity_generation": "gen_s2",
+        "event_type": "buy",
+        "leg_role": "acquisition",
+        "type": "buy",
+        "left_trade_date_basis": "explicit",
+        "right_trade_date_basis": "explicit",
+        "date_threshold_days": 5,
+        "date_distance_days": 1,
+        "structure_agrees": True,
+        "has_required_economics": True,
+        "quantity_within_tolerance": True,
+        "amount_within_tolerance": True,
+        "fees_within_tolerance": True,
+        "price_within_tolerance": True,
+        "date_within_tolerance": True,
+        "is_exact_economic_identity": True,
+        "subtype_conflict": False,
+        "trade_date_conflict": False,
+        "original_acquisition_date_conflict": False,
+        "has_validated_native_relationship": False,
+        "is_candidate": True,
+        "left_trade_date": date(2026, 1, 5),
+        "right_trade_date": date(2026, 1, 5),
+        "preferred_trade_date": date(2026, 1, 5),
+        "left_original_acquisition_date": None,
+        "right_original_acquisition_date": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_investment_field_choice(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "conflict_id": "conflict_1",
+        "leg_role": "acquisition",
+        "field": "amount",
+        "choices": [
+            {
+                "choice_id": "choice_1",
+                "value": "-1052.63",
+                "source_type": "manual",
+                "source_origin": "manual",
+                "native_reference": "native_1",
+                "observation_version": "obsver_1",
+            }
         ],
-        field_choices=[{"conflict_id": "c1", "field": "amount"}],
-        supersedes_decision_ids=[],
-        supersession=[{"decision_id": "d1", "members": ["evt_0"]}],
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_investment_supersession(**overrides: object) -> dict[str, object]:
+    base: dict[str, object] = {
+        "decision_id": "d1",
+        "status": "stale",
+        "members": ["evt_0"],
+        "reserved_rows": [("manual", "manual", "native_0")],
+        "current_successors": ["evt_1"],
+    }
+    base.update(overrides)
+    return base
+
+
+def _make_investment_match_details(**overrides: object) -> InvestmentMatchDetails:
+    base: dict[str, object] = {
+        "members": ["evt_1", "evt_2"],
+        "confidence_band": "exact",
+        "is_competing": False,
+        "auto_eligible": True,
+        "relationship_fingerprint": "fp_1",
+        "candidate_graph_fingerprint": "fp_2",
+        "algorithm_version": "v1",
+        "legs": [_make_investment_leg()],
+        "evidence": [_make_investment_evidence()],
+        "field_choices": [_make_investment_field_choice()],
+        "supersedes_decision_ids": [],
+        "supersession": [_make_investment_supersession()],
+    }
+    base.update(overrides)
+    return InvestmentMatchDetails.model_validate(base)
+
+
+def test_investment_leg_account_identifier_is_partially_masked() -> None:
+    """``account_id`` can be the raw manual-account key for an unlinked account.
+
+    ``legs``/``evidence``/``field_choices``/``supersession`` moved from
+    whole-masking the bare list (``COMPOSITE_IDENTIFIER``) to field-level
+    classification on typed nested records — this is the "still masked"
+    direction: the one field that actually needs it still gets it.
+    """
+    out = redact_typed(_make_investment_match_details(), consent=None)
+    assert out.legs[0].account_id == "****7890"
+
+
+def test_investment_leg_account_identifier_without_digits_is_fully_masked() -> None:
+    """A raw manual-account key shorter than four chars masks to the constant."""
+    details = _make_investment_match_details(
+        legs=[_make_investment_leg(account_id="ab")]
     )
     out = redact_typed(details, consent=None)
-    assert out.legs == "*****"
-    assert out.evidence == "*****"
-    assert out.field_choices == "*****"
-    assert out.supersession == "*****"
-    # Sibling low-tier fields are unaffected.
-    assert out.members == ["evt_1", "evt_2"]
-    assert out.confidence_band == "exact"
+    assert out.legs[0].account_id == "****"
+
+
+def test_investment_match_details_survives_redaction_with_typed_fields() -> None:
+    """The direction the prior whole-mask fix had no coverage for.
+
+    After redaction, every field an agent needs to review a match — amounts,
+    dates, types, roles, conflict and choice ids — must still be present and
+    correctly typed, not just absent-of-the-identifier. A future regression
+    back to whole-masking the list must fail loudly here, not pass silently
+    because nothing asserted survival.
+    """
+    out = redact_typed(_make_investment_match_details(), consent=None)
+
+    assert len(out.legs) == 1
+    leg = out.legs[0]
+    assert leg.source_event_key == "evt_1"
+    assert leg.type == "buy"
+    assert leg.leg_role == "acquisition"
+    assert leg.amount == Decimal("-1052.63")
+    assert isinstance(leg.amount, Decimal)
+    assert leg.quantity == Decimal("10.5")
+    assert leg.trade_date == date(2026, 1, 5)
+    assert isinstance(leg.trade_date, date)
+
+    assert len(out.evidence) == 1
+    evidence = out.evidence[0]
+    assert evidence.is_candidate is True
+    assert evidence.left_trade_date == date(2026, 1, 5)
+
+    assert len(out.field_choices) == 1
+    field_choice = out.field_choices[0]
+    assert field_choice.conflict_id == "conflict_1"
+    assert field_choice.field == "amount"
+    assert field_choice.choices[0].choice_id == "choice_1"
+    assert field_choice.choices[0].value == "-1052.63"
+
+    assert len(out.supersession) == 1
+    assert out.supersession[0].decision_id == "d1"
+
+
+def test_investment_leg_numeric_and_date_fields_are_typed_not_stringified() -> None:
+    """P2 regression: repo storage is ``json.dumps(asdict(proposal), default=str)``.
+
+    Decimal and date leg fields therefore reach ``InvestmentMatchDetails.
+    model_validate`` as plain JSON strings, exactly as
+    ``InvestmentMatchDecisionsRepo.all_rows`` hands them back after
+    ``json.loads``. The typed model must coerce them to real ``Decimal``/
+    ``date`` values rather than publish e.g. ``"-1052.63"`` as a bare string
+    to MCP/CLI clients.
+    """
+    details = InvestmentMatchDetails.model_validate({
+        "members": ["evt_1"],
+        "confidence_band": "exact",
+        "is_competing": False,
+        "auto_eligible": True,
+        "relationship_fingerprint": "fp_1",
+        "candidate_graph_fingerprint": "fp_2",
+        "algorithm_version": "v1",
+        "legs": [
+            _make_investment_leg(
+                quantity="10.5", amount="-1052.63", trade_date="2026-01-05"
+            )
+        ],
+        "evidence": [],
+        "field_choices": [],
+        "supersedes_decision_ids": [],
+        "supersession": [],
+    })
+    leg = details.legs[0]
+    assert leg.amount == Decimal("-1052.63")
+    assert isinstance(leg.amount, Decimal)
+    assert leg.trade_date == date(2026, 1, 5)
+    assert isinstance(leg.trade_date, date)
 
 
 def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -> None:

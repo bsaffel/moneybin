@@ -1,7 +1,5 @@
 """Bounded review-only investment matching through the refresh operation."""
 
-from typing import cast
-
 import typer
 
 from moneybin.cli.output import (
@@ -13,6 +11,8 @@ from moneybin.cli.output import (
 from moneybin.cli.render import render_note, render_rows, render_summary
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.privacy.payloads.reviews import InvestmentMatchDetails
+from moneybin.privacy.redaction import redact_typed
 
 app = typer.Typer(help="Plan investment matches for review", no_args_is_help=True)
 
@@ -30,47 +30,53 @@ def _inspect(status: str, output: OutputFormat, quiet: bool) -> None:
         render_or_json(envelope, output, cli_actor=f"investments_matches_{status}")
         if output == OutputFormat.TEXT:
             for row in view.rows:
+                # render_or_json's TEXT path applies no redaction by design —
+                # the caller owns what it displays. Legs carry account_id,
+                # which can be a raw user-authored key for an unlinked manual
+                # account (see InvestmentLegRecord), so mask it the same way
+                # the JSON path does before printing anything.
+                details = redact_typed(
+                    row.details, None, declared_type=InvestmentMatchDetails
+                )
                 render_summary(
                     [
                         ("Proposal", row.decision_id),
-                        ("Confidence", row.details.confidence_band),
+                        ("Confidence", details.confidence_band),
                     ],
                     title=row.summary,
                 )
-                for leg in row.details.legs:
+                for leg in details.legs:
                     render_note(
-                        f"Leg {leg['leg_role']} — {leg['source_type']} / {leg['source_origin']}",
+                        f"Leg {leg.leg_role} — {leg.source_type} / {leg.source_origin}",
                         quiet=quiet,
                     )
-                    render_rows(["Field", "Observed value"], leg.items())
+                    render_rows(["Field", "Observed value"], leg.model_dump().items())
                 render_note("Evidence", quiet=quiet)
-                for evidence in row.details.evidence:
-                    render_rows(["Field", "Evidence"], evidence.items())
-                for conflict in row.details.field_choices:
+                for evidence in details.evidence:
+                    render_rows(["Field", "Evidence"], evidence.model_dump().items())
+                for conflict in details.field_choices:
                     render_summary([
-                        ("Field choice", str(conflict["field"])),
-                        ("Conflict", str(conflict["conflict_id"])),
+                        ("Field choice", conflict.field),
+                        ("Conflict", conflict.conflict_id),
                     ])
-                    # Issued choices retain the planner's persisted record shape.
-                    choices = cast(list[dict[str, object]], conflict["choices"])
-                    choice_rows: list[tuple[object, object]] = []
-                    for choice in choices:
-                        choice_rows.append((choice["choice_id"], choice["value"]))
-                    render_rows(["Choice", "Observed value"], choice_rows)
-                if row.details.alternatives:
+                    render_rows(
+                        ["Choice", "Observed value"],
+                        [
+                            (choice.choice_id, choice.value)
+                            for choice in conflict.choices
+                        ],
+                    )
+                if details.alternatives:
                     render_note("Competing alternatives", quiet=quiet)
                     render_rows(
                         ["Source events"],
-                        [
-                            (" / ".join(members),)
-                            for members in row.details.alternatives
-                        ],
+                        [(" / ".join(members),) for members in details.alternatives],
                     )
                 render_note("Downstream effects", quiet=quiet)
-                render_rows(["Effect", "Value"], row.details.downstream_effects.items())
-                for prior in row.details.supersession:
+                render_rows(["Effect", "Value"], details.downstream_effects.items())
+                for prior in details.supersession:
                     render_note("Prior Match and curation", quiet=quiet)
-                    render_rows(["Context", "Value"], prior.items())
+                    render_rows(["Context", "Value"], prior.model_dump().items())
             if not view.rows:
                 render_note(f"No {status} investment Proposals.", quiet=quiet)
 

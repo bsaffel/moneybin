@@ -445,13 +445,26 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "is_competing": DataClass.AGGREGATE,
         # Serialized `Proposal` dataclass (event_planning.py) — its `legs`
         # entries are verbatim `int_investment_events__legs` rows, each
-        # carrying `account_id`. For a standalone/unlinked account
-        # core.dim_accounts.account_id is COALESCE(links.account_id,
-        # a.account_id) — the raw source-native key (dim_accounts.sql) — and
-        # `has_resolved_identity` only checks the row exists, not that it was
-        # link-resolved (int_investment_events__observations.sql). Whole-mask,
-        # same reasoning as account_link_decisions.match_signals: a position
-        # the declaration can't pin down, not a bare amount.
+        # carrying `account_id`. That column is resolved per source, not
+        # through core.dim_accounts: the Plaid path routes through
+        # `plaid_account_routes` (app.account_links WHERE status='accepted'
+        # AND ref_kind='source_native'), NULL when unlinked; the manual path
+        # resolves through int_manual__investment_identity's `walk` CTE, which
+        # terminates on the raw user-authored account_id from
+        # raw.manual_investment_transactions when no accepted
+        # app.account_link_decisions row exists
+        # (int_investment_events__observations.sql). So this column can hold
+        # either a canonical surrogate or a raw source-native key depending on
+        # row and source. On THIS raw/serialized surface — reached only via
+        # sql_query, with no per-field declaration available — that is still a
+        # position the declaration can't pin down, so it stays whole-masked,
+        # same reasoning as account_link_decisions.match_signals. The typed
+        # review-payload surface (InvestmentMatchDetails in
+        # privacy/payloads/reviews.py) classifies `legs` field-by-field
+        # instead, masking only `account_id` (ACCOUNT_IDENTIFIER) and leaving
+        # the rest of each leg legible — that surface's classification does
+        # NOT transfer here, and this column's whole-mask does not transfer
+        # there either.
         "proposal": DataClass.COMPOSITE_IDENTIFIER,
         "actor": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
