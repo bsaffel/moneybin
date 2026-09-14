@@ -162,7 +162,7 @@ this spec's to close.
 13. **A report's id, its view, and its CLI command share one name.** The name
     half of `report_id` is the view's name; `ReportSpec.cli_name` already
     derives the Typer command from it by swapping underscores for hyphens
-    (`src/moneybin/reports/_framework/contract.py:408-410`). Applies to every
+    (`src/moneybin/reports/_framework/contract.py:474-476`). Applies to every
     report, not only these three — see §Report allocation.
 14. **An unanchored account is visible, never a silent zero.** An eligible
     account carrying **evidence of holding value** but **no balance
@@ -352,7 +352,7 @@ both a `TRUE` and a `FALSE`/*absent* reading, below — **plus** every
 nonzero holdings row of its own in a mapped origin's newest snapshot,
 which is eligible for `TRUE` only. The second clause is what keeps this
 relation from reintroducing the defect the first clause was itself
-introduced to fix (§"This round refines that correction," below):
+introduced to fix:
 `prep.stg_plaid__accounts:16-18` documents that `account_type` can stay
 NULL for an unmapped Plaid subtype, and an account in that state can
 still report a real, nonzero position — a positive observation the
@@ -419,9 +419,8 @@ being empty as of that later date, so taking the MAX would backdate an
 older item's zero to an observation it never made and misdate this
 column for any caller reading it directly.
 
-**The account-type filter is a correction to an earlier round of this
-section, which enumerated the universe from every account sharing the
-item's `source_origin` regardless of type.**
+**The universe's negative branch is scoped to `account_type = 'investment'`,
+not to every account sharing the item's `source_origin`.**
 `_load_holdings_snapshots` writes one receipt per Plaid *item*, not per
 account — its own docstring calls it "Record that each item's holdings were
 fetched" (`src/moneybin/extractors/plaid/extractor.py:805-840`) — and one
@@ -440,11 +439,11 @@ receipt, because those readings require the invariant's license and a
 non-investment account's own receipt status says nothing about whether
 the holdings product describes it at all.
 
-**This round refines that correction rather than reverting it, and the
-earlier concern is exactly what the negative-inference half above still
-prevents.** The prior round's
-fix was type-symmetric: it excluded a non-investment account from this
-relation *entirely*, in both directions at once. That is a stronger
+**The universe's positive branch must stay type-agnostic even though the
+negative branch is `account_type = 'investment'`-gated — the
+negative-inference half above is exactly what makes that split safe.** A
+type-symmetric filter — excluding a non-investment account from this
+relation *entirely*, in both directions at once — would be a stronger
 reading of the invariant than the invariant requires. A checking account
 with no holdings evidence of its own still correctly stays off this
 relation in the ordinary sense — it never resolves to any `has_position`
@@ -458,15 +457,14 @@ Requirement 14's own text names "a Plaid account whose `current_balance`
 or `account_type` never resolved" as a case the guard exists to close
 (§Requirements, above). An account in exactly that state — unresolved type, a genuine
 nonzero holdings snapshot of its own, no `core.dim_holdings` lot because
-the security is unbound, and no transaction posted yet — was invisible to
-every source under the type-symmetric filter: excluded here, unreachable
-via `core.dim_holdings`, and absent from both ledgers. The requirement and
-the mechanism contradicted each other. The fix above resolves the
-contradiction without reopening the defect the filter was built to close:
-the universe's positive branch is type-agnostic (rule 1, above), so a
+the security is unbound, and no transaction posted yet — would be
+invisible to every source under a type-symmetric filter: excluded here,
+unreachable via `core.dim_holdings`, and absent from both ledgers,
+contradicting Requirement 14. The universe's positive branch is therefore
+type-agnostic (rule 1, above), so a
 real position surfaces regardless of what the type column resolved to,
 while the negative branch stays `account_type = 'investment'`-gated
-exactly as the prior round established — an empty receipt from a source
+— an empty receipt from a source
 the holdings product may not even describe is not a positive observation
 of emptiness, so it earns no license under the invariant to declare
 `FALSE` or *absent*.
@@ -516,23 +514,23 @@ row nonzero on either column, with the other NULL, still satisfies the `OR`
 and counts toward `TRUE` — one broker-confirmed figure is evidence regardless
 of what the other column says.
 
-**Publishing only `TRUE` accounts was tried in an earlier round of this
-file, and that narrowing collapsed a real three-state signal into a lossy
-boolean.** Restricting
+**Publishing only `TRUE` accounts collapses a real three-state signal into
+a lossy boolean.** Restricting
 the relation to accounts with nonzero evidence, enumerated straight from the
-holdings rows rather than from the account universe below, was enough to
+holdings rows rather than from the account universe below, would be enough to
 correctly hold a liquidated account out of the *positive*-evidence reading
 Requirement 14 needs — both the item-level and account-level no-row shapes
 below leave such an account with no holdings row to enumerate it by, so it
-was silently and correctly never `TRUE`. But that same shortcut erased the
+would be silently and correctly never `TRUE`. But that same shortcut would
+erase the
 `FALSE`/*absent* distinction this published column exists to carry: an
 account absent from a `TRUE`-only relation is indistinguishable from an
 account whose item never reported at all, so a caller reading this column
 directly could no longer tell a confirmed empty position from one never
 observed. Publish the full three-state column, enumerated from
 the account universe, instead of narrowing back to a boolean presence check
-— narrowing this relation to fix one defect is what removed the data the
-next fix needed, and re-narrowing it would remove the same data again.
+— narrowing to nonzero evidence alone would remove exactly the
+absence/zero distinction Requirement 14 needs.
 
 **This closes three liquidation shapes for `has_position`; each closes a
 distinct failure, and none of the three subsumes another.**
@@ -579,14 +577,14 @@ an entry naming only one of the view's three columns fails that gate on
 implementation.
 
 - `account_id` → `DataClass.RECORD_ID`, matching `("core",
-  "dim_holdings")`'s own entry (`taxonomy.py:797`).
+  "dim_holdings")`'s own entry (`taxonomy.py:816`).
 - `has_position` → `DataClass.TXN_TYPE` — every boolean flag in the
   taxonomy takes this class; the closest analogue is `fct_investment_lots.is_open`
-  (`taxonomy.py:901`).
+  (`taxonomy.py:960`).
 - `as_of` → `DataClass.TIMESTAMP_OBSERVABILITY`, matching
   `dim_holdings.provider_reported_as_of` in the same entry
-  (`taxonomy.py:830`) and `dim_holdings.price_date`'s identical reasoning
-  just above it (`taxonomy.py:814`).
+  (`taxonomy.py:849`) and `dim_holdings.price_date`'s identical reasoning
+  just above it (`taxonomy.py:830-832`).
 
 So the read has ground truth to derive against instead of needing an
 exception.
@@ -691,36 +689,36 @@ dropping one that still holds unobserved cash.
 
 This corrects a further defect beyond the three below: reading the cash
 arm's decisive-zero test as bootstrap-specific was itself only a partial
-fix, narrower than the invariant it was meant to apply. An earlier round
-of this section excluded a bootstrap-tainted zero from counting as
-decisive but still treated an ordinary, fully-recorded zero as decisive
+fix, narrower than the invariant it was meant to apply. A narrower version
+of this predicate excludes a bootstrap-tainted zero from counting as
+decisive but still treats an ordinary, fully-recorded zero as decisive
 proof of no cash — exactly the gap the concrete counter-example above
 closes.
 
-This also corrects three defects across as many earlier rounds of this
-section, each one a predicate patched to fix the case in front of it
-rather than derived from the invariant above. Round one canceled
-"historical transaction evidence on either ledger" with no restriction at
-all — any zero sum, on either ledger, was read as decisive. Round two
-restricted that reading correctly in principle but keyed it on
-`security_id` instead of `quantity`: `security_id` carries two NULL
+Three narrower predicates for this test are rejected below, each a
+restriction patched to fix one case rather than derived from the invariant
+above. **No restriction at all** — any zero sum, on either ledger, read as
+decisive — is too broad, since it reads an unbound buy or sell's own
+NULL-shaped cash evidence as decisive. **Keying the restriction on
+`security_id`** restricts that reading correctly in principle but keys it
+on the wrong column: `security_id` carries two NULL
 cases, not one — "NULL for cash-only events (deposit, withdrawal, account
 fee, cash interest) and for a synced security with no accepted binding"
 (`src/moneybin/sqlmesh/models/core/fct_investment_transactions.sql:101`) —
-so a predicate keyed on its nullability misread an unbound buy or sell as
+so a predicate keyed on its nullability misreads an unbound buy or sell as
 cash evidence. `quantity` has no such overlap:
 `prep.stg_plaid__investment_transactions` sets `ledger_quantity` NULL only
 for the closed, non-security set of mapped types (dividend, interest,
 capital_gain_distribution, deposit, withdrawal, fee, return_of_capital,
-other; `stg_plaid__investment_transactions.sql:236-249`) and otherwise
+other; `stg_plaid__investment_transactions.sql:250-263`) and otherwise
 carries the row's raw signed share count regardless of whether
 `security_id` resolves through an accepted binding — an unbound buy or sell
 keeps its `quantity`; only its `security_id` goes NULL. The canonical
 column's own comment states the same contract independent of staging
 branch: "Signed units: + acquire, − dispose, NULL cash-only"
-(`fct_investment_transactions.sql:108`). Round three keyed the cash arm on
-row *selection* — preserve `quantity IS NULL` rows, drop `quantity IS NOT
-NULL` rows from consideration entirely — which cancels a sell row's own
+(`fct_investment_transactions.sql:108`). **Keying the restriction on row
+*selection*** — preserve `quantity IS NULL` rows, drop `quantity IS NOT
+NULL` rows from consideration entirely — cancels a sell row's own
 cash credit along with its position evidence whenever the sale's proceeds
 are the account's only cash evidence: `core.fct_investment_transactions.amount`
 is the signed cash effect on *every* row regardless of `quantity`
@@ -732,8 +730,8 @@ a cash-only dividend or deposit, still carries a row on this ledger, so
 it still holds cash: `docs/specs/investments-overview.md:283`
 independently states that an investment account may hold uninvested cash
 with no security row. Reading the cash arm existentially, rather than as
-a filtered subset of rows, is what keeps a later round from becoming a
-rerun of the third on the next liquidation shape.
+a filtered subset of rows, is what avoids reintroducing any of these three
+failure shapes on the next liquidation case.
 
 **What the cash arm catches, and what it still misses.** Both
 `core.fct_transactions` and `core.fct_investment_transactions` carry their
@@ -945,8 +943,8 @@ applies to every ordinary row, extended to the one row that has no
 
 Let `archived_at_floor` be the smallest non-NULL `archived_at` among the
 accounts satisfying the eligible-candidate predicate stated once, above, at
-`:767-768` — not restated here, so the two cannot drift apart the way an
-earlier round of this spec let them — NULL, and therefore unbounded, when
+`:767-768` — not restated here, so the two cannot drift apart — NULL, and
+therefore unbounded, when
 none of them carry an `archived_at` at all. Then:
 
 ```
@@ -983,16 +981,16 @@ effective_from <= synthesis_date` — is what the fallback checks in every case,
 not one rule per shape of range:
 
 - **An open lower edge, bounded or unbounded upper edge, both not in the
-  future, no eligible candidate carrying an `archived_at`** (the ordinary case
-  this fallback exists for, and the historical range from a prior round):
+  future, no eligible candidate carrying an `archived_at`** (the ordinary
+  case this fallback exists for, including a historical range):
   `archived_at_floor` is NULL, so `synthesis_date = effective_to`;
   `effective_from` unset or no later than it, so the row is emitted, dated at
   `effective_to`, exactly as before this rule was stated.
-- **A future-only lower bound with no upper bound** (a prior round): `to_date`
+- **A future-only lower bound with no upper bound:** `to_date`
   unset resolves `effective_to` to `CURRENT_DATE`, so
   `synthesis_date = CURRENT_DATE`; the supplied `from_date` is later than
-  `CURRENT_DATE`, so the lower-edge test fails and no row is emitted — the
-  out-of-window row a prior round flagged no longer synthesizes.
+  `CURRENT_DATE`, so the lower-edge test fails and no row is emitted — no
+  out-of-window row synthesizes.
 - **A single-day window that is itself in the future**
   (`from_date == to_date`, both after today — a harder variant than the
   reported one, since even the emitted date can no longer coincide with
@@ -1153,8 +1151,8 @@ inside an otherwise ordinary, fully-anchored profile still appears here —
 not only in the wholly-unanchored case `reports.net_worth`'s own arm is
 scoped to.
 
-**Dating that row at `CURRENT_DATE` unconditionally was a regression an
-earlier round of this spec introduced, and it is corrected here.** This
+**The synthesized row must not be dated at `CURRENT_DATE`
+unconditionally.** This
 rung's own unranged default is the same one every rung shares —
 `balance_date = MAX(balance_date)` (§Data Model, mirroring
 `NetworthService.current()`, `src/moneybin/services/networth_service.py:54-62`)
@@ -1193,11 +1191,11 @@ lacks, which is why this rung needed the fix above and the day-grain rung did
 not.
 
 **One synthesis rule, reached by a per-candidate anti-join — not two rules
-split by ranged versus unranged.** An earlier round of this section claimed
+split by ranged versus unranged.** It is tempting to claim
 the view's own arm "only ever answers an unranged 'now' read," the runner's
 fallback "only ever answers a bounded range the view cannot see," and
-concluded the two "never fire on the same query." That conclusion was false,
-and it contradicted this section's own "unconditional per candidate" text
+conclude the two "never fire on the same query." That claim is false,
+and it contradicts this section's own "unconditional per candidate" text
 above: a `kind VIEW` has no notion of "ranged" versus "unranged" at all, so
 the view's arm's row — dated by the spine-maximum rule stated above, present
 in the view's raw output on every read — survives the runner's ordinary date
@@ -1256,8 +1254,8 @@ that is the right reading for a genuinely open-below *range* — reads an
 unranged read's absent lower bound as unbounded history rather than "no
 range at all," and readmits exactly the candidate this fix excludes, dated
 at its own `archived_at` in place of the single date the unranged contract
-(`:2236`, below) actually owes the read. That was the defect this round
-corrects.
+(`:2236`, below) actually owes the read. That is the defect the anti-join
+above corrects.
 
 **This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
 invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
@@ -1662,7 +1660,7 @@ Severity is `warn`, not `fail`. The balance the check flags is still present
 and still contributes to the total; only Requirement 14's own guard — an
 account with **no** balance row at all — drives the total to NULL.
 `DoctorReport.failing` counts only `fail` toward `moneybin system doctor`'s
-release-gating exit code (`doctor_service.py:228`, read at
+release-gating exit code (`doctor_service.py:553-556`, read at
 `cli/commands/system/doctor.py:68`), so a stale-but-present
 balance can surface without turning a release artifact red. That is the same
 trade the shipped `investment_stale_prices` check already makes for a
@@ -1691,10 +1689,10 @@ against the account's present row rather than date-scoped (`archived`,
 both COALESCEd there from `app.account_settings`'s current row, not
 history). **The two invariants share one eligibility definition**, so a
 future change to what "eligible" means moves both checks together. That
-join replaces two prior attempts that were each a proxy for it: a
-`balance_date = CURRENT_DATE` filter was tried first and produced a false
-negative (below); dropping the date filter entirely cured that but
-produced the opposite false positive (also below). Neither named the real
+join replaces two proxies for it that each fail differently: a
+`balance_date = CURRENT_DATE` filter produces a false
+negative (below); dropping the date filter entirely cures that but
+produces the opposite false positive (also below). Neither names the real
 condition, which was never a date — it is the account's current inclusion
 state.
 
@@ -1712,7 +1710,7 @@ predates today dates its synthesized row at the balance spine's own
 maximum, not at `CURRENT_DATE` (§`reports.net_worth_accounts`'s dating
 rule); filtering this check on `balance_date = CURRENT_DATE` in addition
 to `account_balance IS NULL` would silently exclude exactly that mixed
-profile — the false negative the first version of this check produced,
+profile — a false negative,
 because the spine can end before today with no row dated today at all.
 Omitting the date filter without the eligibility join produced the other
 failure: `reports.net_worth_accounts` intentionally retains an archived
@@ -1745,7 +1743,7 @@ still present and still contributes to the total, but the account this check
 flags contributes nothing, and `reports.net_worth.net_worth` is already NULL
 for exactly this profile per Requirement 14. `DoctorReport.failing` counts
 `fail` — and only `fail` — toward `moneybin system doctor`'s release-gating
-exit code (`doctor_service.py:228`, read at `cli/commands/system/doctor.py:68`
+exit code (`doctor_service.py:553-556`, read at `cli/commands/system/doctor.py:68`
 and turned into `raise typer.Exit(1)` at both the JSON
 (`cli/commands/system/doctor.py:116`) and default-text
 (`cli/commands/system/doctor.py:190`) output paths), so a profile whose only
@@ -1770,7 +1768,7 @@ not. That was drift, not a convention, and this spec ends it:
 > **The name half of `report_id` is the view's name.**
 
 `ReportSpec.cli_name` already derives the Typer command from that same name by
-swapping underscores for hyphens (`contract.py:408-410`), so one name fixes all
+swapping underscores for hyphens (`contract.py:474-476`), so one name fixes all
 three surfaces at once and there is no independent CLI name to choose.
 
 The reason is `reports explain`. It hands a caller the query, which names the
@@ -2212,8 +2210,8 @@ AGENTS.md's AX bias both point at.
   eligible-candidate predicate, but the runner dates the synthesized row at
   the candidate's own `archived_at` (`archived_at_floor`), never at
   `effective_to`. This pins `archived_at_floor` in the general
-  `synthesis_date` rule (§Data Model) — the regression an earlier round
-  found: dating the row past a counted candidate's own eligible window would
+  `synthesis_date` rule (§Data Model): dating the row past a counted
+  candidate's own eligible window would
   report it unanchored on a date Requirement 9 already excludes it from.
 - **Staleness invariant: entirely stale profile.** A persona whose every
   eligible account's most recent *observed* balance
@@ -2249,7 +2247,7 @@ AGENTS.md's AX bias both point at.
   half of `spec.report_id`, `spec.view.name`, and `spec.name` are all equal —
   three-way, not a pair. `spec.name` is the third because it is independent of
   the other two and `ReportSpec.cli_name` derives the Typer command from it
-  (`src/moneybin/reports/_framework/contract.py:407-410`), so a pairwise guard
+  (`src/moneybin/reports/_framework/contract.py:474-476`), so a pairwise guard
   passes while a definition carries its old CLI command through a rename — the
   one-name rule broken on the one surface a user actually types. Requirement 13
   is a convention until a test enforces it, and the six mismatches this spec
@@ -2299,8 +2297,9 @@ observation — asserted to still publish the synthesized row for that
 range, because `core.fct_balances` is not globally empty (the ordinary
 persona's rows exist elsewhere) but the range-filtered result is. This is
 the case that distinguishes "filtered result empty" from "globally empty"
-as the trigger; the earlier version of this guard passed the third and
-fourth scenarios above while still failing this one. A seventh case covers
+as the trigger — a guard keyed on the wrong one of the two would pass the
+third and fourth scenarios above while still failing this one. A seventh
+case covers
 the fourth evidence arm: a persona investment account whose only activity
 is a dividend or fee in `core.fct_investment_transactions` — no
 `core.fct_transactions` row, no holding, no balance — asserted to drive the
@@ -2319,7 +2318,8 @@ only for the third scenario's wholly-unanchored persona, where the spine is
 empty and the rule's fallback applies.
 
 **An eighth case pins the account-rung anti-join directly** — the regression
-guard for a defect found in an earlier round of this section. The first
+guard against double-emitting or dropping a candidate the view's own arm
+already answered. The first
 scenario's mixed persona, queried over a
 historical range that includes `core.fct_balances_daily`'s own spine maximum: the
 eligible unanchored candidate's view-arm row (dated at that maximum,
@@ -2343,8 +2343,8 @@ spine maximum (Requirement 9 already excludes it there, the same as an
 ordinary row), and never synthesized at its own `archived_at` either. This
 is the regression guard for evaluating the anti-join's candidate set at the
 date an unranged read actually returns rather than at the aggregate rung's
-`effective_from`-based existence check, which an earlier round of this
-section let readmit the candidate and synthesize a historical row inside
+`effective_from`-based existence check, which would otherwise readmit the
+candidate and synthesize a historical row inside
 what the unranged contract promises is a `MAX(balance_date)`-only result.
 The same persona queried again over an explicit historical range spanning
 the candidate's `archived_at` still synthesizes its row there, dated at
@@ -2394,7 +2394,7 @@ case already gives for the account rung.
   fixture.
 - **Staleness warns, it never fails the release gate.** `moneybin system
   doctor` against a profile carrying only the entirely-stale-profile fixture
-  above exits `0`. `DoctorReport.failing` (`doctor_service.py:228`), which
+  above exits `0`. `DoctorReport.failing` (`doctor_service.py:553-556`), which
   the CLI's exit code (`cli/commands/system/doctor.py:68`) reads, does not
   count a `warn` entry. This is the parity guard for keeping
   `net_worth_stale_balance` at `warn` severity: only Requirement 14's own
@@ -2437,10 +2437,10 @@ case already gives for the account rung.
   no-row form §Data Model's liquidation shapes already address. The
   account has no balance observation of any kind in either case. Both
   exit `1`, with `net_worth_unanchored_accounts` at `fail` and
-  `affected_ids` naming the account. An earlier round of this fixture
-  instead read this same net-zero, fully-recorded sum as decisive proof of
-  zero cash and exited `0` in both shapes — the exact failure this fixture
-  now guards against: the buy itself proves the account held real cash at
+  `affected_ids` naming the account. A weaker version of this fixture
+  would instead read this same net-zero, fully-recorded sum as decisive proof of
+  zero cash and exit `0` in both shapes — the exact failure this fixture
+  guards against: the buy itself proves the account held real cash at
   some point that no balance observation ever confirmed was later zero,
   so a fully-recorded round trip is no more decisive than a
   bootstrap-tainted one. This is the regression guard for the cash arm's
@@ -2693,9 +2693,9 @@ approved as a footnote rather than reviewed on its own terms.
   never merely "some later settings write exists," and never scoped to
   *current* `archived = TRUE`. `AccountService.unarchive()`
   sets `archived = FALSE` and, by contract, does **not** restore
-  `include_in_net_worth` (`account_service.py:667-671`: "does NOT restore
-  include_in_net_worth (per spec)"; `settings_update`'s own docstring:
-  "callers re-enable inclusion explicitly when intended"). A reopened
+  `include_in_net_worth` — its own docstring states the flag "is untouched
+  -- it was never changed by archiving" (`account_service.py:713-719`). A
+  reopened
   account therefore keeps a cascade-written `FALSE` while no longer being
   `archived` at all — scoping the check to `archived = TRUE` would lose
   exactly that account the moment it comes back into use, which is the
@@ -2723,10 +2723,11 @@ approved as a footnote rather than reviewed on its own terms.
   That marker only exists on writes made after this feature ships, though
   — a `--exclude` predating it leaves no `context_json` at all. Such a
   write can still prove the same fact directly from its own before/after
-  images, without the marker: `settings_update` only ever forces
-  `include_in_net_worth = FALSE` when the caller's own `archived` argument
-  is `True` in that exact call (`account_service.py:717-718`), so any
-  `account_settings.set` row where `before_value.include_in_net_worth`
+  images, without the marker: the retired pre-V063 cascade forced
+  `include_in_net_worth = FALSE` only when the caller's own `archived`
+  argument was `True` in that exact call
+  (`src/moneybin/sql/migrations/V063__add_account_settings_archived_at.py:5-9`),
+  so any `account_settings.set` row where `before_value.include_in_net_worth`
   reads `TRUE`, `after_value.include_in_net_worth = FALSE`, and
   `after_value.archived = FALSE` could not have been the cascade — a
   standalone write named `include_in_net_worth` directly, independent of
