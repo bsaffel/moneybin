@@ -60,7 +60,7 @@ from moneybin.services.investment_service import (
     RealizedGainRow,
 )
 
-from . import lots, prices, securities
+from . import lots, matches, prices, securities
 
 logger = logging.getLogger(__name__)
 
@@ -558,5 +558,6 @@ def investments_gains(
 
 
 app.add_typer(lots.app, name="lots")
+app.add_typer(matches.app, name="matches")
 app.add_typer(prices.app, name="prices")
 app.add_typer(securities.app, name="securities")

@@ -138,6 +138,7 @@ _QUEUE_KINDS: tuple[ReviewQueueKind, ...] = (
     "categorization",
     "auto_rules",
     "matches",
+    "investment_matches",
     "rule_conflicts",
     "account_links",
     "merchant_links",
@@ -191,7 +192,7 @@ def _canonical_review_position(
     would match nothing at all rather than mis-order — which is why the shape
     is declared per queue here rather than guessed from the value.
     """
-    if status == "history" or kind == "rule_conflicts":
+    if status == "history" or kind in {"rule_conflicts", "investment_matches"}:
         canonicalize = canonical_iso_timestamp
     elif kind == "categorization":
         canonicalize = canonical_iso_date
@@ -761,6 +762,12 @@ def _load_review_view(
     status: ReviewStatus,
 ) -> ReviewsCoarsePayload:
     """Load one complete normalized collection through its existing service."""
+    if kind == "investment_matches":
+        from moneybin.adapters.investment_matching_adapters import (
+            investment_review_view,
+        )
+
+        return investment_review_view(db, status)
     if kind == "categorization":
         service = CategorizationService(db)
         rows = (
@@ -832,6 +839,8 @@ def _review_key_contract(
     status: ReviewStatus,
 ) -> tuple[tuple[type[object], ...], tuple[SortDirection, ...]]:
     """Return the typed immutable ordering contract for one review queue."""
+    if kind == "investment_matches":
+        return ((str, str), ("desc", "asc"))
     if status == "history" or kind == "categorization":
         return ((str, str), ("desc", "asc" if status == "history" else "desc"))
     if kind == "auto_rules":
@@ -852,7 +861,7 @@ def _review_ordering(
 ) -> tuple[tuple[KeysetScalar, ...], tuple[SortDirection, ...]]:
     """Return one immutable queue key whose directions match display order."""
     _, directions = _review_key_contract(kind, status)
-    if status == "history":
+    if status == "history" or kind == "investment_matches":
         return (
             (_text(row.created_at) or "", str(row.decision_id)),
             directions,
@@ -959,6 +968,22 @@ def _review_count(
             if status == "pending"
             else categorization.count_rule_conflict_history()
         )
+    if kind == "investment_matches":
+        # A status-filtered COUNT(*), not `_load_review_view` + len(): that
+        # path decodes every proposal's complete legs and evidence JSON, and
+        # a counts-only caller (`reviews(kind="summary")`) pays that cost
+        # twice — once for pending, once for history — for a number a bare
+        # count answers directly.
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
+
+        investment_service = InvestmentMatchingService(db)
+        return (
+            investment_service.count_pending()
+            if status == "pending"
+            else investment_service.count_history()
+        )
     return len(_view_rows(_load_review_view(db, kind=kind, status=status)))
 
 
@@ -970,7 +995,9 @@ def _review_actions(
     next_cursor: str | None,
 ) -> list[str]:
     """Return queue-native decision and continuation actions."""
-    if status == "history":
+    if kind == "investment_matches":
+        actions = ["Investment matching is review-only; decisions are not available."]
+    elif status == "history":
         actions = [
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
         ]
@@ -998,13 +1025,20 @@ def _summary_actions() -> list[str]:
     ]
 
 
-@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+# CRITICAL, not HIGH: the `investment_matches` kind's InvestmentLegRecord
+# carries `account_id` as ACCOUNT_IDENTIFIER (Tier.CRITICAL), so a call
+# returning investment-match rows legitimately derives a critical summary
+# sensitivity. Every other kind this tool serves tops out at HIGH; the ceiling
+# is a declared contract for documentation and admission review, so it has to
+# name the worst case this tool can actually return, not the common one.
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 def reviews_coarse(
     kind: Literal[
         "summary",
         "categorization",
         "auto_rules",
         "matches",
+        "investment_matches",
         "rule_conflicts",
         "account_links",
         "merchant_links",

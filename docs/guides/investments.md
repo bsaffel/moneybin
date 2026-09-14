@@ -305,6 +305,25 @@ The asserted figure is what the statement says the account is worth on that date
 
 ## From an AI client
 
+### Review potential duplicates
+
+```sh
+moneybin investments matches run
+moneybin investments matches pending
+moneybin investments matches history --output json
+```
+
+The planner compares complete source events and saves review evidence. Pending
+Proposals show corresponding legs, confidence, material field choices, competing
+alternatives, and downstream effects. Repeated planning retains an unchanged
+Proposal; changed evidence moves the old Proposal to history.
+
+These commands do not accept matches or change the Golden ledger. The existing
+source-overlap guard remains in place. If comparison inputs are unavailable,
+run `moneybin refresh` to build them before planning again. An AI client can use
+`refresh_run(steps=["investment_match"])` and then
+`reviews(kind="investment_matches")` to inspect the same durable evidence.
+
 One read tool and three write tools cover the surface. `investments(view=...)` returns `events`, `holdings`, `lots`, `gains`, or `securities` with the same filters as the commands above, and its holdings payload carries `total_market_value`, `market_value_by_currency`, `max_days_since_observed`, and a `warnings` list that counts the unpriced, withheld, and overlapping rows. `investments_record(events=[...])` validates and resolves every account before any row is written, so a bad account ref is a hard failure that aborts the whole batch with nothing written — that failure mode is safe to retry by resubmitting as-is. An unresolved security is a soft, per-event failure instead: that one event is skipped and named by index in `data.error_details`, while every other event in the same call still commits. Retrying by resubmitting the original batch after fixing the security therefore double-inserts the events that already committed; resubmit only the events named in `error_details`; `investments_securities_set` creates or updates a catalog entry including its method; `investments_lots_select` is the selection above. The per-account default method is a field on `accounts_set`. Pulling prices and storing the Tiingo token are CLI-only, the token because a credential must not travel through a model. The [MCP tool reference](../reference/mcp-tools.md#investments) lists every parameter.
 
 ## What is not built yet

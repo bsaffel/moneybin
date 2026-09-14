@@ -156,7 +156,8 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # plus the sentence saying what that queue holds. A caller who cannot read
     # from the description that `rule_conflicts` names both rules and the
     # category each assigns has to open the queue to find out what it is.
-    "reviews": (947, 8_687),
+    # Plus 21 bytes for the investment_matches read selector.
+    "reviews": (968, 8_687),
     "taxonomy": (669, 620),
     "import_status": (642, 1_236),
     "gsheet": (441, 1_016),
