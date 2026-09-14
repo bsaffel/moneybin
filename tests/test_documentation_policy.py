@@ -1213,6 +1213,12 @@ def _stated_figures() -> list[_Figure]:
             (stub_count,),
         ),
         _Figure(
+            "hidden stubs that exit 0",
+            "docs/guides/cli-reference.md",
+            (rf"\bthe first {n} exit `0`",),
+            (stub_count - exit_one_stub_count,),
+        ),
+        _Figure(
             "hidden stubs under `db key`",
             "docs/guides/cli-reference.md",
             (rf"\b{n} `db key` names\b",),
@@ -1290,4 +1296,25 @@ def test_public_docs_stated_figures_match_code() -> None:
                         )
     assert not violations, "Public docs state a figure the code contradicts:\n" + (
         "\n".join(violations)
+    )
+
+
+def test_mcp_clients_guide_lists_exactly_the_supported_clients() -> None:
+    """The guide's `--client` list is the code's tuple, name for name.
+
+    The count figure above cannot see one client swapped for another; the
+    per-client install sections would go stale with the count still right.
+    """
+    from moneybin.cli.commands.mcp import (
+        _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
+    )
+
+    text = (_REPO_ROOT / "docs" / "guides" / "mcp-clients.md").read_text()
+    lead = "The supported `--client` values are:"
+    assert lead in text, "mcp-clients.md lost its --client list"
+    listing = text.split(lead, 1)[1].split("\n\n", 2)[1]
+    listed = set(re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE))
+    assert listed == set(_SUPPORTED_CLIENTS), (
+        f"missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
+        f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
     )
