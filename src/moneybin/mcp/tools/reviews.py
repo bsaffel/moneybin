@@ -968,6 +968,22 @@ def _review_count(
             if status == "pending"
             else categorization.count_rule_conflict_history()
         )
+    if kind == "investment_matches":
+        # A status-filtered COUNT(*), not `_load_review_view` + len(): that
+        # path decodes every proposal's complete legs and evidence JSON, and
+        # a counts-only caller (`reviews(kind="summary")`) pays that cost
+        # twice — once for pending, once for history — for a number a bare
+        # count answers directly.
+        from moneybin.services.investment_matching_service import (
+            InvestmentMatchingService,
+        )
+
+        investment_service = InvestmentMatchingService(db)
+        return (
+            investment_service.count_pending()
+            if status == "pending"
+            else investment_service.count_history()
+        )
     return len(_view_rows(_load_review_view(db, kind=kind, status=status)))
 
 

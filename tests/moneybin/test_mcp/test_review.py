@@ -63,6 +63,7 @@ from moneybin.services.auto_rule_service import (
 )
 from moneybin.services.categorization import CategorizationService
 from moneybin.services.identity_confirmation import IDENTITY_BLAST_RADIUS_CATEGORIES
+from moneybin.services.investment_matching_service import InvestmentMatchingService
 from moneybin.services.merchant_links_service import MerchantLinksService
 from moneybin.services.refresh_outcome import StageOutcome
 from moneybin.services.review_decisions_service import (
@@ -537,6 +538,34 @@ async def test_review_summary_counts_auto_rules_without_blast_radius_scan() -> N
     counts = {(item.kind, item.status): item.count for item in response.data.counts}
     assert counts[("auto_rules", "pending")] == 2
     assert counts[("auto_rules", "history")] == 1
+
+
+async def test_review_summary_counts_investment_matches_without_full_decode() -> None:
+    """`_review_count` must take the status-filtered COUNT(*) path, not `all_rows()`.
+
+    `pending`/`history` decode every Proposal's complete legs-and-evidence JSON;
+    a summary count must never pay that cost, so patch both to fail loudly if
+    the summary path reaches them.
+    """
+    with (
+        patch.object(InvestmentMatchingService, "count_pending", return_value=3),
+        patch.object(InvestmentMatchingService, "count_history", return_value=5),
+        patch.object(
+            InvestmentMatchingService,
+            "pending",
+            side_effect=AssertionError("summary decoded pending proposal payloads"),
+        ),
+        patch.object(
+            InvestmentMatchingService,
+            "history",
+            side_effect=AssertionError("summary decoded history proposal payloads"),
+        ),
+    ):
+        response = await reviews_coarse()
+
+    counts = {(item.kind, item.status): item.count for item in response.data.counts}
+    assert counts[("investment_matches", "pending")] == 3
+    assert counts[("investment_matches", "history")] == 5
 
 
 @pytest.mark.parametrize(

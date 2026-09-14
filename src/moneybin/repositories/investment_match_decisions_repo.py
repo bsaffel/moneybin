@@ -54,6 +54,25 @@ class InvestmentMatchDecisionsRepo(BaseRepo):
             result.append({**payload, **record})
         return result
 
+    def count(self, *, pending: bool) -> int:
+        """Count Proposals by lifecycle bucket without touching the payload.
+
+        ``all_rows`` selects and JSON-decodes every row's complete legs and
+        evidence to answer a question a bare ``COUNT(*)`` answers directly —
+        a counts-only caller (``reviews(kind="summary")``) must not pay that
+        cost. Mirrors ``InvestmentMatchingService.pending``/``history``'s own
+        split: pending is exactly ``status = 'pending'``, history is
+        everything else.
+        """
+        comparison = "=" if pending else "!="
+        cursor = self._db.execute(
+            f"""SELECT COUNT(*) FROM {INVESTMENT_MATCH_DECISIONS.full_name}
+                WHERE status {comparison} ?""",  # noqa: S608  # fixed TableRef, fixed operator; bound value
+            ["pending"],
+        )
+        row = cursor.fetchone()
+        return int(row[0]) if row else 0
+
     def insert_pending(
         self, proposal: Proposal, *, actor: str, in_outer_txn: bool = False
     ) -> str:

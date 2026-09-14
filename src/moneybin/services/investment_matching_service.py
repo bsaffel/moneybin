@@ -201,3 +201,11 @@ class InvestmentMatchingService:
     def history(self) -> list[dict[str, Any]]:
         """Read historical lifecycle rows with their original review evidence."""
         return [row for row in self._repo.all_rows() if row["status"] != "pending"]
+
+    def count_pending(self) -> int:
+        """Count pending Proposals without loading legs or evidence."""
+        return self._repo.count(pending=True)
+
+    def count_history(self) -> int:
+        """Count historical (non-pending) Proposals without loading legs or evidence."""
+        return self._repo.count(pending=False)
