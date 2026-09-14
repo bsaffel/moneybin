@@ -1100,38 +1100,20 @@ def _spec_domain_table() -> dict[str, frozenset[str]]:
     return rows
 
 
-def _hidden_stub_paths() -> list[str]:
-    """Every hidden CLI command whose body is the shared not-implemented stub."""
-    import inspect
+def _hidden_stub_counts() -> tuple[int, int]:
+    """(all whole-command stubs, the ones that exit 1) from the one enumeration.
 
-    import typer
+    test_capability_parity.py owns that list and explains why it is written by
+    hand rather than grepped for `_not_implemented`; a second derivation here
+    would be the two-code-paths drift that list exists to prevent.
+    """
+    from tests.moneybin.test_mcp.test_capability_parity import (
+        UNIMPLEMENTED_CLI_PATHS,
+        UNIMPLEMENTED_EXIT_ONE_CLI_PATHS,
+    )
 
-    from moneybin.cli.main import app
-
-    stubs: list[str] = []
-
-    def walk(instance: typer.Typer, path: list[str], hidden: bool) -> None:
-        for command in instance.registered_commands:
-            callback = command.callback
-            assert callback is not None
-            name = command.name or callback.__name__
-            is_hidden = hidden or bool(command.hidden)
-            source = inspect.getsource(callback)
-            # A `whole_command=False` call is one unfinished mode of a live
-            # command, not a stub (stubs.py); it must not count.
-            if (
-                is_hidden
-                and "_not_implemented(" in source
-                and "whole_command=False" not in source
-            ):
-                stubs.append(" ".join([*path, name]))
-        for group in instance.registered_groups:
-            child = group.typer_instance
-            assert child is not None
-            walk(child, [*path, str(group.name)], hidden or bool(group.hidden))
-
-    walk(app, [], False)
-    return stubs
+    exit_one = len(UNIMPLEMENTED_EXIT_ONE_CLI_PATHS)
+    return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
 def _blank_fenced_blocks(text: str) -> str:
@@ -1139,10 +1121,13 @@ def _blank_fenced_blocks(text: str) -> str:
     out: list[str] = []
     fence: str | None = None
     for line in text.splitlines(keepends=True):
-        opened = _FENCE.match(line)
+        # Same fence rule as `_code_lines`: a marker may be indented under a
+        # list item, and a longer marker closes a block only if it starts
+        # with the one that opened it.
+        opened = _FENCE.match(line.strip())
         if fence is None and opened:
             fence = opened.group("fence")
-        elif fence is not None and line.strip() == fence:
+        elif fence is not None and opened and line.strip().startswith(fence):
             fence = None
         elif fence is not None:
             out.append(
@@ -1182,7 +1167,7 @@ def _stated_figures() -> list[_Figure]:
     seeds = _REPO_ROOT / "src" / "moneybin" / "sqlmesh" / "models" / "seeds"
     with (seeds / "categories.csv").open(newline="") as handle:
         seeded_categories = sum(1 for _ in csv.DictReader(handle))
-    stubs = _hidden_stub_paths()
+    stub_count, exit_one_stub_count = _hidden_stub_counts()
     n = _NUMBER
     return [
         _Figure(
@@ -1213,13 +1198,13 @@ def _stated_figures() -> list[_Figure]:
             "hidden stub commands",
             "docs/guides/cli-reference.md",
             (rf"\b{n} commands are stubs\b",),
-            (len(stubs),),
+            (stub_count,),
         ),
         _Figure(
             "hidden stubs under `db key`",
             "docs/guides/cli-reference.md",
             (rf"\b{n} `db key` names\b",),
-            (sum(path.startswith("db key ") for path in stubs),),
+            (exit_one_stub_count,),
         ),
         _Figure(
             "seeded categories",
@@ -1276,6 +1261,21 @@ def test_public_docs_stated_figures_match_code() -> None:
                         stated_in_home = True
         if not stated_in_home:
             violations.append(f"{figure.home} no longer states the {figure.label}")
+        # The MCP spec is outside the user-facing scan and may restate a
+        # figure beside its own contract; a restatement there must still be
+        # the derived value.
+        spec = _REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md"
+        spec_text = spec.read_text()
+        spec_flat = _blank_fenced_blocks(spec_text).replace("\n", " ")
+        for pattern in figure.patterns:
+            for found in re.finditer(pattern.replace(" ", r"\s+"), spec_flat):
+                stated = tuple(_as_int(group) for group in found.groups() if group)
+                if stated != figure.expected[: len(stated)]:
+                    number = spec_text.count("\n", 0, found.start()) + 1
+                    violations.append(
+                        f"docs/specs/moneybin-mcp.md:{number}: `{found.group(0)}` "
+                        f"states {stated}; the code derives {figure.expected}"
+                    )
     assert not violations, "Public docs state a figure the code contradicts:\n" + (
         "\n".join(violations)
     )
