@@ -443,7 +443,16 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "status": DataClass.TXN_TYPE,
         "auto_eligible": DataClass.AGGREGATE,
         "is_competing": DataClass.AGGREGATE,
-        "proposal": DataClass.TXN_AMOUNT,
+        # Serialized `Proposal` dataclass (event_planning.py) — its `legs`
+        # entries are verbatim `int_investment_events__legs` rows, each
+        # carrying `account_id`. For a standalone/unlinked account
+        # core.dim_accounts.account_id is COALESCE(links.account_id,
+        # a.account_id) — the raw source-native key (dim_accounts.sql) — and
+        # `has_resolved_identity` only checks the row exists, not that it was
+        # link-resolved (int_investment_events__observations.sql). Whole-mask,
+        # same reasoning as account_link_decisions.match_signals: a position
+        # the declaration can't pin down, not a bare amount.
+        "proposal": DataClass.COMPOSITE_IDENTIFIER,
         "actor": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,

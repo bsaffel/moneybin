@@ -266,7 +266,21 @@ class ReviewsMatchesView(BaseModel):
 
 @row_set(NO_ROW_SET)
 class InvestmentMatchDetails(BaseModel):
-    """Exact financial review snapshots are classified at their highest tier."""
+    """Exact financial review snapshots are classified at their highest tier.
+
+    ``legs``, ``evidence``, ``field_choices``, and ``supersession`` are opaque
+    JSON blobs (``dict[str, JsonValue]``) sourced from ``event_planning.py`` /
+    ``event_choices.py``, not fixed-shape amount records — ``TXN_AMOUNT`` was
+    wrong for the shape, not just the content. ``legs`` verbatim-copies
+    ``int_investment_events__legs`` rows, each carrying ``account_id``, which
+    for a standalone/unlinked account is the raw source-native key (see
+    ``taxonomy.py``'s ``investment_match_decisions.proposal`` entry for the
+    full trace). ``COMPOSITE_IDENTIFIER`` whole-masks the same way
+    ``account_link_decisions.match_signals`` does: the declaration can name
+    the shape and worst-case content but not which position an identifier
+    lands at, so a partial mask would publish the tail of the serialized
+    blob rather than of any one value inside it.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -277,11 +291,11 @@ class InvestmentMatchDetails(BaseModel):
     relationship_fingerprint: Annotated[str, DataClass.RECORD_ID]
     candidate_graph_fingerprint: Annotated[str, DataClass.RECORD_ID]
     algorithm_version: Annotated[str, DataClass.TXN_TYPE]
-    legs: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
-    evidence: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
-    field_choices: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    legs: Annotated[list[dict[str, JsonValue]], DataClass.COMPOSITE_IDENTIFIER]
+    evidence: Annotated[list[dict[str, JsonValue]], DataClass.COMPOSITE_IDENTIFIER]
+    field_choices: Annotated[list[dict[str, JsonValue]], DataClass.COMPOSITE_IDENTIFIER]
     supersedes_decision_ids: Annotated[list[str], DataClass.RECORD_ID]
-    supersession: Annotated[list[dict[str, JsonValue]], DataClass.TXN_AMOUNT]
+    supersession: Annotated[list[dict[str, JsonValue]], DataClass.COMPOSITE_IDENTIFIER]
     alternatives: Annotated[list[list[str]], DataClass.RECORD_ID] = []
     downstream_effects: Annotated[dict[str, JsonValue], DataClass.TXN_TYPE] = {}
 

@@ -126,6 +126,28 @@ def test_composite_identifier_measures_whole() -> None:
     assert mask_strength(DataClass.COMPOSITE_IDENTIFIER) is MaskStrength.WHOLE
 
 
+def test_investment_match_decisions_proposal_is_masked_not_passed_through() -> None:
+    """Regression: ``proposal`` was ``TXN_AMOUNT`` (HIGH), a passthrough class.
+
+    The serialized ``Proposal`` blob embeds ``legs[].account_id``, which for a
+    standalone/unlinked account is the raw source-native key
+    (``core.dim_accounts.account_id`` — see ``taxonomy.py``'s registry entry
+    for the full trace). Reclassified to ``COMPOSITE_IDENTIFIER`` (CRITICAL).
+    A passthrough transform would leave this string unchanged; this pins that
+    it does not.
+    """
+    from moneybin.privacy.taxonomy import CLASSIFICATION
+
+    data_class = CLASSIFICATION[("app", "investment_match_decisions")]["proposal"]
+    assert data_class is DataClass.COMPOSITE_IDENTIFIER
+    (masked,) = redact_records(
+        [{"proposal": '{"legs": [{"account_id": "raw_native_key_7890"}]}'}],
+        {"proposal": data_class},
+        consent=None,
+    )
+    assert masked["proposal"] == "*****"
+
+
 @pytest.mark.parametrize(
     "value", [4, Decimal("4"), True, b"4021", ("4", "0"), Decimal("40.21")]
 )
@@ -238,6 +260,45 @@ def test_redacts_pydantic_nested_list() -> None:
     out = redact_typed(payload, consent=None)
     assert out.rows[0].account_id == "****7890"
     assert out.total_balance == Decimal("100.00")
+
+
+def test_investment_match_details_json_blobs_are_masked_not_passed_through() -> None:
+    """Regression: these fields were ``TXN_AMOUNT`` (HIGH), a passthrough class.
+
+    ``legs``/``evidence``/``field_choices``/``supersession`` verbatim-copy
+    ``int_investment_events__legs`` rows, each carrying ``account_id`` — the raw
+    source-native key for a standalone/unlinked account. Reclassified to
+    ``COMPOSITE_IDENTIFIER`` (CRITICAL, whole-masked), matching
+    ``account_link_decisions.match_signals``. A passthrough transform would
+    leave the raw ``account_id`` inside ``legs`` readable; this pins that it
+    does not.
+    """
+    from moneybin.privacy.payloads.reviews import InvestmentMatchDetails
+
+    details = InvestmentMatchDetails(
+        members=["evt_1", "evt_2"],
+        confidence_band="exact",
+        is_competing=False,
+        auto_eligible=True,
+        relationship_fingerprint="fp_1",
+        candidate_graph_fingerprint="fp_2",
+        algorithm_version="v1",
+        legs=[{"source_event_key": "evt_1", "account_id": "raw_native_key_7890"}],
+        evidence=[
+            {"left_source_event_key": "evt_1", "right_source_event_key": "evt_2"}
+        ],
+        field_choices=[{"conflict_id": "c1", "field": "amount"}],
+        supersedes_decision_ids=[],
+        supersession=[{"decision_id": "d1", "members": ["evt_0"]}],
+    )
+    out = redact_typed(details, consent=None)
+    assert out.legs == "*****"
+    assert out.evidence == "*****"
+    assert out.field_choices == "*****"
+    assert out.supersession == "*****"
+    # Sibling low-tier fields are unaffected.
+    assert out.members == ["evt_1", "evt_2"]
+    assert out.confidence_band == "exact"
 
 
 def test_import_files_preserves_bridge_input_but_masks_explicit_account_keys() -> None:
