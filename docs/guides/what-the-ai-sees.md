@@ -207,7 +207,7 @@ audit: tool=transactions_categorize_assist sensitivity=medium metadata={'txn_cou
 ```
 
 There is no `amount`, no `transaction_date`, and no `account_id` field in that
-payload — only `amount_sign`. `check_number` is present and empty on these two
+payload — only `amount_sign`. `check_number` is present and null on these two
 rows; on a check it carries the number.
 
 ---
@@ -350,7 +350,8 @@ Using profile: demo
 The SQL text, the account names, and the descriptions those calls returned are
 absent — the line carries the tier, the classes, and the row count and nothing
 else. On the CLI the line is written by the `--output json` path; a text-mode
-read writes none. Every MCP tool call writes one.
+read writes none. Every MCP tool call writes one. The flags `privacy log` takes
+are in the [`privacy` CLI reference](../reference/cli/privacy.md).
 
 ---
 

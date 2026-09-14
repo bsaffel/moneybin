@@ -200,7 +200,7 @@ Using profile: demo
 ✅ transform_model_presence
 ```
 
-The other 58 lines are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
+The other 58 invariant rows and the closing summary line are cut. `--full` scans every protected `app.*` row instead of a sample, and `--output json` returns the envelope below; both are in the generated [`system` CLI reference](../reference/cli/system.md).
 
 What it audits, via `DoctorService`:
 
@@ -369,3 +369,11 @@ For the encryption-key injection contract and recovery flow when the headless ho
 - **Telemetry, analytics, update checks.** None — the MoneyBin client is silent on the network unless you explicitly invoke `moneybin sync`. See the network-boundary section in [`threat-model.md`](threat-model.md#network-boundary).
 
 The threat model is the source of truth for what crosses each boundary; this guide tells you where to look for evidence.
+
+## What is not built yet
+
+- **No HTTP `/metrics` endpoint.** `app.metrics` is the only sink; read it with `moneybin stats` or by querying the table. A Prometheus or OTel scraper needs a shim you write against one of those two. ([Metrics](#metrics))
+- **No interval flush.** Metrics are written once per session, at exit, and only when the session took a write lock. A long-lived `mcp serve` process writes nothing until it stops. ([Metrics](#metrics))
+- **No event subscription, webhook, or push notification.** Every access pattern is a pull on a timer you set. ([Programmatic monitoring](#programmatic-monitoring))
+- **No stable event names in log records.** `message` substring matching is the contract for detecting an event. ([Log-line shapes](#log-line-shapes))
+- **`moneybin logs` filters skip CLI-written lines.** `--level`, `--grep`, `--since`, `--until`, and `--output json` read only prefixed lines, which a CLI run does not write; pipe `logs <stream> -n <N>` into `grep` for those streams. ([Reading and managing logs](#reading-and-managing-logs))

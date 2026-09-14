@@ -281,7 +281,7 @@ After installing and restarting the client, run one low-risk tool:
   This overview-only call is low sensitivity and contains no PII.
 - `accounts` — lists configured accounts.
 
-Both return the standard MoneyBin envelope. `system_status(sections=["overview"])` on the family demo profile, captured through an in-process FastMCP client with no host in the loop, returns every block the overview carries:
+Both return the standard MoneyBin envelope. `system_status(sections=["overview"])` on the family demo profile, captured through an in-process FastMCP client with no host in the loop, returns every block the overview carries. The tool returns the envelope as one line of serialized JSON; `json.dumps(indent=2)` did the indenting here:
 
 ```json
 {

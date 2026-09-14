@@ -259,7 +259,7 @@ Using profile: demo
 └──────────────┴──────────┴──────┴───────┴────────┴────────┘
 ```
 
-The run prints 50 components on this profile; the 48 not shown have the same shape. Every one of them is `type = transfer`, and none is `type = dedup` — the dedup tier settled every cross-source candidate on its own, and what is left for a human is transfer pairing.
+`--limit` defaults to 50, so this run shows the first 50 pending matches on this profile; the 48 components not shown have the same shape, and every one on this page is `type = transfer`. Raise `--limit` to read the rest of the queue.
 
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
 
@@ -279,10 +279,10 @@ The invariant: `raw.*` is the system of record. If you need to undo, revert the 
 Your category, tags, notes, and splits live in `app.transaction_*` keyed by `transaction_id`. Whether they follow a row across `refresh` depends on whether the `transaction_id` itself changes:
 
 - **Stable case (unchanged source).** Re-running `refresh` against the same raw rows produces the same `transaction_id`s (hashes are deterministic). All `app.*` curation joins back cleanly — nothing moves.
-- **Match-group change.** If a previously-unmatched row gains a dedup partner (or loses one), its `transaction_id` flips from `hash(single tuple)` to `hash(sorted set of tuples)` or vice versa. The category row in `app.transaction_categories` then refers to a `transaction_id` that no longer exists in `core.fct_transactions` — it becomes an orphan. Categorization will re-run against the new gold row, but **any user-typed category the orphaned row carried does not migrate automatically**.
+- **Match-group change.** If a previously-unmatched row gains a dedup partner (or loses one), its `transaction_id` flips from `hash(single tuple)` to `hash(sorted set of tuples)` or vice versa. The superseded id is recorded in `app.transaction_id_aliases`, and the curation rows keyed to it — category, notes, tags, splits — move to the new id at the moment of the re-key, so a user-typed category follows the row. A second pass heals curation stranded by a re-key that rows *disappearing* caused (an import revert, a Plaid removal), and undoing a merge returns the curation to the revived rows.
 - **Source-row hash change.** Editing the underlying CSV (different date, amount, or description) produces a different content-hash, so it's a different transaction entirely — see "Amendments and corrections."
 
-If you confirm or reject a pending match in `moneybin review`, expect potentially-orphaned user categorizations on the affected rows. Recategorize after the `refresh`.
+Confirming or rejecting a pending match in `moneybin review` re-keys the affected rows on the next `refresh`; their categories, notes, tags, and splits follow.
 
 ## Transfers vs dedup
 
@@ -533,7 +533,6 @@ Using profile: demo
 ## What is not built yet
 
 - **No per-step progress from `refresh`.** The command returns when the whole cascade finishes or fails; there is no incremental signal while it runs. Run `moneybin logs cli --follow` in a second terminal if you need to see where a long run is, or drive the stages one at a time with `--step` so each returns its own summary.
-- **A user categorization does not follow a row across a match-group change.** When a row gains or loses a dedup partner its `transaction_id` changes, and the `app.transaction_categories` row keyed to the old id is orphaned rather than migrated. Recategorize the affected rows after the `refresh` that follows a confirm or reject in `moneybin review`.
 - **`moneybin review --interactive` is not built.** The bare `moneybin review --type matches` reports the count and `--confirm <match_id>` / `--confirm-all` act on it; there is no item-by-item walk. List candidates with `moneybin transactions matches pending` and confirm by id.
 - **Concurrent `refresh` is not supported.** DuckDB is single-writer per file: a second `refresh` against the same database retries on backoff until the 10 s write-lock budget elapses, then raises `DatabaseLockError`. Run one driver at a time; queue imports and let a single `refresh` settle them.
 - **`moneybin refresh --step` cannot select `gsheet`.** The CLI's five selectable steps are `match`, `transform`, `categorize`, `identity`, and `rates`; MCP `refresh_run(steps=[...])` accepts all six. Use `moneybin gsheet pull` to request a sheet pull from the CLI.
