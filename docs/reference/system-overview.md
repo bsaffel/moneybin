@@ -130,14 +130,13 @@ Workflow-ordered command groups (`import`, `sync`, `refresh`, `transactions`, `r
 
 ### MCP server
 
-One 50-tool standard registry spans [user-facing domain
-groups](../guides/mcp-server.md) across literal tool-name prefixes over stdio.
-The generic `reports` catalog and runner
+One 50-tool standard registry spans 13 user-facing domain groups across 17
+literal tool-name prefixes over stdio. The generic `reports` catalog and runner
 lists and executes registered reports, so a new report does not add a tool slot.
 Capable hosts may optionally defer schemas from that same registry without
 changing its tool names, approvals, allowlists, annotations, or audit identity.
-The registry advertises zero output schemas. Supported in every client the
-[MCP clients guide](../guides/mcp-clients.md) lists. MoneyBin uses four
+The registry advertises zero output schemas. Supported in eight clients
+— see [`mcp-clients.md`](../guides/mcp-clients.md). MoneyBin uses four
 sensitivity tiers (`low` / `medium` / `high` / `critical`). Static tools derive
 classification from typed payloads; variable projections classify dynamically
 under a declared maximum. → [`mcp-server.md`](../guides/mcp-server.md)

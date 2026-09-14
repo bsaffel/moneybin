@@ -11,8 +11,8 @@ Guards four documentation and agent-routing rules:
 2. Public documents never link into ``private/``.
 3. Active agent instructions never route work to retired local trackers or the
    retired ``update-specs`` skill.
-4. Each count listed in ``_stated_figures`` derives from the code and is stated
-   in exactly one user-facing file; every other file links there.
+4. Every public statement of a count listed in ``_stated_figures`` equals the
+   value the code derives.
 
 A paragraph that must legitimately name an external product (a compatibility
 matrix, a migration note) declares it inline with
@@ -1073,7 +1073,7 @@ def test_public_docs_refresh_cascades_match_runtime() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Figures stated in public prose match the code, and each has one home
+# Figures stated in public prose match the code at every site
 # ---------------------------------------------------------------------------
 
 _NUMBER_WORDS: tuple[str, ...] = tuple(
@@ -1094,14 +1094,13 @@ def _as_int(token: str) -> int:
 
 
 class _Figure(NamedTuple):
-    """One code-derived count, the public file that states it, and its spellings.
+    """One code-derived count and the prose spellings that state it.
 
     Each pattern's capture groups are the stated numbers, in `expected` order;
     a pattern that captures only the first number checks only the first.
     """
 
     label: str
-    home: str
     patterns: tuple[str, ...]
     expected: tuple[int, ...]
 
@@ -1134,9 +1133,8 @@ def _hidden_stub_counts() -> tuple[int, int]:
     return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
-#: Specs that restate a guarded figure beside their own contract. They sit
-#: outside the user-facing scan, so a restatement is allowed there but must
-#: still equal the derived value.
+#: Specs that restate a guarded figure beside their own contract; they are
+#: scanned with the user-facing docs.
 _LIVE_SPECS = (
     "docs/specs/moneybin-mcp.md",
     "docs/specs/mcp-architecture.md",
@@ -1187,13 +1185,11 @@ def _stated_figures() -> list[_Figure]:
     return [
         _Figure(
             "MCP domain groups",
-            "docs/guides/mcp-server.md",
             (rf"\b{n} (?:user-facing )?domain groups\b",),
             (len(domains),),
         ),
         _Figure(
             "MCP tool-name prefixes",
-            "docs/guides/mcp-server.md",
             (
                 rf"\b{n} (?:literal )?tool-name prefixes\b",
                 rf"\b{n} prefixes compose {n} domain groups\b",
@@ -1202,26 +1198,33 @@ def _stated_figures() -> list[_Figure]:
         ),
         _Figure(
             "export bundle tables",
-            "docs/guides/cli-reference.md",
             # `\[?` admits a link opener between the count and its noun.
             (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)\b",),
             (len(BUNDLE_TABLES),),
         ),
         _Figure(
+            "registry tools beyond the four the getting-started guide names",
+            (rf"\b{n} other tools\b",),
+            (len(STANDARD_TOOL_NAMES) - 4,),
+        ),
+        _Figure(
             "MCP install clients",
-            "docs/guides/mcp-clients.md",
-            (rf"\b{n} (?:supported |other |tested )?clients\b",),
+            # `other seven clients` is the figure below, not a wrong eight.
+            (rf"\b(?<!other\s){n} (?:supported |tested )?clients\b",),
             (len(_SUPPORTED_CLIENTS),),
         ),
         _Figure(
+            "MCP install clients beyond the Claude Desktop guide",
+            (rf"\bother {n} clients\b",),
+            (len(_SUPPORTED_CLIENTS) - 1,),
+        ),
+        _Figure(
             "hidden stub commands",
-            "docs/guides/cli-reference.md",
             (rf"\b{n} commands are stubs\b",),
             (stub_count,),
         ),
         _Figure(
             "hidden stubs that exit 0",
-            "docs/guides/cli-reference.md",
             (
                 rf"\bthe first {n} exit `0`",
                 rf"\b{n} reserved Typer paths that are still explicit "
@@ -1231,13 +1234,11 @@ def _stated_figures() -> list[_Figure]:
         ),
         _Figure(
             "hidden stubs under `db key`",
-            "docs/guides/cli-reference.md",
             (rf"\b{n} `db key` names\b",),
             (exit_one_stub_count,),
         ),
         _Figure(
             "seeded categories",
-            "docs/guides/getting-started.md",
             (rf"\b{n} seeded categories\b",),
             (seeded_categories,),
         ),
@@ -1245,26 +1246,29 @@ def _stated_figures() -> list[_Figure]:
 
 
 def test_public_docs_stated_figures_match_code() -> None:
-    """Each figure in `_stated_figures` derives from the code and has one home.
+    """Every statement of a figure in `_stated_figures` equals the derived value.
 
-    A listed figure is stated in exactly one user-facing file; every other file
-    links there instead of restating it, so a code change reds this test rather
-    than a reader. The home's statement must equal the derived value in every
-    spelling the patterns recognise, across hard wraps. Numbers inside
-    transcripts are dated evidence and are not scanned; a figure with no cheap
-    derivation is written as a bound ("more than thirty") rather than pinned
-    here. The table is the guard's scope, not a claim about every number in the
-    docs: the `raw`/`prep` CRITICAL declaration counts and the registry's tool
-    count are pinned at every site they appear by
+    Any user-facing doc or live MCP spec may state a listed figure; each
+    statement must equal the value the code derives, in every spelling the
+    patterns recognise, across hard wraps, and each figure must be stated at
+    least once so a deleted sentence cannot leave a dead entry here. Numbers
+    inside transcripts are dated evidence and are not scanned; a figure with
+    no cheap derivation is written as a bound ("more than thirty") rather than
+    pinned here. The table is the guard's scope, not a claim about every
+    number in the docs: the `raw`/`prep` CRITICAL declaration counts and the
+    registry's tool count are pinned the same way by
     tests/moneybin/test_docs/test_internal_critical_docs.py and
-    test_mcp_surface_docs.py, which predate the one-home rule and also cover
-    the CHANGELOG, specs, and shipped source strings; a count absent from both
-    is unguarded until someone adds it.
+    test_mcp_surface_docs.py, which also cover the CHANGELOG and shipped
+    source strings; a count absent from all three is unguarded until someone
+    adds it.
     """
-    documents = _user_facing_documents()
+    documents = [
+        *_user_facing_documents(),
+        *(_REPO_ROOT / spec for spec in _LIVE_SPECS),
+    ]
     violations: list[str] = []
     for figure in _stated_figures():
-        stated_in_home = False
+        stated_anywhere = False
         for document in documents:
             relative = document.relative_to(_REPO_ROOT).as_posix()
             text = document.read_text()
@@ -1274,37 +1278,16 @@ def test_public_docs_stated_figures_match_code() -> None:
             flat = _blank_fenced_blocks(text).replace("\n", " ")
             for pattern in figure.patterns:
                 for found in re.finditer(pattern.replace(" ", r"\s+"), flat):
+                    stated_anywhere = True
                     stated = tuple(_as_int(group) for group in found.groups() if group)
-                    number = text.count("\n", 0, found.start()) + 1
-                    if relative != figure.home:
-                        violations.append(
-                            f"{relative}:{number}: `{found.group(0)}` restates the "
-                            f"{figure.label}; link to {figure.home} instead"
-                        )
-                    elif stated != figure.expected[: len(stated)]:
+                    if stated != figure.expected[: len(stated)]:
+                        number = text.count("\n", 0, found.start()) + 1
                         violations.append(
                             f"{relative}:{number}: `{found.group(0)}` states "
                             f"{stated}; the code derives {figure.expected}"
                         )
-                    else:
-                        stated_in_home = True
-        if not stated_in_home:
-            violations.append(f"{figure.home} no longer states the {figure.label}")
-        # The live MCP specs are outside the user-facing scan and may restate
-        # a figure beside their own contract; a restatement there must still
-        # be the derived value.
-        for spec in _LIVE_SPECS:
-            spec_text = (_REPO_ROOT / spec).read_text()
-            spec_flat = _blank_fenced_blocks(spec_text).replace("\n", " ")
-            for pattern in figure.patterns:
-                for found in re.finditer(pattern.replace(" ", r"\s+"), spec_flat):
-                    stated = tuple(_as_int(group) for group in found.groups() if group)
-                    if stated != figure.expected[: len(stated)]:
-                        number = spec_text.count("\n", 0, found.start()) + 1
-                        violations.append(
-                            f"{spec}:{number}: `{found.group(0)}` states "
-                            f"{stated}; the code derives {figure.expected}"
-                        )
+        if not stated_anywhere:
+            violations.append(f"no public doc states the {figure.label} any more")
     assert not violations, "Public docs state a figure the code contradicts:\n" + (
         "\n".join(violations)
     )

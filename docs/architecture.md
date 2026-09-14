@@ -82,9 +82,9 @@ The CLI and MCP server are thin formatters around the service layer. The SQL lay
 
 ### MCP registry
 
-The MCP server exposes one 50-tool standard registry over stdio, grouped into
-[user-facing domains](guides/mcp-server.md) that organize the literal tool-name
-prefixes; for example, `identity_*` belongs to Reviews and `gsheet_*` belongs
+The MCP server exposes one 50-tool standard registry across 13 user-facing
+domain groups over stdio. Those groups organize 17 literal tool-name prefixes;
+for example, `identity_*` belongs to Reviews and `gsheet_*` belongs
 to Sync.
 The generic `reports` catalog and runner lists and executes registered reports;
 reports do not consume additional tool slots. Capable hosts may optionally defer
@@ -120,7 +120,7 @@ Single-writer per profile. The encrypted DuckDB file is the unit of sync — Git
 
 ### Data portability
 
-The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. `moneybin export bundle` writes the closed [canonical bundle](guides/cli-reference.md#export) (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets; `moneybin export report` does the same for one catalog report. Beancount and arbitrary SQL-dump formats aren't offered — the read-only SQL surface plus a DuckDB `COPY ... TO` covers that gap today. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
+The DuckDB file is the durable artifact — open it with any DuckDB client and you have your data. `moneybin export bundle` writes the 13-table canonical bundle (accounts, transactions, balances, categories, merchants, securities, investment activity) as CSV, Parquet, or XLSX, to a local file or Google Sheets; `moneybin export report` does the same for one catalog report. Beancount and arbitrary SQL-dump formats aren't offered — the read-only SQL surface plus a DuckDB `COPY ... TO` covers that gap today. MoneyBin is AGPL-licensed, so the code that wrote your data will always be available to read it. See [`docs/licensing.md`](licensing.md).
 
 ## Primitives you'll touch
 

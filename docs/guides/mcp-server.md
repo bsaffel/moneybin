@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-13 -->
+<!-- Last reviewed: 2026-09-14 -->
 # MCP Server
 
 MoneyBin exposes one **50-tool standard registry** to every generic MCP client,
@@ -66,7 +66,7 @@ capability of its own, so it takes no tool slot and changes no approval.
 The 50-tool standard registry sits at the 50-tool hard limit exactly and uses
 exactly two export-specific tools:
 
-- `export_run` publishes the closed [canonical bundle](cli-reference.md#export)
+- `export_run` publishes the closed 13-table canonical bundle
   or one registered report to a named local or Google Sheets destination. Supply
   `redaction_mode="redacted"` or `redaction_mode="unredacted"` on every run. If
   the value is omitted, clients with elicitation ask; other clients receive a
