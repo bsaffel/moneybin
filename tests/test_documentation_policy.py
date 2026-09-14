@@ -1336,3 +1336,56 @@ def test_mcp_clients_guide_lists_exactly_the_supported_clients() -> None:
         f"missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
         f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
     )
+
+
+def test_getting_started_names_live_registry_tools() -> None:
+    """The four tools the guide names are distinct registry members.
+
+    The "46 other tools" figure is the registry size minus four; a renamed or
+    retired tool would keep that subtraction right while the sentence named a
+    tool that no longer exists.
+    """
+    from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+
+    text = (_REPO_ROOT / "docs" / "guides" / "getting-started.md").read_text()
+    sentence = re.search(r"reads — (.*?) other tools —", text.replace("\n", " "))
+    assert sentence is not None, "getting-started.md lost its named-tools sentence"
+    named = re.findall(r"`([a-z_]+)`", sentence.group(1))
+    assert len(named) == 4 and len(set(named)) == 4, named
+    assert set(named) <= STANDARD_TOOL_NAMES, sorted(set(named) - STANDARD_TOOL_NAMES)
+
+
+def test_cli_reference_enumerates_exactly_the_hidden_stubs() -> None:
+    """The stub sentence names every hidden stub path and nothing else.
+
+    The count figures above cannot see one stub implemented and another added;
+    the sentence would keep its totals while naming the wrong commands.
+    """
+    from tests.moneybin.test_mcp.test_capability_parity import (
+        UNIMPLEMENTED_CLI_PATHS,
+        UNIMPLEMENTED_EXIT_ONE_CLI_PATHS,
+    )
+
+    text = (_REPO_ROOT / "docs" / "guides" / "cli-reference.md").read_text()
+    sentence = re.search(
+        r"hidden from `--help`\*\*, so the CLI never advertises what it cannot do: "
+        r"(.*?)\. Each stays invocable",
+        text.replace("\n", " "),
+    )
+    assert sentence is not None, "cli-reference.md lost its stub enumeration"
+    # Each comma-separated item is `a b c`/`d`/`e`: the first name is a full
+    # path and every slash-joined name after it replaces that path's last word.
+    listed: set[str] = set()
+    for item in re.split(r", (?:and )?", sentence.group(1)):
+        names = re.findall(r"`([^`]+)`", item)
+        prefix = names[0].rsplit(" ", 1)[0]
+        listed.add(names[0])
+        listed.update(f"{prefix} {name}" for name in names[1:])
+    expected = UNIMPLEMENTED_CLI_PATHS | UNIMPLEMENTED_EXIT_ONE_CLI_PATHS
+    assert listed == expected, (
+        f"missing={sorted(expected - listed)!r}; extra={sorted(listed - expected)!r}"
+    )
+    assert all(path.startswith("db key ") for path in UNIMPLEMENTED_EXIT_ONE_CLI_PATHS)
+    assert not any(path.startswith("db key ") for path in UNIMPLEMENTED_CLI_PATHS), (
+        "the sentence's `db key` exit-1 attribution no longer holds"
+    )
