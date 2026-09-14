@@ -144,8 +144,6 @@ def merchants_create(
         data=MerchantsCreatePayload(
             created=created, skipped=skipped, error_details=error_details
         ),
-        total_count=len(merchants),
-        returned_count=len(merchants),
         actions=[
             "Use merchants to review all merchant mappings",
         ],

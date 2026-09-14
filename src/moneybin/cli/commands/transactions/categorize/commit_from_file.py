@@ -114,8 +114,6 @@ def categorize_commit_from_file(
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
 
-    input_count = len(items) + len(parse_errors)
-
     from moneybin.protocol.envelope import build_envelope
 
     def _render_table(_: object) -> None:
@@ -130,8 +128,6 @@ def categorize_commit_from_file(
     envelope = build_envelope(
         data=result.to_payload(),
         sensitivity="medium",
-        total_count=input_count,
-        returned_count=input_count,
         actions=[
             "Use `moneybin transactions categorize rules list` to review "
             "auto-created rules",

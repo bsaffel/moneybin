@@ -1028,7 +1028,12 @@ def test_accept_rolls_back_entirely_on_any_write_failure(
     repo = SecurityLinkDecisionsRepo(db)
     assert _accepted_binding(db) == provisional
     assert _security_exists(db, provisional)
-    assert repo.count_pending() == 2
+    # 2 raw pending decision rows (the original + sibling) share one
+    # (ref_kind, ref_value), so count_pending() — the review-unit count —
+    # is 1, not 2. list_pending() below proves both rows individually
+    # survived the rollback.
+    assert repo.count_pending() == 1
+    assert len(repo.list_pending()) == 2
     decision = repo.fetch_by_id(merge_setup["decision_id"])
     assert decision is not None and decision["status"] == "pending"
     assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
@@ -1129,6 +1134,10 @@ def test_pending_groups_tied_candidates_for_the_same_ref(
     assert len(groups) == 1
     decision_ids = {c.decision_id for c in groups[0].candidates}
     assert decision_ids == {merge_setup["decision_id"], sibling.target_id}
+    # count_pending() must agree with len(groups) — both count the review
+    # unit (ref_kind, ref_value), not the 2 raw decision rows, or the MCP
+    # envelope's total_count/returned_count disagree on units (MB-175 review).
+    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
 
 
 def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(

@@ -288,7 +288,11 @@ def rules_create(
         envelope = build_envelope(
             data=payload,
             sensitivity="low",
-            total_count=len(rules),
+            # No total_count: this is a completed, non-paginated write, not a
+            # partial page. len(rules) counts the submitted batch, not "how
+            # many more exist" — pairing it with total_count made has_more=True
+            # whenever a rule was skipped/refused rather than written (MB-175
+            # review, matches the MCP tool's fix).
             returned_count=len(payload.rule_ids),
             actions=actions,
         )

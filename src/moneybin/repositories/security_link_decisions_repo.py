@@ -16,6 +16,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.repositories.base import LinkDecisionsRepoBase
 from moneybin.services.audit_service import AuditEvent
@@ -165,5 +167,21 @@ class SecurityLinkDecisionsRepo(LinkDecisionsRepoBase):
         )
 
     def count_pending(self) -> int:
-        """Pending-decision count for the review sweep (fresh DB -> 0)."""
-        return self._count_pending()
+        """Distinct (ref_kind, ref_value) pairs with pending decisions (fresh DB -> 0).
+
+        The review unit is the provider ref, not the raw decision row —
+        ``pending()`` groups tied candidates for the same ref into one group
+        (``security_links_service.py::pending`` docstring), so this must count
+        the same unit or ``total_count``/``returned_count`` disagree
+        (MB-175 review). Mirrors
+        ``count_pending_merchant_link_decisions``'s distinct-pair count.
+        """
+        try:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM (SELECT DISTINCT ref_kind, ref_value "  # noqa: S608  # TableRef constant, no user values
+                f"FROM {self.table_ref.full_name} "
+                "WHERE status = 'pending')"
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0

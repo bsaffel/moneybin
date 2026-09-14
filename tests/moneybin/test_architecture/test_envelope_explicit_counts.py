@@ -114,22 +114,25 @@ def test_violations_in_source_flags_total_count_only_call(tmp_path: Path) -> Non
         "build_envelope(data=[], total_count=5, returned_count=5)",
         "build_envelope(data=[])",
         "build_envelope(data=[], returned_count=5)",
-        "some_module.build_envelope(data=[], total_count=5)",  # different function name is fine to flag too — see below
     ],
 )
 def test_violations_in_source_ignores_compliant_calls(call: str) -> None:
-    """A call carrying both counts, or no total_count at all, is not a violation.
-
-    The fourth case documents current scan behavior deliberately: the guard
-    matches on the call's bare/attribute name (`build_envelope`), the same
-    approach used to derive MB-175's original site inventory, so an
-    attribute-access call to a same-named function would also be flagged. No
-    second function named `build_envelope` exists in the tree, so this is a
-    scan-behavior note, not a false-positive risk today.
-    """
+    """A call carrying both counts, or no total_count at all, is not a violation."""
     source = f"def f():\n    return {call}\n"
     violations = _violations_in_source(source, "sample.py")
-    if call == "some_module.build_envelope(data=[], total_count=5)":
-        assert violations == ["sample.py:2"]
-    else:
-        assert violations == []
+    assert violations == []
+
+
+def test_violations_in_source_flags_attribute_access_by_name_alone() -> None:
+    """Scan-behavior note: the guard matches on bare/attribute name alone.
+
+    `some_module.build_envelope(...)` is flagged even though it is not
+    necessarily *the* `build_envelope` — the same name-matching approach used
+    to derive MB-175's original site inventory. No second function named
+    `build_envelope` exists in the tree today, so this is a documented
+    scan-behavior tradeoff, not a false-positive risk.
+    """
+    call = "some_module.build_envelope(data=[], total_count=5)"
+    source = f"def f():\n    return {call}\n"
+    violations = _violations_in_source(source, "sample.py")
+    assert violations == ["sample.py:2"]
