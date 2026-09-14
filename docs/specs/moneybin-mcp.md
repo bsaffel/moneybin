@@ -69,7 +69,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `system_audit` | `audit_id`, `cursor`, `limit`, `operation_id`, `view` | Audited mutation history | Read / dynamic / up to high / audit-derived |
 | `system_audit_undo` | `operation_id` | Reverse one undoable operation | Audited recovery / at least low |
 | `profile` |  | Active profile metadata and managed settings | Read / at least low |
-| `profile_set` | `home_currency` | Set the profile's home currency | Audited write / at least low |
+| `profile_set` | `display_currency_targets`, `home_currency` | Set profile currency settings | Audited write / at least low |
 | `reports` | `display_currency`, `limit`, `parameters`, `report_id` | Catalog or execute a registered report | Read / dynamic / up to critical / report-derived |
 | `accounts` | `cursor`, `include_closed`, `limit`, `query`, `reference`, `view` | Account collection | Read / dynamic / up to critical / view-derived |
 | `accounts_set` | `account_id`, `account_subtype`, `clear_fields`, `credit_limit`, `currency_code`, `default_cost_basis_method`, `display_name`, `holder_category`, `include_in_net_worth`, `is_archived`, `last_four`, `official_name` | Account target state | Audited write / at least critical |

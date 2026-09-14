@@ -71,6 +71,47 @@ def test_managed_key_writes_the_database_not_config_yaml(
     assert config["logging"]["level"] == "INFO"
 
 
+def test_display_currency_targets_write_the_database_not_config_yaml(
+    profile_home: Path, db: Database
+) -> None:
+    """A comma-separated CLI target list is normalized and persists as settings."""
+    result = runner.invoke(app, ["set", "display_currency_targets", "eur, GBP,EUR"])
+
+    assert result.exit_code == 0
+    assert ProfileSettingsService(db).get_settings().display_currency_targets == (
+        "EUR",
+        "GBP",
+    )
+    config = yaml.safe_load((profile_home / "config.yaml").read_text())
+    assert "display_currency_targets" not in config
+
+
+def test_empty_display_currency_targets_clear_the_declared_targets(
+    profile_home: Path, db: Database
+) -> None:
+    """An empty CLI value deliberately restores the no-extra-refresh-cost default."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("display_currency_targets", "EUR", actor="test")
+
+    result = runner.invoke(app, ["set", "display_currency_targets", ""])
+
+    assert result.exit_code == 0
+    assert settings.get_settings().display_currency_targets == ()
+
+
+def test_invalid_display_currency_target_preserves_the_existing_targets(
+    profile_home: Path, db: Database
+) -> None:
+    """The CLI validates before an invalid target can replace the saved list."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("display_currency_targets", "EUR", actor="test")
+
+    result = runner.invoke(app, ["set", "display_currency_targets", "not-a-code"])
+
+    assert result.exit_code == 1
+    assert settings.get_settings().display_currency_targets == ("EUR",)
+
+
 def test_dotted_key_still_writes_config_yaml(profile_home: Path, db: Database) -> None:
     """The existing config path is untouched by the dispatch."""
     result = runner.invoke(app, ["set", "logging.level", "DEBUG"])
@@ -105,6 +146,35 @@ def test_show_reports_the_home_currency_from_the_database(
     assert "Settings (database):" in caplog.text
     assert "home_currency: GBP" in caplog.text
     assert "Config (config.yaml):" in caplog.text
+
+
+def test_show_calls_empty_display_targets_not_set(
+    profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The empty default is a missing preference, not a Python tuple display."""
+    ProfileSettingsService(db).set_setting("home_currency", "GBP", actor="test")
+
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
+        result = runner.invoke(app, ["show"])
+
+    assert result.exit_code == 0
+    assert "display_currency_targets: (not set)" in caplog.text
+
+
+def test_show_renders_populated_display_targets_as_a_human_list(
+    profile_home: Path, db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Targets are profile preferences, not a Python tuple for users to parse."""
+    settings = ProfileSettingsService(db)
+    settings.set_setting("home_currency", "GBP", actor="test")
+    settings.set_setting("display_currency_targets", "EUR,GBP", actor="test")
+
+    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
+        result = runner.invoke(app, ["show"])
+
+    assert result.exit_code == 0
+    assert "display_currency_targets: EUR, GBP" in caplog.text
+    assert "display_currency_targets: ('EUR', 'GBP')" not in caplog.text
 
 
 def test_show_survives_a_database_that_predates_the_settings_table(

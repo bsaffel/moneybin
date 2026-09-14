@@ -303,7 +303,7 @@ the observed-evidence gates below close.
 | Domain | Standard tools | Responsibilities |
 |---|---|---|
 | System | `system_status`, `system_audit`, `system_audit_undo` | Sectioned overview/health/statistics; unified audit list/detail/history; operation-level recovery |
-| Profile | `profile`, `profile_set` | Active profile metadata and managed settings, including the home currency |
+| Profile | `profile`, `profile_set` | Active profile metadata and managed settings, including the home currency and display targets |
 | Reports | `reports` | Catalog and execute every registered report |
 | Accounts | `accounts`, `accounts_set`, `accounts_balances`, `accounts_balance_assert`, `accounts_links_run` | Collection/detail/resolve; settings; latest/history; assertion set/remove; merge proposals (sweep or named pair) |
 | Investments | `investments`, `investments_record`, `investments_securities_set`, `investments_lots_select` | Read views; ledger events; security catalog; specific-lot overrides |
@@ -426,12 +426,12 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 50 tools, 62,097 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 62,373 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`948a341de30810e9778bfaead0a08170b46794ae1a8d3f8b959dba3d7ea8ca05`.
+`45cc525e38e6a42e643135ac518a6d2b39ff94e376a0c83fa6b1d2db74d6aeb2`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -28,637 bytes (-31.6%). The deterministic estimate is 15,525
+The delta is -28,361 bytes (-31.3%). The deterministic estimate is 15,594
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.

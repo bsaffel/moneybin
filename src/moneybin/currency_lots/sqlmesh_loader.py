@@ -8,6 +8,7 @@ cache-only: a transform must never turn into a provider call or an App write.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import typing as t
 from collections.abc import Mapping, Sequence
@@ -678,6 +679,48 @@ def _load_app_mutation_watermarks(
     }
 
 
+def _audit_snapshot(value: object) -> Mapping[str, object] | None:
+    if value is None:
+        return None
+    if isinstance(value, Mapping):
+        return value
+    parsed = json.loads(str(value))
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _load_profile_home_freshness(
+    context: ExecutionContext,
+) -> tuple[datetime | None, datetime | None, bool]:
+    audit_log = AUDIT_LOG.full_name
+    frame = context.fetchdf(
+        f"""
+        SELECT occurred_at::VARCHAR AS occurred_at,
+               before_value::VARCHAR AS before_value,
+               after_value::VARCHAR AS after_value
+        FROM {audit_log}
+        WHERE target_schema = 'app'
+          AND target_table = 'profile_settings'
+          AND target_id = 'profile'
+        ORDER BY occurred_at ASC, audit_id ASC
+        """  # noqa: S608  # registered physical table name, not user input
+    )
+    records = _records(frame)
+    home_changed_at: datetime | None = None
+    legacy_home_updated_at: datetime | None = None
+    for record in records:
+        before = _audit_snapshot(record["before_value"])
+        after = _audit_snapshot(record["after_value"])
+        occurred_at = _opt_timestamp(record["occurred_at"])
+        if occurred_at is not None and (before or {}).get("home_currency") != (
+            after or {}
+        ).get("home_currency"):
+            home_changed_at = _latest(home_changed_at, occurred_at)
+        if legacy_home_updated_at is None and before is not None:
+            if before.get("home_currency") is not None:
+                legacy_home_updated_at = _opt_timestamp(before.get("updated_at"))
+    return home_changed_at, legacy_home_updated_at, bool(records)
+
+
 def _load_home_currency(
     context: ExecutionContext,
 ) -> tuple[str | None, datetime | None]:
@@ -691,15 +734,17 @@ def _load_home_currency(
         """  # noqa: S608  # registered physical table name, not user input
     )
     records = _records(frame)
-    changed_at = _load_app_mutation_watermarks(context, "profile_settings").get(
-        "profile"
+    home_changed_at, legacy_home_updated_at, has_profile_audit = (
+        _load_profile_home_freshness(context)
     )
     if not records:
-        return None, changed_at
-    return (
-        _opt_str(records[0]["home_currency"]),
-        _latest(_opt_timestamp(records[0]["profile_updated_at"]), changed_at),
-    )
+        return None, home_changed_at
+    home_currency = _opt_str(records[0]["home_currency"])
+    if home_changed_at is not None:
+        return home_currency, home_changed_at
+    if has_profile_audit:
+        return home_currency, legacy_home_updated_at
+    return home_currency, _opt_timestamp(records[0]["profile_updated_at"])
 
 
 def _load_stored_rates(

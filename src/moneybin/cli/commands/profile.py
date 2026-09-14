@@ -3,7 +3,7 @@
 import logging
 import sys
 from collections.abc import Mapping
-from typing import Annotated
+from typing import Annotated, cast
 
 import typer
 
@@ -199,7 +199,10 @@ def _read_managed_settings(
     set_current_profile(name)
     with get_database(read_only=True) as db:
         settings = ProfileSettingsService(db).get_settings()
-    return {"home_currency": settings.home_currency}
+    return {
+        "home_currency": settings.home_currency,
+        "display_currency_targets": settings.display_currency_targets,
+    }
 
 
 def _set_managed_setting(
@@ -288,7 +291,12 @@ def profile_show(
         if settings:
             logger.info("  Settings (database):")
             for k, v in settings.items():
-                logger.info(f"    {k}: {v if v is not None else '(not set)'}")
+                if k == "display_currency_targets" and isinstance(v, tuple):
+                    targets = cast(tuple[str, ...], v)
+                    shown = ", ".join(targets) if targets else "(not set)"
+                else:
+                    shown = "(not set)" if v is None else v
+                logger.info(f"    {k}: {shown}")
 
 
 @app.command("set")
@@ -296,7 +304,10 @@ def profile_set(
     key: Annotated[
         str,
         typer.Argument(
-            help="Config key (e.g., logging.level) or managed key (home_currency)"
+            help=(
+                "Config key (e.g., logging.level) or managed key "
+                "(home_currency, display_currency_targets)"
+            )
         ),
     ],
     value: Annotated[str, typer.Argument(help="Value to set")],
@@ -308,7 +319,7 @@ def profile_set(
     """Set a configuration value on a profile.
 
     Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
-    managed keys (``home_currency``) write ``app.profile_settings`` in the
+    managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
     profile's database, where the report guards can read them.
     """
     svc = ProfileService()

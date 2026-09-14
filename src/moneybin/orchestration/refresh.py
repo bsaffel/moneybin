@@ -625,9 +625,9 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     sync already held that lock. Refresh holds the lock and is already slow.
 
     Returns ``(backfill, error)``. Both are None when there was nothing to
-    gather — no home currency set means nothing is ever converted, so no rate is
-    implied, and ``core.*`` not existing yet is a first-load precondition. The
-    error is what separates those declines from a step that ran and crashed:
+    gather — no home currency or display target set means no rate is implied,
+    and ``core.*`` not existing yet is a first-load precondition. The error is
+    what separates those declines from a step that ran and crashed:
     the backfill is null on all three, so a caller reading only that would tell
     the user nothing happened when in fact something broke.
     """
@@ -638,26 +638,27 @@ def _run_rates_step(db: Database) -> tuple[RateBackfillResult | None, str | None
     from moneybin.connectors.rates.frankfurter import (
         FrankfurterRateAdapter,
     )
-    from moneybin.repositories.profile_settings_repo import (
-        ProfileSettingsRepo,
-    )
+    from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
     from moneybin.services.rate_backfill import (
         RateBackfillNotReadyError,
         run_rate_backfill,
     )
 
     try:
-        home_currency = ProfileSettingsRepo(db).get_home_currency()
+        profile_settings = ProfileSettingsRepo(db)
+        home_currency = profile_settings.get_home_currency()
+        display_currency_targets = profile_settings.get_display_currency_targets()
     except Exception as exc:  # best-effort refresh stage
         return None, _step_error(exc, step="Rate backfill")
-    if home_currency is None:
-        logger.debug("Rate backfill skipped: no home currency is set")
+    if home_currency is None and not display_currency_targets:
+        logger.debug("Rate backfill skipped: no display currency is set")
         return None, None
 
     try:
         return run_rate_backfill(
             db,
             home_currency=home_currency,
+            display_currency_targets=display_currency_targets,
             # The UTC day, not the host's: Frankfurter keys its series by UTC
             # date, so east of UTC a host-local `today` names a day the provider
             # has not published. Same reasoning, same shape, as

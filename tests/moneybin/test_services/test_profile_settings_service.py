@@ -38,6 +38,57 @@ def test_set_setting_persists_the_home_currency(
     assert len(restated) == 1
 
 
+def test_display_currency_targets_are_normalized_without_restatement(
+    service: ProfileSettingsService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Changing read targets plans future rates but never restates accounting."""
+    restated: list[Database] = []
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting",
+        restated.append,
+    )
+
+    service.set_setting("display_currency_targets", " eur, GBP,EUR ", actor="cli")
+
+    assert service.get_settings().display_currency_targets == ("EUR", "GBP")
+    assert restated == []
+
+
+def test_set_setting_rejects_an_oversized_display_target_list(
+    service: ProfileSettingsService,
+) -> None:
+    """The CLI's comma-parsed string reaches the same repo-level count bound.
+
+    An unbounded target set would make ``plan_rate_backfill`` build a
+    Cartesian product against every held currency (MB-148 CONSIDER).
+    """
+    from moneybin.limits import DISPLAY_CURRENCY_TARGETS_MAX_COUNT
+
+    codes = ",".join(
+        f"{chr(65 + i % 26)}{chr(65 + (i // 26) % 26)}{chr(65 + i // 676)}"
+        for i in range(DISPLAY_CURRENCY_TARGETS_MAX_COUNT + 1)
+    )
+
+    with pytest.raises(UserError) as excinfo:
+        service.set_setting("display_currency_targets", codes, actor="cli")
+
+    assert excinfo.value.code == "mutation_invalid_input"
+    assert service.get_settings().display_currency_targets == ()
+
+
+def test_set_setting_classifies_a_malformed_display_target_list(
+    service: ProfileSettingsService,
+) -> None:
+    """An empty comma-delimited target is mutation-invalid input, not a server bug."""
+    service.set_setting("display_currency_targets", "EUR", actor="cli")
+
+    with pytest.raises(UserError) as excinfo:
+        service.set_setting("display_currency_targets", "EUR,,GBP", actor="cli")
+
+    assert excinfo.value.code == "mutation_invalid_input"
+    assert service.get_settings().display_currency_targets == ("EUR",)
+
+
 def test_set_setting_rejects_an_unknown_key(service: ProfileSettingsService) -> None:
     """An unrecognized managed key is refused, and the error names the real ones.
 

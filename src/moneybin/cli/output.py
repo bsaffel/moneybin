@@ -182,8 +182,9 @@ display_currency_option: str | None = typer.Option(
         "ISO-4217 display currency to request (e.g. EUR). Reports convert only "
         "when each row declares one amount currency and one exact date; otherwise "
         "amounts retain their declared currencies and the result says why. "
-        "'moneybin refresh' stores rates into your home currency only, so any "
-        "other target falls back until its own rates are stored."
+        "'moneybin refresh' stores rates for your home currency and profile "
+        "display targets; set targets with "
+        "'moneybin profile set display_currency_targets EUR,GBP'."
     ),
 )
 

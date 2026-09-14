@@ -56,21 +56,17 @@ def test_v044_singleton_guard_survives_the_migration_path(db: Database) -> None:
         )
 
 
-def test_v044_produces_the_same_shape_as_a_fresh_install(db: Database) -> None:
-    """Upgraded and fresh-installed databases agree on the table's shape.
-
-    The DDL exists twice — `sql/schema/app_profile_settings.sql` for fresh
-    installs and this migration for upgrades. Nothing but this test stops the
-    two copies from drifting apart.
-    """
-    fresh_shape = db.execute(_COLUMN_SHAPE_SQL).fetchall()
-    assert fresh_shape, "schema file should have created the table for a fresh install"
-
+def test_v044_produces_its_historical_shape(db: Database) -> None:
+    """V044 remains the three-column base that later migrations extend."""
     _drop_table(db)
     run_migration(db, migrate)
     migrated_shape = db.execute(_COLUMN_SHAPE_SQL).fetchall()
 
-    assert migrated_shape == fresh_shape
+    assert migrated_shape == [
+        ("scope", "VARCHAR", "NO"),
+        ("home_currency", "VARCHAR", "YES"),
+        ("updated_at", "TIMESTAMP", "NO"),
+    ]
 
 
 def test_v044_is_idempotent(db: Database) -> None:
