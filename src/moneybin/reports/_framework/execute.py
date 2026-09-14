@@ -115,6 +115,7 @@ class ReportResult:
             data=self.records,
             sensitivity=tier_to_sensitivity(self.tier).value,
             total_count=self.total_count,
+            returned_count=len(self.records),
             classes_returned=self.classes_returned,
             actions=self.actions or None,
             period=self.period,

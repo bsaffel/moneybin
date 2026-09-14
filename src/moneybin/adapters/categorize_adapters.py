@@ -64,6 +64,7 @@ def auto_review_envelope(
         data=payload,
         sensitivity="medium",
         total_count=result.total_count,
+        returned_count=len(payload.proposals),
         actions=actions,
     )
 

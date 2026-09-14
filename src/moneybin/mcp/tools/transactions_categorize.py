@@ -504,7 +504,6 @@ def transactions_categorize_commit(
         empty = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
         return build_envelope(
             data=empty.to_payload(),
-            total_count=0,
             actions=[
                 "Use transactions_categorize_rules to review auto-created rules",
                 "Use reviews(kind='categorization') to fetch the next batch",
@@ -517,7 +516,6 @@ def transactions_categorize_commit(
     result.merge_parse_errors(parse_errors)
     return build_envelope(
         data=result.to_payload(),
-        total_count=len(items),
         actions=[
             "Use transactions_categorize_rules to review auto-created rules",
             "Use reviews(kind='categorization') to fetch the next batch",
@@ -587,9 +585,16 @@ def transactions_categorize_rules_create(
             0,
             "Use reviews(kind='rule_conflicts') to decide the refused rule(s)",
         )
+    payload = result.to_payload()
     return build_envelope(
-        data=result.to_payload(),
-        total_count=len(rules),
+        data=payload,
+        # No total_count: this is a completed, non-paginated write, not a
+        # partial page of a larger set. len(rules) counts the submitted
+        # batch, not "how many more exist" — pairing it with total_count
+        # made has_more=True whenever a rule was skipped/refused rather than
+        # written (MB-175 review). Omitting it lets returned_count double as
+        # total_count, so has_more stays False.
+        returned_count=len(payload.rule_ids),
         actions=actions,
     )
 
