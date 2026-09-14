@@ -133,7 +133,7 @@ this spec's to close.
    interval it reports wrongly and why the fix is deferred.
 
     **Inherited from the prerequisite: a set of accounts this requirement has
-    to decide.** `V060` backfills `archived_at` but deliberately leaves
+    to decide.** `V063` backfills `archived_at` but deliberately leaves
     `include_in_net_worth` exactly as stored, including where the retired
     cascade is what forced it to `FALSE`. It cannot do otherwise: the cascade
     ran ahead of `_resolve()`, so an account the user only archived and one the
@@ -834,15 +834,30 @@ column, here a `BETWEEN` on a date column; the predicate shapes differ, the
 architectural move (a Python-built predicate over bound parameters the view
 itself cannot see) is the same.
 
-The runner triggers this fallback on *its own filtered result being
-empty* — not a separate global-emptiness check, and not a check for
-"which arm produced which row," since the runner reads the view's output
-the same way any caller does. This single condition already subsumes the
-wholly-empty-profile case: for that profile, the view's own `CURRENT_DATE`
-arm means the ordinary filter is *not* empty for any range that includes
-today, so the runner's fallback correctly never fires there — see below for
-why the two never collide. The fallback fires only when it is still needed:
-a range that excludes both real data and the view's own `CURRENT_DATE` row.
+The runner triggers this fallback only when the caller supplied an explicit
+`from_date` or `to_date` **and** its own filtered result is empty — not a
+bare emptiness check on its own, and not a check for "which arm produced
+which row," since the runner reads the view's output the same way any
+caller does. An unranged call never reaches this fallback at all: it
+answers straight from the ordinary `MAX(balance_date)` default below, and
+that default already subsumes the wholly-empty-profile case correctly —
+when a genuinely eligible (un-archived) candidate exists, the view's own
+`CURRENT_DATE` arm supplies that one row and the default is non-empty; when
+the profile's only unanchored candidate has since been archived, that arm
+correctly excludes it, the default finds nothing, and the runner returns
+that emptiness rather than falling through to synthesis. A closed account's
+old incompleteness is not the answer to an unranged "what is my net worth
+now," and this fallback exists to date a row inside a range the caller
+actually asked for, never to resurrect a candidate the caller never scoped
+a query to. Requiring an explicit range is also what keeps the
+eligible-candidate predicate's `effective_from IS NULL` arm, below, honest:
+reached only this way, it always means "an explicit range with no lower
+bound," never "no range was given at all" — the reading that let a stale
+`archived_at`-dated row leak into an unranged read, fixed the same way for
+`reports.net_worth_accounts`'s own anti-join below (§Tier 2, "A ninth case
+pins the anti-join's unranged eligibility date"). The fallback fires only
+when it is still needed: an explicit range that excludes both real data and
+the view's own `CURRENT_DATE` row.
 
 **Before computing `effective_from`/`effective_to` or issuing any query,
 the runner validates the range — an inverted one is rejected, not silently
@@ -1031,16 +1046,20 @@ makes the past-and-present cases above fall through unchanged.
 can be dated without knowing the request: every real balance-driven row
 (per-row count and NULL gate, correct in any requested range), plus the one
 `CURRENT_DATE` row for a profile with no balance data at all but an
-eligible candidate. No runner involvement in either. The runner owns
-exactly one thing beyond applying the ordinary range filter: deciding what
-to do when that filter's own result is empty despite the view's best
-effort — check for a range-eligible candidate, and if one exists,
-synthesize the one row the view had no way to date for a range it never
-saw. The two never both fire for the same query: the view's arm answers
-"now," the runner's fallback answers "a specific range with nothing in it,"
-and a query is either unranged (the view's arm can satisfy it) or ranged
-(the runner's ordinary filter runs, and only misses when the view's arm
-falls outside that specific range).
+eligible candidate. No runner involvement in either — an unranged read
+never reaches the runner's own synthesis logic, whether or not a currently
+eligible candidate exists. The runner owns exactly one thing beyond
+applying the ordinary range filter: deciding what to do when an *explicit*
+range's own filtered result is empty despite the view's best effort — check
+for a range-eligible candidate, and if one exists, synthesize the one row
+the view had no way to date for a range it never saw. The two never both
+fire for the same query: the view's arm answers "now" — correctly
+publishing nothing when no candidate is currently eligible, never falling
+through to the runner for that — and the runner's fallback answers only "an
+explicit range with nothing in it." A query is either unranged (the view's
+arm alone answers it, whatever that answer is) or ranged (the runner's
+ordinary filter runs, and only misses when the view's arm falls outside
+that specific range).
 
 **What a direct SQL reader still cannot get from the bare view.** Only an
 explicit historical range that excludes both real data and today, on a
@@ -1845,12 +1864,12 @@ Report runners:
   `core:net_worth_accounts`
 
 Migration:
-- `src/moneybin/sql/migrations/V060__add_account_settings_archived_at.py`
+- `src/moneybin/sql/migrations/V063__add_account_settings_archived_at.py`
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and six acceptance tests for
-`account_archive_intent_ambiguous`: an account backfilled by V060 into the
+tests named in §Testing Strategy, and seven acceptance tests for
+`account_archive_intent_ambiguous`: an account backfilled by V063 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
 per that method's own contract — still warns, pinning that the check is not
@@ -1865,13 +1884,21 @@ account whose `include_in_net_worth = FALSE` was set directly via `--exclude`
 with no `archived = TRUE` audit row ever written for it never warns at all —
 pinning that a legitimately, deliberately excluded account that predates this
 feature (or simply never went through the archive cascade) is not what this
-invariant exists to flag; and, as a third negative, an account whose
+invariant exists to flag; as a third negative, an account whose
 `account_settings.set` history contains a pre-marker row that turns
 `include_in_net_worth` from `TRUE` to `FALSE` while that same row's
 `archived` stays `FALSE`, followed later by a separate row recording
 `archived = TRUE` — never warns, even though the later row alone would
 satisfy the cascade-evidence clause, pinning that the row-shape evidence
-settles the account exactly as the marker would.
+settles the account exactly as the marker would; and, as a fourth negative,
+an account whose very first `account_settings.set` row is that same
+standalone `--exclude` — `before_value IS NULL` (the INSERT path, no prior
+row to snapshot), `after_value.include_in_net_worth = FALSE`,
+`after_value.archived = FALSE` — followed later by a separate row recording
+`archived = TRUE`: never warns either, pinning that a `NULL` `before_value`
+settles the account the same way a stored `TRUE` does, rather than falling
+through to a warning because neither the marker nor a stored-`TRUE` snapshot
+exists to read.
 
 ### Files to Modify
 
@@ -1907,7 +1934,7 @@ settles the account exactly as the marker would.
   the `archived_at` predicates Requirement 9's eligibility filter adds.
 - `src/moneybin/services/doctor_service.py` — the
   `account_archive_intent_ambiguous` invariant (§Prerequisites), `warn`
-  severity, flagging an account the V060 backfill left ambiguous with no
+  severity, flagging an account the V063 backfill left ambiguous with no
   audit row proving a deliberate decision — the
   `confirms_include_in_net_worth` marker, or the pre-marker row-shape
   evidence §Prerequisites defines.
@@ -2331,6 +2358,23 @@ zero"), which fails identically, so the two together prove the predicate
 never discriminates on how the zero was reached, only on whether the
 ledger carries any row at all.
 
+**An eleventh case pins `reports.net_worth`'s own unranged eligibility
+date** — the regression guard for the same class of defect the ninth case
+fixed in `reports.net_worth_accounts`'s anti-join, found separately in the
+aggregate rung's own fallback. The fourth scenario's fixture — the wholly-
+unanchored persona with its one account later archived — queried with no
+range at all: the result is empty, no row at any date, because the account
+fails Requirement 9's eligibility test at the date an unranged read
+actually answers rather than being readmitted through the
+`effective_from IS NULL` arm of the eligible-candidate predicate (§Data
+Model). This is the assertion the fourth scenario's own prose already
+promised ("a query with no range ... would now find it ineligible") but did
+not yet pin. The same fixture queried again over the historical range that
+predates the archival still publishes the synthesized row there, exactly as
+the fourth scenario already asserts — proving this fix is scoped to the
+unranged path and does not regress the ranged one, the same proof the ninth
+case already gives for the account rung.
+
 ### Tier 3 — Integration
 
 - The privacy-class derivation must accept all three views and reject a stacked
@@ -2486,7 +2530,8 @@ multi-currency, and thirteen for `M2B.3`:
 - For `M2B.3`'s range-evaluated eligibility: the same wholly-unanchored
   persona with one account later archived, so a query for a historical
   range predating the archival and a query with no range give different
-  answers — the fixture the fourth Tier 2 scenario above reads.
+  answers — the fixture the fourth and eleventh Tier 2 scenarios above
+  read.
 - For `M2B.3`'s empty-range trigger: the existing balance-backed persona,
   queried over a historical range that predates its own earliest balance
   observation, with the persona account from the first bullet above still
@@ -2645,19 +2690,36 @@ approved as a footnote rather than reviewed on its own terms.
   images, without the marker: `settings_update` only ever forces
   `include_in_net_worth = FALSE` when the caller's own `archived` argument
   is `True` in that exact call (`account_service.py:717-718`), so any
-  `account_settings.set` row where `before_value.include_in_net_worth =
-  TRUE`, `after_value.include_in_net_worth = FALSE`, and
+  `account_settings.set` row where `before_value.include_in_net_worth`
+  reads `TRUE`, `after_value.include_in_net_worth = FALSE`, and
   `after_value.archived = FALSE` could not have been the cascade — a
   standalone write named `include_in_net_worth` directly, independent of
-  `archived` becoming `TRUE` in that same row. That is the same fact the
-  marker states for every future write, recovered from a row that
-  predates the marker entirely. The check's `NOT EXISTS` is therefore one
-  settled-decision test with two ways to satisfy it — the marker or this
-  row shape — not two exemptions to keep in sync as a third shape
-  surfaces: a legacy account excluded standalone and archived only later,
-  whose old exclusion row carries no marker but does carry this shape, is
-  settled by the second and never warns, even though a later row in its
-  history also satisfies the cascade-evidence clause above.
+  `archived` becoming `TRUE` in that same row. `before_value.include_in_net_worth`
+  reading `TRUE` includes a `before_value IS NULL` row, not only a stored
+  `TRUE`: `AccountSettingsRepo.set` captures `before = None` on an INSERT —
+  the account's first-ever settings row — and `_serialize_for_audit` maps
+  that `None` straight to a JSON `NULL` before value
+  (`repositories/base.py:262-263`), so an account excluded on its very
+  first `accounts set --exclude` call carries no `before_value` at all, not
+  a `before_value` recording the flag's prior stored state. `AccountSettings`'s
+  own default (`account_service.py:239`, `include_in_net_worth: bool =
+  True`) is what `settings_update` treats as that unwritten row's implicit
+  prior value, so a `NULL` `before_value.include_in_net_worth` reads the
+  same as a stored `TRUE` for this test — never as "unknown, so exclude
+  it" — and the `after_value.archived = FALSE` clause still does the same
+  work it does for a stored-`TRUE` row: a first-ever write that also
+  archives is the cascade, not a standalone exclusion, and its
+  `after_value.archived = TRUE` already fails this shape without a
+  separate case for it. That is the same fact the marker states for every
+  future write, recovered from a row that predates the marker entirely.
+  The check's `NOT EXISTS` is therefore one settled-decision test with two
+  ways to satisfy it — the marker or this row shape — not two exemptions
+  to keep in sync as a third shape surfaces: a legacy account excluded
+  standalone (on its first settings write or a later one alike) and
+  archived only later, whose old exclusion row carries no marker but does
+  carry this shape, is settled by the second and never warns, even though
+  a later row in its history also satisfies the cascade-evidence clause
+  above.
   Rationale and the redundancy that makes the cascade removable:
   §`app.account_settings`; the check's file and acceptance test:
   §Implementation Plan.
