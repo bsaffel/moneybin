@@ -54,7 +54,7 @@ conn.execute(f"SELECT * FROM fct_transactions WHERE account_id = '{account_id}'"
 
 ## Output Encoding (XSS Prevention)
 
-- **Web UI**: All user-derived content must be escaped before rendering. Use templating engines with auto-escaping enabled (e.g., Jinja2 `autoescape=True`). Never construct HTML with string concatenation or f-strings.
+- **Web UI**: All user-derived content must be escaped before rendering. Use templating engines with auto-escaping enabled (e.g., Jinja2 `autoescape=True`). Never construct HTML with string concatenation or f-strings. No templating engine is in `src/` today — this is the standard for the change that introduces one.
 - **MCP tool responses**: Return structured data (dicts/lists), not pre-formatted HTML. The MCP host is responsible for rendering. Never embed user-derived content in HTML or Markdown links without escaping.
 - **Markdown injection**: When including user-supplied values in Markdown output (descriptions, notes), escape `[]()` link syntax and backticks to prevent content injection in MCP host rendering.
 - **CLI output**: Use `logging` or `typer.echo()` — not raw `print()` with unescaped user data. This prevents log injection and terminal escape sequence attacks.

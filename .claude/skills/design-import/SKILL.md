@@ -1,6 +1,6 @@
 ---
 name: design-import
-description: Bring design work from claude.ai/design — a component, guideline/specimen card, token change, or full screen — back into the repo's design-system/. Inbound counterpart to the outbound /design-sync. Trigger: someone hands you a design-tool project link or zip to land in the repo.
+description: "Bring design work from claude.ai/design — a component, guideline/specimen card, token change, or full screen — back into the repo's design-system/. Inbound counterpart to the outbound /design-sync. Trigger: someone hands you a design-tool project link or zip to land in the repo."
 ---
 
 # Design Import (claude.ai/design → design-system/)
