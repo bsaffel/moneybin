@@ -15,10 +15,10 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.privacy.payloads.accounts import AccountListPayload
 from moneybin.protocol.envelope import build_envelope
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import (
     CLEAR,
     PLAID_CANONICAL_HOLDER_CATEGORIES,

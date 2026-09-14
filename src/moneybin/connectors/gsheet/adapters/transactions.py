@@ -454,10 +454,8 @@ def _link_sheet_accounts(
     for the account-link review queue. Accepting that decision later re-points
     the link, so rows already loaded follow rather than stranding.
     """
-    from moneybin.services.account_display_name import (
+    from moneybin.extractors.account_identity import (
         AccountNameFacts,
-    )
-    from moneybin.services.account_resolution_types import (
         SourceAccount,
     )
     from moneybin.services.account_resolver import AccountResolver

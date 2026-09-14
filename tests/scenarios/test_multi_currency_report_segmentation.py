@@ -33,8 +33,8 @@ from typing import cast
 import pytest
 
 from moneybin.connectors.sync_models import SyncDataResponse
+from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
-from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.doctor_service import DoctorService
 from tests.scenarios._runner.loader import Scenario, SetupSpec

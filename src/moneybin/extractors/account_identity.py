@@ -1,25 +1,24 @@
-"""Python mirror of ``core.dim_accounts``'s display-name derivation.
+"""Account-identity value types shared by extractors and services.
 
-An import announces the accounts it minted (``accounts_created``) before any
-transform has run — and ``import_confirm`` never refreshes at all — so the
-label cannot be read back from ``core``. It is derived here instead, from the
-same two seed CSVs the SQL model joins (``institutions``, ``account_type_map``),
-so the two cannot disagree about a bank's name or an account type's spelling.
+Consolidates two things that travel together: the raw identity a source
+presents for one account (``SourceAccount``) and how ``core.dim_accounts``
+will name it (``AccountNameFacts`` and its derivation, mirroring
+``dim_accounts.sql``'s ``COALESCE`` chain — see ``derive_display_name``).
+Both are pure value types and pure functions — no DB, no config — so they
+live in ``extractors/``, a layer both the extractor channels (OFX, tabular,
+PDF) and ``services/`` (``AccountResolver`` et al.) can import.
 
-The top rung is the exception and needs no registry: it is the account label the
-importer is about to write to ``raw.tabular_accounts.account_label`` (or that
-Plaid already sent), display-ready before it gets here. Both sides read the same
-string, so agreement there is structural rather than mirrored.
-
-What *can* drift is the shape of the ladder below against
-``dim_accounts.sql``'s ``COALESCE`` chain. That is pinned by
-``tests/integration/test_mint_report_names.py``, which imports on every channel
-with a real refresh and asserts the mint report equals the stored name.
-
-Reporting a name derived some other way is the defect this replaces (#446): the
-old label was the OFX ``<ORG>`` routing code plus the file's raw type spelling,
-which named no account the user could later find and, having no per-account
-discriminator, collided across distinct accounts.
+Relocated by MB-246 from ``services/account_display_name.py`` and a slice of
+``services/account_resolution_types.py``, closing the upward layering
+inversion those two modules left in ``extractors/ofx/extractor.py`` (MB-52
+slice 1, PR #585): an extractor may not import from ``services/``, so the
+value objects both layers need had to move to one either can reach. The
+resolver-verdict types that also lived in ``account_resolution_types.py``
+(``AccountCandidate``, ``AccountProposal``, ``ResolvedAccount``, the
+pending-link types, plus ``is_a_name`` / ``matchable_account_name`` /
+``is_reserved_account_name``) stay there — they depend on
+``services.ledger_overlap`` (a DB-touching module) or exist only to serve
+``AccountResolver``'s own service-layer contract, and no extractor needs them.
 """
 
 from __future__ import annotations
@@ -27,11 +26,43 @@ from __future__ import annotations
 import csv
 import io
 import re
+import string
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from importlib import resources
 
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
+_ACCOUNT_IDENTIFIER_CHARACTERS = frozenset(string.ascii_letters + string.digits)
+
+
+def normalize_account_identifier(value: str) -> str:
+    """Canonical cross-source form for a complete account identifier."""
+    return "".join(
+        character.upper()
+        for character in value
+        if character in _ACCOUNT_IDENTIFIER_CHARACTERS
+    )
+
+
+UNNAMED_ACCOUNT_LABEL = "Unnamed account"
+"""What every surface calls an account nothing can name.
+
+Duplicated as a literal in the terminal COALESCE arm of
+``core.dim_accounts.display_name``, because SQL cannot import it. The two are
+pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
+output against this constant after a real SQLMesh run — so a drift in either
+copy fails there rather than in front of a user.
+
+One constant rather than a per-call-site literal because both spellings render
+in the same table: ``core`` supplies this string for a row it could not name,
+while the CLI and MCP substitute it for a name that is absent or was frozen as
+``""``. Those are different states with one honest answer, and rendering them
+as ``Unnamed account`` beside ``unnamed account`` reads as a bug.
+
+Lives in ``extractors/`` rather than beside either consumer: the naming ladder
+below (``derive_display_name``) and the free-text resolver's matching
+(``services.account_resolution_types.is_a_name`` et al.) both have to agree on
+it, and neither consumer may import the other's module for it.
+"""
 
 #: The shared account-type registry, relative to the installed ``moneybin``
 #: package. Same CSV that backs ``seeds.account_type_map``, which
@@ -50,9 +81,9 @@ def _has_letter(text: str) -> bool:
 
     Mirrors the model's ``REGEXP_MATCHES(account_label, '\p{L}')``. Both sides
     were ``[A-Za-z]``, which agreed with each other and was wrong together: a
-    label written in any non-Latin script — ``储蓄账户``, ``Сбережения`` — held
-    no "letter", so the rung dropped a name a person actually chose and named
-    the account by an assembled label instead.
+    label written in any non-Latin script — ``储蓄账户``, ``Сбережения`` —
+    held no "letter", so the rung dropped a name a person actually chose and
+    named the account by an assembled label instead.
 
     ``str.isalpha`` is the exact Python spelling of ``\p{L}``: both are the
     Unicode letter categories and nothing else, so ``²`` and ``Ⅳ`` fail on
@@ -226,11 +257,11 @@ def derive_display_name(
 class AccountNameFacts:
     """The facts ``core.dim_accounts`` builds a display name from.
 
-    Carried on a :class:`~moneybin.services.account_resolution_types.SourceAccount`
-    so each channel can state them where its own raw account row is written —
-    the only place that knows which spelling of the institution and which
-    account-number column the model will read — while the mint report, built
-    much later and elsewhere, stays a single derivation.
+    Carried on a :class:`SourceAccount` so each channel can state them where
+    its own raw account row is written — the only place that knows which
+    spelling of the institution and which account-number column the model
+    will read — while the mint report, built much later and elsewhere, stays
+    a single derivation.
     """
 
     source_label: str | None = None
@@ -274,3 +305,87 @@ class AccountNameFacts:
             category=self.category,
             last_four=self.last_four,
         )
+
+
+@dataclass(frozen=True)
+class SourceAccount:
+    """One source account presented to the resolver.
+
+    ``source_account_key`` is the source's native key (OFX number, CSV slug,
+    Plaid token, or PDF document digest) — the ``source_native`` ref_value
+    staging joins on.
+    PII fields (``account_number``) are used as scoped confirmers and never logged.
+    """
+
+    source_type: str
+    source_origin: str
+    source_account_key: str
+    account_name: str
+    account_name_is_user_set: bool = False
+    """Whether ``account_name`` is a person- or source-authored label rather
+    than a generated fallback (institution + type, a bare filename, a raw
+    token). Mirrors ``core.dim_accounts.display_name_is_user_set`` on the
+    candidate side: the resolver's name rung requires this on the SOURCE side
+    too, so a channel that has no authored name field (OFX has none at all)
+    can't have its generated placeholder read back as name evidence. Default
+    False is the safe reading for a channel that never sets it."""
+    account_number: str | None = None
+    last_four: str | None = None
+    institution: str | None = None
+    persistent_token: str | None = None
+    legacy_source_account_key: str | None = None
+    """A superseded source key that may nominate a review candidate, never adopt."""
+    legacy_source_origin: str | None = None
+    """The origin that scoped ``legacy_source_account_key`` before replacement."""
+    legacy_source_account_key_is_filename_alias: bool = False
+    """Whether the legacy key came from an anchorless PDF filename alias."""
+    source_file: str | None = None
+    """Canonical source path used only to recover a proven historical PDF tuple."""
+    unpinned_account_key: str | None = None
+    """The key this source derives on its own, when a pin made it use another.
+
+    A pinned import borrows the key its account already answers to so the rows
+    dedup, which leaves nothing on record identifying THIS file. Carried here so
+    the resolver can also link the derived key, and an unpinned re-import of the
+    same file still recognises the account instead of asking or minting."""
+
+    name_facts: AccountNameFacts | None = None
+    """What ``core.dim_accounts`` will name this account by, if it mints one.
+
+    Never a resolution signal — the resolver ignores it. It rides here because
+    the mint report (``accounts_created``) is built long after the channel that
+    knows which institution spelling and which account-number column the model
+    will read. Distinct from ``account_name`` beside it, which is the file's raw
+    free-text label and feeds fuzzy matching: ``name_facts.source_label`` is the
+    display-safe form of that label, and is the top rung the model names by.
+    Left None only by callers that never report a mint (the sync path, the
+    resolver's own probes)."""
+
+    explicit_account_id: str | None = None
+    force_standalone: bool = False
+    """User declared this a NEW standalone account: mint fresh, skip the
+    weak-candidate merge pass. Set by an import-time ``account_bindings`` entry
+    of ``"new"``. Still idempotent on re-import (adopts an existing
+    source_native above)."""
+
+    def __post_init__(self) -> None:
+        """Canonicalize a blank last four to None — they mean the same thing.
+
+        ``SyncAccount.mask`` declares only a maximum length, so the sync server
+        can send ``""`` or ``"  "``; a source that writes an empty column
+        produces the same. All answer the last4 rung with silence, but the
+        resolver asks whether that answer is missing in two conventions — ``is
+        None`` at the quarantine gates, falsy at the lookup and reissue passes —
+        and neither ``"" is None`` nor ``bool("  ")`` agrees. Canonicalizing here
+        is what keeps the two from disagreeing, rather than requiring every
+        present and future consumer to pick the right one.
+
+        Stripping, not just an empty-string test: a whitespace-only mask is
+        truthy and non-None, so it would clear the quarantine gate that ``""``
+        cannot. Padding around real digits is the same defect one step along —
+        the last4 lookup matches exactly, so ``" 1234 "`` would mint a second
+        account for a ledger that already has one.
+        """
+        if self.last_four is not None:
+            stripped = self.last_four.strip()
+            object.__setattr__(self, "last_four", stripped or None)

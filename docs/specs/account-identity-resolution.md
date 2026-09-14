@@ -1163,7 +1163,7 @@ obligation is to tell the user an account came into existence.
 one `core.dim_accounts.display_name` will carry — the source's own account
 label, then institution, then subtype-or-type, then last four, in the model's
 own COALESCE order — built at mint time by
-`services/account_display_name.py` from the same `seeds.institutions` and
+`extractors/account_identity.py` from the same `seeds.institutions` and
 `seeds.account_type_map` CSVs the model joins. Derived rather than queried
 because nothing has refreshed when the report is built, and `import_confirm`
 never refreshes at all; agreement between the two derivations is pinned by an

@@ -19,6 +19,7 @@ from typing import Any, cast
 from moneybin import error_codes
 from moneybin.database import Database, has_column
 from moneybin.errors import UserError
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -29,7 +30,6 @@ from moneybin.privacy.payloads.accounts import (
 )
 from moneybin.services._validators import validate_currency_code
 from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
     is_a_name,
     is_reserved_account_name,
 )
@@ -174,7 +174,7 @@ _LAST_FOUR_RE = re.compile(r"^[0-9]{4}$")
 #: Free-text settings fields normalized before validation. ``core.dim_accounts``
 #: reads every one of them with no ``TRIM``, so padding stored here is padding
 #: rendered inside an account's name -- while the Python mirror
-#: (``services/account_display_name.py::_stated``) trims, which is exactly how
+#: (``extractors/account_identity.py::_stated``) trims, which is exactly how
 #: the announced name and the stored one come to disagree. Normalizing once at
 #: this boundary keeps both readers on the same string instead of asking each to
 #: defend itself. ``last_four`` and ``currency_code`` are absent because their

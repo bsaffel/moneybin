@@ -363,12 +363,16 @@ def _collect_imports(path: Path, src_root: Path = SRC) -> list[tuple[str, str, s
 
 
 def _scan_adapters() -> list[tuple[str, str, str]]:
-    """Walk every adapter file and collect guarded imports."""
+    """Walk every adapter file and collect guarded imports.
+
+    Includes ``__init__.py``: a command-package initializer is ordinary
+    adapter code (MB-246 found `cli/commands/accounts/__init__.py` importing a
+    guarded-package symbol that this scan had never inspected), not a
+    re-export shim exempt from the convention.
+    """
     triples: list[tuple[str, str, str]] = []
     for root in ADAPTER_ROOTS:
         for path in sorted(root.rglob("*.py")):
-            if path.name == "__init__.py":
-                continue
             triples.extend(_collect_imports(path))
     return triples
 

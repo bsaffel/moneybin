@@ -26,6 +26,7 @@ from moneybin.connectors.sync_models import (
     SyncDataResponse,
 )
 from moneybin.database import Database
+from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
 from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
@@ -38,7 +39,6 @@ from moneybin.metrics.registry import (
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
-from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.security_resolver import SecurityResolver
 from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
