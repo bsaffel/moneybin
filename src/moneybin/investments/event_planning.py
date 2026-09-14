@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.investments.event_assignment import (
+    MAX_COMPONENT_STATES,
     Candidate,
     EvidenceBand,
     solve_candidates,
@@ -52,21 +55,67 @@ class PlanningResult:
 def _groups(
     nodes: set[str], neighbors: Mapping[str, set[str]]
 ) -> Iterator[tuple[str, ...]]:
-    """Enumerate all cliques, including eligible subsets of maximal cliques."""
+    """Enumerate all cliques, including eligible subsets of maximal cliques.
+
+    A fully-connected k-node component emits every subset of size >= 2 —
+    2**k - k - 1 groups — so this recursion is exponential in the size of a
+    *densely overlapping* component (repeated same-day events with
+    identical evidence on both sides). Measured: k=25 emits ~33.5M groups in
+    ~16s. The bound below is checked per connected component, not globally
+    across this call's whole node set, and reuses event_assignment's
+    MAX_COMPONENT_STATES/error code (same growth shape: emitted-group count
+    tracks actual recursion work, the way that module's memo size does).
+    Per-component matters here specifically: many small, disjoint,
+    legitimate match pairs are common and must never trip a bound sized for
+    one dense cluster — measured, a 1,001-node star (sparse, no triangle)
+    emits only 1,000 groups in ~0.02s regardless of node count.
+    """
 
     def expand(
-        prefix: tuple[str, ...], available: list[str]
+        prefix: tuple[str, ...], available: list[str], count: list[int]
     ) -> Iterator[tuple[str, ...]]:
         for index, node in enumerate(available):
             group = (*prefix, node)
             if len(group) >= 2:
+                count[0] += 1
+                if count[0] > MAX_COMPONENT_STATES:
+                    raise UserError(
+                        f"Investment matching component ({len(component)} "
+                        "source events densely connected) exceeded "
+                        f"{MAX_COMPONENT_STATES} candidate relationship "
+                        "subsets while enumerating cliques — its cost is "
+                        "exponential for a large mutually compatible group, "
+                        "so it refuses rather than risk a long stall. This "
+                        "happens when many same-day events with identical "
+                        "evidence (security, amount, date) repeat across "
+                        "both histories.",
+                        code=error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE,
+                    )
                 yield group
             yield from expand(
                 group,
                 [other for other in available[index + 1 :] if other in neighbors[node]],
+                count,
             )
 
-    yield from expand((), sorted(nodes))
+    remaining = set(nodes)
+    while remaining:
+        # Arbitrary, not sorted: picking a deterministic start (e.g. min())
+        # here costs O(len(remaining)) per component and turns many small
+        # components into O(n**2) overall — this only needs an O(1) pick.
+        # Downstream order doesn't matter; drafts/candidates are deduped and
+        # re-sorted independently in build_plan/solve_candidates.
+        start = next(iter(remaining))
+        component: set[str] = set()
+        todo = {start}
+        while todo:
+            node = todo.pop()
+            if node in component:
+                continue
+            component.add(node)
+            todo.update((neighbors.get(node, set()) & remaining) - component)
+        remaining -= component
+        yield from expand((), sorted(component), [0])
 
 
 def build_plan(

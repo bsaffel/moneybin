@@ -7,6 +7,9 @@ from decimal import Decimal
 from itertools import combinations, product
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.errors import UserError
+from moneybin.investments.event_assignment import MAX_COMPONENT_STATES
 from moneybin.investments.event_fingerprints import fingerprint
 
 _FIELDS = (
@@ -170,7 +173,30 @@ def issue_choices(
             "field": field,
             "choices": choices,
         })
-    for selected in product(*(conflict["choices"] for conflict in issued)):
+    # A coherent selection short-circuits on the first match, so this bounds
+    # actual combinations *examined* — not the theoretical product size — the
+    # same shape as event_assignment.MAX_COMPONENT_STATES (reused, plus its
+    # error code): many conflicting fields with no bearing on `_coherent`
+    # (e.g. differing dates/subtype while amounts agree) return at index 0
+    # regardless of how large the product is, while a compound event with
+    # several *accounting*-field conflicts and no coherent choice must search
+    # exhaustively — that search is what needs the bound. Measured: a
+    # 4-origin, 2-role reinvest with no coherent combination reaches ~67M
+    # combinations; this refuses well before that, in tens of milliseconds.
+    for index, selected in enumerate(
+        product(*(conflict["choices"] for conflict in issued))
+    ):
+        if index >= MAX_COMPONENT_STATES:
+            raise UserError(
+                f"Investment field-choice search ({len(issued)} conflicting "
+                f"fields) exceeded {MAX_COMPONENT_STATES} combinations while "
+                "resolving accounting coherence — its cost is exponential "
+                "when several fields conflict with no coherent selection, "
+                "so it refuses rather than risk a long stall. This happens "
+                "when a multi-source event has several material "
+                "differences across sources.",
+                code=error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE,
+            )
         proposed = {role: dict(row) for role, row in defaults.items()}
         for conflict, choice in zip(issued, selected, strict=True):
             proposed[conflict["leg_role"]][conflict["field"]] = choice["value"]
