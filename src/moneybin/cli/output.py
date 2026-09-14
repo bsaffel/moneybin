@@ -179,11 +179,11 @@ display_currency_option: str | None = typer.Option(
     None,
     "--display-currency",
     help=(
-        "ISO-4217 code to price every amount in (e.g. EUR). Each row converts at "
-        "its own date. Amounts stay in their original currency — and the result "
-        "says so — when any row has no rate. 'moneybin refresh' stores rates "
-        "into your home currency only, so any other target falls back until its "
-        "own rates are stored."
+        "ISO-4217 display currency to request (e.g. EUR). Reports convert only "
+        "when each row declares one amount currency and one exact date; otherwise "
+        "amounts retain their declared currencies and the result says why. "
+        "'moneybin refresh' stores rates into your home currency only, so any "
+        "other target falls back until its own rates are stored."
     ),
 )
 

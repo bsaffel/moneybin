@@ -223,6 +223,30 @@ def test_international_realized_fx_ground_truth() -> None:
         )
         assert sum(row[3] for row in gains) == Decimal(completed_months * 5)
 
+        report_rows = db.execute(
+            """
+            SELECT currency_code, home_currency, coverage_status,
+                   disposed_amount, proceeds, cost_basis, gain_loss
+            FROM reports.realized_fx
+            ORDER BY disposal_date, realized_fx_gain_id
+            """
+        ).fetchall()
+        assert len(report_rows) == completed_months
+        assert all(
+            row
+            == (
+                "EUR",
+                "USD",
+                "complete",
+                Decimal("45.00"),
+                Decimal("55.00"),
+                Decimal("50.00"),
+                Decimal("5.00"),
+            )
+            for row in report_rows
+        )
+        assert sum(row[6] for row in report_rows) == Decimal(completed_months * 5)
+
         as_of = _report_as_of(db)
         expected_positions = _expected_positions(generated, as_of)
         assert len(expected_positions) == 5

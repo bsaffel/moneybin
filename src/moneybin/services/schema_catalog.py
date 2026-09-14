@@ -539,6 +539,18 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "reports.realized_fx": [
+        Example(
+            question="Realized FX gain/loss by disposal and lot allocation",
+            sql="""
+                SELECT realized_fx_gain_id, account_name, currency_code, home_currency,
+                       coverage_status, acquisition_date, disposal_date, disposed_amount,
+                       proceeds, cost_basis, fee_amount, gain_loss
+                FROM reports.realized_fx
+                ORDER BY disposal_date DESC, conversion_id, currency_lot_id
+            """,
+        ),
+    ],
     "core.dim_securities": [
         Example(
             question="Look up a security by ticker (substitute YOUR_TICKER)",

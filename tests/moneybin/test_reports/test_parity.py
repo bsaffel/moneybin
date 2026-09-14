@@ -56,6 +56,7 @@ _EXPECTED_CLI = {
     "merchant-activity",
     "large-transactions",
     "balance-drift",
+    "realized-fx",
 }
 _EXPECTED_CATALOG_CLI = {
     "core:balance_drift": "balance-drift",
@@ -64,6 +65,7 @@ _EXPECTED_CATALOG_CLI = {
     "core:merchant_activity": "merchant-activity",
     "core:networth": "networth",
     "core:networth_history": "networth-history",
+    "core:realized_fx": "realized-fx",
     "core:recurring_subscriptions": "recurring-subscriptions",
     "core:spending_trend": "spending-trend",
 }
