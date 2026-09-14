@@ -1,7 +1,9 @@
-<!-- Last reviewed: 2026-09-04 -->
+<!-- Last reviewed: 2026-09-14 -->
 # MCP Server
 
-MoneyBin exposes one **50-tool standard registry** to every generic MCP client.
+MoneyBin exposes one **50-tool standard registry** to every generic MCP client,
+spanning 13 user-facing domain groups across 17 literal tool-name prefixes (a
+prefix is the part of a tool name before the first underscore).
 A capable host may optionally defer schemas from that same registry to reduce prompt cost,
 but tool names, approvals, allowlists, annotations, and audit identity do not
 change. Reports are registered catalog entries behind the single `reports`
@@ -64,8 +66,8 @@ capability of its own, so it takes no tool slot and changes no approval.
 The 50-tool standard registry sits at the 50-tool hard limit exactly and uses
 exactly two export-specific tools:
 
-- `export_run` publishes the closed 13-table canonical bundle or one registered
-  report to a named local or Google Sheets destination. Supply
+- `export_run` publishes the closed 13-table canonical bundle
+  or one registered report to a named local or Google Sheets destination. Supply
   `redaction_mode="redacted"` or `redaction_mode="unredacted"` on every run. If
   the value is omitted, clients with elicitation ask; other clients receive a
   structured `mutation_redaction_choice_required` refusal. An explicit `redaction_mode`

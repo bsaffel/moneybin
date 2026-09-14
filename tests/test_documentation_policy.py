@@ -1,6 +1,6 @@
 """Regression checks for public documentation policy.
 
-Guards three documentation and agent-routing rules:
+Guards four documentation and agent-routing rules:
 
 1. Specs and ADRs explain MoneyBin decisions with the project's own
    constraints and evidence, not an external product's behavior. The lexicon
@@ -11,6 +11,8 @@ Guards three documentation and agent-routing rules:
 2. Public documents never link into ``private/``.
 3. Active agent instructions never route work to retired local trackers or the
    retired ``update-specs`` skill.
+4. Every public statement of a count listed in ``_stated_figures`` equals the
+   value the code derives.
 
 A paragraph that must legitimately name an external product (a compatibility
 matrix, a migration note) declares it inline with
@@ -25,6 +27,7 @@ import re
 import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -412,24 +415,41 @@ def _inline_spans(prose: list[tuple[int, str]]) -> list[tuple[int, str]]:
     return spans
 
 
+def _fence_state(text: str) -> Iterator[tuple[str, re.Match[str] | None, bool, bool]]:
+    """Yield `(line, marker, inside, opening)` for every line of a document.
+
+    `marker` is the fence match on a line that opens or closes a block, and
+    `opening` says which; `inside` is true for the lines between them. A marker
+    may be indented under a list item, and a longer marker closes a block only
+    if it starts with the one that opened it. Every fence-aware scan in this
+    module reads this one state machine so none can drift from the others.
+    """
+    fence: str | None = None
+    for line in text.splitlines():
+        match = _FENCE.match(line.strip())
+        if match and (fence is None or line.strip().startswith(fence)):
+            opening = fence is None
+            fence = match.group("fence") if opening else None
+            yield line, match, False, opening
+        else:
+            yield line, None, fence is not None, False
+
+
 def _code_lines(text: str) -> list[_CodeLine]:
     """Return one `_CodeLine` per fenced-block line and inline code span."""
     lines: list[_CodeLine] = []
     prose: list[tuple[int, str]] = []
-    fence: str | None = None
     shell_block = False
-    for number, line in enumerate(text.splitlines(), start=1):
-        match = _FENCE.match(line.strip())
-        if match and (fence is None or line.strip().startswith(fence)):
+    for number, (line, marker, inside, opening) in enumerate(
+        _fence_state(text), start=1
+    ):
+        if marker:
             lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
             prose = []
-            if fence:
-                fence = None
-            else:
-                fence = match.group("fence")
-                shell_block = match.group("lang").lower() in _SHELL_LANGS
+            if opening:
+                shell_block = marker.group("lang").lower() in _SHELL_LANGS
             continue
-        if fence:
+        if inside:
             if shell_block:
                 lines.append(_CodeLine(number, line, runnable=True))
         else:
@@ -1050,3 +1070,388 @@ def test_public_docs_refresh_cascades_match_runtime() -> None:
         "Public docs spell a refresh cascade that does not match "
         f"`{' → '.join(CANONICAL_STEPS)}`:\n" + "\n".join(violations)
     )
+
+
+# ---------------------------------------------------------------------------
+# Figures stated in public prose match the code at every site
+# ---------------------------------------------------------------------------
+
+_UNIT_WORDS: tuple[str, ...] = tuple(
+    (
+        "zero one two three four five six seven eight nine ten eleven twelve "
+        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
+    ).split()
+)
+_TENS_WORDS: tuple[str, ...] = tuple(
+    "twenty thirty forty fifty sixty seventy eighty ninety".split()
+)
+
+
+def _either_case(words: tuple[str, ...]) -> str:
+    return "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in words)
+
+
+# Digits, or words up to 999: "eight", "forty-six", "one hundred twelve".
+_NUMBER = (
+    r"(\d+|"
+    rf"(?:(?:{_either_case(_UNIT_WORDS[1:10])}|[Aa]) hundred(?: and)?(?: |-))?"
+    rf"(?:(?:{_either_case(_TENS_WORDS)})(?:[- ](?:{_either_case(_UNIT_WORDS[1:10])}))?"
+    rf"|(?:{_either_case(_UNIT_WORDS)}))"
+    r")"
+)
+
+
+def _as_int(token: str) -> int:
+    if token.isdigit():
+        return int(token)
+    total = 0
+    for word in re.split(r"[\s-]+", token.lower()):
+        if word == "a":
+            total += 1
+        elif word == "hundred":
+            total *= 100
+        elif word == "and":
+            continue
+        elif word in _UNIT_WORDS:
+            total += _UNIT_WORDS.index(word)
+        else:
+            total += 20 + 10 * _TENS_WORDS.index(word)
+    return total
+
+
+class _Figure(NamedTuple):
+    """One code-derived count and the prose spellings that state it.
+
+    Each pattern's capture groups are the stated numbers, in `expected` order;
+    a pattern that captures only the first number checks only the first.
+    """
+
+    label: str
+    patterns: tuple[str, ...]
+    expected: tuple[int, ...]
+
+
+def _spec_domain_table() -> dict[str, frozenset[str]]:
+    """The `Domain | Tools` table in the MCP spec, domain name → tool names."""
+    text = (_REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md").read_text()
+    section = text.split("## Standard registry", 1)[1].split("\n## ", 1)[0]
+    rows: dict[str, frozenset[str]] = {}
+    for line in section.splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) == 2 and cells[0] not in {"Domain", "---"}:
+            rows[cells[0]] = frozenset(re.findall(r"`([a-z_]+)`", cells[1]))
+    return rows
+
+
+def _hidden_stub_counts() -> tuple[int, int]:
+    """(all whole-command stubs, the ones that exit 1) from the one enumeration.
+
+    test_capability_parity.py owns that list and explains why it is written by
+    hand rather than grepped for `_not_implemented`; a second derivation here
+    would be the two-code-paths drift that list exists to prevent.
+    """
+    from tests.moneybin.test_mcp.test_capability_parity import (
+        UNIMPLEMENTED_CLI_PATHS,
+        UNIMPLEMENTED_EXIT_ONE_CLI_PATHS,
+    )
+
+    exit_one = len(UNIMPLEMENTED_EXIT_ONE_CLI_PATHS)
+    return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
+
+
+#: Specs that restate a guarded figure beside their own contract; they are
+#: scanned with the user-facing docs.
+_LIVE_SPECS = (
+    "docs/specs/moneybin-mcp.md",
+    "docs/specs/mcp-architecture.md",
+    "docs/specs/moneybin-capabilities.md",
+)
+
+
+def _blank_fenced_blocks(text: str) -> str:
+    """Replace every fenced code block's characters with spaces, length-preserving."""
+    out = [
+        " " * len(line) if inside else line
+        for line, _marker, inside, _opening in _fence_state(text)
+    ]
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
+
+
+def _stated_figures() -> list[_Figure]:
+    import csv
+
+    from moneybin.cli.commands.mcp import (
+        _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
+    )
+    from moneybin.exports.catalog import BUNDLE_TABLES
+    from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+
+    domains = _spec_domain_table()
+    assert frozenset().union(*domains.values()) == STANDARD_TOOL_NAMES, (
+        "The MCP spec's domain table no longer lists exactly the standard registry"
+    )
+    prefixes = {name.split("_")[0] for name in STANDARD_TOOL_NAMES}
+    # The spec restates both counts in the sentence above its own table, and
+    # specs are outside the user-facing scan, so pin that sentence here.
+    spec_text = (_REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md").read_text()
+    spec_sentence = re.search(
+        r"The (\d+) user-facing domains below group (\d+) literal tool-name prefixes",
+        spec_text.replace("\n", " "),
+    )
+    assert spec_sentence is not None, "moneybin-mcp.md lost its domain-count sentence"
+    assert tuple(int(group) for group in spec_sentence.groups()) == (
+        len(domains),
+        len(prefixes),
+    ), "moneybin-mcp.md's domain-count sentence disagrees with its own table"
+    seeds = _REPO_ROOT / "src" / "moneybin" / "sqlmesh" / "models" / "seeds"
+    with (seeds / "categories.csv").open(newline="") as handle:
+        seeded_categories = sum(1 for _ in csv.DictReader(handle))
+    stub_count, exit_one_stub_count = _hidden_stub_counts()
+    n = _NUMBER
+    return [
+        _Figure(
+            "MCP domain groups",
+            (rf"\b{n} (?:user-facing )?domain groups\b",),
+            (len(domains),),
+        ),
+        _Figure(
+            "MCP tool-name prefixes",
+            (
+                rf"\b{n} (?:literal )?tool-name prefixes\b",
+                rf"\b{n} prefixes compose {n} domain groups\b",
+            ),
+            (len(prefixes), len(domains)),
+        ),
+        _Figure(
+            "export bundle tables",
+            # `\[?` admits a link opener between the count and its noun.
+            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)\b",),
+            (len(BUNDLE_TABLES),),
+        ),
+        _Figure(
+            "registry tools beyond the four the getting-started guide names",
+            (rf"\b{n} other tools\b",),
+            (len(STANDARD_TOOL_NAMES) - 4,),
+        ),
+        _Figure(
+            "MCP install clients",
+            # Install-support wording is required so a count of some other
+            # kind of client ("two clients can read concurrently") is not
+            # compared with the install list.
+            (
+                rf"\b{n} (?:supported )?clients "
+                r"(?:supported|MoneyBin is tested against|we test against)\b",
+                rf"\b(?:Supported in|install across|any of the) {n} "
+                r"(?:supported )?clients\b",
+            ),
+            (len(_SUPPORTED_CLIENTS),),
+        ),
+        _Figure(
+            "MCP install clients beyond the Claude Desktop guide",
+            (rf"\bother {n} clients\b",),
+            (len(_SUPPORTED_CLIENTS) - 1,),
+        ),
+        _Figure(
+            "hidden stub commands",
+            (rf"\b{n} commands are stubs\b",),
+            (stub_count,),
+        ),
+        _Figure(
+            "hidden stubs that exit 0",
+            (
+                rf"\bthe first {n} exit `0`",
+                rf"\b{n} reserved Typer paths that are still explicit "
+                r"`_not_implemented` stubs",
+            ),
+            (stub_count - exit_one_stub_count,),
+        ),
+        _Figure(
+            "hidden stubs under `db key`",
+            (rf"\b{n} `db key` names\b",),
+            (exit_one_stub_count,),
+        ),
+        _Figure(
+            "seeded categories",
+            (rf"\b{n} seeded categories\b",),
+            (seeded_categories,),
+        ),
+    ]
+
+
+def test_public_docs_stated_figures_match_code() -> None:
+    """Every statement of a figure in `_stated_figures` equals the derived value.
+
+    Any user-facing doc or live MCP spec may state a listed figure; each
+    statement must equal the value the code derives, in every spelling the
+    patterns recognise, across hard wraps, and each figure must be stated at
+    least once so a deleted sentence cannot leave a dead entry here. Numbers
+    inside transcripts are dated evidence and are not scanned; a figure with
+    no cheap derivation is written as a bound ("more than thirty") rather than
+    pinned here. The table is the guard's scope, not a claim about every
+    number in the docs: the `raw`/`prep` CRITICAL declaration counts and the
+    registry's tool count are pinned the same way by
+    tests/moneybin/test_docs/test_internal_critical_docs.py and
+    test_mcp_surface_docs.py, which also cover the CHANGELOG and shipped
+    source strings; a count absent from all three is unguarded until someone
+    adds it.
+    """
+    documents = [
+        *_user_facing_documents(),
+        *(_REPO_ROOT / spec for spec in _LIVE_SPECS),
+    ]
+    violations: list[str] = []
+    for figure in _stated_figures():
+        stated_anywhere = False
+        for document in documents:
+            relative = document.relative_to(_REPO_ROOT).as_posix()
+            text = document.read_text()
+            # Blanking fences and turning newlines into spaces both keep every
+            # offset, so a phrase split across a hard wrap still matches, a
+            # transcript's numbers are never read, and line numbers stay right.
+            flat = _blank_fenced_blocks(text).replace("\n", " ")
+            for pattern in figure.patterns:
+                for found in re.finditer(pattern.replace(" ", r"\s+"), flat):
+                    stated_anywhere = True
+                    stated = tuple(_as_int(group) for group in found.groups() if group)
+                    if stated != figure.expected[: len(stated)]:
+                        number = text.count("\n", 0, found.start()) + 1
+                        violations.append(
+                            f"{relative}:{number}: `{found.group(0)}` states "
+                            f"{stated}; the code derives {figure.expected}"
+                        )
+        if not stated_anywhere:
+            violations.append(f"no public doc states the {figure.label} any more")
+    assert not violations, "Public docs state a figure the code contradicts:\n" + (
+        "\n".join(violations)
+    )
+
+
+def test_blank_fenced_blocks_hides_top_level_and_indented_fences() -> None:
+    """Fence content is blanked, markers and every offset survive, prose stays."""
+    text = (
+        "intro eight clients\n"
+        "```bash\n"
+        "65 invariants checked\n"
+        "```\n"
+        "- item\n"
+        "  ```json\n"
+        '  {"clients": "eight clients"}\n'
+        "  ```\n"
+        "after 13-table canonical bundle\n"
+    )
+    blanked = _blank_fenced_blocks(text)
+    assert len(blanked) == len(text)
+    assert blanked.count("\n") == text.count("\n")
+    assert "65 invariants" not in blanked
+    assert '"eight clients"' not in blanked
+    assert blanked.startswith("intro eight clients\n```bash\n")
+    assert "  ```json\n" in blanked and "  ```\n" in blanked
+    assert blanked.endswith("after 13-table canonical bundle\n")
+    assert _blank_fenced_blocks("no trailing newline") == "no trailing newline"
+
+
+def test_public_docs_list_exactly_the_supported_clients() -> None:
+    """Every complete `--client` enumeration is the code's tuple, name for name.
+
+    The count figure above cannot see one client swapped for another; the
+    per-client install sections would go stale with the count still right.
+    The MCP clients guide carries the list as bullets and the CLI reference
+    as a sentence; both are checked.
+    """
+    from moneybin.cli.commands.mcp import (
+        _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
+    )
+
+    guide = (_REPO_ROOT / "docs" / "guides" / "mcp-clients.md").read_text()
+    lead = "The supported `--client` values are:"
+    assert lead in guide, "mcp-clients.md lost its --client list"
+    listing = guide.split(lead, 1)[1].split("\n\n", 2)[1]
+    reference = (_REPO_ROOT / "docs" / "guides" / "cli-reference.md").read_text()
+    sentence = re.search(
+        r"the supported clients are (.*?), and ([a-z-]+),", reference.replace("\n", " ")
+    )
+    assert sentence is not None, "cli-reference.md lost its supported-clients sentence"
+    enumerations = {
+        "docs/guides/mcp-clients.md": set(
+            re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE)
+        ),
+        "docs/guides/cli-reference.md": {
+            *sentence.group(1).split(", "),
+            sentence.group(2),
+        },
+    }
+    for relative, listed in enumerations.items():
+        assert listed == set(_SUPPORTED_CLIENTS), (
+            f"{relative}: missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
+            f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
+        )
+
+
+def test_getting_started_names_live_registry_tools() -> None:
+    """The four tools the guide names are distinct registry members.
+
+    The "46 other tools" figure is the registry size minus four; a renamed or
+    retired tool would keep that subtraction right while the sentence named a
+    tool that no longer exists.
+    """
+    from moneybin.mcp.surface import STANDARD_TOOL_NAMES
+
+    text = (_REPO_ROOT / "docs" / "guides" / "getting-started.md").read_text()
+    sentence = re.search(r"reads — (.*?) other tools —", text.replace("\n", " "))
+    assert sentence is not None, "getting-started.md lost its named-tools sentence"
+    named = re.findall(r"`([a-z_]+)`", sentence.group(1))
+    assert len(named) == 4 and len(set(named)) == 4, named
+    assert set(named) <= STANDARD_TOOL_NAMES, sorted(set(named) - STANDARD_TOOL_NAMES)
+
+
+def test_cli_reference_enumerates_exactly_the_hidden_stubs() -> None:
+    """The stub sentence names every hidden stub path and nothing else.
+
+    The count figures above cannot see one stub implemented and another added;
+    the sentence would keep its totals while naming the wrong commands.
+    """
+    from tests.moneybin.test_mcp.test_capability_parity import (
+        UNIMPLEMENTED_CLI_PATHS,
+        UNIMPLEMENTED_EXIT_ONE_CLI_PATHS,
+    )
+
+    text = (_REPO_ROOT / "docs" / "guides" / "cli-reference.md").read_text()
+    sentence = re.search(
+        r"hidden from `--help`\*\*, so the CLI never advertises what it cannot do: "
+        r"(.*?)\. Each stays invocable",
+        text.replace("\n", " "),
+    )
+    assert sentence is not None, "cli-reference.md lost its stub enumeration"
+    # Each comma-separated item is `a b c`/`d`/`e`: the first name is a full
+    # path and every slash-joined name after it replaces that path's last word.
+    listed: set[str] = set()
+    for item in re.split(r", (?:and )?", sentence.group(1)):
+        names = re.findall(r"`([^`]+)`", item)
+        prefix = names[0].rsplit(" ", 1)[0]
+        listed.add(names[0])
+        listed.update(f"{prefix} {name}" for name in names[1:])
+    expected = UNIMPLEMENTED_CLI_PATHS | UNIMPLEMENTED_EXIT_ONE_CLI_PATHS
+    assert listed == expected, (
+        f"missing={sorted(expected - listed)!r}; extra={sorted(listed - expected)!r}"
+    )
+    assert all(path.startswith("db key ") for path in UNIMPLEMENTED_EXIT_ONE_CLI_PATHS)
+    assert not any(path.startswith("db key ") for path in UNIMPLEMENTED_CLI_PATHS), (
+        "the sentence's `db key` exit-1 attribution no longer holds"
+    )
+
+
+def test_number_parser_reads_compound_word_forms() -> None:
+    """Word-form numbers above twenty parse whole, not by their last word."""
+    cases = {
+        "eight": 8,
+        "Twenty": 20,
+        "forty-six": 46,
+        "forty six": 46,
+        "one hundred twelve": 112,
+        "a hundred and twelve": 112,
+        "112": 112,
+    }
+    for spelled, value in cases.items():
+        found = re.fullmatch(_NUMBER, spelled)
+        assert found is not None, spelled
+        assert _as_int(found.group(1)) == value, spelled

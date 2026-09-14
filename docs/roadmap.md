@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-12 -->
+<!-- Last reviewed: 2026-09-13 -->
 # Roadmap
 
 MoneyBin is pre-v1 and solo-maintained. The AGPL license guarantees the code

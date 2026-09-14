@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-10 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Who MoneyBin Is For
 
 MoneyBin is built for a specific set of people. This page tells you whether you're one of them — honestly, including who you should use instead if you're not.

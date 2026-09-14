@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-13 -->
 # What Works Today
 
 What MoneyBin can do today. Each capability links to its guide; the [roadmap](roadmap.md) covers what's planned and the [CHANGELOG](../CHANGELOG.md) carries the dated record.
@@ -157,7 +157,8 @@ blocker.
 ## Data export
 
 - **Canonical export delivery** — `moneybin export bundle` publishes a closed
-  13-table portability catalog to redacted CSV by default under
+  13-table portability catalog to redacted CSV by
+  default under
   `~/Documents/MoneyBin/<profile>/exports/`. Local CSV and Parquet bundles carry
   a manifest, checksums, and generated data dictionary; XLSX carries the same
   contract in one workbook. Each local run is immutable, ZIP is limited to CSV
