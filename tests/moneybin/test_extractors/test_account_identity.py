@@ -11,14 +11,14 @@ from __future__ import annotations
 
 import pytest
 
-from moneybin.services.account_display_name import (
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
     AccountNameFacts,
     account_category,
     derive_display_name,
     derived_last_four,
     usable_source_label,
 )
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 
 
 @pytest.mark.parametrize(

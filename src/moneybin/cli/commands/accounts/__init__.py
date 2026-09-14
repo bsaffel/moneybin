@@ -27,6 +27,7 @@ from moneybin.cli.output import (
 from moneybin.cli.render import render_rows
 from moneybin.cli.utils import handle_cli_errors
 from moneybin.database import get_database
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
     AccountListPayload,
@@ -35,10 +36,7 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.protocol.envelope import build_envelope
-from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
-    is_a_name,
-)
+from moneybin.services.account_resolution_types import is_a_name
 from moneybin.services.account_service import (
     CLEAR,
     AccountService,

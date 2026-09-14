@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountNameFacts,
+    SourceAccount,
+    account_category,
+    derived_last_four,
+)
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
 from moneybin.extractors.tabular.account_label import parse_account_label
@@ -54,16 +61,9 @@ from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
-from moneybin.services.account_display_name import (
-    AccountNameFacts,
-    account_category,
-    derived_last_four,
-)
 from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
     AccountProposalDict,
     ResolvedAccount,
-    SourceAccount,
     is_reserved_account_name,
 )
 from moneybin.services.account_resolver import AccountResolver

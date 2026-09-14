@@ -23,6 +23,7 @@ from fastmcp import FastMCP
 
 from moneybin.database import get_database
 from moneybin.errors import UserError
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.mcp.tools.accounts import (
     _account_candidates,  # pyright: ignore[reportPrivateUsage]
     _load_pending_account_proposal,  # pyright: ignore[reportPrivateUsage]  # the untested wiring is the subject
@@ -40,7 +41,6 @@ from moneybin.mcp.tools.accounts import (
 from moneybin.privacy.payloads.accounts import AccountListPayload, AccountSummary
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.entity_reference import ResolvedEntity, resolve_entity_reference
 
 pytestmark = pytest.mark.usefixtures("mcp_db")

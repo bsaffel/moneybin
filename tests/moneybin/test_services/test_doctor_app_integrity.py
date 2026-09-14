@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.repositories.account_settings_repo import AccountSettingsRepo
 from moneybin.repositories.balance_assertions_repo import BalanceAssertionsRepo
 from moneybin.repositories.budgets_repo import BudgetsRepo
@@ -37,7 +38,6 @@ from moneybin.repositories.transaction_categories_repo import (
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.user_categories_repo import UserCategoriesRepo
 from moneybin.repositories.user_merchants_repo import UserMerchantsRepo
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import CLEAR, AccountService
 from moneybin.services.doctor_service import (
     _BALANCE_ASSERTIONS_PK_EXPR,

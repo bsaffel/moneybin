@@ -1,49 +1,25 @@
-"""Input/result types for AccountResolver (keeps the resolve() signature stable)."""
+"""Input/result types for AccountResolver (keeps the resolve() signature stable).
+
+``SourceAccount`` and the account-naming ladder used to live here, but an
+extractor may not import from ``services/`` — see
+``moneybin.extractors.account_identity`` for why MB-246 relocated them there,
+a layer both ``extractors/`` and ``services/`` can import. This module keeps
+only the resolver-verdict types (``AccountCandidate``, ``AccountProposal``,
+``ResolvedAccount``, the pending-link types) and the free-text matching
+helpers (``is_a_name``, ``matchable_account_name``,
+``is_reserved_account_name``), which depend on ``services.ledger_overlap`` (a
+DB-touching module) or exist only to serve ``AccountResolver``'s own
+service-layer contract.
+"""
 
 from __future__ import annotations
 
-import string
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, NotRequired, TypedDict, TypeGuard
+from typing import NotRequired, TypedDict, TypeGuard
 
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.entity_reference import normalize_reference
 from moneybin.services.ledger_overlap import LedgerOverlap
-
-if TYPE_CHECKING:  # import-time cycle: account_display_name reads the
-    # UNNAMED_ACCOUNT_LABEL defined below, so the edge back is annotation-only.
-    from moneybin.services.account_display_name import AccountNameFacts
-
-_ACCOUNT_IDENTIFIER_CHARACTERS = frozenset(string.ascii_letters + string.digits)
-
-
-def normalize_account_identifier(value: str) -> str:
-    """Canonical cross-source form for a complete account identifier."""
-    return "".join(
-        character.upper()
-        for character in value
-        if character in _ACCOUNT_IDENTIFIER_CHARACTERS
-    )
-
-
-UNNAMED_ACCOUNT_LABEL = "Unnamed account"
-"""What every surface calls an account nothing can name.
-
-Duplicated as a literal in the terminal COALESCE arm of
-``core.dim_accounts.display_name``, because SQL cannot import it. The two are
-pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
-output against this constant after a real SQLMesh run -- so a drift in either
-copy fails there rather than in front of a user.
-
-One constant rather than a per-call-site literal because both spellings render
-in the same table: ``core`` supplies this string for a row it could not name,
-while the CLI and MCP substitute it for a name that is absent or was frozen as
-``""``. Those are different states with one honest answer, and rendering them
-as ``Unnamed account`` beside ``unnamed account`` reads as a bug.
-
-Lives here rather than beside either consumer because both the merge matcher
-and the free-text resolver must agree on it, and they import nothing from each
-other.
-"""
 
 _RESERVED_ACCOUNT_NAME_FOLD = normalize_reference(UNNAMED_ACCOUNT_LABEL)
 
@@ -267,90 +243,6 @@ class AccountProposal:
             "requires_confirm": self.requires_confirm,
             "candidates": candidates,
         }
-
-
-@dataclass(frozen=True)
-class SourceAccount:
-    """One source account presented to the resolver.
-
-    ``source_account_key`` is the source's native key (OFX number, CSV slug,
-    Plaid token, or PDF document digest) — the ``source_native`` ref_value
-    staging joins on.
-    PII fields (``account_number``) are used as scoped confirmers and never logged.
-    """
-
-    source_type: str
-    source_origin: str
-    source_account_key: str
-    account_name: str
-    account_name_is_user_set: bool = False
-    """Whether ``account_name`` is a person- or source-authored label rather
-    than a generated fallback (institution + type, a bare filename, a raw
-    token). Mirrors ``core.dim_accounts.display_name_is_user_set`` on the
-    candidate side: the resolver's name rung requires this on the SOURCE side
-    too, so a channel that has no authored name field (OFX has none at all)
-    can't have its generated placeholder read back as name evidence. Default
-    False is the safe reading for a channel that never sets it."""
-    account_number: str | None = None
-    last_four: str | None = None
-    institution: str | None = None
-    persistent_token: str | None = None
-    legacy_source_account_key: str | None = None
-    """A superseded source key that may nominate a review candidate, never adopt."""
-    legacy_source_origin: str | None = None
-    """The origin that scoped ``legacy_source_account_key`` before replacement."""
-    legacy_source_account_key_is_filename_alias: bool = False
-    """Whether the legacy key came from an anchorless PDF filename alias."""
-    source_file: str | None = None
-    """Canonical source path used only to recover a proven historical PDF tuple."""
-    unpinned_account_key: str | None = None
-    """The key this source derives on its own, when a pin made it use another.
-
-    A pinned import borrows the key its account already answers to so the rows
-    dedup, which leaves nothing on record identifying THIS file. Carried here so
-    the resolver can also link the derived key, and an unpinned re-import of the
-    same file still recognises the account instead of asking or minting."""
-
-    name_facts: AccountNameFacts | None = None
-    """What ``core.dim_accounts`` will name this account by, if it mints one.
-
-    Never a resolution signal — the resolver ignores it. It rides here because
-    the mint report (``accounts_created``) is built long after the channel that
-    knows which institution spelling and which account-number column the model
-    will read. Distinct from ``account_name`` beside it, which is the file's raw
-    free-text label and feeds fuzzy matching: ``name_facts.source_label`` is the
-    display-safe form of that label, and is the top rung the model names by.
-    Left None only by callers that never report a mint (the sync path, the
-    resolver's own probes)."""
-
-    explicit_account_id: str | None = None
-    force_standalone: bool = False
-    """User declared this a NEW standalone account: mint fresh, skip the
-    weak-candidate merge pass. Set by an import-time ``account_bindings`` entry
-    of ``"new"``. Still idempotent on re-import (adopts an existing
-    source_native above)."""
-
-    def __post_init__(self) -> None:
-        """Canonicalize a blank last four to None — they mean the same thing.
-
-        ``SyncAccount.mask`` declares only a maximum length, so the sync server
-        can send ``""`` or ``"  "``; a source that writes an empty column
-        produces the same. All answer the last4 rung with silence, but the
-        resolver asks whether that answer is missing in two conventions — ``is
-        None`` at the quarantine gates, falsy at the lookup and reissue passes —
-        and neither ``"" is None`` nor ``bool("  ")`` agrees. Canonicalizing here
-        is what keeps the two from disagreeing, rather than requiring every
-        present and future consumer to pick the right one.
-
-        Stripping, not just an empty-string test: a whitespace-only mask is
-        truthy and non-None, so it would clear the quarantine gate that ``""``
-        cannot. Padding around real digits is the same defect one step along —
-        the last4 lookup matches exactly, so ``" 1234 "`` would mint a second
-        account for a ledger that already has one.
-        """
-        if self.last_four is not None:
-            stripped = self.last_four.strip()
-            object.__setattr__(self, "last_four", stripped or None)
 
 
 @dataclass(frozen=True)

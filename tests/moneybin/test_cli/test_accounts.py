@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.privacy.payloads.accounts import (
     AccountListPayload,
     AccountResolutionItem,
@@ -16,7 +17,6 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummary,
     AccountSummaryStats,
 )
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.account_service import CLEAR
 
 
