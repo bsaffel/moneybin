@@ -4,6 +4,7 @@ This module provides common fixtures and test utilities used across
 the test suite, including profile cleanup and configuration management.
 """
 
+import re
 import shutil
 from collections.abc import Callable, Generator
 from contextlib import contextmanager
@@ -20,7 +21,7 @@ from moneybin.config import (
     register_profile_resolver,
     set_current_profile,
 )
-from moneybin.database import Database
+from moneybin.database import SQLMESH_ROOT, Database
 from tests.moneybin.db_helpers import (
     apply_core_table_comments,
     create_core_dim_stub_views,
@@ -258,6 +259,19 @@ def schema_catalog_db(
         "CAST(NULL AS INTEGER) AS days_since_assertion, "
         "CAST(NULL AS VARCHAR) AS status "
         "WHERE FALSE"
+    )
+    realized_fx_model = (
+        SQLMESH_ROOT / "models" / "reports" / "realized_fx.sql"
+    ).read_text()
+    realized_fx_body = re.sub(
+        r"^.*?MODEL\s*\(.*?\);\s*",
+        "",
+        realized_fx_model,
+        count=1,
+        flags=re.DOTALL,
+    ).strip()
+    database.execute(
+        f"CREATE OR REPLACE VIEW reports.realized_fx AS {realized_fx_body}"
     )
 
     # Inject fixture DB so any call to get_database() returns it without

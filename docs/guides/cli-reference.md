@@ -346,10 +346,17 @@ account for duplicates, and with two ids proposes exactly that pair — the
 escape hatch for a duplicate no signal reaches. Commands:
 [`reference/cli/accounts.md`](../reference/cli/accounts.md).
 
-`accounts set` cascades atomically: `--archive` also sets `--exclude` for net
-worth in the same write; `--unarchive` does NOT auto-restore `--include`. At
-least one field flag is required, and each structural field has a
-`--clear-<field>` twin.
+`accounts set`'s `--archive`/`--unarchive` and `--include`/`--exclude` are
+independent flags with different jobs. `--archive` already excludes the
+account from net worth entirely today, history included, via the existing
+blanket filter; the archive date is recorded for a future release that will
+scope that exclusion by date, not applied yet. `--include`/`--exclude` toggle
+net-worth inclusion independently of archived status and persist through a
+later `--unarchive` — reach for `--exclude` alongside `--archive` only when
+the account should stay out of net worth at every date, even once it becomes
+active again; `--archive` alone already excludes it today and reverses
+cleanly on `--unarchive`. At least one field flag is required, and each
+structural field has a `--clear-<field>` twin.
 
 **Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
@@ -420,12 +427,13 @@ only change the number.
 ## Reports
 
 Cross-domain analytical views. All commands support `--output json` and return
-the standard envelope. The eight built-in reports — `networth`,
+the standard envelope. The nine built-in reports — `networth`,
 `networth-history`, `cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`,
-`large-transactions`, `balance-drift` — each have their own command with the
-filters that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
+`large-transactions`, `balance-drift`, `realized-fx` — each have their own
+command with the filters that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
 `spending-trend`, `--from`/`--to` on `networth-history`, `--since` on
-`balance-drift`, `--as-of` on snapshots, `--account` and `--category` where
+`balance-drift`, `--from-date`/`--to-date` on `realized-fx`, `--as-of` on snapshots,
+`--account` and `--category` where
 they apply);
 [`features.md`](../features.md#reports) says what each one shows, and the
 [reports guide](reports.md) shows each one's output. Commands:

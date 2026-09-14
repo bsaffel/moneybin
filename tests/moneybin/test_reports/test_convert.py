@@ -1330,6 +1330,49 @@ def test_an_unconverted_execution_declares_no_original_currency_column(
     assert ORIGINAL_CURRENCY_COLUMN not in converted.output_classes
 
 
+def test_mixed_unit_report_refuses_display_repricing_without_relabelling(
+    saved_db: Database,
+) -> None:
+    """An explicit target cannot make audited EUR/USD amounts claim one unit."""
+    classes = {
+        "currency_code": DataClass.CURRENCY,
+        "home_currency": DataClass.CURRENCY,
+        "disposed_amount": DataClass.TXN_AMOUNT,
+        "gain_loss": DataClass.BALANCE,
+    }
+    semantics = replace(
+        _semantics(),
+        currency=None,
+        fx_date=None,
+        fx_basis="mixed-unit audited accounting",
+    )
+    execution = _execution(
+        records=[
+            {
+                "currency_code": "EUR",
+                "home_currency": "USD",
+                "disposed_amount": Decimal("45.00"),
+                "gain_loss": Decimal("5.00"),
+            }
+        ],
+        columns=list(classes),
+        column_types=["VARCHAR", "VARCHAR", "DECIMAL(18,2)", "DECIMAL(18,2)"],
+        output_classes=classes,
+        semantics=semantics,
+        display_currency=None,
+    )
+
+    converted = convert_execution(
+        execution,
+        to_currency="GBP",
+        service=CurrencyService(saved_db),
+    )
+
+    assert converted.records == execution.records
+    assert converted.display_currency is None
+    assert converted.degraded_reason == "mixed-unit audited accounting"
+
+
 def test_rows_already_in_the_target_are_not_treated_as_a_conversion(
     saved_db: Database,
 ) -> None:

@@ -1,0 +1,1 @@
+`moneybin reports realized-fx` and `core:realized_fx` now expose realized foreign-exchange gain or loss per consumed Currency lot, while unmatched-inventory placeholders remain visible as incomplete rows with a closed coverage reason.

@@ -1,6 +1,10 @@
-"""Scenario: archive cascade flows from app.account_settings through core.dim_accounts.
+"""Scenario: archiving flows from app.account_settings through core.dim_accounts.
 
-Verifies the cascade reaches reports.net_worth and the accounts list CLI.
+Verifies archived/archived_at reach reports.net_worth and the accounts list
+CLI. The archive cascade (archived=True forcing include_in_net_worth=False)
+is retired — see docs/specs/reports-net-worth-sql-surface.md
+§Prerequisites — so this scenario now asserts the two flags are independent
+and that archived_at is stamped instead.
 
 Fixture: tests/fixtures/ofx/multi_account_sample.ofx
   - CHECKING1 (CHECKING): balance $1,000.00, 1 debit (-$50.00)
@@ -8,16 +12,21 @@ Fixture: tests/fixtures/ofx/multi_account_sample.ofx
 
 Expectations (independently derived from fixture file before running):
   - Pre-archive:  dim_accounts has 2 rows; both have archived=FALSE,
-                  include_in_net_worth=TRUE.
-  - Post-archive: CHECKING1 has archived=TRUE, include_in_net_worth=FALSE.
+                  archived_at=NULL, include_in_net_worth=TRUE.
+  - Post-archive: CHECKING1 has archived=TRUE, archived_at=today,
+                  include_in_net_worth=TRUE (untouched -- no cascade).
                   SAVINGS1 is unchanged.
-  - reports.net_worth after second transform: CHECKING1 excluded;
-                  account_count on the balance date must be 1 (SAVINGS1 only).
+  - reports.net_worth after second transform: CHECKING1 still excluded --
+                  the `NOT a.archived` half of the eligibility filter is
+                  unchanged by this slice -- account_count on the balance
+                  date must be 1 (SAVINGS1 only).
   - list_accounts(include_archived=False): 1 account (SAVINGS1).
   - list_accounts(include_archived=True):  2 accounts (both).
 """
 
 from __future__ import annotations
+
+from datetime import date
 
 import pytest
 
@@ -29,8 +38,8 @@ from tests.scenarios._runner.steps import run_step
 # SQLMesh's interval-based optimizer skips FULL-kind models if their intervals
 # are already covered for the current day. After writing to app.account_settings
 # (an external table, invisible to SQLMesh's dependency graph), we must
-# explicitly restate these models so the updated archived/include_in_net_worth
-# flags are picked up without waiting for the next calendar day.
+# explicitly restate these models so the updated archived/archived_at flags
+# are picked up without waiting for the next calendar day.
 _ARCHIVE_RESTATE_MODELS = [
     "core.dim_accounts",
     "core.fct_balances_daily",
@@ -39,8 +48,8 @@ _ARCHIVE_RESTATE_MODELS = [
 
 @pytest.mark.scenarios
 @pytest.mark.slow
-def test_archive_cascade_excludes_from_networth() -> None:
-    """Archiving an account flips include_in_net_worth and excludes from reports.net_worth."""
+def test_archive_excludes_from_networth_without_cascading_include() -> None:
+    """Archiving excludes from reports.net_worth without touching include_in_net_worth."""
     # Bootstrap using the multi-account scenario's setup (import + transform pipeline).
     # We drive steps manually so we can inject the archive mutation between transforms.
     scenario = load_shipped_scenario("ofx-multi-account-statement")
@@ -72,17 +81,21 @@ def test_archive_cascade_excludes_from_networth() -> None:
             f"Expected 2 accounts before archive, got {pre_total}"
         )
 
-        # Both accounts start with archived=FALSE and include_in_net_worth=TRUE.
+        # Both accounts start with archived=FALSE, archived_at=NULL,
+        # include_in_net_worth=TRUE.
         pre_flags = db.execute(
             """
-            SELECT account_id, archived, include_in_net_worth
+            SELECT account_id, archived, archived_at, include_in_net_worth
             FROM core.dim_accounts
             ORDER BY account_id
             """
         ).fetchall()
         for row in pre_flags:
-            acct_id, archived, include = row
+            acct_id, archived, archived_at, include = row
             assert not archived, f"Account {acct_id} should not be archived pre-archive"
+            assert archived_at is None, (
+                f"Account {acct_id} should have archived_at=NULL pre-archive"
+            )
             assert include, (
                 f"Account {acct_id} should have include_in_net_worth=TRUE pre-archive"
             )
@@ -104,7 +117,9 @@ def test_archive_cascade_excludes_from_networth() -> None:
         # Verify the service write is immediately reflected in app.account_settings
         # (before the next transform propagates it to dim_accounts).
         assert updated.archived is True
-        assert updated.include_in_net_worth is False
+        assert updated.archived_at == date.today()
+        # No cascade: include_in_net_worth stays at its default TRUE.
+        assert updated.include_in_net_worth is True
 
         # Step 4: second transform with restate_models — forces dim_accounts to
         # re-run even though SQLMesh already covered today's interval on the first
@@ -119,41 +134,47 @@ def test_archive_cascade_excludes_from_networth() -> None:
 
         # --- Post-archive assertions ---
 
-        # CHECKING1: archived=TRUE, include_in_net_worth=FALSE.
+        # CHECKING1: archived=TRUE, archived_at=today, include_in_net_worth=TRUE.
         checking = db.execute(
             """
-            SELECT archived, include_in_net_worth
+            SELECT archived, archived_at, include_in_net_worth
             FROM core.dim_accounts
             WHERE account_id = ?
             """,
             [checking_id],
         ).fetchone()
         assert checking is not None, "CHECKING1 must still exist in dim_accounts"
-        checking_archived, checking_include = checking
+        checking_archived, checking_archived_at, checking_include = checking
         assert checking_archived is True, (
             "CHECKING1.archived must be TRUE after archive"
         )
-        assert checking_include is False, (
-            "CHECKING1.include_in_net_worth must be FALSE after archive (cascade)"
+        assert checking_archived_at == date.today(), (
+            "CHECKING1.archived_at must be stamped with today's date"
+        )
+        assert checking_include is True, (
+            "CHECKING1.include_in_net_worth must stay TRUE — no cascade"
         )
 
-        # SAVINGS1: unchanged — archived=FALSE, include_in_net_worth=TRUE.
+        # SAVINGS1: unchanged — archived=FALSE, archived_at=NULL, include_in_net_worth=TRUE.
         savings = db.execute(
             """
-            SELECT archived, include_in_net_worth
+            SELECT archived, archived_at, include_in_net_worth
             FROM core.dim_accounts
             WHERE account_id = ?
             """,
             [savings_id],
         ).fetchone()
         assert savings is not None, "SAVINGS1 must still exist in dim_accounts"
-        savings_archived, savings_include = savings
+        savings_archived, savings_archived_at, savings_include = savings
         assert savings_archived is False, "SAVINGS1.archived must remain FALSE"
+        assert savings_archived_at is None, "SAVINGS1.archived_at must remain NULL"
         assert savings_include is True, "SAVINGS1.include_in_net_worth must remain TRUE"
 
-        # reports.net_worth is a VIEW that re-evaluates on every read.
-        # After archiving CHECKING1, only SAVINGS1 contributes → account_count=1.
-        # (Derived independently: fixture has 1 non-archived account after the mutation.)
+        # reports.net_worth is a VIEW that re-evaluates on every read. The
+        # `NOT a.archived` half of the eligibility filter is unchanged by this
+        # slice, so CHECKING1 is still excluded outright → account_count=1.
+        # (Derived independently: fixture has 1 non-archived account after the
+        # mutation.)
         post_nw = db.execute(
             "SELECT account_count FROM reports.net_worth ORDER BY balance_date LIMIT 1"
         ).fetchone()

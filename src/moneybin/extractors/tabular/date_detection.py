@@ -97,8 +97,46 @@ def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
     return parsed / len(clean) >= _MIN_OVERRIDE_PARSE_RATE
 
 
+def _score_format_against_values(fmt: str, clean: list[str]) -> tuple[float, float]:
+    """Score one candidate format against already-cleaned, non-empty values.
+
+    Shared by ``detect_date_format``'s declared-format check and its
+    ``_DATE_FORMATS`` scan below — identical parse-rate/range-
+    reasonableness rule either way, so the two loops can't drift apart
+    the way two independently maintained copies eventually do. A
+    malformed format (a repeated directive, e.g. ``"%Y %Y"``, which
+    ``strptime`` compiles into a regex and fails as ``re.error`` rather
+    than ``ValueError``) scores ``(0.0, 0.0)`` instead of raising —
+    every value would raise identically, so nothing here can rescue it —
+    only reachable via a caller-declared format; every ``_DATE_FORMATS``
+    entry is a fixed, known-valid literal.
+
+    Returns:
+        ``(parse_rate, range_score)``. ``range_score`` is ``0.0`` when
+        nothing parsed, since "how reasonable were the parsed dates" is
+        vacuous with no parsed dates to judge.
+    """
+    parse_count = 0
+    reasonable_count = 0
+    for val in clean:
+        try:
+            dt = datetime.strptime(val, fmt)
+        except ValueError:
+            continue
+        except re.error:
+            return 0.0, 0.0
+        parse_count += 1
+        if _MIN_YEAR <= dt.year <= _max_year():
+            reasonable_count += 1
+    parse_rate = parse_count / len(clean) if clean else 0.0
+    range_score = reasonable_count / max(parse_count, 1)
+    return parse_rate, range_score
+
+
 def detect_date_format(
     values: list[str | None],
+    *,
+    declared_format: str | None = None,
 ) -> tuple[str | None, "ConfidenceType"]:
     """Detect the date format from sample values.
 
@@ -107,6 +145,22 @@ def detect_date_format(
 
     Args:
         values: Sample date strings (may include None/empty).
+        declared_format: A caller-declared format (e.g. an explicit
+            ``--date-format`` override) to score FIRST, before the fixed
+            ``_DATE_FORMATS`` scan and before DD/MM disambiguation -- a
+            caller who named the format already resolved the ambiguity a
+            positional scan exists to guess at, and a format outside
+            ``_DATE_FORMATS`` entirely (``%Y%m%d``, a time-bearing
+            ``%Y-%m-%d %H:%M:%S``) would otherwise never be recognized at
+            all, however cleanly it reads the column. Scored with the SAME
+            parse-rate/range rule as every candidate below (``_MIN_PARSE_
+            RATE``, not ``format_parses``'s lower override bar -- that bar
+            answers a different question, whether the loader can import
+            with it; this one decides what detection believes). Falls
+            through to the normal scan, unchanged, when the declaration
+            doesn't clear the bar -- a genuinely wrong override still fails
+            here and is caught by import-time validation, never silently
+            wins.
 
     Returns:
         Tuple of (format string, confidence: "high" | "medium" | "low").
@@ -116,20 +170,19 @@ def detect_date_format(
     if not clean:
         return None, "low"
 
+    if declared_format is not None:
+        parse_rate, range_score = _score_format_against_values(declared_format, clean)
+        if parse_rate >= _MIN_PARSE_RATE:
+            confidence = (
+                "high" if parse_rate >= 0.95 and range_score >= 0.95 else "medium"
+            )
+            return declared_format, confidence
+        # Doesn't clear the bar -- fall through unchanged rather than
+        # forcing a declaration the data doesn't actually support.
+
     scores: list[tuple[str, float, float]] = []
     for fmt in _DATE_FORMATS:
-        parse_count = 0
-        reasonable_count = 0
-        for val in clean:
-            try:
-                dt = datetime.strptime(val, fmt)
-                parse_count += 1
-                if _MIN_YEAR <= dt.year <= _max_year():
-                    reasonable_count += 1
-            except ValueError:
-                continue
-        parse_rate = parse_count / len(clean) if clean else 0
-        range_score = reasonable_count / max(parse_count, 1)
+        parse_rate, range_score = _score_format_against_values(fmt, clean)
         if parse_rate >= _MIN_PARSE_RATE:
             scores.append((fmt, parse_rate, range_score))
             # Early exit on perfect match with unambiguous format

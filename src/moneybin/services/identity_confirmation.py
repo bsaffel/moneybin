@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from moneybin.services.ledger_overlap import LedgerOverlap
+from moneybin.vocabulary import MEDIATED_SYNC_SOURCE_TYPES
 
 #: Every blast-radius category an identity confirmation reports, named once.
 #:
@@ -150,22 +151,17 @@ class AccountMergeFacts:
     )
 
 
-#: Source types that arrive through the mediated sync server.
-#:
-#: ``source_type`` records the provider slug the server happens to speak, and
-#: the client's contract is that those providers are implementation details
-#: hidden behind it (AGENTS.md, "Sync server is opaque"). This sentence is read
-#: by a human in the CLI and by an agent over MCP, so the label names the
+#: This sentence is read by a human in the CLI and by an agent over MCP, so a
+#: mediated-sync source (see ``MEDIATED_SYNC_SOURCE_TYPES``) is labeled by the
 #: channel the user knows — ``moneybin sync pull`` — never the vendor. A format
 #: like OFX or a store like GSheet is the user's own and stays named.
-_MEDIATED_SYNC_SOURCES = frozenset({"plaid"})
 _SYNC_SOURCE_LABEL = "SYNC"
 
 
 def _source_label(facts: AccountLedgerFacts) -> str | None:
     """Uppercased source origins — "PDF", "OFX", "PDF+OFX" — or None when unknown."""
     labels = dict.fromkeys(
-        _SYNC_SOURCE_LABEL if source in _MEDIATED_SYNC_SOURCES else source.upper()
+        _SYNC_SOURCE_LABEL if source in MEDIATED_SYNC_SOURCE_TYPES else source.upper()
         for source in facts.source_types
     )
     return "+".join(labels) or None

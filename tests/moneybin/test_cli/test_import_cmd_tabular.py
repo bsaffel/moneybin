@@ -492,15 +492,16 @@ class TestPreview:
                 f"registered: {sorted(registered)}"
             )
 
-    def test_preview_warns_on_header_that_looks_like_data(
+    def test_preview_detects_headerless_excel_without_warning(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Preview surfaces the misdetection warning on a red-flag layout.
+        """A headerless Excel sheet must preview cleanly, like CSV/Parquet (MB-449).
 
-        A headerless Excel sheet (row 0 is a real transaction) trips
-        header_row_looks_like_data on the auto-detect path the CLI uses. The
-        warning routes through logger.warning (stderr) per cli.md, so assert it
-        via caplog rather than CliRunner's stdout capture.
+        Excel used to always consume row 0 as the header with no headerless
+        detection, so this exact fixture used to trip the
+        header_row_looks_like_data misdetection warning on the auto-detect
+        path. Excel now shares detection with CSV/Parquet: both rows are kept,
+        has_header is reported False, and no misdetection warning fires.
         """
         import logging
 
@@ -518,7 +519,206 @@ class TestPreview:
             result = runner.invoke(app, ["preview", str(path)])
 
         assert result.exit_code == 0
-        assert any("parses as a transaction" in r.message for r in caplog.records)
+        assert "Header row detected: False" in result.output
+        assert "2 in file = 0 skipped + 0 header + 2 read" in result.output
+        assert not any("parses as a transaction" in r.message for r in caplog.records)
+
+    def test_preview_header_position_ambiguous_uses_shared_recovery_text(
+        self, tmp_path: Path, caplog: LogCaptureFixture
+    ) -> None:
+        """`import preview` has no --confirm flag.
+
+        The hand-rolled warning this replaced told the user to "re-run with
+        --confirm to proceed" — a flag `import preview` itself does not
+        register (it lives on `import files` / `import confirm`). Reusing
+        the shared ``header_position_ambiguous_recovery`` helper names the
+        commands that actually clear the gate. The helper's own text stays
+        row-free (it can reach the log pipeline); the disputed row(s) go
+        through ``echo_disputed_rows`` (allowlisted via ``disputed_row_
+        fields``) on stderr only, never a log record.
+        """
+        import logging
+
+        from moneybin.services.import_confirmation import (
+            header_position_ambiguous_recovery,
+        )
+
+        csv_file = tmp_path / "data_before_header.csv"
+        csv_file.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        expected = header_position_ambiguous_recovery(str(csv_file))
+        assert any(expected in r.message for r in caplog.records), caplog.text
+        # The disputed rows appear in the CLI's stderr-mixed output, already
+        # allowlisted to dest=value pairs (disputed_row_fields) rather than
+        # raw positional cells...
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
+        # ...and in no log record — a row can carry an account number, and
+        # log_to_file defaults to True.
+        assert not any(
+            "transaction_date=2026-01-01" in r.message for r in caplog.records
+        )
+
+    def test_preview_disputed_row_evidence_survives_quoted_header(
+        self, tmp_path: Path
+    ) -> None:
+        """A quoted CSV header must not blank out the disputed-row evidence.
+
+        Round 18: ``_detect_header`` tokenized sample lines with a bare
+        ``line.split(delimiter)``, while ``pl.read_csv`` is quote-aware. A
+        quoted header produced ``header_cells`` carrying literal quote
+        characters, which never equal a value in ``df.columns`` -- so every
+        cell's column identity looked unresolvable and the whole disputed
+        row was omitted, even though nothing in it was unsafe to show. Only
+        an unmapped account-shaped column (never a date/amount/description
+        cell) should ever be absent.
+        """
+        csv_file = tmp_path / "quoted_header.csv"
+        csv_file.write_text(
+            '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+            '"2026-01-02","10.00","Tea","1234"\n'
+            '"Date","Amount","Description","AccountNumber"\n'
+            '"2026-01-03","5.00","Snack","AB1234C"\n',
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        # The exact-match itself proves omission: an included AccountNumber
+        # cell would change the string (an extra ", AccountNumber=..."
+        # suffix), so matching exactly this text is sufficient -- no need
+        # to additionally scan the whole output, which also renders the
+        # real (non-disputed) data row's own AccountNumber column value.
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
+
+    def test_preview_quoted_description_with_delimiter_not_omitted(
+        self, tmp_path: Path
+    ) -> None:
+        """A quoted description containing the delimiter must not length-mismatch.
+
+        Before the fix, a bare ``line.split(",")`` split
+        ``"Coffee, large"`` into two cells, making the disputed row longer
+        than ``header_cells`` -- a length mismatch that omits the whole row.
+        The real read always counts it as one cell, so the row must be
+        shown, not omitted.
+        """
+        csv_file = tmp_path / "quoted_description_delimiter.csv"
+        csv_file.write_text(
+            '2026-01-01,42.50,"Coffee, large",ACCT-XY9Z\n'
+            "2026-01-02,10.00,Tea,1234\n"
+            "Date,Amount,Description,AccountNumber\n"
+            "2026-01-03,5.00,Snack,AB1234C\n",
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0
+        assert (
+            "transaction_date=2026-01-01, amount=42.50, description=Coffee, large"
+            in result.output
+        )
+        assert (
+            "transaction_date=2026-01-02, amount=10.00, description=Tea"
+            in result.output
+        )
+
+    def test_preview_maps_native_date_excel_column_correctly(
+        self, tmp_path: Path
+    ) -> None:
+        """A native-date Excel column with unaliased headers must still map right.
+
+        Regression: `import preview` has no --date-format flag, so no
+        declared time-bearing format can ever reach this command's
+        normalize-before-map step. Headers are deliberately unaliased
+        ("Col1"/"Col2"/"Col3") so map_columns's content-based discovery is
+        what has to get this right — skipping normalization here doesn't
+        just fail to detect the date column, it misidentifies it as
+        `description` while the real description column drops out of the
+        mapping entirely.
+        """
+        from datetime import date
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Col1", "Col2", "Col3"])
+        ws.append([date(2026, 1, 1), 42.50, "Coffee"])
+        ws.append([date(2026, 1, 2), 10.00, "Tea"])
+        path = tmp_path / "native_dates_unaliased.xlsx"
+        wb.save(path)
+
+        result = runner.invoke(app, ["preview", str(path)])
+
+        assert result.exit_code == 0
+        assert "transaction_date ← Col1" in result.output
+        assert "description ← Col1" not in result.output
+
+    def test_preview_override_scopes_native_date_normalization(
+        self, tmp_path: Path
+    ) -> None:
+        """A caller --override transaction_date=<col> must scope normalization.
+
+        Same shape as the MCP `_import_preview_tabular` fix: first-contact
+        `import preview` (no saved/matched format) never passed
+        `date_column` to `normalize_excel_date_columns_for_detection`, so
+        an unrelated
+        second native-date column ("Memo", auto-typed by some spreadsheet
+        tool) got normalized too whenever a broad scan found it — even
+        though the caller named the actual date column via `--override`.
+        The printed sample table must show Memo's raw "<date> 00:00:00"
+        text untouched, since only the overridden transaction_date column
+        may be rewritten.
+        """
+        from datetime import date
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description", "Memo"])
+        ws.append([date(2026, 1, 1), -4.50, "Coffee", date(2026, 1, 15)])
+        path = tmp_path / "second_native_date_column.xlsx"
+        wb.save(path)
+
+        result = runner.invoke(
+            app,
+            ["preview", str(path), "--override", "transaction_date=Date"],
+        )
+
+        assert result.exit_code == 0
+        assert "transaction_date ← Date" in result.output
+        # Memo's raw native-date text must survive untouched — proof that
+        # normalization was scoped to the overridden transaction_date column
+        # rather than sweeping in every native-date column it can find.
+        assert "2026-01-15 00:00:00" in result.output
 
     def test_permission_error_is_classified_not_raw(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

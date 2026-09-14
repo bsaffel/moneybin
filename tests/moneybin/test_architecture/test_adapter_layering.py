@@ -213,18 +213,38 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.readers",
         "read_file",
     ),
+    # why: pure DataFrame transform (no writes) — builds a throwaway
+    # detection copy so map_columns/matched_format display can recognize a
+    # native-date Excel column's rendered text; the adapter has no other
+    # way to avoid the same read->map sequence import_service.py's service
+    # layer applies.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_for_detection",
+    ),
+    # why: pure DataFrame transform (no writes) — the one render against the
+    # FINAL resolved mapping, once map_columns has run; needed so a column
+    # only aliased into the mapping after the detection copy above still
+    # renders correctly before display.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_after_mapping",
+    ),
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.column_mapper",
         "map_columns",
     ),
-    # why: pure read — samples one column of an in-memory frame the adapter
-    # already holds. Needed so a mapping override can refresh samples for a
-    # destination the detector never proposed.
+    # why: pure read — builds {dest: samples} for an in-memory frame the
+    # adapter already holds, always against a frame rendered under the
+    # mapping being shown. Needed so a mapping override can refresh samples
+    # for a destination the detector never proposed.
     (
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.column_mapper",
-        "collect_samples",
+        "collect_field_samples",
     ),
     (
         "mcp/tools/import_tools.py",
@@ -235,6 +255,21 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "mcp/tools/import_tools.py",
         "moneybin.extractors.tabular.readers",
         "read_file",
+    ),
+    # why: pure DataFrame transform (no writes) — same reason as the CLI
+    # preview entry above; import_preview_coarse's map_columns call needs
+    # the identical read->normalize->map sequence the service layer applies.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_for_detection",
+    ),
+    # why: pure DataFrame transform (no writes) — same reason as the CLI
+    # after-mapping entry above.
+    (
+        "mcp/tools/import_tools.py",
+        "moneybin.extractors.tabular.readers",
+        "normalize_excel_date_columns_after_mapping",
     ),
     # FIELD_ALIASES is a pure module-level constant (destination field name ->
     # alias list) — import_preview's mapping= override validates against its

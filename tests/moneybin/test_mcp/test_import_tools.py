@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -772,6 +772,642 @@ async def test_import_preview_binds_parse_hash_and_storage_to_one_byte_read(
         assert row["file_sha256"] == hashlib.sha256(original).hexdigest()
         assert row["file_size_bytes"] == len(original)
         assert repo.get_source_bytes(preview_id) == original
+
+
+async def test_import_preview_coarse_maps_native_date_excel_column_correctly(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A native-date Excel column with unaliased headers must still map right.
+
+    Regression: this preview path has no saved/matched format and no
+    date-format parameter, so ``normalize_excel_date_columns_for_detection``
+    must run unconditionally before ``map_columns`` here — skipping it
+    doesn't just fail to detect the date column, it actively misidentifies
+    it as ``description`` while the real description column drops out of
+    the mapping entirely (worse than refusing to detect a date at all).
+    Headers are deliberately unaliased ("Col1"/"Col2"/"Col3") so
+    ``map_columns``'s content-based discovery is what has to get this right,
+    not a name-alias shortcut.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Col1", "Col2", "Col3"])
+    ws.append([date(2026, 1, 1), 42.50, "Coffee"])
+    ws.append([date(2026, 1, 2), 10.00, "Tea"])
+    xlsx = tmp_path / "native_dates_unaliased.xlsx"
+    wb.save(xlsx)
+
+    response = await import_preview_coarse(file_path=str(xlsx))
+
+    assert response.error is None, response.error
+    assert response.data.mapping.get("transaction_date") == "Col1"
+    assert response.data.mapping.get("description") != "Col1"
+
+
+async def test_import_preview_coarse_keeps_header_position_warning_with_real_preview_id(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A header-position warning must survive the placeholder-actions rewrite.
+
+    ``import_preview_coarse`` appends
+    ``header_position_ambiguous_recovery_mcp()`` to ``actions`` when the
+    signal is present and the plan is otherwise confirmable, but the later
+    step that swaps the placeholder ``preview_id`` for the real one must not
+    REASSIGN the whole ``actions`` list to a single-element list containing
+    only the confirm hint — that would silently discard the warning the
+    agent needs to see before ratifying.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee\n"
+        "2026-01-02,10.00,Tea\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    assert response.data.header_position_ambiguous is True
+    assert response.data.confidence != "low"
+    preview_id = response.data.preview_id
+    assert any(f"preview_id='{preview_id}'" in action for action in response.actions)
+
+    from moneybin.services.import_confirmation import (
+        header_position_ambiguous_recovery_mcp,
+    )
+
+    assert header_position_ambiguous_recovery_mcp() in response.actions
+
+
+async def test_import_preview_coarse_discloses_the_disputed_rows(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The preview must show the actual disputed row(s), not just the flag.
+
+    A confirm that asks "is this a transaction?" without showing the row
+    it's asking about is functionally silent even though a warning appeared
+    (design-principles.md, "Magic stays visible").
+    ``data.header_position_ambiguous_rows`` carries the actual cells for
+    every column whose identity is known AND whose destination field is on
+    the allowlist (``disputed_row_fields`` in import_confirmation.py) --
+    here, all three: transaction_date, amount, description.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee\n"
+        "2026-01-02,10.00,Tea\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    assert response.data.header_position_ambiguous is True
+    assert response.data.header_position_ambiguous_rows == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    # Same classification path as sample_values (DataClass.DESCRIPTION),
+    # confirming the field is actually wired into the sensitivity/consent
+    # machinery rather than a plain, unclassified str list.
+    assert response.summary.sensitivity == "medium"
+
+
+async def test_import_preview_coarse_omits_unmapped_disputed_row_cells(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A cell in a column with no allowlisted destination must be OMITTED.
+
+    Any shape-based masker has an irreducible hole -- a short or
+    alphanumeric account key (``ACCT-XY9Z``, ``1234``) defeats
+    ``mask_pii_shaped``, and identifiers.md's "Account identifiers" section
+    closes the list of surfaces allowed to leak such keys. The fix is a
+    destination-field allowlist, not a stronger masker: a disputed row shows
+    ONLY cells mapped to transaction_date/post_date/amount/debit_amount/
+    credit_amount/description; every other cell is omitted entirely, never
+    shown masked or otherwise. Here, ``AccountNumber`` has no allowlisted
+    destination, so its account-shaped values never reach the response --
+    not raw, not masked.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "data_before_header.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee,ACCT-XY9Z\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    # The account-shaped cells never made it into the response at all --
+    # neither raw nor masked.
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_disputed_row_evidence_survives_quoted_header(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A quoted CSV header must not blank out the disputed-row evidence.
+
+    Round 18: ``_detect_header`` tokenized sample lines with a bare
+    ``line.split(delimiter)``, while ``pl.read_csv`` is quote-aware. A
+    quoted header (``"Date","Amount",...``) produced ``header_cells``
+    carrying literal quote characters (``'"Date"'``), which never equals a
+    value in ``df.columns`` (``'Date'``) -- so every disputed-row cell's
+    column identity looked unresolvable and ``disputed_row_fields`` omitted
+    the whole row, even though nothing in it was unsafe to show. This is
+    over-omission, not a leak, so no privacy test caught it -- but it
+    defeats "Magic stays visible" for one of the most common bank-export
+    shapes. Read through the real reader (no hand-built header_cells) to
+    prove the fix end-to-end.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_header.csv"
+    csv.write_text(
+        '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+        '"2026-01-02","10.00","Tea","1234"\n'
+        '"Date","Amount","Description","AccountNumber"\n'
+        '"2026-01-03","5.00","Snack","AB1234C"\n',
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_disputed_row_evidence_survives_fully_quoted_csv(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Same fix, every cell of every row quoted (not just the header).
+
+    Distinct from the quoted-header case: here the disputed rows' OWN
+    cells are quoted too, so this also proves the row cells themselves come
+    back unquoted (``pl.read_csv`` never shows a caller a literal quote
+    character for a plain quoted field either).
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_all.csv"
+    csv.write_text(
+        '"2026-01-01","42.50","Coffee","ACCT-XY9Z"\n'
+        '"2026-01-02","10.00","Tea","1234"\n'
+        '"Date","Amount","Description","AccountNumber"\n'
+        '"2026-01-03","5.00","Snack","AB1234C"\n',
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    # No leftover quote characters -- the row cells themselves were quoted.
+    for row in disputed:
+        for value in row.values():
+            assert '"' not in value
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_quoted_description_with_delimiter_not_omitted(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A quoted description containing the delimiter must not length-mismatch.
+
+    Before the fix, a bare ``line.split(",")`` would split
+    ``"Coffee, large"`` into TWO cells, making the disputed row longer than
+    ``header_cells`` -- a length mismatch that ``disputed_row_fields`` omits
+    entirely (fail-closed). The real read (``pl.read_csv``) always counted
+    it as one cell, so this was pure over-omission: the row is shown, not
+    omitted.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "quoted_description_delimiter.csv"
+    csv.write_text(
+        '2026-01-01,42.50,"Coffee, large",ACCT-XY9Z\n'
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        {
+            "transaction_date": "2026-01-01",
+            "amount": "42.50",
+            "description": "Coffee, large",
+        },
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+
+
+async def test_import_preview_coarse_ragged_short_row_shows_its_own_cells(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Round 19: a disputed row shorter than the header is not fully omitted.
+
+    Before the fix, ``disputed_row_fields`` blanked ANY row whose length
+    didn't exactly match ``header_cells`` -- including a row that is
+    merely SHORTER because it omits a trailing optional cell, a common
+    ragged-CSV shape (a transaction with no description, say). That made
+    the confirm show "(no displayable fields)" for the very row being
+    ratified, even though its date/amount were perfectly alignable. Row
+    length now plays no part in the rule at all -- see the sibling
+    longer-row test below.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "ragged_short_row.csv"
+    csv.write_text(
+        "2026-01-01,42.50\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        # Shorter row (missing Description, AccountNumber) -- projects
+        # only the positions it actually has, not omitted whole.
+        {"transaction_date": "2026-01-01", "amount": "42.50"},
+        # Full-length row -- AccountNumber still omitted (not allowlisted).
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+
+
+async def test_import_preview_coarse_ragged_long_row_shows_its_aligned_prefix(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Round 20: a disputed row longer than the header is not fully omitted.
+
+    Row length plays no part in the allowlist/identity rule at all -- a
+    position past the header's own width simply has no header cell to name
+    it, so it never resolves and drops out on its own, exactly like any
+    other unresolvable position. This also matches the real read:
+    ``pl.read_csv(..., truncate_ragged_lines=True)`` keeps a longer row's
+    leading cells in the header's own columns too.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "ragged_long_row.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee,ACCT-XY9Z\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        # Both rows have one extra trailing cell versus the 3-cell header
+        # -- the aligned prefix still shows; the extra cell has no header
+        # position to name it and is simply absent, never shown.
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
+
+
+async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A caller-supplied transaction_date mapping must scope normalization.
+
+    ``_import_preview_tabular``'s one render
+    (``normalize_excel_date_columns_after_mapping``) only rewrites the
+    columns ``mapped_date_columns(field_mapping)`` names — i.e. whichever
+    columns the FINAL mapping assigns to ``transaction_date``/``post_date``
+    — never every native-date-shaped column it can find. ``Memo`` here is a
+    SECOND, genuinely native-date Excel column (a spreadsheet tool
+    auto-typed it, unrelated to the transaction date) that maps to the
+    ``memo`` destination by header alias, which is not one of those two
+    date-typed fields. With the mapped ``transaction_date`` column
+    correctly scoped, ``Memo`` must stay untouched — still the raw
+    "<date> 00:00:00" text fastexcel renders for a native date cell —
+    because only the mapped date column(s) may be rewritten. An unscoped
+    normalization would truncate ``Memo`` too, and the confirm/replay path
+    (which always scopes to ``ReviewedTabularPlan.field_mapping``'s actual
+    ``transaction_date``) would NOT re-truncate it, so the caller would
+    import a different ``memo`` value than the one this preview showed
+    them.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Amount", "Description", "Memo"])
+    ws.append([date(2026, 1, 1), -4.50, "Coffee", date(2026, 1, 15)])
+    ws.append([date(2026, 1, 2), 100.00, "Salary", date(2026, 1, 16)])
+    xlsx = tmp_path / "second_native_date_column.xlsx"
+    wb.save(xlsx)
+
+    response = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"transaction_date": "Date"}
+    )
+
+    assert response.error is None, response.error
+    assert response.data.mapping.get("transaction_date") == "Date"
+    assert response.data.mapping.get("memo") == "Memo"
+    assert response.data.sample_values["transaction_date"] == [
+        "2026-01-01",
+        "2026-01-02",
+    ]
+    assert response.data.sample_values["memo"] == [
+        "2026-01-15 00:00:00",
+        "2026-01-16 00:00:00",
+    ]
+
+
+async def test_import_preview_coarse_post_date_matches_what_import_stores(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """The previewed post_date sample must match what the import stores.
+
+    All three normalize_excel_date_columns_after_mapping call sites now
+    derive their scope from the shared mapped_date_columns helper, so a
+    first-contact preview naming both transaction_date and post_date as
+    native-Excel-date columns must show the same post_date the later
+    import commits — not a still-raw "<date> 00:00:00" sample that
+    silently diverges once imported.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append([date(2026, 1, 1), date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append([date(2026, 1, 2), date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_native.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx),
+        mapping={"transaction_date": "Date", "post_date": "Posted"},
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.sample_values["post_date"] == ["2026-01-03", "2026-01-04"]
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "post_date_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"transaction_date": "Date", "post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            # Incidental to this test: the account resolver's fallback rung
+            # always offers mcp_db's seeded accounts as weak candidates for a
+            # never-before-seen source, so import_answering_gate can't answer
+            # on this test's behalf. Bind explicitly to "new" -- the honest
+            # choice for a name that matches nothing but the fallback rung.
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored_post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+
+    assert [d.isoformat() for d in stored_post_dates] == preview.data.sample_values[
+        "post_date"
+    ]
+
+
+async def test_import_preview_post_date_only_override_matches_what_import_stores(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """D's headline round-14 counterexample, preview vs. replay.
+
+    The caller's ``mapping`` names ONLY ``post_date`` (native); ``Date``
+    (transaction_date) is discovered by content as TEXT in "%m/%d/%Y", not
+    ISO. If the preview's detection copy ever leaked into what it later
+    reports as ``sample_values["post_date"]`` -- or a real import replayed
+    from the same bytes rendered post_date differently -- this diverges
+    from what the confirm path actually stores.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append(["01/01/2026", date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append(["01/02/2026", date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_only_override.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"post_date": "Posted"}
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.mapping.get("transaction_date") == "Date"
+    assert preview.data.mapping.get("post_date") == "Posted"
+    assert preview.data.date_format == "%m/%d/%Y"
+    assert preview.data.sample_values["post_date"] == ["01/03/2026", "01/04/2026"]
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "post_date_only_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored_post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+
+    assert stored_post_dates == [date(2026, 1, 3), date(2026, 1, 4)]
+    assert None not in stored_post_dates
+
+
+async def test_import_preview_post_date_only_override_with_native_transaction_date(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """A native, unmapped date column must not orphan itself.
+
+    The caller's ``mapping`` names ONLY ``post_date`` (native); ``Date``
+    (transaction_date) is ALSO native but not in the override. The
+    detection copy renders every date-shaped column regardless of mapping
+    state, so ``map_columns`` still detects transaction_date's format and
+    stages a confirmable plan.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.append(["Date", "Posted", "Amount", "Description"])
+    ws.append([date(2026, 1, 1), date(2026, 1, 3), -4.50, "Coffee"])
+    ws.append([date(2026, 1, 2), date(2026, 1, 4), 100.00, "Salary"])
+    xlsx = tmp_path / "preview_post_date_only_native_transaction_date.xlsx"
+    wb.save(xlsx)
+
+    preview = await import_preview_coarse(
+        file_path=str(xlsx), mapping={"post_date": "Posted"}
+    )
+
+    assert preview.error is None, preview.error
+    assert preview.data.mapping.get("transaction_date") == "Date"
+    assert preview.data.mapping.get("post_date") == "Posted"
+    assert preview.data.date_format is not None, (
+        "map_columns could not detect a format for the native, unmapped "
+        "transaction_date column"
+    )
+
+    from moneybin.database import get_database
+    from moneybin.services.import_service import ImportService
+
+    with get_database(read_only=False) as db:
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+
+        import_kwargs: dict[str, Any] = {
+            "account_name": "e1_native_preview_test",
+            "refresh": False,
+            "confirm": True,
+            "overrides": {"post_date": "Posted"},
+            "save_format": False,
+        }
+        try:
+            result = ImportService(db).import_file(xlsx, **import_kwargs)
+        except ImportConfirmationRequiredError as exc:
+            assert exc.outcome.reason == "account_confirmation"
+            bindings = {
+                proposal["source_account_key"]: "new"
+                for proposal in exc.outcome.account_proposals
+            }
+            result = ImportService(db).import_file(
+                xlsx, account_bindings=bindings, **import_kwargs
+            )
+        assert result.rows_loaded == 2
+        stored = db.execute(
+            "SELECT transaction_date, post_date FROM raw.tabular_transactions "
+            "ORDER BY transaction_date"
+        ).fetchall()
+
+    assert [row[0] for row in stored] == [date(2026, 1, 1), date(2026, 1, 2)]
+    assert [row[1] for row in stored] == [date(2026, 1, 3), date(2026, 1, 4)]
 
 
 @pytest.mark.parametrize(
@@ -2799,48 +3435,42 @@ async def test_mapping_override_to_single_amount_retires_the_split_sign_rule(
     assert confirmed.data.rows_loaded == 2
 
 
-async def test_mapping_override_does_not_clear_a_structural_red_flag(
+async def test_headerless_excel_previews_and_confirms_cleanly(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """An override answers a column question, not "the header row is a transaction".
+    """A headerless Excel file must preview and confirm like CSV/Parquet (MB-449).
 
-    ``resolve_tier`` forces ``low`` on a structural red flag so the confirm
-    gate engages, and that forced tier is the only carrier of the flag into
-    import_confirm. Promoting to ``high`` on any override would let a
-    one-field correction disarm the gate for a file whose first transaction
-    row was consumed as column names.
+    Excel used to always consume row 0 as the header with no headerless
+    detection, forcing a structural red flag on every first-contact preview
+    that no mapping override could clear (`import_preview` never threads an
+    explicit skip_rows, so auto-detection is the only path this MCP surface
+    ever takes). Excel now shares `_classify_header_rows` with CSV/Parquet:
+    the file previews with no red flag and both transactions load on confirm.
     """
     import openpyxl
 
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None
-    # No header row — pl.read_excel eats this real transaction as column names.
+    # No header row — every row is a real transaction (date + amount).
     ws.append(["2026-07-01", -4.50, "Coffee"])
     ws.append(["2026-07-02", 100.00, "Salary"])
     xlsx = tmp_path / "headerless.xlsx"
     wb.save(xlsx)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    baseline = await import_preview_coarse(file_path=str(xlsx))
-    assert baseline.data.header_row_looks_like_data is True
-    assert baseline.data.confidence == "low"
-
-    preview = await import_preview_coarse(
-        file_path=str(xlsx),
-        mapping={"description": "Coffee"},
-    )
-
-    assert preview.data.header_row_looks_like_data is True
-    assert preview.data.confidence == "low"
+    preview = await import_preview_coarse(file_path=str(xlsx))
+    assert preview.data.header_row_looks_like_data is False
 
     confirmed = await import_confirm_coarse(
         preview_id=preview.data.preview_id,
         account_name="Checking",
+        account_bindings={"checking": "new"},
     )
-    assert confirmed.data.status == "confirmation_required"
+    assert confirmed.data.status == "complete"
+    assert confirmed.data.rows_loaded == 2
 
 
 async def test_import_preview_coarse_rejects_invalid_mapping_override(
@@ -3173,25 +3803,25 @@ async def test_unreadable_date_hint_names_a_recovery_that_can_change_the_format(
     assert "import_confirm(" not in hint, hint
 
 
-async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
+async def test_headerless_excel_hint_carries_no_structural_warning(
     mcp_db: object,
     tmp_path: Path,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    """A consumed header row is unfixable by mapping=, so don't recommend it.
+    """A correctly-detected headerless Excel sheet gets no red-flag hint (MB-449).
 
-    resolve_tier pins the tier to `low` on a structural red flag and no override
-    clears it, while no MCP or CLI surface exposes a skip-rows/no-header
-    correction — `skip_rows` is only ever written from detection. The generic
-    "send mapping={...}" hint therefore loops the agent through previews that
-    can never confirm; the only real recovery is at the source file.
+    Before this fix, a headerless Excel sheet always tripped the structural
+    red flag on first contact, and the hint it earned named no real recovery
+    ("fix the header row" for a file that already has none). Detection now
+    matches CSV/Parquet, so this same fixture previews with no red flag and
+    carries no such hint.
     """
     import openpyxl
 
     wb = openpyxl.Workbook()
     ws = wb.active
     assert ws is not None
-    # No header row — pl.read_excel eats this real transaction as column names.
+    # No header row — every row is a real transaction (date + amount).
     ws.append(["2026-07-01", -4.50, "Coffee"])
     ws.append(["2026-07-02", 100.00, "Salary"])
     xlsx = tmp_path / "headerless.xlsx"
@@ -3200,11 +3830,9 @@ async def test_structural_red_flag_hint_does_not_prescribe_a_mapping_retry(
 
     preview = await import_preview_coarse(file_path=str(xlsx))
 
-    assert preview.data.header_row_looks_like_data is True
+    assert preview.data.header_row_looks_like_data is False
     hint = " ".join(preview.actions)
-    assert "header row" in hint, hint
-    assert "mapping=" not in hint, hint
-    assert "import_confirm(" not in hint, hint
+    assert "header row" not in hint, hint
 
 
 async def test_account_confirmation_hint_never_names_the_raw_source_key(

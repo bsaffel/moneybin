@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 import shlex
 
+import click
+from typer.main import get_command
 from typer.testing import CliRunner
 
 # Quoted or backticked — the producing sites use both.
@@ -36,14 +38,47 @@ def moneybin_invocations(text: str) -> list[list[str]]:
     return invocations
 
 
+def _resolved_leaf_or_group(args: list[str]) -> click.Command | None:
+    """Walk ``args`` through the CLI's command tree; ``None`` if any step fails to resolve.
+
+    Stops at the first non-group ``Command`` — remaining ``args`` are that
+    leaf's own positionals/options (e.g. ``MIX_V MIX_W`` on ``links run``),
+    not further subcommand names. The caller checks the returned command:
+    a ``Group`` with ``invoke_without_command=False`` (the default; see
+    `cli.md`) prints help and does nothing when invoked bare, but a group
+    declared ``invoke_without_command=True`` (``import inbox``, ``mcp
+    config``) runs its own default action instead.
+    """
+    from moneybin.cli.main import app  # keep collection-time light
+
+    current: click.Command = get_command(app)
+    ctx = click.Context(current)
+    for name in args:
+        if not isinstance(current, click.Group):
+            return current
+        next_command = current.get_command(ctx, name)
+        if next_command is None:
+            return None
+        current = next_command
+        ctx = click.Context(current, parent=ctx)
+    return current
+
+
 def assert_published_commands_resolve(text: str) -> None:
-    """Fail if ``text`` publishes a command the CLI does not register.
+    """Fail if ``text`` publishes a command the CLI does not register or fully run.
 
     Appends ``--help`` so registration is what is under test rather than the
     command's runtime behaviour: an unregistered name exits 2 either way, and a
     registered one prints its help without touching a database. Empty input is a
     failure, not a pass — a guard whose predicate never ran is indistinguishable
     from one that held.
+
+    Registering is not the same as doing something: a bare command GROUP
+    (``moneybin transform``, no subcommand) also exits 0 on ``--help`` and
+    prints help instead of running. Reject a published invocation whose
+    fully-resolved command is still a group that does nothing on its own —
+    one declared ``invoke_without_command=True`` (``import inbox``, ``mcp
+    config``) is exempt, since invoking it bare runs its default action.
     """
     from moneybin.cli.main import app  # keep collection-time light
 
@@ -55,4 +90,11 @@ def assert_published_commands_resolve(text: str) -> None:
         assert result.exit_code == 0, (
             f"published command `moneybin {' '.join(args)}` does not resolve "
             f"(exit {result.exit_code}): {result.output}"
+        )
+        resolved = _resolved_leaf_or_group(args)
+        assert not (
+            isinstance(resolved, click.Group) and not resolved.invoke_without_command
+        ), (
+            f"published command `moneybin {' '.join(args)}` resolves to a "
+            "command GROUP, not a leaf — it prints help and runs nothing"
         )
