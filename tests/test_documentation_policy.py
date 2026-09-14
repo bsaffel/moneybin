@@ -1317,25 +1317,41 @@ def test_blank_fenced_blocks_hides_top_level_and_indented_fences() -> None:
     assert _blank_fenced_blocks("no trailing newline") == "no trailing newline"
 
 
-def test_mcp_clients_guide_lists_exactly_the_supported_clients() -> None:
-    """The guide's `--client` list is the code's tuple, name for name.
+def test_public_docs_list_exactly_the_supported_clients() -> None:
+    """Every complete `--client` enumeration is the code's tuple, name for name.
 
     The count figure above cannot see one client swapped for another; the
     per-client install sections would go stale with the count still right.
+    The MCP clients guide carries the list as bullets and the CLI reference
+    as a sentence; both are checked.
     """
     from moneybin.cli.commands.mcp import (
         _SUPPORTED_CLIENTS,  # pyright: ignore[reportPrivateUsage]  # the tuple is the figure
     )
 
-    text = (_REPO_ROOT / "docs" / "guides" / "mcp-clients.md").read_text()
+    guide = (_REPO_ROOT / "docs" / "guides" / "mcp-clients.md").read_text()
     lead = "The supported `--client` values are:"
-    assert lead in text, "mcp-clients.md lost its --client list"
-    listing = text.split(lead, 1)[1].split("\n\n", 2)[1]
-    listed = set(re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE))
-    assert listed == set(_SUPPORTED_CLIENTS), (
-        f"missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
-        f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
+    assert lead in guide, "mcp-clients.md lost its --client list"
+    listing = guide.split(lead, 1)[1].split("\n\n", 2)[1]
+    reference = (_REPO_ROOT / "docs" / "guides" / "cli-reference.md").read_text()
+    sentence = re.search(
+        r"the supported clients are (.*?), and ([a-z-]+),", reference.replace("\n", " ")
     )
+    assert sentence is not None, "cli-reference.md lost its supported-clients sentence"
+    enumerations = {
+        "docs/guides/mcp-clients.md": set(
+            re.findall(r"^- `([a-z-]+)`", listing, flags=re.MULTILINE)
+        ),
+        "docs/guides/cli-reference.md": {
+            *sentence.group(1).split(", "),
+            sentence.group(2),
+        },
+    }
+    for relative, listed in enumerations.items():
+        assert listed == set(_SUPPORTED_CLIENTS), (
+            f"{relative}: missing={sorted(set(_SUPPORTED_CLIENTS) - listed)!r}; "
+            f"extra={sorted(listed - set(_SUPPORTED_CLIENTS))!r}"
+        )
 
 
 def test_getting_started_names_live_registry_tools() -> None:
