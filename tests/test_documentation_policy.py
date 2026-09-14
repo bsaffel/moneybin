@@ -1209,8 +1209,15 @@ def _stated_figures() -> list[_Figure]:
         ),
         _Figure(
             "MCP install clients",
-            # `other seven clients` is the figure below, not a wrong eight.
-            (rf"\b(?<!other\s){n} (?:supported |tested )?clients\b",),
+            # Install-support wording is required so a count of some other
+            # kind of client ("two clients can read concurrently") is not
+            # compared with the install list.
+            (
+                rf"\b{n} (?:supported )?clients "
+                r"(?:supported|MoneyBin is tested against|we test against)\b",
+                rf"\b(?:Supported in|install across|any of the) {n} "
+                r"(?:supported )?clients\b",
+            ),
             (len(_SUPPORTED_CLIENTS),),
         ),
         _Figure(
