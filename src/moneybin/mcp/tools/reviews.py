@@ -25,7 +25,6 @@ from moneybin.errors import (
     classify_user_error,
     exception_origin,
 )
-from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.mcp._registration import register
 from moneybin.mcp.confirmation import (
     ConfirmationBinding,
@@ -114,6 +113,7 @@ from moneybin.protocol.write_contracts import (
     RuleConflictDecisionRequest,
 )
 from moneybin.services.account_links_service import AccountLinksService
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.auto_rule_service import AutoRuleService
 from moneybin.services.categorization import (
     CategorizationService,

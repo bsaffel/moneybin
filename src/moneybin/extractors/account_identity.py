@@ -3,8 +3,8 @@
 Consolidates two things that travel together: the raw identity a source
 presents for one account (``SourceAccount``) and how ``core.dim_accounts``
 will name it (``AccountNameFacts`` and its derivation, mirroring
-``dim_accounts.sql``'s ``COALESCE`` chain -- see ``derive_display_name``).
-Both are pure value types and pure functions -- no DB, no config -- so they
+``dim_accounts.sql``'s ``COALESCE`` chain — see ``derive_display_name``).
+Both are pure value types and pure functions — no DB, no config — so they
 live in ``extractors/``, a layer both the extractor channels (OFX, tabular,
 PDF) and ``services/`` (``AccountResolver`` et al.) can import.
 
@@ -16,7 +16,7 @@ value objects both layers need had to move to one either can reach. The
 resolver-verdict types that also lived in ``account_resolution_types.py``
 (``AccountCandidate``, ``AccountProposal``, ``ResolvedAccount``, the
 pending-link types, plus ``is_a_name`` / ``matchable_account_name`` /
-``is_reserved_account_name``) stay there -- they depend on
+``is_reserved_account_name``) stay there — they depend on
 ``services.ledger_overlap`` (a DB-touching module) or exist only to serve
 ``AccountResolver``'s own service-layer contract, and no extractor needs them.
 """
@@ -49,7 +49,7 @@ UNNAMED_ACCOUNT_LABEL = "Unnamed account"
 Duplicated as a literal in the terminal COALESCE arm of
 ``core.dim_accounts.display_name``, because SQL cannot import it. The two are
 pinned together by ``test_dim_accounts_merge.py``, which asserts the model's
-output against this constant after a real SQLMesh run -- so a drift in either
+output against this constant after a real SQLMesh run — so a drift in either
 copy fails there rather than in front of a user.
 
 One constant rather than a per-call-site literal because both spellings render
@@ -81,7 +81,7 @@ def _has_letter(text: str) -> bool:
 
     Mirrors the model's ``REGEXP_MATCHES(account_label, '\p{L}')``. Both sides
     were ``[A-Za-z]``, which agreed with each other and was wrong together: a
-    label written in any non-Latin script -- ``储蓄账户``, ``Сбережения`` --
+    label written in any non-Latin script — ``储蓄账户``, ``Сбережения`` —
     held no "letter", so the rung dropped a name a person actually chose and
     named the account by an assembled label instead.
 
@@ -95,7 +95,7 @@ def _has_letter(text: str) -> bool:
 
 #: A label already carrying a four-digit group does not also take a last four.
 #: Four digits is the last-four unit, so such a label is either stating the
-#: account's own already or is what the masker left of a longer number --
+#: account's own already or is what the masker left of a longer number —
 #: ``Checking ****5678`` joined with ``…9012`` publishes eight digits of a
 #: twelve-digit number, well past what the last-four convention allows. A year
 #: inside a name is indistinguishable from a number's tail, so neither one is

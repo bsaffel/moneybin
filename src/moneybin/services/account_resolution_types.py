@@ -17,6 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict, TypeGuard
 
+# Re-exported: adapters that display the sentinel (mcp/tools/reviews.py,
+# cli/commands/accounts/*.py) import it from here rather than from
+# `extractors.account_identity` directly, which is a guarded package for
+# `test_adapter_layering.py`. This module already isn't guarded for adapters.
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.entity_reference import normalize_reference
 from moneybin.services.ledger_overlap import LedgerOverlap

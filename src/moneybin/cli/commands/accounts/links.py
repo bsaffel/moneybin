@@ -24,7 +24,6 @@ from moneybin.cli.utils import (
 )
 from moneybin.database import get_database
 from moneybin.errors import UserError
-from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.matching.reconciliation import RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
 from moneybin.privacy.payloads.accounts import (
     AccountLinksHistoryPayload,
@@ -37,6 +36,7 @@ from moneybin.services.account_links_service import (
     AccountLinkAcceptImpact,
     AccountLinksService,
 )
+from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from moneybin.services.identity_confirmation import identity_confirm_message
 from moneybin.services.ledger_overlap import LedgerOverlap
 

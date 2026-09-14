@@ -69,21 +69,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.matching.persistence",
         "VALID_MATCH_TYPES",
     ),
-    # UNNAMED_ACCOUNT_LABEL is a fixed string literal (MB-246 relocated it,
-    # with SourceAccount and the account-naming ladder, from services/ to
-    # extractors/account_identity.py — a layer both extractors/ and services/
-    # can import). Pure data, no DB access; used here only to detect the
-    # sentinel in text already returned by a service call.
-    (
-        "mcp/tools/reviews.py",
-        "moneybin.extractors.account_identity",
-        "UNNAMED_ACCOUNT_LABEL",
-    ),
-    (
-        "cli/commands/accounts/links.py",
-        "moneybin.extractors.account_identity",
-        "UNNAMED_ACCOUNT_LABEL",
-    ),
     # --- Pure read helpers ----------------------------------------------
     # import_log.get_import_history is a read-only repo helper consumed by
     # the import_status MCP tool. No writes, no orchestration.
@@ -378,12 +363,16 @@ def _collect_imports(path: Path, src_root: Path = SRC) -> list[tuple[str, str, s
 
 
 def _scan_adapters() -> list[tuple[str, str, str]]:
-    """Walk every adapter file and collect guarded imports."""
+    """Walk every adapter file and collect guarded imports.
+
+    Includes ``__init__.py``: a command-package initializer is ordinary
+    adapter code (MB-246 found `cli/commands/accounts/__init__.py` importing a
+    guarded-package symbol that this scan had never inspected), not a
+    re-export shim exempt from the convention.
+    """
     triples: list[tuple[str, str, str]] = []
     for root in ADAPTER_ROOTS:
         for path in sorted(root.rglob("*.py")):
-            if path.name == "__init__.py":
-                continue
             triples.extend(_collect_imports(path))
     return triples
 
