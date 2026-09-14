@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-11 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Reports
 
 Nine built-in reports answer the standing questions — what am I worth, where
@@ -538,3 +538,12 @@ The `reports` MCP tool is the same catalog. Called with no `report_id` it return
 ## Export
 
 `moneybin export report REPORT_ID` writes any catalog report — built-in or saved, `--param` bound the same way — to a named local destination as CSV, Parquet, or XLSX, or to a Google Sheet in the sheet's own format. Masking applies on the way out; `--unredacted` is an explicit per-run choice. A redacted export of a saved report also withholds what you authored: its columns become `redacted_column_1`, `redacted_column_2`, and so on, its parameters `redacted_parameter_*`, and its SQL is left out of the receipt, while a built-in's export keeps its real names, and its SQL when it has one — the two service-backed net-worth reports have none to keep. The [export section of the CLI reference](cli-reference.md#export) and the [Google Sheets guide](connect-gsheet.md) cover destinations.
+
+## What is not built yet
+
+- **Holdings in net worth.** Investment holdings do not count toward the net-worth total; only account balances do. Read positions with `moneybin investments holdings`. ([Net worth](#net-worth))
+- **Marking a subscription cancelled.** There is no "mark as cancelled"; a cancelled subscription goes inactive on its own once its last charge is more than 60 days or two intervals old, whichever is longer. ([Recurring](#recurring))
+- **Balance drift without an assertion.** `balance-drift` returns no rows until you record a statement balance with `accounts balance assert`, and the computed balance it compares against comes from the last rebuild, so run `moneybin refresh` or `moneybin transform apply` after an import. ([Balance drift](#balance-drift), [Reading the output](#reading-the-output))
+- **Converting historical accounting amounts.** `--display-currency` does not re-price `proceeds`, `cost_basis`, `fee_amount`, or `gain_loss` on `realized-fx`; those stay in `home_currency` while `disposed_amount` stays in `currency_code`. ([Realized FX](#realized-fx))
+- **A second page of a report.** A report has no page after the first: when `summary.has_more` says the cap cut the result, raise `--limit`. ([Reading the output](#reading-the-output))
+- **Saving a report from an agent.** Saving, editing, and deleting reports is CLI-only; the `reports` tool reads the catalog and runs it. ([From an AI client](#from-an-ai-client))
