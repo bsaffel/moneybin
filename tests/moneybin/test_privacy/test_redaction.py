@@ -417,8 +417,13 @@ def test_investment_leg_account_identifier_is_partially_masked() -> None:
     assert out.legs[0].account_id == "****7890"
 
 
-def test_investment_leg_account_identifier_without_digits_is_fully_masked() -> None:
-    """A raw manual-account key shorter than four chars masks to the constant."""
+def test_investment_leg_account_identifier_under_four_chars_is_fully_masked() -> None:
+    """A raw manual-account key shorter than four chars masks to the constant.
+
+    The threshold is length, not digits: ACCOUNT_IDENTIFIER keeps the last four
+    characters of anything longer, so a user-authored key surrenders its tail
+    the same way a numeric one does.
+    """
     details = _make_investment_match_details(
         legs=[_make_investment_leg(account_id="ab")]
     )

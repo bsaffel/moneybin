@@ -1025,7 +1025,13 @@ def _summary_actions() -> list[str]:
     ]
 
 
-@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.HIGH)
+# CRITICAL, not HIGH: the `investment_matches` kind's InvestmentLegRecord
+# carries `account_id` as ACCOUNT_IDENTIFIER (Tier.CRITICAL), so a call
+# returning investment-match rows legitimately derives a critical summary
+# sensitivity. Every other kind this tool serves tops out at HIGH; the ceiling
+# is a declared contract for documentation and admission review, so it has to
+# name the worst case this tool can actually return, not the common one.
+@mcp_tool(dynamic_classification=True, maximum_sensitivity=Sensitivity.CRITICAL)
 def reviews_coarse(
     kind: Literal[
         "summary",
