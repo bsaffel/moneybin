@@ -325,6 +325,106 @@ class TestImportOFXMidLoadFailure:
         assert rows_imported == rows_total
 
 
+class TestImportOFXRevertSharedInstitutionRow:
+    """MB-256: reverting one import can delete a row a surviving import needs.
+
+    ``raw.ofx_institutions``' PK is ``(organization, fid)`` -- no
+    ``source_file``, no ``import_id`` (see ``OFXLoadError``'s docstring and
+    ``TestImportOFXMidLoadFailure`` above, which cover the *mid-load-failure*
+    half of this same mechanism). ``on_conflict="upsert"`` means importing a
+    second statement from an already-known institution re-stamps that shared
+    row with the second import's ``import_id``. ``ImportService.revert_confirmed``
+    deletes purely by ``DELETE FROM <table> WHERE import_id = ?``
+    (``import_service.py`` ``revert_confirmed``), and ``plan_revert`` only
+    guards the *opposite* case -- re-importing the same ``source_file`` -- so
+    reverting the SECOND of two same-institution imports deletes the
+    institution row even though the FIRST import is still 'complete' and
+    depends on it.
+    """
+
+    def test_revert_of_second_import_deletes_institution_row_first_import_needs(
+        self, db: Database
+    ) -> None:
+        first = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        second = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
+        assert first.exists() and second.exists()
+
+        service = ImportService(db)
+        # Both fixtures declare <FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
+        # but different <ACCTID> (1111 vs 4242) -- same institution, two
+        # distinct accounts/statements, exactly like
+        # TestImportOFXMidLoadFailure above.
+        import_answering_gate(service, first, refresh=False)
+        history = import_log.get_import_history(db, limit=5)
+        first_import_id = [h for h in history if h["source_type"] == "ofx"][0][
+            "import_id"
+        ]
+        assert isinstance(first_import_id, str)
+
+        import_answering_gate(service, second, refresh=False)
+        history = import_log.get_import_history(db, limit=5)
+        ofx_imports = [h for h in history if h["source_type"] == "ofx"]
+        assert len(ofx_imports) == 2
+        second_import_id = next(
+            h["import_id"] for h in ofx_imports if h["import_id"] != first_import_id
+        )
+        assert isinstance(second_import_id, str)
+
+        # Hand-derived expectation, BEFORE the revert:
+        #  - raw.ofx_institutions has exactly ONE row for (SAMPLE BANK, 9999):
+        #    the upsert (PK = organization, fid) replaced the first import's
+        #    row with the second's.
+        #  - That surviving row's import_id reads as the SECOND import's id.
+        #    This is the precondition proving the mechanism actually fired.
+        institution_rows = db.execute(
+            "SELECT import_id FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK' AND fid = '9999'"
+        ).fetchall()
+        assert len(institution_rows) == 1
+        assert institution_rows[0][0] == second_import_id
+
+        # Revert the SECOND import through the same service call the CLI/MCP
+        # revert path uses.
+        result = ImportService(db).revert_confirmed(
+            second_import_id, verify=lambda _live: None
+        )
+        assert result["status"] == "reverted"
+
+        # Hand-derived expectation, AFTER the revert:
+        #  - The FIRST import is still 'complete', and its raw.ofx_accounts /
+        #    raw.ofx_transactions rows are untouched (those tables' PKs
+        #    include source_file, so the second import's writes landed as
+        #    separate rows rather than overwriting the first's).
+        #  - The institution row for (SAMPLE BANK, 9999) is therefore still
+        #    needed by the first import and MUST survive.
+        first_status = db.execute(
+            "SELECT status FROM raw.import_log WHERE import_id = ?",
+            [first_import_id],
+        ).fetchone()
+        assert first_status is not None
+        assert first_status[0] == "complete"
+
+        first_account_rows = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_accounts WHERE import_id = ?",
+            [first_import_id],
+        ).fetchone()
+        assert first_account_rows is not None
+        assert first_account_rows[0] > 0
+
+        surviving_institution_rows = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_institutions "
+            "WHERE organization = 'SAMPLE BANK' AND fid = '9999'"
+        ).fetchone()
+        assert surviving_institution_rows is not None
+        assert surviving_institution_rows[0] == 1, (
+            "MB-256: raw.ofx_institutions row for the still-complete first "
+            "import was deleted by reverting the second import. The row was "
+            "re-stamped with the second import's import_id by the upsert "
+            "write, and revert_confirmed deletes purely by import_id with no "
+            "check for a surviving import that still needs the row."
+        )
+
+
 class TestImportOFXFailurePhaseMetrics:
     """`IMPORT_ERRORS_TOTAL` must keep naming the phase that actually failed.
 
