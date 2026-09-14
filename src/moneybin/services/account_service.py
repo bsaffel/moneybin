@@ -11,12 +11,13 @@ import dataclasses
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from difflib import SequenceMatcher, get_close_matches
 from typing import Any, cast
 
 from moneybin import error_codes
-from moneybin.database import Database
+from moneybin.database import Database, has_column
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -236,6 +237,7 @@ class AccountSettings:
     currency_code: str | None = None
     credit_limit: Decimal | None = None
     archived: bool = False
+    archived_at: date | None = None
     include_in_net_worth: bool = True
     default_cost_basis_method: str | None = None
 
@@ -251,6 +253,7 @@ class AccountSettings:
             "currency_code": self.currency_code,
             "credit_limit": self.credit_limit,
             "archived": self.archived,
+            "archived_at": self.archived_at,
             "include_in_net_worth": self.include_in_net_worth,
             "default_cost_basis_method": self.default_cost_basis_method,
         }
@@ -419,32 +422,59 @@ class AccountService:
         assert_account_exists(self._db, account_id)
 
     def _load_settings(self, account_id: str) -> AccountSettings | None:
-        """Load settings for an account; ``None`` if no row exists (read, free)."""
+        """Load settings for an account; ``None`` if no row exists (read, free).
+
+        ``archived_at`` is projected only when the live ``app.account_settings``
+        catalog has it -- see the matching comment in ``list_accounts``. A
+        profile opened with ``no_auto_upgrade=True`` (config.py's documented
+        operator mode) skips V063 -- the migration that added this column --
+        forever, not just until the next migration run: ``Database.__init__``
+        calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
+        existing table) unconditionally, before the ``no_auto_upgrade`` branch
+        decides whether to run pending migrations at all. An unconditional
+        ``SELECT archived_at`` would raise a raw ``duckdb.BinderException``
+        the moment any settings write (``accounts set``) reaches this read.
+        """
+        has_archived_at = has_column(self._db, ACCOUNT_SETTINGS, "archived_at")
+        fields = [
+            "account_id",
+            "display_name",
+            "official_name",
+            "last_four",
+            "account_subtype",
+            "holder_category",
+            "currency_code",
+            "credit_limit",
+            "archived",
+            *(["archived_at"] if has_archived_at else []),
+            "include_in_net_worth",
+            "default_cost_basis_method",
+        ]
+        field_list = ", ".join(fields)
         row = self._db.execute(
             f"""
-            SELECT account_id, display_name, official_name, last_four,
-                   account_subtype, holder_category, currency_code,
-                   credit_limit, archived, include_in_net_worth,
-                   default_cost_basis_method
+            SELECT {field_list}
             FROM {ACCOUNT_SETTINGS.full_name}
             WHERE account_id = ?
-            """,
+            """,  # field list is allowlisted above (literal strings)
             [account_id],
         ).fetchone()
         if row is None:
             return None
+        r = dict(zip(fields, row, strict=True))
         return AccountSettings(
-            account_id=row[0],
-            display_name=_stored_text(row[1]),
-            official_name=_stored_text(row[2]),
-            last_four=row[3],
-            account_subtype=_stored_text(row[4]),
-            holder_category=_stored_text(row[5]),
-            currency_code=row[6],
-            credit_limit=row[7],
-            archived=row[8],
-            include_in_net_worth=row[9],
-            default_cost_basis_method=row[10],
+            account_id=r["account_id"],
+            display_name=_stored_text(r["display_name"]),  # type: ignore[arg-type]
+            official_name=_stored_text(r["official_name"]),  # type: ignore[arg-type]
+            last_four=r["last_four"],  # type: ignore[arg-type]
+            account_subtype=_stored_text(r["account_subtype"]),  # type: ignore[arg-type]
+            holder_category=_stored_text(r["holder_category"]),  # type: ignore[arg-type]
+            currency_code=r["currency_code"],  # type: ignore[arg-type]
+            credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+            archived=r["archived"],  # type: ignore[arg-type]
+            archived_at=r.get("archived_at"),  # type: ignore[arg-type]
+            include_in_net_worth=r["include_in_net_worth"],  # type: ignore[arg-type]
+            default_cost_basis_method=r["default_cost_basis_method"],  # type: ignore[arg-type]
         )
 
     def list_accounts(
@@ -471,6 +501,13 @@ class AccountService:
         where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         # Field list is constructed from literal strings (not user input).
+        # archived_at is projected only when the live core.dim_accounts
+        # catalog has it: a read-only open (accounts_list's own path) skips
+        # migrations and model materialization entirely, so an existing
+        # profile whose dim_accounts predates this column would otherwise
+        # hit a raw DuckDB binder error before a `transform apply` ever
+        # rebuilds it. Absent means "not yet migrated" -- None, not a guess.
+        has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
         fields = [
             "account_id",
             "display_name",
@@ -480,6 +517,7 @@ class AccountService:
             "holder_category",
             "currency_code",
             "archived",
+            *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "last_four",
             "credit_limit",
@@ -492,22 +530,25 @@ class AccountService:
             ORDER BY institution_name, account_type, account_id
         """  # field list is allowlisted above (literal strings)
         rows = self._db.execute(sql, params).fetchall()
-        account_summaries = [
-            AccountSummary(
-                account_id=str(row[0]),
-                display_name=row[1],
-                institution_name=row[2],
-                account_type=row[3],
-                account_subtype=row[4],
-                holder_category=row[5],
-                currency_code=row[6],
-                archived=bool(row[7]),
-                include_in_net_worth=bool(row[8]),
-                last_four=row[9],
-                credit_limit=row[10],
+        account_summaries: list[AccountSummary] = []
+        for row in rows:
+            r = dict(zip(fields, row, strict=True))
+            account_summaries.append(
+                AccountSummary(
+                    account_id=str(r["account_id"]),
+                    display_name=r["display_name"],  # type: ignore[arg-type]
+                    institution_name=r["institution_name"],  # type: ignore[arg-type]
+                    account_type=r["account_type"],  # type: ignore[arg-type]
+                    account_subtype=r["account_subtype"],  # type: ignore[arg-type]
+                    holder_category=r["holder_category"],  # type: ignore[arg-type]
+                    currency_code=r["currency_code"],  # type: ignore[arg-type]
+                    archived=bool(r["archived"]),
+                    archived_at=r.get("archived_at"),  # type: ignore[arg-type]
+                    include_in_net_worth=bool(r["include_in_net_worth"]),
+                    last_four=r["last_four"],  # type: ignore[arg-type]
+                    credit_limit=r["credit_limit"],  # type: ignore[arg-type]
+                )
             )
-            for row in rows
-        ]
         logger.info(f"Listed {len(account_summaries)} accounts")
         return AccountListPayload(rows=account_summaries)
 
@@ -518,6 +559,9 @@ class AccountService:
         credit_limit, routing_number). The middleware masks CRITICAL fields
         via ``Annotated[T, DataClass.X]`` metadata on ``AccountDetail``.
         """
+        # archived_at is projected only when the live core.dim_accounts
+        # catalog has it -- see the matching comment in list_accounts.
+        has_archived_at = has_column(self._db, DIM_ACCOUNTS, "archived_at")
         fields = [
             "account_id",
             "display_name",
@@ -529,6 +573,7 @@ class AccountService:
             "last_four",
             "credit_limit",
             "archived",
+            *(["archived_at"] if has_archived_at else []),
             "include_in_net_worth",
             "source_type",
             "routing_number",
@@ -559,6 +604,7 @@ class AccountService:
             routing_number=r["routing_number"],  # type: ignore[arg-type]
             credit_limit=r["credit_limit"],  # type: ignore[arg-type]
             archived=bool(r["archived"]),
+            archived_at=r.get("archived_at"),  # type: ignore[arg-type]
             include_in_net_worth=bool(r["include_in_net_worth"]),
             source_type=r["source_type"],  # type: ignore[arg-type]
         )
@@ -656,17 +702,19 @@ class AccountService:
         return settings
 
     def archive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
-        """Set archived=TRUE; cascades include_in_net_worth=FALSE in the same write.
+        """Set archived=TRUE and stamp archived_at with today's date.
 
-        Deprecated: prefer ``settings_update(archived=True)``.
+        include_in_net_worth is untouched -- archiving no longer cascades to
+        it. Deprecated: prefer ``settings_update(archived=True)``.
         """
         settings, _ = self.settings_update(account_id, archived=True, actor=actor)
         return settings
 
     def unarchive(self, account_id: str, *, actor: str = "system") -> AccountSettings:
-        """Set archived=FALSE; does NOT restore include_in_net_worth (per spec).
+        """Set archived=FALSE and clear archived_at back to NULL.
 
-        Deprecated: prefer ``settings_update(archived=False)``.
+        include_in_net_worth is untouched -- it was never changed by
+        archiving. Deprecated: prefer ``settings_update(archived=False)``.
         """
         settings, _ = self.settings_update(account_id, archived=False, actor=actor)
         return settings
@@ -694,11 +742,15 @@ class AccountService:
         the updated settings and a list of soft-validation warnings (empty if
         all values are canonical).
 
-        Cascade: ``archived=True`` forces ``include_in_net_worth=False`` in the
-        same write to preserve the invariant that archived accounts never
-        contribute to net worth. ``archived=False`` does NOT auto-restore
-        ``include_in_net_worth`` — matches the prior ``unarchive()`` contract;
-        callers re-enable inclusion explicitly when intended.
+        ``archived`` and ``include_in_net_worth`` are independent fields —
+        archiving no longer forces ``include_in_net_worth=False``. Instead,
+        ``archived=True`` stamps ``archived_at`` with today's date the first
+        time the account transitions to archived (a later call while it is
+        already archived leaves the stored date untouched); ``archived=False``
+        clears ``archived_at`` back to NULL. ``archived_at`` is what lets a
+        stock-measure report (net worth) exclude the account only for dates
+        after it, instead of retroactively — see
+        docs/specs/reports-net-worth-sql-surface.md §``app.account_settings``.
 
         ``default_cost_basis_method`` is hard-validated (unlike the soft
         ``account_subtype`` / ``holder_category`` warnings): a non-CLEAR,
@@ -711,11 +763,15 @@ class AccountService:
         diff: dict[str, object] = {}
         warnings: list[dict[str, str]] = []
 
-        # Archive forces include_in_net_worth=False in the same write —
-        # resolved before _resolve() so an explicit caller value is
-        # overridden by the cascade.
-        if archived is True:
-            include_in_net_worth = False
+        # archived_at is date-scoped, derived history state, not a caller
+        # input: stamp it with today's date on the FALSE->TRUE transition
+        # (idempotent -- re-archiving an already-archived account leaves the
+        # stored date alone), and clear it back to NULL on unarchive.
+        # include_in_net_worth is untouched either way (no cascade).
+        if archived is True and not current.archived:
+            diff["archived_at"] = date.today()
+        elif archived is False and current.archived:
+            diff["archived_at"] = None
 
         def _resolve(field_name: str, new: object) -> None:
             if new is None:
@@ -799,19 +855,20 @@ class AccountService:
         if not diff:
             return current, warnings
 
-        updated = dataclasses.replace(current, **cast(dict[str, Any], diff))
+        target = dataclasses.replace(current, **cast(dict[str, Any], diff))
         self._settings_repo.set(
-            account_id=updated.account_id,
-            display_name=updated.display_name,
-            official_name=updated.official_name,
-            last_four=updated.last_four,
-            account_subtype=updated.account_subtype,
-            holder_category=updated.holder_category,
-            currency_code=updated.currency_code,
-            credit_limit=updated.credit_limit,
-            archived=updated.archived,
-            include_in_net_worth=updated.include_in_net_worth,
-            default_cost_basis_method=updated.default_cost_basis_method,
+            account_id=target.account_id,
+            display_name=target.display_name,
+            official_name=target.official_name,
+            last_four=target.last_four,
+            account_subtype=target.account_subtype,
+            holder_category=target.holder_category,
+            currency_code=target.currency_code,
+            credit_limit=target.credit_limit,
+            archived=target.archived,
+            archived_at=target.archived_at,
+            include_in_net_worth=target.include_in_net_worth,
+            default_cost_basis_method=target.default_cost_basis_method,
             actor=actor,
         )
         logger.info(
@@ -825,7 +882,15 @@ class AccountService:
             restate_fx_accounting(
                 self._db, account_currency_changed="currency_code" in diff
             )
-        return updated, warnings
+        # Re-read rather than return `target`: on a pre-V063 catalog opened
+        # with no_auto_upgrade=True, AccountSettingsRepo.set() silently drops
+        # archived_at from the write (its own docstring says so), so `target`
+        # -- built before the write ran -- would claim a date the row never
+        # received. `_load_or_default` is the same catalog-guarded read
+        # `_load_settings` uses elsewhere, so the value this method returns
+        # always matches what the repo actually persisted, never what the
+        # write path silently dropped.
+        return self._load_or_default(account_id), warnings
 
     def resolve(self, query: str, limit: int | None = 5) -> AccountResolvePayload:
         """Fuzzy-match a free-text query against core.dim_accounts.

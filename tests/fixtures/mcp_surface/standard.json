@@ -1,5 +1,5 @@
 {
-  "sha256": "50b3656d2e983739dc4e1e58368d32b88edf5e9f62a131f756e7c4837f204259",
+  "sha256": "948a341de30810e9778bfaead0a08170b46794ae1a8d3f8b959dba3d7ea8ca05",
   "tool_count": 50,
   "tools": [
     {
@@ -397,7 +397,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). Archiving (is_archived=True) cascades include_in_net_worth=False atomically; unarchive does NOT restore the prior include value. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
+        "description": "Partial update of an account's settings. Behavioral fields: display_name, default_cost_basis_method (fifo/hifo/specific/average; invalid values raise mutation_invalid_input), include_in_net_worth, is_archived. Structural fields: official_name, last_four, account_subtype, holder_category, currency_code, credit_limit. Pass None to leave a field unchanged; include a text field's name in clear_fields to clear it (booleans are not clearable). is_archived and include_in_net_worth are independent: archiving today excludes the account from net worth entirely (history included); archived_at is recorded for a future date-scoped release, not yet applied. include_in_net_worth=False excludes an account regardless of archived status. Writes app.account_settings; revert by calling again with the prior values (no built-in undo). Amounts are in the currency named by `summary.display_currency`.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -541,12 +541,12 @@
         },
         "name": "accounts_set"
       },
-      "description_bytes": 730,
+      "description_bytes": 889,
       "input_schema_bytes": 1006,
       "name": "accounts_set",
       "other_bytes": 54,
       "output_schema_bytes": 0,
-      "total_bytes": 1927
+      "total_bytes": 2086
     },
     {
       "annotation_bytes": 90,
@@ -5229,5 +5229,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 61938
+  "total_bytes": 62097
 }

@@ -6,6 +6,8 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+from collections.abc import Generator
+from datetime import date
 from decimal import Decimal
 from unittest.mock import MagicMock
 
@@ -164,6 +166,150 @@ class TestListAccounts:
         assert d["summary"]["total_count"] == 2
         actions: list[str] = d["actions"]
         assert len(actions) > 0
+
+
+class TestPreV063SchemaToleranceOnReadOnlyOpen:
+    """A read-only open must tolerate core.dim_accounts predating archived_at.
+
+    ``Database.__init__``'s ``read_only=True`` branch skips schema init,
+    migrations, and SQLMesh model materialization entirely -- so an existing
+    profile whose ``core.dim_accounts`` was materialized before this column
+    existed hits this path on every ``moneybin accounts list`` / ``accounts
+    get`` until something else (``transform apply``, ``refresh run``, or an
+    ``mcp serve`` boot self-heal) rebuilds the model. Neither read-only NOR
+    write-mode ``Database.__init__`` ever materializes SQLMesh models
+    automatically, so this is not a transient window -- an unconditional
+    ``SELECT archived_at`` would raise a raw ``duckdb.BinderException``
+    before any of those recovery paths ran.
+    """
+
+    @pytest.fixture()
+    def pre_v063_ro_db(
+        self, db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real read-only Database reopened over a dim_accounts missing archived_at."""
+        create_core_tables_raw(db.conn)
+        db.execute("ALTER TABLE core.dim_accounts DROP COLUMN archived_at")
+        db.execute(
+            "INSERT INTO core.dim_accounts "
+            "(account_id, display_name, archived) "
+            "VALUES ('acct_pre_v063', 'Pre-V063 Account', FALSE)"
+        )
+        db_path = db.path
+        db.close()
+        ro_db = Database(db_path, secret_store=mock_secret_store, read_only=True)
+        yield ro_db
+        ro_db.close()
+
+    @pytest.mark.unit
+    def test_list_accounts_succeeds(self, pre_v063_ro_db: Database) -> None:
+        result = AccountService(pre_v063_ro_db).list_accounts()
+        assert len(result.rows) == 1
+        assert result.rows[0].account_id == "acct_pre_v063"
+        assert result.rows[0].archived_at is None
+
+    @pytest.mark.unit
+    def test_get_account_succeeds(self, pre_v063_ro_db: Database) -> None:
+        detail = AccountService(pre_v063_ro_db).get_account("acct_pre_v063")
+        assert detail is not None
+        assert detail.archived_at is None
+
+
+class TestPreV063SchemaToleranceOnAccountSettingsWrite:
+    """A write-mode open must tolerate account_settings predating archived_at.
+
+    Codex PR #596 P2 (thread ``PRRT_kwDOPjlNiM6h1iuP``, anchored
+    ``account_service.py:430``). Unlike the read-only ``dim_accounts`` case
+    above, ``Database.__init__``
+    calls ``init_schemas()`` (``CREATE TABLE IF NOT EXISTS``, a no-op on an
+    existing table) unconditionally in EVERY open, before the explicit
+    ``no_auto_upgrade`` gate decides whether pending migrations run at all --
+    so a profile opened with ``no_auto_upgrade=True`` never gets V063 applied,
+    not just transiently until the next migration run.
+    """
+
+    @pytest.fixture()
+    def pre_v063_rw_db(
+        self, test_db: Database, mock_secret_store: MagicMock
+    ) -> Generator[Database, None, None]:
+        """A real write-mode Database reopened over account_settings missing archived_at."""
+        test_db.execute("ALTER TABLE app.account_settings DROP COLUMN archived_at")
+        db_path = test_db.path
+        test_db.close()
+        rw_db = Database(
+            db_path,
+            secret_store=mock_secret_store,
+            no_auto_upgrade=True,
+            read_only=False,
+        )
+        yield rw_db
+        rw_db.close()
+
+    @pytest.mark.unit
+    def test_load_settings_succeeds(self, pre_v063_rw_db: Database) -> None:
+        repo = AccountSettingsRepo(pre_v063_rw_db)
+        repo.set(
+            account_id="acct_a",
+            display_name="Checking",
+            official_name=None,
+            last_four=None,
+            account_subtype=None,
+            holder_category=None,
+            currency_code=None,
+            credit_limit=None,
+            archived=False,
+            archived_at=None,
+            include_in_net_worth=True,
+            default_cost_basis_method=None,
+            actor="cli",
+        )
+        loaded = AccountService(pre_v063_rw_db)._load_settings("acct_a")
+        assert loaded is not None
+        assert loaded.archived_at is None
+
+    @pytest.mark.unit
+    def test_settings_update_succeeds(self, pre_v063_rw_db: Database) -> None:
+        """The full `accounts set` path -- Codex's exact reported entry point.
+
+        `_load_or_default` reaches `_load_settings` before the write, and the
+        write itself flows through `AccountSettingsRepo.set`.
+        """
+        svc = AccountService(pre_v063_rw_db)
+        settings, warnings = svc.settings_update(
+            "acct_a", actor="cli", display_name="Renamed"
+        )
+        assert settings.display_name == "Renamed"
+        assert warnings == []
+
+    @pytest.mark.unit
+    def test_settings_update_archive_reports_persisted_state(
+        self, pre_v063_rw_db: Database
+    ) -> None:
+        """archived_at in the response must match what was actually written.
+
+        claude[bot]'s review of PR #596 commit ``036ee53d`` (review body,
+        anchored ``account_service.py:858``, no inline thread -- GitHub
+        rejected that anchor as outside the diff's commentable range): on
+        this exact catalog shape, ``AccountSettingsRepo.set()`` has no
+        ``archived_at`` column to write into and silently drops it, but
+        ``settings_update`` built its returned ``AccountSettings`` from
+        ``dataclasses.replace(current, archived_at=date.today())`` computed
+        BEFORE the write ran -- so the response claimed a stamped date the
+        row never received, and a following read reported ``None``. The
+        prior test in this class (``test_settings_update_succeeds``) only
+        renamed ``display_name`` and never drove an ``archived=True``
+        transition, so nothing caught this.
+        """
+        svc = AccountService(pre_v063_rw_db)
+        settings, warnings = svc.settings_update("acct_a", actor="cli", archived=True)
+        assert warnings == []
+        assert settings.archived is True
+        # Never date.today() -- the write path had no column to persist it into.
+        assert settings.archived_at is None
+
+        reloaded = svc._load_settings("acct_a")
+        assert reloaded is not None
+        assert settings.archived_at == reloaded.archived_at
 
 
 class TestAccountSettingsModel:
@@ -335,6 +481,7 @@ def _seed_blank_settings_row(db: Database) -> None:
         currency_code=None,
         credit_limit=None,
         archived=False,
+        archived_at=None,
         include_in_net_worth=True,
         default_cost_basis_method=None,
         actor="test",
@@ -383,19 +530,33 @@ class TestAccountServiceMutators:
         assert loaded.include_in_net_worth is True
 
     @pytest.mark.unit
-    def test_archive_cascades_to_include(self, test_db: Database) -> None:
+    def test_archive_does_not_cascade_to_include(self, test_db: Database) -> None:
         svc = AccountService(test_db)
         result = svc.archive("acct_a")
         assert result.archived is True
-        assert result.include_in_net_worth is False
+        # include_in_net_worth is untouched — no cascade.
+        assert result.include_in_net_worth is True
+        assert result.archived_at == date.today()
 
     @pytest.mark.unit
-    def test_unarchive_does_not_restore_include(self, test_db: Database) -> None:
+    def test_unarchive_clears_archived_at_and_leaves_include_untouched(
+        self, test_db: Database
+    ) -> None:
         svc = AccountService(test_db)
         svc.archive("acct_a")
         result = svc.unarchive("acct_a")
         assert result.archived is False
-        assert result.include_in_net_worth is False  # NOT restored
+        assert result.archived_at is None
+        assert result.include_in_net_worth is True  # never touched
+
+    @pytest.mark.unit
+    def test_rearchive_does_not_move_archived_at(self, test_db: Database) -> None:
+        """A second archive() while already archived keeps the first date."""
+        svc = AccountService(test_db)
+        first = svc.archive("acct_a")
+        # A no-op re-archive should not restamp the date.
+        second = svc.archive("acct_a")
+        assert second.archived_at == first.archived_at
 
     @pytest.mark.unit
     def test_settings_update_partial(self, test_db: Database) -> None:
@@ -597,26 +758,44 @@ class TestSettingsUpdateExtended:
         assert result.include_in_net_worth is False
 
     @pytest.mark.unit
-    def test_set_archived_true_cascades_include_false(self, test_db: Database) -> None:
+    def test_set_archived_true_does_not_cascade_include(
+        self, test_db: Database
+    ) -> None:
         svc = AccountService(test_db)
         # Start from the default include_in_net_worth=True.
         result, _ = svc.settings_update("acct_a", actor="cli", archived=True)
         assert result.archived is True
-        assert result.include_in_net_worth is False, (
-            "Archiving must cascade include_in_net_worth to False"
+        assert result.include_in_net_worth is True, (
+            "Archiving must not cascade include_in_net_worth"
         )
+        assert result.archived_at == date.today()
 
     @pytest.mark.unit
-    def test_set_archived_false_does_not_restore_include(
+    def test_set_archived_true_honors_explicit_include_value(
+        self, test_db: Database
+    ) -> None:
+        """An explicit include_in_net_worth in the same call must win outright.
+
+        Previously the cascade overrode this, ahead of _resolve(), so an
+        explicit caller value silently lost.
+        """
+        svc = AccountService(test_db)
+        result, _ = svc.settings_update(
+            "acct_a", actor="cli", archived=True, include_in_net_worth=False
+        )
+        assert result.archived is True
+        assert result.include_in_net_worth is False
+
+    @pytest.mark.unit
+    def test_set_archived_false_clears_archived_at_leaves_include_untouched(
         self, test_db: Database
     ) -> None:
         svc = AccountService(test_db)
-        # Archive (cascades include=False).
         svc.settings_update("acct_a", actor="cli", archived=True)
-        # Unarchive — include stays False, matching the prior unarchive() contract.
         result, _ = svc.settings_update("acct_a", actor="cli", archived=False)
         assert result.archived is False
-        assert result.include_in_net_worth is False
+        assert result.archived_at is None
+        assert result.include_in_net_worth is True
 
     @pytest.mark.unit
     def test_clear_display_name_via_clear_sentinel(self, test_db: Database) -> None:
@@ -744,6 +923,7 @@ class TestSettingsUpdateExtended:
             currency_code=None,
             credit_limit=None,
             archived=False,
+            archived_at=None,
             include_in_net_worth=True,
             default_cost_basis_method=None,
             actor="test",
@@ -771,6 +951,7 @@ def _insert_dim_account(
     currency_code: str = "USD",
     credit_limit: Decimal | None = None,
     archived: bool = False,
+    archived_at: date | None = None,
     include_in_net_worth: bool = True,
     routing_number: str | None = None,
     official_name: str | None = None,
@@ -791,10 +972,10 @@ def _insert_dim_account(
             loaded_at, updated_at,
             display_name, official_name, last_four, account_subtype,
             holder_category, currency_code, credit_limit,
-            archived, include_in_net_worth
+            archived, archived_at, include_in_net_worth
         ) VALUES (?, ?, ?, ?, NULL, ?, 'test.qfx', '2025-01-01',
                   CURRENT_TIMESTAMP, CURRENT_TIMESTAMP,
-                  ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             account_id,
@@ -810,6 +991,7 @@ def _insert_dim_account(
             currency_code,
             credit_limit,
             archived,
+            archived_at,
             include_in_net_worth,
         ],
     )
