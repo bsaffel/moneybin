@@ -80,14 +80,9 @@ class TestImportOFXBatchLifecycle:
         assert len(ofx_imports) >= 1
         latest = ofx_imports[0]
         assert latest["status"] in ("complete", "partial")
-        # rows_imported sums all four OFX tables (institutions, accounts,
-        # transactions, balances) so balance-only statements still report > 0.
-        expected_total = (
-            result.institutions
-            + result.accounts
-            + result.transactions
-            + result.balances
-        )
+        # rows_imported sums all three OFX tables (accounts, transactions,
+        # balances) so balance-only statements still report > 0.
+        expected_total = result.accounts + result.transactions + result.balances
         assert latest["rows_imported"] == expected_total
 
     def test_shared_fitid_rows_all_survive_import(self, db: Database) -> None:
@@ -250,42 +245,25 @@ class TestImportOFXBatchLifecycle:
 
 
 class TestImportOFXMidLoadFailure:
-    """A load() failure partway through must not touch a prior import's rows.
+    """A load() failure partway through must report real partial progress.
 
-    Regression coverage for the OFXLoadError fix: raw.ofx_institutions and
-    raw.ofx_accounts write with on_conflict="upsert" (INSERT OR REPLACE), and
-    neither table's primary key includes import_id. Importing a second file
-    from an already-known institution therefore re-stamps that institution's
-    existing row with the SECOND import's import_id -- so a cleanup that
-    deletes "this import_id's rows" on failure would delete a row that
-    belongs to the first, already-successful import. The fix instead reports
-    the real partial row count OFXLoadError carries and never deletes.
+    Regression coverage for the OFXLoadError fix: raw.ofx_accounts writes with
+    on_conflict="upsert" (INSERT OR REPLACE), and its primary key doesn't
+    include import_id. A failure partway through load() (accounts landed,
+    transactions raised) must never be "cleaned up" by deleting rows scoped to
+    this import_id -- that DELETE has no way to tell a freshly-written row
+    from one that already existed. The fix instead reports the real partial
+    row count OFXLoadError carries and never deletes.
     """
 
-    def test_partial_failure_preserves_prior_import_and_reports_real_counts(
+    def test_partial_failure_reports_real_counts(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        first = Path("tests/fixtures/ofx/sample_minimal.ofx")
-        second = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
-        assert first.exists() and second.exists()
+        fixture = Path("tests/fixtures/ofx/sample_minimal.ofx")
+        assert fixture.exists()
 
-        # Both fixtures declare <FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
-        # but different <ACCTID> (1111 vs 4242) -- same institution, distinct
-        # accounts, so the second import is a clean "new account" gate answer
-        # with no merge candidates, and its institution write collides with
-        # the first import's institution row by design.
-        import_answering_gate(ImportService(db), first, refresh=False)
-        institutions_after_first = db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_institutions "
-            "WHERE organization = 'SAMPLE BANK'"
-        ).fetchone()
-        assert institutions_after_first is not None
-        assert institutions_after_first[0] == 1
-
-        # Force the second import to fail once it reaches the transactions
-        # write -- institutions and accounts (which re-stamp the shared
-        # institution row above with this import's import_id) have already
-        # landed by that point.
+        # Force the import to fail once it reaches the transactions write --
+        # accounts has already landed by that point.
         real_ingest = db.ingest_dataframe
 
         def _fail_on_transactions(table: str, frame: object, **kwargs: object) -> int:
@@ -298,23 +276,19 @@ class TestImportOFXMidLoadFailure:
         # OFXExtractor.load() wraps the raw RuntimeError in OFXLoadError so it
         # can carry the partial-progress counts through to _import_ofx.
         with pytest.raises(OFXLoadError, match="transactions"):
-            import_answering_gate(ImportService(db), second, refresh=False)
+            import_answering_gate(ImportService(db), fixture, refresh=False)
 
-        # Regression assertion: the first import's institution row must
-        # survive the second import's failure. Under the deleted-on-failure
-        # behavior this pins against, the row the second import re-stamped
-        # would have been removed here, taking the first import's data with it.
-        institutions_after_failure = db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_institutions "
-            "WHERE organization = 'SAMPLE BANK'"
+        # The accounts write that landed before the failure must survive.
+        accounts_after_failure = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_accounts"
         ).fetchone()
-        assert institutions_after_failure is not None
-        assert institutions_after_failure[0] == 1
+        assert accounts_after_failure is not None
+        assert accounts_after_failure[0] > 0
 
-        # The failed batch must report what it actually wrote (institutions +
-        # accounts survived the failure), never a hardcoded zero that
-        # discards real partial progress. get_import_history() doesn't
-        # project rows_total, so read raw.import_log directly for both.
+        # The failed batch must report what it actually wrote (accounts
+        # survived the failure), never a hardcoded zero that discards real
+        # partial progress. get_import_history() doesn't project rows_total,
+        # so read raw.import_log directly for both.
         failed = db.execute(
             "SELECT rows_total, rows_imported FROM raw.import_log "
             "WHERE source_type = 'ofx' AND status = 'failed'"
@@ -325,26 +299,24 @@ class TestImportOFXMidLoadFailure:
         assert rows_imported == rows_total
 
 
-class TestImportOFXRevertSharedInstitutionRow:
-    """MB-256: reverting one import can delete a row a surviving import needs.
+class TestImportOFXRevertPreservesSameInstitutionSibling:
+    """MB-256: reverting one import must never touch a surviving sibling's rows.
 
-    ``raw.ofx_institutions``' PK is ``(organization, fid)`` -- no
-    ``source_file``, no ``import_id`` (see ``OFXLoadError``'s docstring and
-    ``TestImportOFXMidLoadFailure`` above, which cover the *mid-load-failure*
-    half of this same mechanism). ``on_conflict="upsert"`` means importing a
-    second statement from an already-known institution re-stamps that shared
-    row with the second import's ``import_id``. ``ImportService.revert_confirmed``
-    deletes purely by ``DELETE FROM <table> WHERE import_id = ?``
-    (``import_service.py`` ``revert_confirmed``), and ``plan_revert`` only
-    guards the *opposite* case -- re-importing the same ``source_file`` -- so
-    reverting the SECOND of two same-institution imports deletes the
-    institution row even though the FIRST import is still 'complete' and
-    depends on it.
+    Before this ticket, ``raw.ofx_institutions``' PK was ``(organization,
+    fid)`` -- no ``source_file``, no ``import_id``. ``on_conflict="upsert"``
+    meant importing a second statement from an already-known institution
+    re-stamped that shared row with the second import's ``import_id``, so
+    ``ImportService.revert_confirmed``'s ``DELETE FROM <table> WHERE
+    import_id = ?`` deleted a row the FIRST, still-'complete' import needed.
+    Removing the table (this ticket) removes the only OFX raw table whose
+    primary key doesn't scope by ``source_file``, so no row can ever be
+    shared between two imports again. This proves the invariant directly:
+    reverting the second of two same-institution imports must leave the
+    first 'complete' with its own ``raw.ofx_accounts`` rows -- including
+    ``institution_org``/``institution_fid`` -- intact.
     """
 
-    def test_revert_of_second_import_deletes_institution_row_first_import_needs(
-        self, db: Database
-    ) -> None:
+    def test_revert_of_second_import_preserves_first_import(self, db: Database) -> None:
         first = Path("tests/fixtures/ofx/sample_minimal.ofx")
         second = Path("tests/fixtures/ofx/duplicate_fitid_sample.ofx")
         assert first.exists() and second.exists()
@@ -352,8 +324,7 @@ class TestImportOFXRevertSharedInstitutionRow:
         service = ImportService(db)
         # Both fixtures declare <FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
         # but different <ACCTID> (1111 vs 4242) -- same institution, two
-        # distinct accounts/statements, exactly like
-        # TestImportOFXMidLoadFailure above.
+        # distinct accounts/statements.
         import_answering_gate(service, first, refresh=False)
         history = import_log.get_import_history(db, limit=5)
         first_import_id = [h for h in history if h["source_type"] == "ofx"][0][
@@ -370,19 +341,6 @@ class TestImportOFXRevertSharedInstitutionRow:
         )
         assert isinstance(second_import_id, str)
 
-        # Hand-derived expectation, BEFORE the revert:
-        #  - raw.ofx_institutions has exactly ONE row for (SAMPLE BANK, 9999):
-        #    the upsert (PK = organization, fid) replaced the first import's
-        #    row with the second's.
-        #  - That surviving row's import_id reads as the SECOND import's id.
-        #    This is the precondition proving the mechanism actually fired.
-        institution_rows = db.execute(
-            "SELECT import_id FROM raw.ofx_institutions "
-            "WHERE organization = 'SAMPLE BANK' AND fid = '9999'"
-        ).fetchall()
-        assert len(institution_rows) == 1
-        assert institution_rows[0][0] == second_import_id
-
         # Revert the SECOND import through the same service call the CLI/MCP
         # revert path uses.
         result = ImportService(db).revert_confirmed(
@@ -390,13 +348,7 @@ class TestImportOFXRevertSharedInstitutionRow:
         )
         assert result["status"] == "reverted"
 
-        # Hand-derived expectation, AFTER the revert:
-        #  - The FIRST import is still 'complete', and its raw.ofx_accounts /
-        #    raw.ofx_transactions rows are untouched (those tables' PKs
-        #    include source_file, so the second import's writes landed as
-        #    separate rows rather than overwriting the first's).
-        #  - The institution row for (SAMPLE BANK, 9999) is therefore still
-        #    needed by the first import and MUST survive.
+        # The FIRST import must still be 'complete' ...
         first_status = db.execute(
             "SELECT status FROM raw.import_log WHERE import_id = ?",
             [first_import_id],
@@ -404,25 +356,25 @@ class TestImportOFXRevertSharedInstitutionRow:
         assert first_status is not None
         assert first_status[0] == "complete"
 
+        # ... and its raw.ofx_accounts rows -- including the institution
+        # identity columns that used to live in the now-removed
+        # raw.ofx_institutions table -- must be untouched.
         first_account_rows = db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_accounts WHERE import_id = ?",
+            "SELECT institution_org, institution_fid FROM raw.ofx_accounts "
+            "WHERE import_id = ?",
             [first_import_id],
-        ).fetchone()
-        assert first_account_rows is not None
-        assert first_account_rows[0] > 0
+        ).fetchall()
+        assert len(first_account_rows) > 0
+        assert all(org == "SAMPLE BANK" for org, _fid in first_account_rows)
+        assert all(fid == "9999" for _org, fid in first_account_rows)
 
-        surviving_institution_rows = db.execute(
-            "SELECT COUNT(*) FROM raw.ofx_institutions "
-            "WHERE organization = 'SAMPLE BANK' AND fid = '9999'"
+        # The reverted second import's own rows are gone.
+        second_account_rows = db.execute(
+            "SELECT COUNT(*) FROM raw.ofx_accounts WHERE import_id = ?",
+            [second_import_id],
         ).fetchone()
-        assert surviving_institution_rows is not None
-        assert surviving_institution_rows[0] == 1, (
-            "MB-256: raw.ofx_institutions row for the still-complete first "
-            "import was deleted by reverting the second import. The row was "
-            "re-stamped with the second import's import_id by the upsert "
-            "write, and revert_confirmed deletes purely by import_id with no "
-            "check for a surviving import that still needs the row."
-        )
+        assert second_account_rows is not None
+        assert second_account_rows[0] == 0
 
 
 class TestImportOFXFailurePhaseMetrics:

@@ -3,10 +3,9 @@
 `_mcp_db_template` builds the baseline encrypted DuckDB once per session
 (core tables + base reference data). `mcp_db` then copies the file into
 each test's tmp_path so every test gets an isolated database without
-re-running the schema DDL or 6 baseline INSERTs.
+re-running the schema DDL or 4 baseline INSERTs.
 
 Base reference data:
-- 2 institutions (Test Bank, Other Bank)
 - 2 accounts (ACC001 CHECKING, ACC002 SAVINGS)
 - 2 account balances
 """
@@ -48,14 +47,6 @@ def _mcp_db_template(  # pyright: ignore[reportUnusedFunction]  # pytest fixture
     )
     conn = database.conn
     create_core_tables_raw(conn)
-
-    conn.execute("""
-        INSERT INTO raw.ofx_institutions
-            (organization, fid, source_file, extracted_at, loaded_at, import_id, source_type)
-        VALUES
-        ('Test Bank', '1234', 'test.qfx', '2025-01-01', CURRENT_TIMESTAMP, NULL, 'ofx'),
-        ('Other Bank', '5678', 'other.qfx', '2025-01-01', CURRENT_TIMESTAMP, NULL, 'ofx')
-    """)
 
     conn.execute("""
         INSERT INTO core.dim_accounts

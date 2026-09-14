@@ -188,7 +188,7 @@ class TestToolRegistration:
         parsed = result.to_dict()
         assert parsed["status"] != "error"
         listed = {t["name"] for t in parsed["data"]["tables"]}
-        assert "raw.ofx_institutions" in listed
+        assert "raw.ofx_accounts" in listed
         # Name and kind only — the point is that this fits in a context window.
         assert "columns" not in next(iter(parsed["data"]["tables"]))
 
@@ -371,10 +371,10 @@ class TestToolRegistration:
         not be the catalog's. Echoing the input back hands the agent a name to
         paste that is not the one the catalog holds.
         """
-        payload = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        payload = (await sql_schema(table="RAW.OFX_ACCOUNTS")).to_dict()
         assert payload["error"]["code"] == "sql_table_not_curated"
-        assert '"raw"."ofx_institutions"' in payload["error"]["hint"]
-        assert "RAW.OFX_INSTITUTIONS" not in payload["error"]["hint"]
+        assert '"raw"."ofx_accounts"' in payload["error"]["hint"]
+        assert "RAW.OFX_ACCOUNTS" not in payload["error"]["hint"]
 
     @pytest.mark.unit
     async def test_sql_schema_exact_name_is_case_insensitive(
@@ -388,7 +388,7 @@ class TestToolRegistration:
         which is what an uppercase qualifier produced, since the raw string
         reached the allowlist before anything lowercased it.
         """
-        uncurated = (await sql_schema(table="RAW.OFX_INSTITUTIONS")).to_dict()
+        uncurated = (await sql_schema(table="RAW.OFX_ACCOUNTS")).to_dict()
         assert uncurated["error"]["code"] == "sql_table_not_curated"
 
         curated = (await sql_schema(table="CORE.FCT_TRANSACTIONS")).to_dict()
@@ -418,12 +418,12 @@ class TestToolRegistration:
         """An uncurated relation exists; saying "Unknown table" is a false negative.
 
         Server instructions point agents at `sql_schema` as *the* schema
-        surface, so "Unknown table: raw.ofx_institutions" reads as "does not
+        surface, so "Unknown table: raw.ofx_accounts" reads as "does not
         exist" when `sql_query` reads that table fine. The refusal has to
         separate "not in the curated catalog" from "not in the database", and
         name the path that does work.
         """
-        result = await sql_schema(table="raw.ofx_institutions")
+        result = await sql_schema(table="raw.ofx_accounts")
         parsed = result.to_dict()
         assert parsed["error"]["code"] == "sql_table_not_curated"
         assert parsed["error"]["code"] != "sql_unknown_table"
