@@ -41,6 +41,7 @@
     include_in_net_worth: BOOLEAN
     default_cost_basis_method: TEXT
     updated_at: TIMESTAMPNTZ
+    archived_at: DATE
 - name: '"moneybin"."app"."audit_log"'
   columns:
     audit_id: TEXT
@@ -77,6 +78,15 @@
     code_level: TEXT
     category_id: TEXT
     source_taxonomy_version: TEXT
+    created_at: TIMESTAMPNTZ
+    updated_at: TIMESTAMPNTZ
+- name: '"moneybin"."app"."exchange_rate_overrides"'
+  columns:
+    from_currency: TEXT
+    to_currency: TEXT
+    rate_date: DATE
+    rate: DECIMAL(18, 8)
+    note: TEXT
     created_at: TIMESTAMPNTZ
     updated_at: TIMESTAMPNTZ
 - name: '"moneybin"."app"."match_decisions"'
