@@ -99,6 +99,8 @@ def format_parses(values: "Sequence[str | None]", fmt: str) -> bool:
 
 def detect_date_format(
     values: list[str | None],
+    *,
+    declared_format: str | None = None,
 ) -> tuple[str | None, "ConfidenceType"]:
     """Detect the date format from sample values.
 
@@ -107,6 +109,22 @@ def detect_date_format(
 
     Args:
         values: Sample date strings (may include None/empty).
+        declared_format: A caller-declared format (e.g. an explicit
+            ``--date-format`` override) to score FIRST, before the fixed
+            ``_DATE_FORMATS`` scan and before DD/MM disambiguation -- a
+            caller who named the format already resolved the ambiguity a
+            positional scan exists to guess at, and a format outside
+            ``_DATE_FORMATS`` entirely (``%Y%m%d``, a time-bearing
+            ``%Y-%m-%d %H:%M:%S``) would otherwise never be recognized at
+            all, however cleanly it reads the column. Scored with the SAME
+            parse-rate/range rule as every candidate below (``_MIN_PARSE_
+            RATE``, not ``format_parses``'s lower override bar -- that bar
+            answers a different question, whether the loader can import
+            with it; this one decides what detection believes). Falls
+            through to the normal scan, unchanged, when the declaration
+            doesn't clear the bar -- a genuinely wrong override still fails
+            here and is caught by import-time validation, never silently
+            wins.
 
     Returns:
         Tuple of (format string, confidence: "high" | "medium" | "low").
@@ -115,6 +133,33 @@ def detect_date_format(
     clean = [v.strip() for v in values if v and v.strip()]
     if not clean:
         return None, "low"
+
+    if declared_format is not None:
+        parse_count = 0
+        reasonable_count = 0
+        for val in clean:
+            try:
+                dt = datetime.strptime(val, declared_format)
+            except ValueError:
+                continue
+            except re.error:
+                # Malformed declared format (e.g. a repeated directive) --
+                # every value will raise identically, so nothing can
+                # rescue it. Fall through to the normal scan below.
+                parse_count = 0
+                break
+            parse_count += 1
+            if _MIN_YEAR <= dt.year <= _max_year():
+                reasonable_count += 1
+        parse_rate = parse_count / len(clean)
+        if parse_rate >= _MIN_PARSE_RATE:
+            range_score = reasonable_count / max(parse_count, 1)
+            confidence = (
+                "high" if parse_rate >= 0.95 and range_score >= 0.95 else "medium"
+            )
+            return declared_format, confidence
+        # Doesn't clear the bar -- fall through unchanged rather than
+        # forcing a declaration the data doesn't actually support.
 
     scores: list[tuple[str, float, float]] = []
     for fmt in _DATE_FORMATS:

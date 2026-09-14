@@ -3302,6 +3302,7 @@ class ImportService:
                 t_high=bands.t_high,
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
+                declared_date_format=date_format_override,
             )
             sign_evidence_header = mapping_result.sign_evidence_header
             confidence = mapping_result.to_confidence(

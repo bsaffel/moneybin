@@ -1986,6 +1986,90 @@ class TestTabularConfirmationFlow:
             )
         assert result.import_id is not None
 
+    def test_declared_date_format_resolves_a_headerless_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Codex P2 (round 18): an override must not blind detection itself.
+
+        Unlike the CSV test above (which mocks map_columns to isolate the
+        LATER validation stage), this drives the REAL detection engine on
+        first contact -- no matched_format, no reviewed_plan, generated
+        column names (content-only mapping). Regression:
+        normalize_excel_date_columns_for_detection renders the detection
+        copy's native midnight cells into the caller's override format, but
+        detect_date_format's _DATE_FORMATS is date-only with no %Y%m%d
+        entry -- so the rendered column became undetectable, transaction_date
+        went missing entirely, and the compact "20260105" text could even
+        score as an amount downstream (a low-confidence refusal, not the
+        clean import this file deserves). Passing the declared format into
+        map_columns/detect_date_format (scored FIRST, ahead of the fixed
+        candidate list) fixes this without touching the detection copy's
+        own render.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        # No header row -- generated column names, content-only mapping.
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        ws.append([datetime.date(2026, 1, 3), -20.00, "Groceries"])
+        xlsx = tmp_path / "headerless_native_dates_compact.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y%m%d",
+        )
+
+        assert result.rows_loaded == 3
+
+    def test_declared_date_format_still_resolves_a_mixed_native_and_text_column(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The fix must not regress the case the override-render was protecting.
+
+        A column mixing native Excel date cells with a pre-existing TEXT
+        cell already in the override's format (e.g. a re-saved workbook)
+        needs the detection copy actually rendered into that format --
+        otherwise the native cells go ISO while the text cell stays in its
+        original format, and detect_date_format's uniform-parse-rate check
+        fails the whole column. Probed on round 18: an "always render ISO"
+        fix broke exactly this case, which is why the render stayed as-is
+        and only detect_date_format/map_columns learned the declaration.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        # Pre-existing text cell, already in the override's own format.
+        ws.append(["01/15/2026", 100.00, "Salary"])
+        ws.append([datetime.date(2026, 1, 3), -20.00, "Groceries"])
+        xlsx = tmp_path / "headerless_mixed_native_and_text_dates.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%m/%d/%Y",
+        )
+
+        assert result.rows_loaded == 3
+
     def test_a_dirty_prefix_does_not_refuse_a_file_the_format_reads(
         self, db: Database, tmp_path: Path
     ) -> None:
