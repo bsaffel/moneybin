@@ -1076,21 +1076,47 @@ def test_public_docs_refresh_cascades_match_runtime() -> None:
 # Figures stated in public prose match the code at every site
 # ---------------------------------------------------------------------------
 
-_NUMBER_WORDS: tuple[str, ...] = tuple(
+_UNIT_WORDS: tuple[str, ...] = tuple(
     (
         "zero one two three four five six seven eight nine ten eleven twelve "
-        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
     ).split()
 )
+_TENS_WORDS: tuple[str, ...] = tuple(
+    "twenty thirty forty fifty sixty seventy eighty ninety".split()
+)
+
+
+def _either_case(words: tuple[str, ...]) -> str:
+    return "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in words)
+
+
+# Digits, or words up to 999: "eight", "forty-six", "one hundred twelve".
 _NUMBER = (
     r"(\d+|"
-    + "|".join(f"[{word[0].upper()}{word[0]}]{word[1:]}" for word in _NUMBER_WORDS)
-    + ")"
+    rf"(?:(?:{_either_case(_UNIT_WORDS[1:10])}|[Aa]) hundred(?: and)?(?: |-))?"
+    rf"(?:(?:{_either_case(_TENS_WORDS)})(?:[- ](?:{_either_case(_UNIT_WORDS[1:10])}))?"
+    rf"|(?:{_either_case(_UNIT_WORDS)}))"
+    r")"
 )
 
 
 def _as_int(token: str) -> int:
-    return int(token) if token.isdigit() else _NUMBER_WORDS.index(token.lower())
+    if token.isdigit():
+        return int(token)
+    total = 0
+    for word in re.split(r"[\s-]+", token.lower()):
+        if word == "a":
+            total += 1
+        elif word == "hundred":
+            total *= 100
+        elif word == "and":
+            continue
+        elif word in _UNIT_WORDS:
+            total += _UNIT_WORDS.index(word)
+        else:
+            total += 20 + 10 * _TENS_WORDS.index(word)
+    return total
 
 
 class _Figure(NamedTuple):
@@ -1412,3 +1438,20 @@ def test_cli_reference_enumerates_exactly_the_hidden_stubs() -> None:
     assert not any(path.startswith("db key ") for path in UNIMPLEMENTED_CLI_PATHS), (
         "the sentence's `db key` exit-1 attribution no longer holds"
     )
+
+
+def test_number_parser_reads_compound_word_forms() -> None:
+    """Word-form numbers above twenty parse whole, not by their last word."""
+    cases = {
+        "eight": 8,
+        "Twenty": 20,
+        "forty-six": 46,
+        "forty six": 46,
+        "one hundred twelve": 112,
+        "a hundred and twelve": 112,
+        "112": 112,
+    }
+    for spelled, value in cases.items():
+        found = re.fullmatch(_NUMBER, spelled)
+        assert found is not None, spelled
+        assert _as_int(found.group(1)) == value, spelled
