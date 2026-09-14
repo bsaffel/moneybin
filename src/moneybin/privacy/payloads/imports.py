@@ -738,8 +738,10 @@ class ImportInboxPendingEntry(TypedDict, total=False):
     # Present only for reason='header_position_ambiguous'; already allowlisted
     # (disputed_row_fields) where the entry is built, same as
     # ImportConfirmationPayload's field of the same name. This is the live
-    # drain summary, not the persisted sidecar — the sidecar itself stays
-    # row-free (see header_position_ambiguous_recovery_sidecar).
+    # drain summary; the persisted `.pending.yml` sidecar carries the
+    # identical projection under the same key (see
+    # header_position_ambiguous_recovery_sidecar) so a later
+    # `import confirm --accept` also has evidence to show.
     header_position_ambiguous_rows: Annotated[
         list[dict[str, str]], DataClass.DESCRIPTION
     ]

@@ -782,6 +782,22 @@ class InboxService:
         pending_proposals = list(outcome_obj.account_proposals)
         rekey_bare_proposals_for_path(pending_proposals, moved)
 
+        # Computed once, used for BOTH the persisted sidecar and the transient
+        # live-drain entry below — the same allowlisted projection
+        # (date/amount/description only, never raw rows) that the sidecar's
+        # `samples` field already carries, so there is no remaining reason to
+        # keep it out of the durable record `import confirm --accept` reads
+        # days later with nothing else to show for it.
+        disputed_fields: list[dict[str, str]] = []
+        if outcome_obj.header_position_ambiguous_rows:
+            from moneybin.services.import_confirmation import disputed_row_fields
+
+            disputed_fields = disputed_row_fields(
+                outcome_obj.header_position_ambiguous_rows,
+                outcome_obj.header_position_ambiguous_header_cells,
+                proposed_mapping,
+            )
+
         sidecar = self.write_pending_sidecar(
             moved,
             channel=outcome_obj.channel,
@@ -800,6 +816,7 @@ class InboxService:
             sign_evidence=sign_evidence,
             sign_sample_rows=sign_sample_rows,
             error_message=outcome_obj.error_message,
+            header_position_ambiguous_rows=disputed_fields,
         )
         entry = _base_entry()
         entry["moved_to"] = str(moved.relative_to(self.root))
@@ -813,20 +830,14 @@ class InboxService:
         # it every surface rendering these entries has to re-derive the file
         # type from a name, and would get a .pdf holding OFX text wrong.
         entry["channel"] = outcome_obj.channel
-        # The live drain summary, not the persisted sidecar (which stays
-        # row-free) — carries the disputed row so import_inbox.py's text and
-        # JSON renderers can show it, allowlisted to the date/amount/
-        # description cells that answer "is this a transaction?" via the
-        # PROPOSED mapping (the only one that exists at this first-contact
-        # point).
-        if outcome_obj.header_position_ambiguous_rows:
-            from moneybin.services.import_confirmation import disputed_row_fields
-
-            entry["header_position_ambiguous_rows"] = disputed_row_fields(
-                outcome_obj.header_position_ambiguous_rows,
-                outcome_obj.header_position_ambiguous_header_cells,
-                proposed_mapping,
-            )
+        # The live drain summary AND the persisted sidecar now carry the same
+        # allowlisted projection (date/amount/description cells only, via the
+        # PROPOSED mapping — the only one that exists at this first-contact
+        # point) so import_inbox.py's text/JSON renderers, and a later
+        # `import confirm --accept` reading the sidecar days after an
+        # unattended sync, both have the evidence to show.
+        if disputed_fields:
+            entry["header_position_ambiguous_rows"] = disputed_fields
         result.pending.append(entry)
         INBOX_SYNC_TOTAL.labels(outcome="pending").inc()
         logger.info(log_line)
@@ -929,6 +940,7 @@ class InboxService:
         sign_evidence: list[str] | None = None,
         sign_sample_rows: list[dict[str, str]] | None = None,
         error_message: str = "",
+        header_position_ambiguous_rows: list[dict[str, str]] | None = None,
     ) -> Path:
         """Write a <filename>.pending.yml sidecar with the detector proposal.
 
@@ -937,6 +949,14 @@ class InboxService:
         `--mapping field=column` to ratify or override the detector's
         proposal. Sample values are bounded by the upstream
         ``_SAMPLE_SIZE`` cap; no extra truncation is applied here.
+
+        ``header_position_ambiguous_rows`` is the already-allowlisted
+        projection (``disputed_row_fields`` output — date/amount/description
+        cells only, NEVER raw rows) for ``reason="header_position_ambiguous"``.
+        Defaults to ``None``/empty for every other reason. A reader (e.g.
+        ``import confirm``) that finds no such key at all — an old sidecar
+        written before this field existed — treats a missing key the same as
+        an empty list: no evidence to show, exactly as before this change.
 
         ``account_hint`` (the inbox subdirectory name, e.g. ``chase-checking``)
         is appended as ``--account-name <hint>`` to the action lines so a
@@ -1103,6 +1123,13 @@ class InboxService:
             "reason": reason,
             "proposed_mapping": dict(proposed_mapping),
             "samples": {k: list(v) for k, v in samples.items()},
+            # Already-allowlisted (disputed_row_fields output — never raw
+            # rows), same data class as `samples` above. Populated only for
+            # reason="header_position_ambiguous"; empty for every other
+            # reason. See this method's docstring for the old-sidecar default.
+            "header_position_ambiguous_rows": [
+                dict(r) for r in (header_position_ambiguous_rows or [])
+            ],
             "flagged": list(flagged),
             "missing_required": list(missing_required),
             "unmapped_columns": list(unmapped_columns),

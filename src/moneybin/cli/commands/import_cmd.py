@@ -2043,6 +2043,38 @@ def import_confirm_command(
         _parse_account_metadata(list(account_meta)) if account_meta else None
     )
 
+    # `import confirm` has no review-only mode of its own (bare invocation
+    # with neither --accept nor --mapping is a usage error above), so
+    # --accept is the only moment a sidecar-originated ratification is ever
+    # about to happen. Render the sidecar's persisted disputed-row evidence
+    # here rather than requiring a separate `import preview` first — an old
+    # sidecar with no such key (or no sidecar at all) renders nothing, same
+    # as today.
+    if accept:
+        sidecar_path = file_path.with_name(file_path.name + ".pending.yml")
+        if sidecar_path.exists():
+            import yaml
+
+            sidecar_data: object = None
+            try:
+                sidecar_data = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                pass
+            disputed_raw: object = None
+            if isinstance(sidecar_data, dict):
+                disputed_raw = cast(dict[str, Any], sidecar_data).get(
+                    "header_position_ambiguous_rows"
+                )
+            disputed_rows: list[dict[str, str]] = []
+            if isinstance(disputed_raw, list):
+                for candidate_row in cast(list[Any], disputed_raw):
+                    if isinstance(candidate_row, dict):
+                        typed_row = cast(dict[str, Any], candidate_row)
+                        disputed_rows.append({
+                            str(k): str(v) for k, v in typed_row.items()
+                        })
+            echo_disputed_row_fields(disputed_rows)
+
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
         ProposedMapping,

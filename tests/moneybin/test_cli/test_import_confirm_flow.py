@@ -1857,6 +1857,101 @@ class TestImportConfirmCommand:
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
 
+    def test_confirm_accept_renders_sidecars_disputed_rows(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Codex's inbox_service.py:820 finding, closed at the review path.
+
+        `import confirm` has no review-only invocation (bare, with neither
+        --accept nor --mapping, is a usage error), so --accept is the only
+        moment a sidecar-originated ratification happens. It must render the
+        sidecar's persisted evidence before ratifying — an unattended
+        `moneybin import inbox` sync is the only reason this sidecar exists,
+        so nothing else ever showed this row to anyone. An unmapped,
+        account-shaped cell (``ACCT-XY9Z``) must never reach the render.
+        """
+        import yaml
+
+        csv_file = tmp_path / "statement.csv"
+        csv_file.write_text(
+            "2026-01-01,42.50,Coffee,ACCT-XY9Z\nDate,Amount,Description,AccountNumber\n"
+        )
+        sidecar = tmp_path / "statement.csv.pending.yml"
+        sidecar.write_text(
+            yaml.safe_dump({
+                "channel": "tabular",
+                "tier": "low",
+                "score": 0.0,
+                "reason": "header_position_ambiguous",
+                "proposed_mapping": {
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                "samples": {},
+                "header_position_ambiguous_rows": [
+                    {
+                        "transaction_date": "2026-01-01",
+                        "amount": "42.50",
+                        "description": "Coffee",
+                    }
+                ],
+                "flagged": [],
+                "missing_required": [],
+                "unmapped_columns": [],
+                "account_proposals": [],
+                "actions": [],
+            })
+        )
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 0
+        assert "Disputed row(s)" in result.output
+        assert "2026-01-01" in result.output
+        assert "ACCT-XY9Z" not in result.output
+
+    def test_confirm_accept_tolerates_a_sidecar_without_the_new_key(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """An old sidecar written before this fix must still load and accept.
+
+        No `header_position_ambiguous_rows` key at all — the shape every
+        sidecar had before this change — must not crash `--accept`, and must
+        show no evidence, exactly as before.
+        """
+        import yaml
+
+        csv_file = tmp_path / "old.csv"
+        csv_file.write_text("Date,Amount,Description\n2026-01-01,42.50,Coffee\n")
+        sidecar = tmp_path / "old.csv.pending.yml"
+        sidecar.write_text(
+            yaml.safe_dump({
+                "channel": "tabular",
+                "tier": "high",
+                "score": 0.9,
+                "reason": "unknown_layout",
+                "proposed_mapping": {},
+                "samples": {},
+                "flagged": [],
+                "missing_required": [],
+                "unmapped_columns": [],
+                "account_proposals": [],
+                "actions": [],
+            })
+        )
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 0
+        assert "Disputed row(s)" not in result.output
+
     def test_confirm_names_the_account_it_created(
         self,
         mock_db: MagicMock,

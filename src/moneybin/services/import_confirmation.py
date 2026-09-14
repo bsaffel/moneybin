@@ -571,10 +571,12 @@ def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
     command mentioned. Both `inbox_service.py` (the persisted sidecar) and
     `import_inbox.py` (the drain's own summary) call this one function.
 
-    Row-free by design, like the CLI variant: names `import preview`, which
-    is read-only and shows the disputed row via the same
-    `echo_disputed_rows` path — the sidecar file itself never carries the
-    row content.
+    This returned STRING stays row-free, like the CLI variant — it can reach
+    the log pipeline, so it names `import preview` rather than inlining the
+    disputed row. The STRUCTURED sidecar YAML is a different surface: it now
+    persists the same allowlisted `header_position_ambiguous_rows` projection
+    `samples` already carries, so `import confirm --accept` has evidence to
+    show even when nobody ran `import preview` first.
     """
     import shlex
 
