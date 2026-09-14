@@ -1050,6 +1050,45 @@ async def test_import_preview_coarse_quoted_description_with_delimiter_not_omitt
     ]
 
 
+async def test_import_preview_coarse_ragged_short_row_shows_its_own_cells(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Round 19: a disputed row shorter than the header is not fully omitted.
+
+    Before the fix, ``disputed_row_fields`` blanked ANY row whose length
+    didn't exactly match ``header_cells`` -- including a row that is
+    merely SHORTER because it omits a trailing optional cell, a common
+    ragged-CSV shape (a transaction with no description, say). That made
+    the confirm show "(no displayable fields)" for the very row being
+    ratified, even though its date/amount were perfectly alignable. Only a
+    row LONGER than the header (whose extra cells prove the header doesn't
+    describe it) is still omitted whole.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "ragged_short_row.csv"
+    csv.write_text(
+        "2026-01-01,42.50\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description,AccountNumber\n"
+        "2026-01-03,5.00,Snack,AB1234C\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        # Shorter row (missing Description, AccountNumber) -- projects
+        # only the positions it actually has, not omitted whole.
+        {"transaction_date": "2026-01-01", "amount": "42.50"},
+        # Full-length row -- AccountNumber still omitted (not allowlisted).
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+
+
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(
     mcp_db: object,
     tmp_path: Path,

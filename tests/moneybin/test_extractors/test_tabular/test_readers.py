@@ -922,13 +922,25 @@ class TestExcelReader:
 
         Mirrors test_bytes_path_openpyxl_bad_zip_falls_back_instead_of_raising,
         but with an explicit skip_rows so the defense-in-depth call
-        (_excel_row_looks_like_data_at) is what hits the real OLE2 bytes —
-        given bytes, openpyxl skips its filename check and fails inside
-        ZipFile(...) with zipfile.BadZipFile rather than InvalidFileException.
-        Drives the sampler with the real leading bytes of an OLE2 compound
-        file so openpyxl raises BadZipFile on its own, not because a mock
-        says so; only the downstream pl.read_excel is mocked, standing in for
-        calamine actually parsing a well-formed legacy .xls stream.
+        (``_excel_row_looks_like_data_at_bounded``) is what hits the real
+        OLE2 bytes — given bytes, openpyxl skips its filename check and
+        fails inside ZipFile(...) with zipfile.BadZipFile rather than
+        InvalidFileException. Drives the sampler with the real leading
+        bytes of an OLE2 compound file so openpyxl raises BadZipFile on its
+        own, not because a mock says so.
+
+        Round 19: this safety check now genuinely falls back to a bounded
+        fastexcel/calamine probe rather than hardcoding False (the fixed
+        regression), so ``polars.read_excel`` is mocked with a
+        ``side_effect`` distinguishing the two DIFFERENT calls this read
+        now makes — the bounded probe (``has_header=False``, standing in
+        for calamine sampling one raw row) and the real full read
+        (``has_header=True``, standing in for calamine actually parsing a
+        well-formed legacy .xls stream) — rather than one mock serving
+        both indiscriminately. The probed row here is a genuine header
+        (labels, not a transaction), so the safety check still reads
+        False; the positive case (the probed row IS a transaction) is
+        covered separately.
         """
         ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
 
@@ -937,7 +949,18 @@ class TestExcelReader:
             "Amount": ["42.5"],
             "Description": ["Coffee"],
         })
-        mocker.patch("polars.read_excel", return_value=stub_df)
+        # The bounded probe reads row 0 unheadered — a genuine label row,
+        # not a transaction, so header_row_looks_like_data stays False.
+        probe_df = pl.DataFrame({
+            "column_1": ["Date"],
+            "column_2": ["Amount"],
+            "column_3": ["Description"],
+        })
+
+        def _fake_read_excel(*args: object, **kwargs: object) -> pl.DataFrame:
+            return probe_df if kwargs.get("has_header") is False else stub_df
+
+        mocker.patch("polars.read_excel", side_effect=_fake_read_excel)
 
         result = read_file(
             tmp_path / "legacy_replay.xls",
@@ -950,6 +973,51 @@ class TestExcelReader:
         assert result.has_header is True
         assert result.header_row_looks_like_data is False
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
+
+    def test_explicit_skip_rows_on_legacy_xls_catches_a_real_transaction(
+        self, tmp_path: Path, mocker: MockerFixture
+    ) -> None:
+        """Round 19 regression: a stale skip_rows must not silently drop a row.
+
+        Before this fix, ``header_row_looks_like_data`` was hardcoded False
+        for any Excel container openpyxl can't open (legacy .xls) — the
+        safety check never even attempted a fastexcel/calamine fallback, so
+        a stale saved skip_rows offset landing on a genuine transaction row
+        kept high confidence and the row was silently dropped as "the
+        header" instead of raising ``header_row_consumed``. Same OLE2/bytes
+        shape as the sibling "falls back instead of raising" test, but the
+        bounded probe here reads a row that DOES look like a transaction.
+        """
+        ole2_magic_bytes = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 512
+
+        stub_df = pl.DataFrame({
+            "Date": ["2026-01-01"],
+            "Amount": ["42.5"],
+            "Description": ["Coffee"],
+        })
+        # The bounded probe reads row 0 unheadered as a genuine transaction
+        # (date + amount) -- the row skip_rows=0 is about to consume.
+        probe_df = pl.DataFrame({
+            "column_1": ["2026-01-01"],
+            "column_2": ["42.50"],
+            "column_3": ["Coffee"],
+        })
+
+        def _fake_read_excel(*args: object, **kwargs: object) -> pl.DataFrame:
+            return probe_df if kwargs.get("has_header") is False else stub_df
+
+        mocker.patch("polars.read_excel", side_effect=_fake_read_excel)
+
+        result = read_file(
+            tmp_path / "legacy_replay.xls",
+            FormatInfo(file_type="excel"),
+            skip_rows=0,
+            sheet="Sheet1",
+            source_bytes=ole2_magic_bytes,
+        )
+        assert result.skip_rows == 0
+        assert result.has_header is True
+        assert result.header_row_looks_like_data is True
 
     def test_headerless_legacy_xls_not_eaten_as_header(
         self, tmp_path: Path, mocker: MockerFixture

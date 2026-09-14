@@ -917,7 +917,82 @@ def _excel_row_looks_like_data_at(
     )
     if row_index >= len(rows):
         return False
-    non_empty = [c.strip().strip('"').strip("'") for c in rows[row_index] if c.strip()]
+    # No quote-stripping: these are native openpyxl cell values, never
+    # CSV-quoted text, so a leading/trailing quote character is genuine
+    # cell content (see _classify_header_rows's identical rule).
+    non_empty = [c.strip() for c in rows[row_index] if c.strip()]
+    return _looks_like_data_row(non_empty) if non_empty else False
+
+
+def _excel_row_looks_like_data_at_bounded(
+    path: Path,
+    sheet_name: str | None,
+    row_index: int,
+    *,
+    source_bytes: bytes | None = None,
+) -> bool:
+    """Same question as ``_excel_row_looks_like_data_at``, never defaulting to False.
+
+    The header-row safety signal must be computed for every Excel
+    container, including one openpyxl can't open (legacy ``.xls``) or
+    whose caller-supplied sheet name it can't find in an otherwise-openable
+    workbook. Tries the openpyxl-backed sampler first (exact row semantics
+    the real read will use); on ``_openpyxl_sheet_access_errors()``, falls
+    back to the SAME bounded fastexcel/calamine read
+    ``_classify_excel_headerless_via_fastexcel`` already uses for this
+    identical "openpyxl can't answer this" gap in auto-detect
+    classification — one fallback, not a second copy of it. Only when
+    fastexcel ALSO can't read the container (``fastexcel.FastExcelError``)
+    does this return False; the real read further down then raises the
+    actual, clean error. Defaulting to False on a merely-failed SAMPLING
+    attempt (rather than genuine unreadability) is exactly the regression
+    this function exists to close: a stale saved ``skip_rows`` offset
+    pointing at a real transaction row in a legacy ``.xls`` kept high
+    confidence and silently dropped that row instead of raising
+    ``header_row_consumed``.
+
+    Args:
+        path: File path.
+        sheet_name: Sheet to sample, or None to let fastexcel pick its own
+            default (mirrors ``pl.read_excel``'s own default) — the shape
+            ``sheet_used`` already takes when openpyxl couldn't even open
+            the container to pick a sheet.
+        row_index: Zero-based physical row index to check.
+        source_bytes: Already materialized workbook object to inspect.
+
+    Returns:
+        True when the row at ``row_index`` parses as a transaction record.
+    """
+    if sheet_name is not None:
+        try:
+            return _excel_row_looks_like_data_at(
+                path, sheet_name, row_index, source_bytes=source_bytes
+            )
+        except _openpyxl_sheet_access_errors():
+            pass  # Fall through to the fastexcel/calamine sampler below.
+
+    import fastexcel
+
+    try:
+        probe_df = pl.read_excel(
+            path if source_bytes is None else BytesIO(source_bytes),
+            sheet_name=sheet_name,
+            has_header=False,
+            infer_schema_length=0,
+            read_options={"header_row": None, "n_rows": row_index + 1},
+        )
+    except fastexcel.FastExcelError:
+        return False
+    rows = list(probe_df.iter_rows())
+    if row_index >= len(rows):
+        return False
+    # _fastexcel_probe_cell_text strips the calamine-rendered time-of-day
+    # suffix, the same normalization _classify_excel_headerless_via_
+    # fastexcel applies for the identical classification task.
+    cells = [
+        _fastexcel_probe_cell_text(v) if v is not None else "" for v in rows[row_index]
+    ]
+    non_empty = [c.strip() for c in cells if c.strip()]
     return _looks_like_data_row(non_empty) if non_empty else False
 
 
@@ -1171,36 +1246,18 @@ def _read_excel(
     # skip_rows path only (mirrors _read_text). Auto-detection
     # (_classify_header_rows) never selects a data-looking row as the header
     # ITSELF, so this stays False there — header_position_ambiguous (below)
-    # is auto-detection's own, separately-dismissible red flag. Classifies
-    # the physical sampled row, not df.columns — fastexcel's post-read column
-    # naming for a native Excel date/datetime cell doesn't reliably parse as
-    # a date (see _excel_row_looks_like_data_at).
+    # is auto-detection's own, separately-dismissible red flag. This signal
+    # is computed for EVERY Excel container, including one openpyxl can't
+    # open at all or whose sheet_used it couldn't find — never defaulted to
+    # False just because that specific sampling attempt failed; see
+    # _excel_row_looks_like_data_at_bounded for why (a stale saved skip_rows
+    # offset pointing at a real transaction in a legacy .xls must still
+    # raise header_row_consumed, not silently drop the row).
     header_row_looks_like_data = False
     if explicit_skip and resolved_has_header:
-        # Same reasoning as the auto-detect branch's sheet_used check above:
-        # a None sheet_used already proves openpyxl can't open this file, so
-        # this sampler would hit the identical failure before indexing a
-        # sheet name.
-        if sheet_used is None:
-            header_row_looks_like_data = False
-        else:
-            try:
-                header_row_looks_like_data = _excel_row_looks_like_data_at(
-                    path, sheet_used, skip_rows, source_bytes=source_bytes
-                )
-            except _openpyxl_sheet_access_errors():
-                # Same fallback as the auto-detect branch above, and for the
-                # same reasons: a .xls-sourced saved format (file_type is
-                # always "excel" — see format_detector.py's _EXTENSION_MAP —
-                # never the literal "xls") with skip_rows > 0 reaches this
-                # defense-in-depth sampler too, and openpyxl still can't open
-                # a legacy .xls (path or bytes shape — see the auto-detect
-                # branch's comment for why the two shapes raise different
-                # exceptions); OR sheet_used (a saved format's sheet name)
-                # doesn't exist in an otherwise-openable workbook. An
-                # unreadable sampler has no opinion; the real read below
-                # still succeeds via fastexcel.
-                header_row_looks_like_data = False
+        header_row_looks_like_data = _excel_row_looks_like_data_at_bounded(
+            path, sheet_used, skip_rows, source_bytes=source_bytes
+        )
 
     return ReadResult(
         df=df,

@@ -259,18 +259,26 @@ def disputed_row_fields(
     only one exists yet (first-contact confirm); the final mapping once
     resolved.
 
-    A cell is shown only when its column identity is known — the SAME
-    physical position in ``header_cells`` names a column that appears
-    EXACTLY ONCE there (a blank header cell or a name repeated elsewhere in
-    the header means identity can't be established) — AND that column maps
+    A cell is shown only when (a) its physical position actually exists in
+    the row, and (b) that SAME position in ``header_cells`` names a column
+    that appears EXACTLY ONCE there (a blank header cell or a name repeated
+    elsewhere in the header means identity can't be established) AND maps
     to an allowed field (``_DISPUTED_ROW_ALLOWED_FIELDS``: the date fields,
     the amount fields including the split debit/credit variants, and
     description). Every other cell is OMITTED, not masked: any shape-based
     masker (mask_pii_shaped included) has a short/alphanumeric-key hole
     (identifiers.md "Account identifiers"), so an account-shaped cell in an
-    unmapped or non-allowed column must never reach a surface at all. A row
-    whose length doesn't match ``header_cells`` has no reliable column
-    alignment at any position, so the WHOLE row is omitted (``{}``).
+    unmapped or non-allowed column must never reach a surface at all.
+
+    Row-length asymmetry is handled two different ways, deliberately: a row
+    SHORTER than ``header_cells`` (a trailing optional column a real
+    transaction just omits — CSVs ragged-truncate like this constantly)
+    still projects whichever of its OWN positions resolve per the rule
+    above, rather than losing every cell to a length check that has nothing
+    to do with column identity. A row LONGER than ``header_cells`` is
+    omitted WHOLE (``{}``): its extra trailing cells prove the header
+    doesn't actually describe this row's shape, so no position in it can be
+    trusted, including the ones that would otherwise align.
     """
     if not header_cells:
         return [{} for _ in rows]
@@ -293,8 +301,8 @@ def disputed_row_fields(
 
     return [
         {}
-        if len(row) != len(header_cells)
-        else {dest: row[i] for i, dest in dest_by_position.items()}
+        if len(row) > len(header_cells)
+        else {dest: row[i] for i, dest in dest_by_position.items() if i < len(row)}
         for row in rows
     ]
 

@@ -337,6 +337,32 @@ class TestDisputedRowFields:
         result = disputed_row_fields(rows, self._HEADER[:3], self._MAPPING)
         assert result == [{}]
 
+    def test_shorter_row_projects_only_its_own_existing_positions(self) -> None:
+        """Round 19: a row shorter than the header is not fully omitted.
+
+        A CSV transaction that omits a trailing optional column (a common
+        ragged shape -- ``2026-01-01,42.50`` ahead of a ``Date,Amount,
+        Description`` header) must not lose its aligned date/amount
+        evidence to a length check that has nothing to do with column
+        identity. Only the position this row doesn't have (Description,
+        AccountNumber) is naturally absent -- the row is not omitted whole.
+        """
+        rows = [("2026-01-01", "42.50")]  # missing Description, AccountNumber
+        result = disputed_row_fields(rows, self._HEADER, self._MAPPING)
+        assert result == [{"transaction_date": "2026-01-01", "amount": "42.50"}]
+
+    def test_shorter_row_still_respects_blank_and_duplicate_header_cells(
+        self,
+    ) -> None:
+        """The shorter-row projection still applies the identity rule per cell."""
+        header = ("Date", "", "Amount", "Amount")
+        mapping = {"transaction_date": "Date", "amount": "Amount"}
+        # Row has only 2 cells: Date and the blank-headed column. Amount's
+        # two (duplicated) positions are entirely absent from this row.
+        rows = [("2026-01-01", "42.50")]
+        result = disputed_row_fields(rows, header, mapping)
+        assert result == [{"transaction_date": "2026-01-01"}]
+
     def test_empty_header_cells_omits_every_row(self) -> None:
         rows = [("2026-01-01", "42.50", "Coffee")]
         result = disputed_row_fields(rows, (), self._MAPPING)
@@ -383,6 +409,21 @@ class TestDisputedRowFields:
             for i, dest in enumerate(("transaction_date", "amount", "description"))
         }
         assert result[0] != buggy_zip_result
+
+    def test_mutation_restoring_the_exact_length_guard_would_be_caught(self) -> None:
+        """Round 19: prove the SHORTER-row projection is load-bearing too.
+
+        Simulates the mutation "restore the old exact-length guard
+        (``len(row) != len(header_cells)``)" by hand-deriving what THAT
+        buggy guard would produce for a shorter row (the whole row
+        omitted, as it did before round 19) and asserting the real
+        function instead projects the row's own existing positions.
+        """
+        rows = [("2026-01-01", "42.50")]
+        result = disputed_row_fields(rows, self._HEADER, self._MAPPING)
+        buggy_exact_length_result: dict[str, str] = {}
+        assert result[0] != buggy_exact_length_result
+        assert result == [{"transaction_date": "2026-01-01", "amount": "42.50"}]
 
 
 class TestSignConventionProposal:
