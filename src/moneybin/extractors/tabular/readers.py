@@ -885,6 +885,58 @@ def _fastexcel_probe_cell_text(value: str) -> str:
     return match.group(1) if match else value
 
 
+def _fastexcel_sample_rows(
+    path: Path,
+    sheet_name: str | None,
+    *,
+    n: int,
+    source_bytes: bytes | None = None,
+) -> list[list[str]]:
+    """Read the first ``n`` physical rows of an Excel sheet via fastexcel/calamine.
+
+    The one bounded, unheadered read both ``_classify_excel_headerless_via_
+    fastexcel`` and ``_excel_row_looks_like_data_at_bounded`` use whenever
+    openpyxl can't answer their question itself — legacy ``.xls`` (which
+    openpyxl never supported) or a caller-supplied sheet name openpyxl
+    can't find in an otherwise-openable container. ``n_rows`` caps the read
+    itself (fastexcel/calamine stops parsing once it has this many rows)
+    rather than materializing the whole sheet and slicing afterward — the
+    only difference between the two callers is what they pass for ``n``.
+
+    Lets ``fastexcel.FastExcelError`` propagate uncaught: each caller wraps
+    its own call in the same ``except``, so the real read further down
+    still gets the chance to raise the actual, clean error rather than this
+    helper swallowing it into a shared fallback both callers would then
+    have to distinguish again.
+
+    Args:
+        path: File path.
+        sheet_name: Sheet to sample, or None to let fastexcel pick its own
+            default (mirrors ``pl.read_excel``'s own default).
+        n: Maximum number of rows to sample.
+        source_bytes: Already materialized workbook object to inspect.
+
+    Returns:
+        Rows as lists of cell strings, with ``_fastexcel_probe_cell_text``'s
+        calamine-rendered time-of-day-suffix normalization already applied
+        — the same normalization ``_excel_cell_text`` applies for the
+        openpyxl-backed sampler, so both probes present ``_classify_
+        header_rows``/``_looks_like_data_row`` with the identical shape for
+        identical underlying data.
+    """
+    probe_df = pl.read_excel(
+        path if source_bytes is None else BytesIO(source_bytes),
+        sheet_name=sheet_name,
+        has_header=False,
+        infer_schema_length=0,
+        read_options={"header_row": None, "n_rows": n},
+    )
+    return [
+        [_fastexcel_probe_cell_text(v) if v is not None else "" for v in row]
+        for row in probe_df.iter_rows()
+    ]
+
+
 def _excel_row_looks_like_data_at(
     path: Path,
     sheet_name: str,
@@ -974,25 +1026,14 @@ def _excel_row_looks_like_data_at_bounded(
     import fastexcel
 
     try:
-        probe_df = pl.read_excel(
-            path if source_bytes is None else BytesIO(source_bytes),
-            sheet_name=sheet_name,
-            has_header=False,
-            infer_schema_length=0,
-            read_options={"header_row": None, "n_rows": row_index + 1},
+        rows = _fastexcel_sample_rows(
+            path, sheet_name, n=row_index + 1, source_bytes=source_bytes
         )
     except fastexcel.FastExcelError:
         return False
-    rows = list(probe_df.iter_rows())
     if row_index >= len(rows):
         return False
-    # _fastexcel_probe_cell_text strips the calamine-rendered time-of-day
-    # suffix, the same normalization _classify_excel_headerless_via_
-    # fastexcel applies for the identical classification task.
-    cells = [
-        _fastexcel_probe_cell_text(v) if v is not None else "" for v in rows[row_index]
-    ]
-    non_empty = [c.strip() for c in cells if c.strip()]
+    non_empty = [c.strip() for c in rows[row_index] if c.strip()]
     return _looks_like_data_row(non_empty) if non_empty else False
 
 
@@ -1034,33 +1075,13 @@ def _classify_excel_headerless_via_fastexcel(
     import fastexcel
 
     try:
-        # n_rows caps the read itself (fastexcel/calamine stops parsing
-        # once it has this many rows) rather than materializing the whole
-        # sheet and slicing afterward — the old materialize-then-.head(30)
-        # paid for the WHOLE sheet here, then
-        # _read_excel's real read parses the whole sheet again below, so a
-        # large supported .xls paid for two complete parses even when
-        # destined for the row-limit refusal. 30 matches
-        # _classify_header_rows's own "first ~30 physical rows" contract
-        # (the same bound _excel_sample_rows already samples for the
-        # openpyxl-backed classification path) — reusing it rather than
+        # 30 matches _classify_header_rows's own "first ~30 physical rows"
+        # contract (the same bound _excel_sample_rows already samples for
+        # the openpyxl-backed classification path) — reusing it rather than
         # inventing a second bound for the identical classification task.
-        probe_df = pl.read_excel(
-            path if source_bytes is None else BytesIO(source_bytes),
-            sheet_name=sheet_name,
-            has_header=False,
-            infer_schema_length=0,
-            read_options={"header_row": None, "n_rows": 30},
+        sample_rows = _fastexcel_sample_rows(
+            path, sheet_name, n=30, source_bytes=source_bytes
         )
-        # _fastexcel_probe_cell_text strips the same calamine-rendered
-        # time-of-day suffix _excel_cell_text strips for the openpyxl-backed
-        # probe (see its docstring) — both probes must present
-        # _classify_header_rows with the identical shape for identical
-        # underlying data.
-        sample_rows = [
-            [_fastexcel_probe_cell_text(v) if v is not None else "" for v in row]
-            for row in probe_df.iter_rows()
-        ]
         return _classify_header_rows(sample_rows)
     except fastexcel.FastExcelError:
         return 0, True, False, (), ()

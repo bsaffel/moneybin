@@ -1062,9 +1062,9 @@ async def test_import_preview_coarse_ragged_short_row_shows_its_own_cells(
     merely SHORTER because it omits a trailing optional cell, a common
     ragged-CSV shape (a transaction with no description, say). That made
     the confirm show "(no displayable fields)" for the very row being
-    ratified, even though its date/amount were perfectly alignable. Only a
-    row LONGER than the header (whose extra cells prove the header doesn't
-    describe it) is still omitted whole.
+    ratified, even though its date/amount were perfectly alignable. Row
+    length now plays no part in the rule at all -- see the sibling
+    longer-row test below.
     """
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     csv = tmp_path / "ragged_short_row.csv"
@@ -1087,6 +1087,46 @@ async def test_import_preview_coarse_ragged_short_row_shows_its_own_cells(
         # Full-length row -- AccountNumber still omitted (not allowlisted).
         {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
     ]
+
+
+async def test_import_preview_coarse_ragged_long_row_shows_its_aligned_prefix(
+    mcp_db: object,
+    tmp_path: Path,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Round 20: a disputed row longer than the header is not fully omitted.
+
+    Row length plays no part in the allowlist/identity rule at all -- a
+    position past the header's own width simply has no header cell to name
+    it, so it never resolves and drops out on its own, exactly like any
+    other unresolvable position. This also matches the real read:
+    ``pl.read_csv(..., truncate_ragged_lines=True)`` keeps a longer row's
+    leading cells in the header's own columns too.
+    """
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    csv = tmp_path / "ragged_long_row.csv"
+    csv.write_text(
+        "2026-01-01,42.50,Coffee,ACCT-XY9Z\n"
+        "2026-01-02,10.00,Tea,1234\n"
+        "Date,Amount,Description\n"
+        "2026-01-03,5.00,Snack\n",
+        encoding="utf-8",
+    )
+
+    response = await import_preview_coarse(file_path=str(csv))
+
+    assert response.error is None, response.error
+    disputed = response.data.header_position_ambiguous_rows
+    assert disputed == [
+        # Both rows have one extra trailing cell versus the 3-cell header
+        # -- the aligned prefix still shows; the extra cell has no header
+        # position to name it and is simply absent, never shown.
+        {"transaction_date": "2026-01-01", "amount": "42.50", "description": "Coffee"},
+        {"transaction_date": "2026-01-02", "amount": "10.00", "description": "Tea"},
+    ]
+    for row in disputed:
+        assert "ACCT-XY9Z" not in row.values()
+        assert "1234" not in row.values()
 
 
 async def test_import_preview_coarse_mapping_scopes_native_date_normalization(

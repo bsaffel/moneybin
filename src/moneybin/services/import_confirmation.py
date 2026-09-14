@@ -259,8 +259,8 @@ def disputed_row_fields(
     only one exists yet (first-contact confirm); the final mapping once
     resolved.
 
-    A cell is shown only when (a) its physical position actually exists in
-    the row, and (b) that SAME position in ``header_cells`` names a column
+    A cell is shown iff (a) its physical position ``i`` actually exists in
+    the row, AND (b) that SAME position in ``header_cells`` names a column
     that appears EXACTLY ONCE there (a blank header cell or a name repeated
     elsewhere in the header means identity can't be established) AND maps
     to an allowed field (``_DISPUTED_ROW_ALLOWED_FIELDS``: the date fields,
@@ -268,17 +268,19 @@ def disputed_row_fields(
     description). Every other cell is OMITTED, not masked: any shape-based
     masker (mask_pii_shaped included) has a short/alphanumeric-key hole
     (identifiers.md "Account identifiers"), so an account-shaped cell in an
-    unmapped or non-allowed column must never reach a surface at all.
-
-    Row-length asymmetry is handled two different ways, deliberately: a row
-    SHORTER than ``header_cells`` (a trailing optional column a real
-    transaction just omits — CSVs ragged-truncate like this constantly)
-    still projects whichever of its OWN positions resolve per the rule
-    above, rather than losing every cell to a length check that has nothing
-    to do with column identity. A row LONGER than ``header_cells`` is
-    omitted WHOLE (``{}``): its extra trailing cells prove the header
-    doesn't actually describe this row's shape, so no position in it can be
-    trusted, including the ones that would otherwise align.
+    unmapped or non-allowed column must never reach a surface at all. Row
+    length plays no other part in this rule: a row SHORTER than
+    ``header_cells`` (a trailing optional column a real transaction just
+    omits) simply has no position past its own end to resolve, and a row
+    LONGER than ``header_cells`` has trailing positions with no header
+    cell to name them — both drop out of (a) on their own, with no
+    separate length check. This also matches the real read: ``pl.read_csv``
+    is called with ``truncate_ragged_lines=True``, so a longer row's
+    leading cells still land in the header's own columns there too. A row
+    with nothing resolvable is ``{}`` — a caller renders that as "no
+    displayable fields" rather than silently dropping the row, but it is
+    never grounds to make the whole plan unconfirmable: that would strand
+    a file whose header merely has a blank or duplicated cell.
     """
     if not header_cells:
         return [{} for _ in rows]
@@ -300,9 +302,7 @@ def disputed_row_fields(
             dest_by_position[i] = dest
 
     return [
-        {}
-        if len(row) > len(header_cells)
-        else {dest: row[i] for i, dest in dest_by_position.items() if i < len(row)}
+        {dest: row[i] for i, dest in dest_by_position.items() if i < len(row)}
         for row in rows
     ]
 

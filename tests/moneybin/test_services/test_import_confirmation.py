@@ -330,12 +330,26 @@ class TestDisputedRowFields:
         result = disputed_row_fields(rows, header, mapping)
         assert result == [{"transaction_date": "2026-01-01"}]
 
-    def test_length_mismatched_row_is_fully_omitted(self) -> None:
-        # One extra cell versus the header -- no reliable positional
-        # alignment anywhere in this row, so the WHOLE row is dropped.
-        rows = [("2026-01-01", "42.50", "Coffee", "extra")]
+    def test_longer_row_shows_its_aligned_prefix_extra_cell_absent(self) -> None:
+        """Round 20: a row longer than the header is not omitted either.
+
+        Row length plays no part in the rule at all -- a position past the
+        header's own width simply has no header cell to name it, so it
+        never enters ``dest_by_position`` and drops out on its own, same
+        as any other unresolvable position. This also matches the real
+        read: ``pl.read_csv(..., truncate_ragged_lines=True)`` keeps a
+        longer row's leading cells in the header's own columns too.
+        """
+        rows = [("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z")]
         result = disputed_row_fields(rows, self._HEADER[:3], self._MAPPING)
-        assert result == [{}]
+        assert result == [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "42.50",
+                "description": "Coffee",
+            }
+        ]
+        assert "ACCT-XY9Z" not in result[0].values()
 
     def test_shorter_row_projects_only_its_own_existing_positions(self) -> None:
         """Round 19: a row shorter than the header is not fully omitted.
@@ -390,25 +404,26 @@ class TestDisputedRowFields:
         assert result[0] != buggy_pass_through
         assert "ACCT-XY9Z" not in result[0].values()
 
-    def test_mutation_dropping_length_check_would_be_caught(self) -> None:
-        """Prove the length-mismatch guard, not just alignment, is load-bearing.
+    def test_mutation_restoring_the_longer_row_guard_would_be_caught(self) -> None:
+        """Round 20: prove the deleted longer-row guard stays deleted.
 
-        Simulates the mutation "drop the len(row) != len(header_cells)
-        guard and zip anyway" by hand-deriving what that buggy zip would
-        produce for a longer row, and asserting the real function instead
-        omits the whole row.
+        Simulates the mutation "restore ``{} if len(row) > len(header_
+        cells) else ...``" by hand-deriving what that buggy guard would
+        produce for a longer row (the whole row omitted, as it did before
+        round 20) and asserting the real function instead shows the
+        aligned prefix.
         """
-        rows = [("2026-01-01", "42.50", "Coffee", "extra", "ACCT-XY9Z")]
-        header = self._HEADER  # 4 cells; row has 5 -- length mismatch.
-        result = disputed_row_fields(rows, header, self._MAPPING)
-        assert result == [{}]
-        # A buggy zip-without-length-check would still surface the
-        # allowed fields (misaligned or not) instead of omitting the row.
-        buggy_zip_result = {
-            dest: rows[0][i]
-            for i, dest in enumerate(("transaction_date", "amount", "description"))
-        }
-        assert result[0] != buggy_zip_result
+        rows = [("2026-01-01", "42.50", "Coffee", "ACCT-XY9Z")]
+        result = disputed_row_fields(rows, self._HEADER[:3], self._MAPPING)
+        buggy_longer_row_result: dict[str, str] = {}
+        assert result[0] != buggy_longer_row_result
+        assert result == [
+            {
+                "transaction_date": "2026-01-01",
+                "amount": "42.50",
+                "description": "Coffee",
+            }
+        ]
 
     def test_mutation_restoring_the_exact_length_guard_would_be_caught(self) -> None:
         """Round 19: prove the SHORTER-row projection is load-bearing too.
