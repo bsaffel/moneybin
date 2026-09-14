@@ -1134,7 +1134,14 @@ def _hidden_stub_counts() -> tuple[int, int]:
     return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
-_LIVE_MCP_SPECS = ("docs/specs/moneybin-mcp.md", "docs/specs/mcp-architecture.md")
+#: Specs that restate a guarded figure beside their own contract. They sit
+#: outside the user-facing scan, so a restatement is allowed there but must
+#: still equal the derived value.
+_LIVE_SPECS = (
+    "docs/specs/moneybin-mcp.md",
+    "docs/specs/mcp-architecture.md",
+    "docs/specs/moneybin-capabilities.md",
+)
 
 
 def _blank_fenced_blocks(text: str) -> str:
@@ -1215,7 +1222,11 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "hidden stubs that exit 0",
             "docs/guides/cli-reference.md",
-            (rf"\bthe first {n} exit `0`",),
+            (
+                rf"\bthe first {n} exit `0`",
+                rf"\b{n} reserved Typer paths that are still explicit "
+                r"`_not_implemented` stubs",
+            ),
             (stub_count - exit_one_stub_count,),
         ),
         _Figure(
@@ -1282,7 +1293,7 @@ def test_public_docs_stated_figures_match_code() -> None:
         # The live MCP specs are outside the user-facing scan and may restate
         # a figure beside their own contract; a restatement there must still
         # be the derived value.
-        for spec in _LIVE_MCP_SPECS:
+        for spec in _LIVE_SPECS:
             spec_text = (_REPO_ROOT / spec).read_text()
             spec_flat = _blank_fenced_blocks(spec_text).replace("\n", " ")
             for pattern in figure.patterns:
@@ -1297,6 +1308,30 @@ def test_public_docs_stated_figures_match_code() -> None:
     assert not violations, "Public docs state a figure the code contradicts:\n" + (
         "\n".join(violations)
     )
+
+
+def test_blank_fenced_blocks_hides_top_level_and_indented_fences() -> None:
+    """Fence content is blanked, markers and every offset survive, prose stays."""
+    text = (
+        "intro eight clients\n"
+        "```bash\n"
+        "65 invariants checked\n"
+        "```\n"
+        "- item\n"
+        "  ```json\n"
+        '  {"clients": "eight clients"}\n'
+        "  ```\n"
+        "after 13-table canonical bundle\n"
+    )
+    blanked = _blank_fenced_blocks(text)
+    assert len(blanked) == len(text)
+    assert blanked.count("\n") == text.count("\n")
+    assert "65 invariants" not in blanked
+    assert '"eight clients"' not in blanked
+    assert blanked.startswith("intro eight clients\n```bash\n")
+    assert "  ```json\n" in blanked and "  ```\n" in blanked
+    assert blanked.endswith("after 13-table canonical bundle\n")
+    assert _blank_fenced_blocks("no trailing newline") == "no trailing newline"
 
 
 def test_mcp_clients_guide_lists_exactly_the_supported_clients() -> None:
