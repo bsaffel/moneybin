@@ -1,0 +1,1 @@
+A headered `.xlsx` export with real Excel date cells (not text) now imports correctly instead of being refused with an unreadable-date error — the Excel reader normalizes a native date cell's rendered value the same way it already normalized the header-classification sample.

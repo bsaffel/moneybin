@@ -1,5 +1,6 @@
 """Tests for the tabular import service layer."""
 
+import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -522,6 +523,51 @@ class TestTabularConfirmationFlow:
     detection heuristics.
     """
 
+    def test_first_contact_confirmation_samples_show_the_rendered_memo_text(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A first-contact confirmation's samples must match the import.
+
+        A ``Memo`` column openpyxl types as a date (unrelated to
+        ``transaction_date``) maps to the ``memo`` field via header alias.
+        The confirmation-required proposal's samples must show ``Memo``'s
+        RAW text -- the real import never renders it, since
+        ``normalize_excel_date_columns_after_mapping`` only touches
+        date-typed destination fields, not every native column the
+        (thrown-away) detection copy renders.
+        """
+        import openpyxl
+
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description", "Memo"])
+        ws.append([
+            datetime.date(2026, 1, 1),
+            -4.50,
+            "Coffee",
+            datetime.date(2026, 1, 15),
+        ])
+        ws.append([
+            datetime.date(2026, 1, 2),
+            100.00,
+            "Salary",
+            datetime.date(2026, 1, 16),
+        ])
+        xlsx = tmp_path / "first_contact_memo_native.xlsx"
+        wb.save(xlsx)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(xlsx, account_name="test", refresh=False)
+
+        samples = exc_info.value.outcome.samples
+        assert samples["memo"] == ["2026-01-15 00:00:00", "2026-01-16 00:00:00"]
+
     def test_low_confidence_raises_confirmation_required(self, db: Database) -> None:
         """Low-tier detection must raise ImportConfirmationRequiredError."""
         from moneybin.services.import_confirmation import (
@@ -694,24 +740,21 @@ class TestTabularConfirmationFlow:
         # contradict the preview the caller already holds.
         assert outcome.confidence.tier == "medium"
 
-    def test_first_contact_xlsx_reports_the_structural_cause(
+    def test_first_contact_headerless_xlsx_imports_without_confirmation(
         self, db: Database, tmp_path: Path
     ) -> None:
-        """A headerless XLSX sets the flag on first contact — no skip_rows needed.
+        """A headerless XLSX must import cleanly on first contact (MB-449).
 
-        _read_excel computes header_row_looks_like_data unconditionally,
-        because pl.read_excel always consumes row 0 as the header. resolve_or_
-        confirm then refuses the forced-low tier with its own generic reason
-        and raises before the convergence guard, so every surface prescribed a
-        mapping retry for the one cause no mapping answers. (An earlier round
-        of this PR asserted first contact could never set the flag — true for
-        the CSV reader, wrong for Excel.)
+        _read_excel used to compute header_row_looks_like_data unconditionally,
+        because pl.read_excel always consumed row 0 as the header — so a
+        headerless sheet's real first transaction was eaten and the import
+        refused with reason="header_row_consumed" on every first contact.
+        Excel now shares _classify_header_rows with the CSV/Parquet readers:
+        a genuinely headerless sheet is detected as such, no data row is
+        consumed, and both rows load like the CSV/Parquet equivalent would.
         """
         import openpyxl
 
-        from moneybin.services.import_confirmation import (
-            ImportConfirmationRequiredError,
-        )
         from moneybin.services.import_service import ImportService
 
         wb = openpyxl.Workbook()
@@ -722,31 +765,1027 @@ class TestTabularConfirmationFlow:
         xlsx = tmp_path / "headerless.xlsx"
         wb.save(xlsx)
 
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_data_rows_before_an_auto_detected_header_surface_not_silently_drop(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Auto-detection must not silently discard real leading transactions.
+
+        Codex finding: ``_classify_header_rows``'s pass 1 scans for a
+        header-like row followed by data, with no check that no EARLIER
+        qualifying row already looked like data. A file shaped
+        data/data/header/data (two real transactions, then a row that
+        happens to read as labels, then one more transaction) made pass 1
+        pick the header-like row at index 2 and skip_rows=2 — silently
+        discarding the two real transactions above it as "preamble", with
+        no signal raised (``header_row_looks_like_data`` was computed only
+        for an explicit skip_rows, so it stayed False here).
+
+        This shape is genuinely ambiguous — the classifier cannot tell "two
+        real transactions before a coincidentally header-like row" from "an
+        opening/closing-balance summary line before the real header" (see
+        test_summary_row_above_header_not_headerless in test_readers.py,
+        which intentionally keeps that second case silent). Fixed via the
+        DISMISSIBLE ``header_position_ambiguous`` reason (a later Codex
+        finding caught the first fix routing this into ``header_row_
+        consumed``, which is UNCONFIRMABLE by design — that blocked a
+        legitimate summary-row file even with ``confirm=True``).
+
+        On first contact, an unconfirmed mapping ALWAYS reaches
+        `resolve_or_confirm`'s own `ConfirmationRequired` (a human caller
+        with no signal never self-accepts, per Req 4) — but
+        `classify_unconfirmable_plan` now reclassifies that generic outcome
+        into `header_position_ambiguous` whenever the signal is present, so
+        the caller's FIRST message already names the header inference
+        instead of a generic "unknown layout, pass --confirm" — that generic
+        message let confirm=True get accepted as ratification of a risk the
+        user was never shown, dismissible but uninformative, which
+        design-principles.md "Magic stays visible" treats as equivalent to
+        silent.
+        `test_matched_format_header_position_ambiguous_is_dismissible`
+        below isolates the LATER, Resolved-outcome gate via a
+        matched_format import, which bypasses resolve_or_confirm entirely.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        # The caller's first message must already name the real inference.
         with pytest.raises(ImportConfirmationRequiredError) as exc_info:
             ImportService(db).import_file(
-                xlsx,
+                csv,
                 account_name="test",
                 refresh=False,
-                confirm=True,
+                confirm=False,
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_position_ambiguous"
+
+        # Before the header_position_ambiguous fix, this raised
+        # header_row_consumed and confirm=True could not clear it — the
+        # regression an earlier round's coordinator flagged.
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test2",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+        assert result.rows_loaded == 1
+
+    def test_matched_format_header_position_ambiguous_is_dismissible(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Isolate the header_position_ambiguous gate via matched_format.
+
+        A saved format whose skip_rows is 0 (falsy) re-runs auto-detection
+        live on every import and bypasses resolve_or_confirm entirely (the
+        mapping is already known), so this is the cleanest way to see the
+        gate's own reason rather than the generic first-contact
+        ``unknown_layout`` mapping-confirmation gate.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="ambiguous_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=False,
+                format_name="ambiguous_fixture",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_position_ambiguous"
+        # The refusal must carry the actual disputed row, not just the flag
+        # -- a caller ratifying with --confirm has to be able to see it.
+        assert exc_info.value.outcome.header_position_ambiguous_rows == (
+            ("2026-01-01", "42.50", "Coffee"),
+            ("2026-01-02", "10.00", "Tea"),
+        )
+        # And the header row's own full positional cells, from the same
+        # physical sample -- disputed_row_fields resolves column identity
+        # by position against these, never against the (possibly
+        # column-dropped) df.columns.
+        assert exc_info.value.outcome.header_position_ambiguous_header_cells == (
+            "Date",
+            "Amount",
+            "Description",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test2",
+            refresh=False,
+            confirm=True,
+            format_name="ambiguous_fixture",
+            save_format=False,
+        )
+        assert result.rows_loaded == 1
+
+    def test_reviewed_plan_header_position_ambiguous_ratifies_without_confirm(
+        self, db: Database, tmp_path: Path, caplog: LogCaptureFixture
+    ) -> None:
+        """Replaying the plan IS the ratification -- confirm=True is not required.
+
+        Per ConfirmationRequired's docstring: a reviewed_plan replay already
+        showed header_position_ambiguous in its own preview before the
+        caller chose to call import_confirm, so calling confirm on THAT
+        plan ratifies it regardless of the confirm= argument's value.
+        Also verifies the two coverage gaps beside it: the declined counter
+        must stay flat on this ratified path (mirrors
+        test_an_ambiguous_header_refusal_does_not_also_record_overridden's
+        snapshot pattern), and the ratified-path warning must fire with no
+        row content in it (a disputed row can carry an account number).
+        """
+        import logging
+
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_service import ImportService, ReviewedTabularPlan
+
+        csv_file = tmp_path / "ambiguous_replay.csv"
+        csv_file.write_text(
+            "2026-01-01,42.50,Coffee\nDate,Amount,Description\n2026-01-02,10.00,Tea\n",
+            encoding="utf-8",
+        )
+        reviewed_plan = ReviewedTabularPlan(
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            file_size=csv_file.stat().st_size,
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            date_format="%Y-%m-%d",
+            sign_convention="negative_is_expense",
+            number_format="us",
+            is_multi_account=False,
+            confidence="high",
+            skip_rows=1,
+            has_header=True,
+            rows_in_file=3,
+            rows_skipped_trailing=0,
+            header_row_looks_like_data=False,
+            header_signature=["Amount", "Date", "Description"],
+            flagged_fields=[],
+            header_position_ambiguous=True,
+        )
+
+        before_declined = IMPORT_CONFIRMATIONS_TOTAL.labels(
+            channel="tabular", tier="high", outcome="declined"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+
+        with caplog.at_level(logging.WARNING):
+            result = ImportService(db).import_file(
+                csv_file,
+                reviewed_plan=reviewed_plan,
+                account_name="test",
+                refresh=False,
+                # confirm defaults to False -- the plan alone must ratify.
                 save_format=False,
             )
 
-        assert exc_info.value.outcome.reason == "header_row_consumed"
+        assert result.rows_loaded == 1
+
+        after_declined = IMPORT_CONFIRMATIONS_TOTAL.labels(
+            channel="tabular", tier="high", outcome="declined"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert after_declined == before_declined
+
+        warnings = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("also reads as a" in msg for msg in warnings)
+        # No row content (a disputed row can carry an account number) in
+        # any warning this ratified path emits.
+        assert not any("Coffee" in msg or "42.50" in msg for msg in warnings)
+
+    def test_matched_format_summary_row_confirm_true_imports(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The exact regression: a legitimate summary row must import cleanly.
+
+        Before the fix, ``header_position_ambiguous`` was folded into
+        ``header_row_consumed`` (unconfirmable), so even a genuine
+        opening-balance preamble like this one — the case
+        ``test_summary_row_above_header_not_headerless`` (test_readers.py)
+        proves the READER handles correctly — became permanently
+        unimportable at the service layer, regardless of ``confirm=True``.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "summary.csv"
+        csv.write_text(
+            "2026-01-01,100.00\n"
+            "Date,Amount,Description\n"
+            "2026-01-02,42.50,Coffee\n"
+            "2026-01-03,10.00,Tea\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="summary_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="summary_fixture",
+            save_format=False,
+        )
+        assert result.rows_loaded == 2
+
+    def test_unrelated_mapping_override_does_not_ratify_header_position(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """An unrelated ``--mapping`` correction must not self-accept the gate.
+
+        Codex finding: ``ratified_header_position`` used to include
+        ``bool(overrides)``, so ANY override — even one that says nothing
+        about the header — silently ratified the header-position guess.
+        A caller correcting an unrelated column mapping never saw the
+        ambiguity, which is exactly the self-accept
+        design-principles.md's "Magic stays visible" forbids: "a weak or
+        ambiguous inference always surfaces — and is never eligible for
+        agent self-accept, regardless of confidence score." Only
+        ``confirm=True`` (or replaying a ``reviewed_plan`` whose preview
+        showed it) may ratify.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="ambiguous_fixture",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=",",
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        # A mapping override that re-affirms the (already-correct) description
+        # column — says nothing about the header position — with confirm=False.
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=False,
+                overrides={"description": "Description"},
+                format_name="ambiguous_fixture",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_position_ambiguous"
+
+        # confirm=True still ratifies, unaffected by this fix.
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test2",
+            refresh=False,
+            confirm=True,
+            format_name="ambiguous_fixture",
+            save_format=False,
+        )
+        assert result.rows_loaded == 1
+
+    def test_paginated_export_with_repeated_header_imports_without_confirmation(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A real header followed by data, a repeated header, then more data.
+
+        Must import cleanly — the ambiguity fix must not start flagging
+        a legitimately paginated export.
+
+        Pass 1 returns on the FIRST header-like candidate it finds. Here
+        that is the genuine header at row 0, which has no EARLIER qualifying
+        row at all (there is nothing before it), so
+        header_row_looks_like_data stays False and the file imports without
+        a confirmation gate — unlike the ambiguous data-before-header shape
+        above, where no header-like candidate exists until after real data.
+        """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "paginated.csv"
+        csv.write_text(
+            "Date,Amount,Description\n"
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n"
+            "2026-01-04,8.25,Lunch\n",
+            encoding="utf-8",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        # 4 real transactions; the repeated header row is dropped by
+        # _remove_repeated_headers, not counted as a transaction.
+        assert result.rows_loaded == 4
+
+    def test_headered_xlsx_with_native_date_cells_imports_completely(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A headered, spreadsheet-native XLSX must import end to end.
+
+        Reviewer-flagged gap on the header-detection PR: this reader forces
+        `infer_schema_length=0` (all-string columns), so `pl.read_excel`
+        renders a native Excel date cell as an ISO datetime string
+        ("2026-01-01 00:00:00") rather than a plain date. Every
+        `_DATE_FORMATS` entry (date_detection.py) is date-only, so before the
+        fix `detect_date_format` returned `(None, "low")` for the date
+        column and the import was refused with reason="unreadable_date" —
+        even on a normally-headered file, not just the headerless shape a
+        prior fix addressed. `_excel_cell_text` already normalized this for
+        the header-classification sample; the real values `pl.read_excel`
+        returns needed the same treatment
+        (`_normalize_excel_date_columns`).
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_headered.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_matched_format_native_date_override_reformats_and_imports(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A non-ISO --date-format override on a matched native-date file.
+
+        Must reformat the native cells into the override's own shape and
+        import cleanly — not refuse, and not silently import zero rows.
+
+        normalize_excel_date_columns_after_mapping re-renders every mapped
+        column's native cells into the declared format cell-by-cell instead
+        of flipping the format to ISO, so a saved/overridden non-ISO format
+        like "%m/%d/%Y" is exactly as valid against a native-typed column as
+        it always was against a text one — there is no "flip" left for a
+        caller-declared bare format to be wrong about. A real format/data
+        mismatch is still covered by
+        test_a_date_format_override_that_cannot_read_the_column_is_refused
+        and its sibling, both CSV-based and unaffected by this Excel-only
+        normalization step.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_date_matched.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="native_date_fixture",
+                institution_name="Test",
+                file_type="excel",
+                delimiter=None,
+                encoding="utf-8",
+                header_signature=["Date", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%m/%d/%Y",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="native_date_fixture",
+            date_format="%m/%d/%Y",
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        transaction_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT transaction_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert transaction_dates == [
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 2),
+        ]
+
+    def test_matched_format_two_native_date_columns_populates_post_date(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Every mapped date field must normalize together, not just one.
+
+        When both ``transaction_date`` and ``post_date`` map to native-Excel-
+        date columns, both must be normalized together: rewriting only
+        ``transaction_date`` flips ``effective_date_format`` to
+        ``"%Y-%m-%d"`` while ``post_date`` stays raw ``"<date> 00:00:00"``
+        text — a mismatch ``_parse_dates`` fails on non-fatally, so every
+        ``post_date`` silently becomes NULL. The saved format's own persisted
+        ``date_format`` ("%m/%d/%Y", never the file's actual shape) proves the
+        fix does not depend on it matching either column's pre-rewrite text.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted", "Amount", "Description"])
+        ws.append([
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            -4.50,
+            "Coffee",
+        ])
+        ws.append([
+            datetime.date(2026, 1, 2),
+            datetime.date(2026, 1, 4),
+            100.00,
+            "Salary",
+        ])
+        xlsx = tmp_path / "two_native_dates.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="two_native_dates_fixture",
+                institution_name="Test",
+                file_type="excel",
+                delimiter=None,
+                encoding="utf-8",
+                header_signature=["Date", "Posted", "Amount", "Description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "post_date": "Posted",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%m/%d/%Y",
+                number_format="us",
+                skip_rows=0,
+            ),
+            actor="test",
+        )
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            format_name="two_native_dates_fixture",
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+
+    def test_partial_override_post_date_aliased_later_is_not_null(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A first-contact partial ``--mapping`` must not orphan post_date.
+
+        The caller names only ``transaction_date`` via an explicit override;
+        no saved/matched format exists. ``post_date`` is resolved later, by
+        ``map_columns``'s own alias detection over "Posted Date" — a column
+        that was NOT in the caller's override and so never reached the
+        pre-mapping normalization pass. Without the post-mapping pass,
+        ``post_date`` stays raw "<date> 00:00:00" text, ``_parse_dates``
+        fails on it non-fatally, and every row's ``post_date`` silently
+        becomes NULL.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted Date", "Amount", "Description"])
+        ws.append([
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 3),
+            -4.50,
+            "Coffee",
+        ])
+        ws.append([
+            datetime.date(2026, 1, 2),
+            datetime.date(2026, 1, 4),
+            100.00,
+            "Salary",
+        ])
+        xlsx = tmp_path / "partial_override_post_date.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            overrides={"transaction_date": "Date"},
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+        assert None not in post_dates
+
+    def test_partial_override_naming_only_post_date_does_not_orphan_it(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A first-contact override naming ONLY post_date must not orphan it.
+
+        D's headline round-14 counterexample: the caller names only
+        ``post_date`` via an explicit override, with no --date-format.
+        ``transaction_date`` is auto-discovered as TEXT in "%m/%d/%Y" (not
+        ISO). If normalizing the caller's known mapping ever collapsed the
+        real frame's native ``post_date`` cells to bare ISO before the
+        final "%m/%d/%Y" format is known (rather than only a throwaway
+        detection copy), the later render could no longer recognize them
+        as native (already bare ISO, not midnight-shaped) and would leave
+        them un-rendered — a shape "%m/%d/%Y" can't parse, silently NULL.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted", "Amount", "Description"])
+        ws.append(["01/01/2026", datetime.date(2026, 1, 3), -4.50, "Coffee"])
+        ws.append(["01/02/2026", datetime.date(2026, 1, 4), 100.00, "Salary"])
+        xlsx = tmp_path / "partial_override_only_post_date.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            overrides={"post_date": "Posted"},
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+        assert None not in post_dates
+
+    def test_auto_detect_with_no_override_at_all_does_not_orphan_post_date(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The same provenance loss exists on the pure auto-detect path.
+
+        No override at all: both transaction_date (text, "%m/%d/%Y") and
+        post_date (native) are discovered by map_columns/header aliasing.
+        Mirrors test_partial_override_naming_only_post_date_does_not_orphan_it
+        without any caller-supplied mapping.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Posted Date", "Amount", "Description"])
+        ws.append(["01/01/2026", datetime.date(2026, 1, 3), -4.50, "Coffee"])
+        ws.append(["01/02/2026", datetime.date(2026, 1, 4), 100.00, "Salary"])
+        xlsx = tmp_path / "auto_detect_native_post_date.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx, account_name="test", refresh=False, confirm=True, save_format=False
+        )
+
+        assert result.rows_loaded == 2
+        post_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT post_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert post_dates == [datetime.date(2026, 1, 3), datetime.date(2026, 1, 4)]
+        assert None not in post_dates
+
+    def test_date_format_override_validates_against_rendered_frame(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A declared --date-format must validate against what gets imported.
+
+        A native Date column with NO --mapping override still imports
+        under an explicit --date-format: the early override validation
+        checks a render copy, not the raw detection copy, so a column
+        map_columns only aliases in (never named by the caller) is still
+        readable text by the time the override is checked against it.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_date_format_override_no_mapping.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%m/%d/%Y",
+        )
+
+        assert result.rows_loaded == 2
+        transaction_dates = [
+            row[0]
+            for row in db.execute(
+                "SELECT transaction_date FROM raw.tabular_transactions "
+                "ORDER BY transaction_date"
+            ).fetchall()
+        ]
+        assert transaction_dates == [
+            datetime.date(2026, 1, 1),
+            datetime.date(2026, 1, 2),
+        ]
+
+    def test_time_bearing_date_format_override_still_imports_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A caller-declared time-bearing --date-format must not be defeated.
+
+        Before Excel's native-date normalization existed, "%Y-%m-%d %H:%M:%S"
+        was the only documented way to import this exact shape: fastexcel
+        renders a native Excel date cell as "2026-07-01 00:00:00", and no
+        _DATE_FORMATS entry is time-bearing. _normalize_excel_date_columns
+        now runs on every read and would truncate that same column to
+        "2026-07-01" before the override ever sees it, dropping the
+        override's parse rate to 0% and turning a previously-working import
+        into IMPORT_INVALID_DATE_FORMAT. A time-bearing override must skip
+        normalization for this read so it still reads the column shape it
+        names.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_time_override.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y-%m-%d %H:%M:%S",
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_bare_date_format_override_keeps_normalizing_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A bare (no time component) --date-format must not disable normalization.
+
+        Mirrors the sibling test above but proves the other direction: an
+        override with no time component is asking for bare dates, so
+        blanket-skipping normalization whenever ANY override is present
+        would throw away this PR's own fix for a native-date Excel column
+        (test_headered_xlsx_with_native_date_cells_imports_completely,
+        just with an explicit rather than detected date format).
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "native_dates_bare_override.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y-%m-%d",
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_implicitly_matched_saved_format_time_bearing_date_still_imports(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """An implicitly (header-signature) matched format must not be defeated.
+
+        Ordering bug: Stage 2 (the read) used to normalize every native-date
+        Excel column unconditionally, but a saved TabularFormat matched only
+        by implicit header signature (no --format name) is resolved at
+        Stage 3, in import_service.py, AFTER that read — so its persisted
+        time-bearing date_format could never reach a gate living inside the
+        reader. No --date-format override is passed here at all: the format
+        is discovered purely by `fmt.matches_headers(headers)` matching this
+        file's own "Date"/"Amount"/"Description" columns.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "implicit_match_time_bearing.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="implicit_time_bearing_fixture",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d %H:%M:%S",
+                number_format="us",
+            ),
+            actor="test",
+        )
+
+        # No format_name= and no date_format= — the format must be found
+        # purely by the implicit header-signature match in Stage 3.
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
+
+    def test_implicitly_matched_saved_format_date_only_still_imports_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A matched format's date-only date_format must reconcile with the rewrite.
+
+        A matched/reviewed format's persisted ``date_format`` must not be
+        handed straight to ``ResolvedMapping`` when
+        ``normalize_excel_date_columns_after_mapping`` has just rewritten
+        the native-date column's text from "<date> 00:00:00" to bare ISO
+        ("2026-07-01"). Every shipped built-in format (mint/tiller/ynab)
+        declares a date-only ``%m/%d/%Y``-shaped format, so an .xlsx re-save
+        of that same header layout implicitly matches by header signature,
+        gets normalized to ISO text, and then fails to parse against the
+        persisted date-only format on every row — reporting success with
+        zero rows loaded. This saved format's own ``%m/%d/%Y`` reproduces
+        that exact shape without needing a real built-in fixture.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        ws.append([datetime.date(2026, 7, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 7, 2), 100.00, "Salary"])
+        xlsx = tmp_path / "implicit_match_date_only.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="implicit_date_only_fixture",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%m/%d/%Y",
+                number_format="us",
+            ),
+            actor="test",
+        )
+
+        # No format_name= and no date_format= — the format must be found
+        # purely by the implicit header-signature match in Stage 3, exactly
+        # like every built-in format's %m/%d/%Y-shaped date_format would be.
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
 
     def test_a_saved_format_cannot_commit_a_consumed_header_row(
         self, db: Database, tmp_path: Path
     ) -> None:
         """The structural gate must cover the branch where the flag can be set.
 
-        `header_row_looks_like_data` is computed only for an explicit
-        `skip_rows` (readers.py — auto-detection never picks a data-looking
-        row), so the only branch that can see it true is `elif matched_format:`,
-        which asserts confidence="high" and commits. `--format <saved>` on a
-        file whose post-skip header line is a transaction therefore imported a
-        plan with one record already consumed as column names, while
-        `import_preview` refuses the same plan. No caller input clears it:
-        resolve_or_confirm honours an Override at every tier by design, and no
-        column mapping un-consumes a header row.
+        This exercises the EXPLICIT-skip_rows path of `header_row_looks_like_data`
+        (readers.py — a saved format's `skip_rows` lands on a row that itself
+        parses as data). That path only reaches `elif matched_format:`, which
+        asserts confidence="high" and commits. `--format <saved>` on a file
+        whose post-skip header line is a transaction therefore imported a plan
+        with one record already consumed as column names, while `import_preview`
+        refuses the same plan. No caller input clears it: resolve_or_confirm
+        honours an Override at every tier by design, and no column mapping
+        un-consumes a header row. (A second, independent path — auto-detection
+        flagging a data-like row before the header it picked — can also set
+        this flag; see test_readers.py's preamble-ambiguity coverage.)
         """
         from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
         from moneybin.services.import_confirmation import (
@@ -947,6 +1986,90 @@ class TestTabularConfirmationFlow:
             )
         assert result.import_id is not None
 
+    def test_declared_date_format_resolves_a_headerless_native_date_xlsx(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Codex P2 (round 18): an override must not blind detection itself.
+
+        Unlike the CSV test above (which mocks map_columns to isolate the
+        LATER validation stage), this drives the REAL detection engine on
+        first contact -- no matched_format, no reviewed_plan, generated
+        column names (content-only mapping). Regression:
+        normalize_excel_date_columns_for_detection renders the detection
+        copy's native midnight cells into the caller's override format, but
+        detect_date_format's _DATE_FORMATS is date-only with no %Y%m%d
+        entry -- so the rendered column became undetectable, transaction_date
+        went missing entirely, and the compact "20260105" text could even
+        score as an amount downstream (a low-confidence refusal, not the
+        clean import this file deserves). Passing the declared format into
+        map_columns/detect_date_format (scored FIRST, ahead of the fixed
+        candidate list) fixes this without touching the detection copy's
+        own render.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        # No header row -- generated column names, content-only mapping.
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        ws.append([datetime.date(2026, 1, 2), 100.00, "Salary"])
+        ws.append([datetime.date(2026, 1, 3), -20.00, "Groceries"])
+        xlsx = tmp_path / "headerless_native_dates_compact.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y%m%d",
+        )
+
+        assert result.rows_loaded == 3
+
+    def test_declared_date_format_still_resolves_a_mixed_native_and_text_column(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The fix must not regress the case the override-render was protecting.
+
+        A column mixing native Excel date cells with a pre-existing TEXT
+        cell already in the override's format (e.g. a re-saved workbook)
+        needs the detection copy actually rendered into that format --
+        otherwise the native cells go ISO while the text cell stays in its
+        original format, and detect_date_format's uniform-parse-rate check
+        fails the whole column. Probed on round 18: an "always render ISO"
+        fix broke exactly this case, which is why the render stayed as-is
+        and only detect_date_format/map_columns learned the declaration.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([datetime.date(2026, 1, 1), -4.50, "Coffee"])
+        # Pre-existing text cell, already in the override's own format.
+        ws.append(["01/15/2026", 100.00, "Salary"])
+        ws.append([datetime.date(2026, 1, 3), -20.00, "Groceries"])
+        xlsx = tmp_path / "headerless_mixed_native_and_text_dates.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%m/%d/%Y",
+        )
+
+        assert result.rows_loaded == 3
+
     def test_a_dirty_prefix_does_not_refuse_a_file_the_format_reads(
         self, db: Database, tmp_path: Path
     ) -> None:
@@ -1036,6 +2159,80 @@ class TestTabularConfirmationFlow:
                 )._value.get()  # type: ignore[reportPrivateUsage]
                 == prior
             ), outcome
+
+    def test_an_ambiguous_header_refusal_does_not_also_record_overridden(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A header-position refusal must not double-count as "overridden".
+
+        Codex finding, the same class as
+        test_a_refused_date_override_records_no_success_metrics above: for a
+        first-contact ambiguous file submitted with an unrelated --mapping
+        override but no --confirm, resolve_or_confirm's own gate accepted
+        the override (recording "overridden") before the later
+        header_position_ambiguous gate declined the same call — one refused
+        import counted as both "overridden" and "declined", poisoning the
+        confirmation counters used to calibrate self-accept policy. Fixed by
+        running the header-position gate before resolve_or_confirm's
+        resolution-outcome counters, not just before the header gate's own
+        counter.
+        """
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "data_before_header.csv"
+        csv.write_text(
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "Date,Amount,Description\n"
+            "2026-01-03,5.00,Snack\n",
+            encoding="utf-8",
+        )
+
+        # This fixture's mapping (Date/Amount/Description, all required
+        # fields present) detects at "high" confidence — the header
+        # ambiguity is an independent axis from mapping quality, and the
+        # "declined" counter this gate records is labeled with that same
+        # mapping-confidence tier (matching the pre-fix code this replaces,
+        # which also labeled its "declined" counter from the mapping tier,
+        # not a hardcoded "low" — the gate's own *proposed* confidence in
+        # its raised ConfirmationRequired is hardcoded low, but that is a
+        # different field from this counter's tier label).
+        before = {
+            outcome: IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="high", outcome=outcome
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            for outcome in ("overridden", "accepted", "declined")
+        }
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            # CLI shape: no observations buffer, so counters apply
+            # immediately and a rollback cannot undo a premature increment.
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=False,
+                overrides={"description": "Description"},
+                save_format=False,
+            )
+
+        for outcome in ("overridden", "accepted"):
+            assert (
+                IMPORT_CONFIRMATIONS_TOTAL.labels(
+                    channel="tabular", tier="high", outcome=outcome
+                )._value.get()  # type: ignore[reportPrivateUsage]
+                == before[outcome]
+            ), outcome
+        assert (
+            IMPORT_CONFIRMATIONS_TOTAL.labels(
+                channel="tabular", tier="high", outcome="declined"
+            )._value.get()  # type: ignore[reportPrivateUsage]
+            == before["declined"] + 1
+        )
 
     def test_a_date_format_override_that_cannot_read_the_column_is_refused(
         self, db: Database, tmp_path: Path
@@ -1220,9 +2417,14 @@ class TestTabularConfirmationFlow:
         from moneybin.services.import_service import ImportService
 
         # citi_credit.csv: Status,Date,Description,Debit,Credit,Member Name
+        # (dates are "01/05/2026"-shaped — date_format must match the real
+        # fixture now that _validate_date_format_override always checks the
+        # resolved format against the actual column, not just a fresh
+        # caller-supplied override.)
         split_result = _make_mapping_result(
             score=1.0,
             confidence="high",
+            date_format="%m/%d/%Y",
             field_mapping={
                 "transaction_date": "Date",
                 "debit_amount": "Debit",

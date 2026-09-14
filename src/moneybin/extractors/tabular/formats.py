@@ -33,6 +33,13 @@ SignConventionType = Literal[
 NumberFormatType = Literal["us", "european", "swiss_french", "zero_decimal"]
 ConfidenceType = Literal["high", "medium", "low"]
 
+# The tabular schema's only date-typed destination fields (raw_tabular_
+# transactions.sql declares exactly these two as DATE). Lives here rather
+# than in readers.py so a polars-free caller (import_confirmation.py) can
+# import it without pulling polars into the CLI cold-start path — readers.py
+# re-exports nothing; every importer names this module directly.
+DATE_TYPED_TABULAR_FIELDS: tuple[str, ...] = ("transaction_date", "post_date")
+
 
 class TabularFormat(BaseModel, frozen=True):
     """Column mapping for a specific institution's tabular export format.

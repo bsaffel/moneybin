@@ -116,6 +116,35 @@ class TestDetectDateFormat:
         values: list[str | None] = ["foo", "bar", "baz"]
         assert detect_date_format(values) == (None, "low")
 
+    def test_declared_format_outside_the_candidate_list_wins(self) -> None:
+        """A caller-declared format not in _DATE_FORMATS is still recognized.
+
+        Round 18, Codex P2: a headerless XLSX's native dates render into
+        the caller's --date-format for the detection copy, but %Y%m%d has
+        no _DATE_FORMATS entry, so an unscored declaration would never be
+        recognized however cleanly it reads the column -- a compact date
+        could even score as an amount downstream. Scoring the declaration
+        FIRST closes that gap.
+        """
+        values: list[str | None] = ["20260105", "20260212", "20260331"]
+        fmt, confidence = detect_date_format(values, declared_format="%Y%m%d")
+        assert fmt == "%Y%m%d"
+        assert confidence == "high"
+
+    def test_declared_format_that_fails_falls_through_to_the_normal_scan(self) -> None:
+        """A wrong declaration doesn't win -- it falls through, unchanged.
+
+        The declaration answers "what does detection believe", not "what
+        does the loader accept" -- a genuinely wrong override still needs
+        to be caught later (import-time validation), never silently win
+        here. %Y%m%d cannot read US-slash dates, so the normal _DATE_
+        FORMATS scan must still find %m/%d/%Y.
+        """
+        values: list[str | None] = ["01/15/2026", "02/20/2026", "03/31/2026"]
+        fmt, confidence = detect_date_format(values, declared_format="%Y%m%d")
+        assert fmt == "%m/%d/%Y"
+        assert confidence == "high"
+
 
 class TestDetectNumberFormat:
     """Tests for number format detection."""

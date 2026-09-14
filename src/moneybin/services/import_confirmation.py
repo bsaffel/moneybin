@@ -12,11 +12,16 @@ invoked only when a confirm decision is needed.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from moneybin.extractors.confidence import Confidence, Tier
-from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.extractors.tabular.formats import (
+    DATE_TYPED_TABULAR_FIELDS,
+    NumberFormatType,
+    SignConventionType,
+)
 from moneybin.services.account_resolution_types import AccountProposalDict
 
 Channel = Literal["tabular", "gsheet", "pdf", "ofx"]
@@ -28,6 +33,7 @@ ConfirmationReason = Literal[
     "sign_convention",
     "unreadable_date",
     "header_row_consumed",
+    "header_position_ambiguous",
 ]
 ConfirmationOutcome = Literal["accepted", "overridden", "declined"]
 
@@ -157,6 +163,20 @@ class ConfirmationRequired:
     is right for a mapping problem and wrong for this one, which no column
     correction touches. Surfaces route it to source repair, not a retry.
 
+    `reason='header_position_ambiguous'` is `header_row_consumed`'s
+    dismissible sibling: auto-detection picked a header-like row that has a
+    data-like row somewhere before it (see `ReadResult.header_position_
+    ambiguous`'s docstring in readers.py), and nothing is lost yet — unlike
+    `header_row_consumed`, no row has been read as column names. Confirming
+    (`confirm=True`, or replaying a `reviewed_plan` that showed this in its
+    preview) ratifies the detected header position and the import proceeds;
+    it exists as its own reason, not folded into `header_row_consumed`,
+    precisely so it stays confirmable. Deliberately NOT ratified by a bare
+    mapping `Override` — a column correction answers a different question
+    than "is this header position right", and treating it as an answer here
+    let an unrelated `--mapping` fix self-accept an unshown inference
+    (design-principles.md "Magic stays visible").
+
     `reason='unreadable_date'` narrows `unknown_layout` to one cause: a
     `transaction_date` column is mapped and nothing could read its values.
     It exists so a surface can name the two fixes that work — remap the
@@ -194,6 +214,97 @@ class ConfirmationRequired:
     # deliberately absent from confirmation_payload_dict: no transport consumer
     # needs it, and MCP's actions[] never replays a caller's bindings at all.
     ratified_bindings: dict[str, str] = field(default_factory=dict)
+    # Populated only for reason='header_position_ambiguous', from the same
+    # ReadResult.header_position_ambiguous_rows the preview surfaces — so a
+    # caller who never previewed still gets to see the disputed row before
+    # deciding whether to ratify. Empty for every other reason.
+    header_position_ambiguous_rows: tuple[tuple[str, ...], ...] = ()
+    # The header row's own FULL positional cells from the same physical
+    # sample — see ReadResult.header_position_ambiguous_header_cells.
+    # Position-aligned with header_position_ambiguous_rows; required to
+    # resolve a disputed cell's column identity in disputed_row_fields().
+    header_position_ambiguous_header_cells: tuple[str, ...] = ()
+
+
+# The only destination fields a disputed row may ever show — exactly the
+# cells that answer "is this a transaction or a balance summary?" (a date,
+# an amount, or the description), never an account/identifier field. Named
+# from the same canonical sources map_columns itself uses, not memory:
+# DATE_TYPED_TABULAR_FIELDS is raw_tabular_transactions.sql's own date
+# columns, and the amount/description names are FIELD_ALIASES's own keys
+# (column_mapper.py's _score_column_for_field uses the identical four).
+# identifiers.md "Account identifiers" closes the list of surfaces allowed
+# to leak a short/alphanumeric key past mask_pii_shaped's digit-run shape —
+# this PR does not add one, so an unmapped or non-allowed cell is OMITTED
+# here, never masked and shown.
+_DISPUTED_ROW_ALLOWED_FIELDS: frozenset[str] = frozenset(DATE_TYPED_TABULAR_FIELDS) | {
+    "amount",
+    "debit_amount",
+    "credit_amount",
+    "description",
+}
+
+
+def disputed_row_fields(
+    rows: Sequence[Sequence[str]],
+    header_cells: Sequence[str],
+    field_mapping: Mapping[str, str],
+) -> list[dict[str, str]]:
+    """Project each disputed row onto only the cells that answer the confirm.
+
+    The one builder: every surface that shows a header_position_ambiguous
+    disputed row (confirmation_payload_dict, the inbox drain's live
+    summary, the MCP preview payload, the CLI's echo_disputed_rows) calls
+    this instead of repeating the selection. Pass the PROPOSED mapping when
+    only one exists yet (first-contact confirm); the final mapping once
+    resolved.
+
+    A cell is shown iff (a) its physical position ``i`` actually exists in
+    the row, AND (b) that SAME position in ``header_cells`` names a column
+    that appears EXACTLY ONCE there (a blank header cell or a name repeated
+    elsewhere in the header means identity can't be established) AND maps
+    to an allowed field (``_DISPUTED_ROW_ALLOWED_FIELDS``: the date fields,
+    the amount fields including the split debit/credit variants, and
+    description). Every other cell is OMITTED, not masked: any shape-based
+    masker (mask_pii_shaped included) has a short/alphanumeric-key hole
+    (identifiers.md "Account identifiers"), so an account-shaped cell in an
+    unmapped or non-allowed column must never reach a surface at all. Row
+    length plays no other part in this rule: a row SHORTER than
+    ``header_cells`` (a trailing optional column a real transaction just
+    omits) simply has no position past its own end to resolve, and a row
+    LONGER than ``header_cells`` has trailing positions with no header
+    cell to name them — both drop out of (a) on their own, with no
+    separate length check. This also matches the real read: ``pl.read_csv``
+    is called with ``truncate_ragged_lines=True``, so a longer row's
+    leading cells still land in the header's own columns there too. A row
+    with nothing resolvable is ``{}`` — a caller renders that as "no
+    displayable fields" rather than silently dropping the row, but it is
+    never grounds to make the whole plan unconfirmable: that would strand
+    a file whose header merely has a blank or duplicated cell.
+    """
+    if not header_cells:
+        return [{} for _ in rows]
+    name_counts: dict[str, int] = {}
+    for cell in header_cells:
+        if cell.strip():
+            name_counts[cell] = name_counts.get(cell, 0) + 1
+    dest_by_column = {
+        column: dest
+        for dest, column in field_mapping.items()
+        if dest in _DISPUTED_ROW_ALLOWED_FIELDS
+    }
+    dest_by_position: dict[int, str] = {}
+    for i, cell in enumerate(header_cells):
+        if not cell.strip() or name_counts.get(cell, 0) > 1:
+            continue
+        dest = dest_by_column.get(cell)
+        if dest is not None:
+            dest_by_position[i] = dest
+
+    return [
+        {dest: row[i] for i, dest in dest_by_position.items() if i < len(row)}
+        for row in rows
+    ]
 
 
 def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object]:
@@ -252,6 +363,15 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
         "sign_evidence": sign_evidence,
         "sign_sample_rows": sign_sample_rows,
         "account_proposals": list(outcome.account_proposals),
+        # Allowlisted to date/amount/description cells only: this dict feeds
+        # both the CLI recovery renderer and MCP's confirmation_required
+        # envelope. proposed_mapping is the PROPOSED mapping — the only one
+        # that exists at this first-contact confirm point.
+        "header_position_ambiguous_rows": disputed_row_fields(
+            outcome.header_position_ambiguous_rows,
+            outcome.header_position_ambiguous_header_cells,
+            proposed_mapping,
+        ),
     }
 
 
@@ -293,6 +413,7 @@ def classify_unconfirmable_plan(
     date_format: str | None,
     field_mapping: dict[str, str],
     flagged_fields: list[str],
+    header_position_ambiguous: bool = False,
 ) -> ConfirmationReason:
     """Name the cause a caller's next action has to answer.
 
@@ -305,15 +426,46 @@ def classify_unconfirmable_plan(
     Precedence is by what the caller can actually do:
 
     1. A consumed header row — no input touches it, so it outranks everything.
-    2. A missing required destination — the date recoveries remap a column or
+    2. An unconfirmed ambiguous header position — structural, like #1, but
+       (unlike #1) the caller CAN clear it, with confirm=True. Ranked above
+       the mapping-quality checks below because a wrong header-position guess
+       means the mapping was scored against possibly-wrong rows in the first
+       place; the mapping question is moot until the header question is
+       answered.
+    3. A missing required destination — the date recoveries remap a column or
        supply a format, and neither supplies a field that is absent.
-    3. An unreadable date on a *mapped* column — remap it or name its format.
-    4. Otherwise a plain mapping correction.
+    4. An unreadable date on a *mapped* column — remap it or name its format.
+    5. Otherwise a plain mapping correction.
+
+    `header_position_ambiguous` MUST already be gated by the caller to
+    "present AND not yet ratified" (see `ReadResult.header_position_
+    ambiguous`'s docstring in readers.py, and this reason's own docstring on
+    `ConfirmationRequired` for what ratifies it) — this function has no
+    access to `confirm`/`reviewed_plan` to gate it itself, and a caller that
+    passes the raw unconditional flag would reclassify a SECOND, already-
+    ratified confirm() call away from its real remaining blocker (e.g. a
+    still-missing required field) and back onto a question the caller
+    already answered.
+
+    Before this parameter existed, `resolve_or_confirm`'s own
+    `ConfirmationRequired` (reason="unknown_layout", the ordinary "first
+    contact always confirms" outcome for a human caller with no signal) was
+    raised as-is, so a first-contact file with leading transaction-like rows
+    showed a generic "pass --confirm" message that never mentioned them.
+    Following that advice set confirm=True, which a LATER, separate gate
+    then read as ratification of an inference the user was never shown —
+    dismissible, but uninformative, which `design-principles.md` "Magic
+    stays visible" treats as equivalent to silent. Reclassifying here, as
+    part of naming the reason in the first place, removes the ordering
+    question entirely: there is no later gate position left to get wrong,
+    because the true reason is what gets raised the first time.
     """
     from moneybin.extractors.tabular.column_mapper import score_mapping
 
     if header_row_looks_like_data:
         return "header_row_consumed"
+    if header_position_ambiguous:
+        return "header_position_ambiguous"
     _, missing_required = score_mapping(field_mapping, flagged_fields, date_format)
     if missing_required:
         return "unknown_layout"
@@ -354,6 +506,85 @@ def header_row_consumed_recovery_mcp() -> str:
         "transaction — a real record was consumed as the header. No column "
         "correction can recover it, and MoneyBin exposes no skip-rows "
         "override. Add a header row to the source file and preview it again."
+    )
+
+
+def header_position_ambiguous_recovery(file_path: str) -> str:
+    """The dismissible recovery for an ambiguous auto-detected header, CLI.
+
+    UNLIKE `header_row_consumed_recovery`, this names a command that actually
+    resolves the gate: nothing has been consumed yet, so `--confirm` (or
+    `import confirm ... --accept`) ratifies the detected header position and
+    the import proceeds. Names the other honest option too — if the row
+    above the header is a real transaction, not a balance summary, the fix
+    is in the source file, and no flag changes that.
+
+    Deliberately row-free: this text can reach the log pipeline
+    (`log_to_file` defaults to True), so the disputed row's own content
+    never belongs here. A caller showing the evidence renders it separately
+    — the CLI via `echo_disputed_rows` (stderr only), MCP via
+    `data.header_position_ambiguous_rows`.
+    """
+    import shlex
+
+    quoted = shlex.quote(file_path)
+    return (
+        "A row before the detected header also reads as a transaction. If "
+        "it is a balance summary or similar preamble, the detected header is "
+        "correct — re-run with `moneybin import files "
+        f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
+        "proceed. If it is a real transaction, correct the source file "
+        "before importing — MoneyBin will otherwise treat it as skipped "
+        "preamble."
+    )
+
+
+def header_position_ambiguous_recovery_mcp() -> str:
+    """The dismissible recovery for an ambiguous auto-detected header, MCP.
+
+    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`, this
+    one has a command to offer, because confirming the SAME preview ratifies
+    the detected header position rather than restaging an unconfirmable plan.
+    The disputed row's own content lives in `data.header_position_ambiguous_
+    rows` rather than inlined here — the same reason `data.sample_
+    values` isn't inlined into this text either.
+    """
+    return (
+        "A row before the detected header also reads as a transaction — see "
+        "data.header_position_ambiguous_rows for the disputed row(s). If it "
+        "is a balance summary or similar preamble, the detected header is "
+        "correct — call import_confirm(preview_id=...) to proceed. If it is "
+        "a real transaction, correct the source file and preview it again."
+    )
+
+
+def header_position_ambiguous_recovery_sidecar(file_path: str) -> str:
+    """The dismissible recovery for header_position_ambiguous, inbox lifecycle.
+
+    UNLIKE `header_position_ambiguous_recovery` (CLI direct import), this
+    deliberately omits `import files ... --confirm`: that command never
+    calls `archive_confirmed_file`, so recommending it for a file the inbox
+    already moved to `pending/` would complete the import while leaving the
+    source and its sidecar there — the next inbox sync reprocesses a
+    finished item and duplicates every transaction it just loaded. `import
+    confirm --accept` both ratifies and archives, and needs no second
+    command mentioned. Both `inbox_service.py` (the persisted sidecar) and
+    `import_inbox.py` (the drain's own summary) call this one function.
+
+    This returned STRING stays row-free, like the CLI variant — it can reach
+    the log pipeline, so it names `import preview` rather than inlining the
+    disputed row. The STRUCTURED sidecar YAML is a different surface: it now
+    persists the same allowlisted `header_position_ambiguous_rows` projection
+    `samples` already carries, so `import confirm --accept` has evidence to
+    show even when nobody ran `import preview` first.
+    """
+    import shlex
+
+    quoted = shlex.quote(file_path)
+    return (
+        f"moneybin import confirm {quoted} --accept (ratifies the detected "
+        "header position and archives this file); "
+        f"moneybin import preview {quoted} shows the disputed row first"
     )
 
 

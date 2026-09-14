@@ -756,6 +756,14 @@ class ReviewedTabularPlan:
     """Fields the preview flagged as weakly matched. Required, not defaulted:
     an absent value re-scores as a clean mapping, which is how a flagged 0.85
     plan came to report score=1.0 beside its own "low" tier."""
+    header_position_ambiguous: bool = False
+    """Defaulted for backward compatibility with a plan persisted before this
+    field existed (`from_dict` on a stale row must not raise). See
+    `ReadResult.header_position_ambiguous`'s docstring — unlike
+    `header_row_looks_like_data`, replaying THIS plan (calling
+    `import_confirm`) is itself the ratification, because nothing was lost:
+    the preview already showed the ambiguity and the caller chose to
+    proceed."""
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical JSON-ready representation."""
@@ -805,6 +813,124 @@ def _validate_date_format_override(
         f"{date_column!r} column. Importing with it would drop most rows. "
         "Check the format against the column's own values.",
         code=error_codes.IMPORT_INVALID_DATE_FORMAT,
+    )
+
+
+def _gate_header_position_ambiguous(
+    *,
+    read_result: Any,
+    reviewed_plan: "ReviewedTabularPlan | None",
+    field_mapping: dict[str, str],
+    confidence_tier: str,
+    df: Any,
+    confirm: bool,
+    emit_metrics: bool,
+    observations: MetricObservations | None,
+) -> None:
+    """Refuse or (if ratified) warn-and-proceed on an ambiguous header pick.
+
+    header_position_ambiguous is auto-detection's OWN red flag (see
+    ReadResult's docstring in readers.py) — a data-like row precedes the
+    header auto-detection picked, and the classifier cannot tell a real
+    transaction from a legitimate balance-summary preamble apart. UNLIKE
+    header_row_looks_like_data, nothing is lost yet: the rows in question
+    were classified as preamble, not consumed as a header. So this reason
+    IS confirmable — but ONLY by confirm=True, or (for the reviewed_plan
+    branch) the mere act of calling import_confirm on a preview that
+    already showed it (reviewed_plan replays an EXPLICIT skip_rows, so
+    read_result never recomputes this for that branch — the persisted
+    plan value is the only source there, and by construction it can only
+    be True here if that preview surfaced it).
+
+    Deliberately NOT bool(overrides), unlike resolve_or_confirm's own
+    Override handling: an override answers "is this COLUMN MAPPING
+    correct", a question this ambiguity never asked. Treating any
+    unrelated --mapping correction as ratification let a caller silently
+    self-accept a header-position guess they were never shown —
+    design-principles.md "Magic stays visible": "a weak or ambiguous
+    inference always surfaces — and is never eligible for agent
+    self-accept, regardless of confidence score". Checked the other two
+    bool(overrides)-as-ratification sites in this file for the same
+    defect: resolve_or_confirm's own Override signal IS the mapping answer
+    it asked for, and user_ratified_via_override (auto-save-format gate)
+    stays scoped to the mapping question overrides actually answers — so
+    neither reopens this bug.
+
+    Callers must invoke this BEFORE recording any resolution-outcome
+    counter (self-accept/override/accepted) for the branch it gates:
+    a refusal here must not first count as a resolved import — on the
+    first-contact branch, resolve_or_confirm's own accept/override
+    counters used to fire before this check ran, so one refused import was
+    counted as both "overridden" and "declined", poisoning the
+    calibration data those confirmation counters exist to produce. One
+    function, called once per branch at that branch's own earliest point
+    with a field_mapping to show, is what keeps this true structurally —
+    a shared "gate" called late cannot un-record a counter an earlier call
+    already emitted.
+    """
+    header_position_ambiguous = (
+        reviewed_plan.header_position_ambiguous
+        if reviewed_plan is not None
+        else read_result.header_position_ambiguous
+    )
+    if not header_position_ambiguous:
+        return
+    ratified_header_position = confirm or reviewed_plan is not None
+    if not ratified_header_position:
+        from moneybin.extractors.confidence import Confidence
+        from moneybin.extractors.tabular.column_mapper import collect_field_samples
+        from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
+        from moneybin.services.import_confirmation import (
+            ConfirmationRequired,
+            ImportConfirmationRequiredError,
+            ProposedMapping,
+        )
+
+        gate_samples = collect_field_samples(df, field_mapping)
+        record_counter(
+            IMPORT_CONFIRMATIONS_TOTAL,
+            labels={
+                "channel": "tabular",
+                "tier": confidence_tier,
+                "outcome": "declined",
+            },
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition="rollback",
+        )
+        raise ImportConfirmationRequiredError(
+            ConfirmationRequired(
+                channel="tabular",
+                confidence=Confidence(
+                    score=0.0, tier="low", flagged=(), missing_required=()
+                ),
+                proposed=ProposedMapping(
+                    field_mapping=dict(field_mapping),
+                    sample_values=gate_samples,
+                    unmapped_columns=tuple(
+                        c for c in df.columns if c not in field_mapping.values()
+                    ),
+                ),
+                reason="header_position_ambiguous",
+                samples=gate_samples,
+                # reviewed_plan is always None on this branch (see the
+                # docstring above: a reviewed_plan is unconditionally
+                # ratified), so read_result is the live detection this
+                # refusal describes.
+                header_position_ambiguous_rows=read_result.header_position_ambiguous_rows,
+                header_position_ambiguous_header_cells=(
+                    read_result.header_position_ambiguous_header_cells
+                ),
+            )
+        )
+    # Ratified: proceed with the detected header position, but stay visible
+    # about it rather than going fully silent (Magic stays visible) — the
+    # caller confirmed the risk, not the outcome.
+    logger.warning(
+        "⚠️  A row before the detected header also reads as a "
+        "transaction. Proceeding with the detected header position "
+        "as confirmed — if that row was a real transaction, it was "
+        "not imported."
     )
 
 
@@ -2691,7 +2817,11 @@ class ImportService:
             merge_formats,
             save_format_to_db,
         )
-        from moneybin.extractors.tabular.readers import read_file
+        from moneybin.extractors.tabular.readers import (
+            normalize_excel_date_columns_after_mapping,
+            normalize_excel_date_columns_for_detection,
+            read_file,
+        )
         from moneybin.extractors.tabular.transforms import transform_dataframe
         from moneybin.utils import slugify
 
@@ -2786,6 +2916,30 @@ class ImportService:
                     matched_format = fmt
                     break
 
+        # Excel's native-date columns still read as "<date> 00:00:00" text
+        # here — df is untouched until normalize_excel_date_columns_after_
+        # mapping renders it, exactly once, against the FINAL mapping and
+        # format each branch below resolves. declared_date_format is
+        # whichever format governs this column BEFORE that render: a
+        # replayed preview's persisted format, a saved TabularFormat's
+        # persisted format (matched by name OR by the implicit
+        # header-signature match just above), or a fresh
+        # --date-format/mapping override in the auto-detect case.
+        # matched_format's branch gives date_format_override precedence over
+        # the saved format's own date_format for THIS decision only — a
+        # caller can match a saved/built-in format by header signature and
+        # still pass a fresh --date-format (e.g. a time-bearing one for an
+        # xlsx re-save the saved format's date-only string was never meant to
+        # read). reviewed_plan intentionally does NOT get this: it replays a
+        # persisted plan exactly, and reviewed imports don't accept a fresh
+        # date_format_override (see import_confirm's contract).
+        if reviewed_plan is not None:
+            declared_date_format = reviewed_plan.date_format
+        elif matched_format:
+            declared_date_format = date_format_override or matched_format.date_format
+        else:
+            declared_date_format = date_format_override
+
         sign_evidence_header: str | None = None
         if reviewed_plan is not None:
             if sorted(df.columns) != reviewed_plan.header_signature:
@@ -2808,6 +2962,15 @@ class ImportService:
                     "The reviewed import mapping references unavailable columns.",
                     code=error_codes.IMPORT_PREVIEW_PLAN_MISMATCH,
                 )
+            # The mapping and format are already final for a replay — render
+            # before anything below reads df's date-column text (the
+            # low-tier refusal's plan_samples, immediately below).
+            df = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type=format_info.file_type,
+                field_mapping=reviewed_plan.field_mapping,
+                date_format=reviewed_plan.date_format,
+            )
             if reviewed_plan.confidence == "low" or reviewed_plan.date_format is None:
                 # Req 4: low is never auto-acceptable, even replayed from a
                 # staged preview — and a plan whose date format was never
@@ -2820,7 +2983,7 @@ class ImportService:
                 from moneybin.config import get_settings
                 from moneybin.extractors.confidence import Confidence, resolve_tier
                 from moneybin.extractors.tabular.column_mapper import (
-                    collect_samples,
+                    collect_field_samples,
                     score_mapping,
                 )
                 from moneybin.metrics.registry import IMPORT_CONFIRMATIONS_TOTAL
@@ -2857,14 +3020,7 @@ class ImportService:
                     else resolve_tier(score, t_high=bands.t_high, t_med=bands.t_med)
                 )
                 mapped_columns = set(reviewed_plan.field_mapping.values())
-                plan_samples = {
-                    dest: [
-                        value
-                        for value in collect_samples(df, column)
-                        if value is not None
-                    ]
-                    for dest, column in reviewed_plan.field_mapping.items()
-                }
+                plan_samples = collect_field_samples(df, reviewed_plan.field_mapping)
                 record_counter(
                     IMPORT_CONFIRMATIONS_TOTAL,
                     labels={
@@ -2906,6 +3062,20 @@ class ImportService:
                         # *values* are the problem — with no date column at all,
                         # --date-format is useless and a mapping override is
                         # the real recovery.
+                        #
+                        # Deliberately NOT passing header_position_ambiguous
+                        # here (default False): unlike the first-contact
+                        # branch below, a reviewed_plan replay's preview
+                        # already surfaced reviewed_plan.header_position_
+                        # ambiguous as its own visible field before the
+                        # caller ever chose to call import_confirm — calling
+                        # confirm on a plan that showed it IS the
+                        # ratification (see ConfirmationRequired's
+                        # docstring). This refusal's real, still-open cause
+                        # is the mapping confidence gate above (Req 4: low
+                        # is never auto-acceptable, even replayed); naming
+                        # the header question again here would misdirect the
+                        # caller back to something already answered.
                         reason=classify_unconfirmable_plan(
                             header_row_looks_like_data=(
                                 reviewed_plan.header_row_looks_like_data
@@ -2916,6 +3086,9 @@ class ImportService:
                         ),
                     )
                 )
+            # The gate above already refused reviewed_plan.date_format is
+            # None.
+            assert reviewed_plan.date_format is not None  # noqa: S101  # invariant, not user input
             resolved = ResolvedMapping(
                 field_mapping=dict(reviewed_plan.field_mapping),
                 date_format=reviewed_plan.date_format,
@@ -2924,21 +3097,62 @@ class ImportService:
                 is_multi_account=reviewed_plan.is_multi_account,
                 confidence=reviewed_plan.confidence,
             )
+            # Ahead of format_source/metrics below, per
+            # _gate_header_position_ambiguous's own contract: a refusal
+            # must not first record a resolution outcome for this branch.
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=reviewed_plan,
+                field_mapping=resolved.field_mapping,
+                confidence_tier=resolved.confidence,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
             format_source = "reviewed"
         elif matched_format:
+            # matched_format.date_format is a required (non-Optional) field.
+            # The mapping and format are already final — render before
+            # anything below reads df's date-column text (the
+            # header-ambiguity gate's samples, immediately below).
+            df = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type=format_info.file_type,
+                field_mapping=matched_format.field_mapping,
+                date_format=declared_date_format,
+            )
+            # matched_format.date_format is a required (non-Optional) field,
+            # so date_format_override or matched_format.date_format is
+            # never None — but pyright doesn't narrow declared_date_format
+            # (assigned once per branch above) this far down the function.
+            assert declared_date_format is not None  # noqa: S101  # invariant, not user input
             resolved = ResolvedMapping(
                 field_mapping=matched_format.field_mapping,
-                date_format=matched_format.date_format,
+                date_format=declared_date_format,
                 sign_convention=matched_format.sign_convention,
                 number_format=matched_format.number_format,
                 is_multi_account=matched_format.multi_account,
                 confidence="high",
+            )
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=None,
+                field_mapping=resolved.field_mapping,
+                confidence_tier=resolved.confidence,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
             )
             format_source = (
                 "built-in" if matched_format.name in builtin_formats else "saved"
             )
         else:
             from moneybin.config import get_settings
+            from moneybin.extractors.tabular.column_mapper import (
+                collect_field_samples,
+            )
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_DETECTION_SCORE,
@@ -2959,20 +3173,43 @@ class ImportService:
 
             settings = get_settings()
             bands = settings.import_.confidence
+            # detection_df is a throwaway copy — never imported, never shown
+            # as a sample — that only exists so map_columns / detect_date_
+            # format can recognize a native-typed date column's content; df
+            # itself stays untouched until the real mapping is final, below.
+            detection_df = normalize_excel_date_columns_for_detection(
+                df, file_type=format_info.file_type, date_format=date_format_override
+            )
             mapping_result = map_columns(
-                df,
+                detection_df,
                 overrides=overrides,
                 t_high=bands.t_high,
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
+                declared_date_format=date_format_override,
             )
             sign_evidence_header = mapping_result.sign_evidence_header
             confidence = mapping_result.to_confidence(
                 t_high=bands.t_high, t_med=bands.t_med
             )
+            # Caller-visible samples come from a render under THIS proposed
+            # mapping, not detection_df: detection_df renders every string
+            # column for format detection, so an unrelated native column
+            # (mapped to a non-date field) would otherwise show a rendering
+            # the real import never reproduces for it. Thrown away either
+            # way — resolve_or_confirm below may never reach the real
+            # render at all.
+            proposed_samples_df = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type=format_info.file_type,
+                field_mapping=mapping_result.field_mapping,
+                date_format=date_format_override or mapping_result.date_format,
+            )
             proposed = ProposedMapping(
                 field_mapping=mapping_result.field_mapping,
-                sample_values=mapping_result.sample_values,
+                sample_values=collect_field_samples(
+                    proposed_samples_df, mapping_result.field_mapping
+                ),
                 unmapped_columns=tuple(mapping_result.unmapped_columns),
             )
 
@@ -3035,9 +3272,20 @@ class ImportService:
             # Ahead of resolve_or_confirm, which records an accepted or
             # overridden confirmation below — a counter the CLI path applies
             # immediately, so a later refusal cannot take it back.
-            _validate_date_format_override(
-                df, mapping_result.field_mapping, date_format_override
-            )
+            #
+            # Validated against proposed_samples_df, never detection_df:
+            # whenever an override is present, that render is already built
+            # from this same df/field_mapping/date_format_override (the
+            # `or` above resolves to date_format_override either way), so
+            # this reads the identical rendered text instead of rebuilding
+            # it. Skipped entirely when there's nothing to validate,
+            # matching this validation's own no-op guard.
+            if date_format_override is not None:
+                _validate_date_format_override(
+                    proposed_samples_df,
+                    mapping_result.field_mapping,
+                    date_format_override,
+                )
             date_format_effective = date_format_override or mapping_result.date_format
             if date_format_effective is None:
                 # A date column nothing could parse makes the plan unloadable at
@@ -3057,6 +3305,9 @@ class ImportService:
                     observations=observations,
                     disposition="rollback",
                 )
+                _unreadable_date_ambiguous_header = (
+                    read_result.header_position_ambiguous and not confirm
+                )
                 raise ImportConfirmationRequiredError(
                     ConfirmationRequired(
                         channel="tabular",
@@ -3064,13 +3315,35 @@ class ImportService:
                         proposed=proposed,
                         # See the reviewed-plan branch: a file with no date
                         # column mapped is a mapping problem, not a format one.
+                        # header_position_ambiguous is gated to "not confirm"
+                        # here (see classify_unconfirmable_plan's own
+                        # docstring on why it cannot self-gate): if the
+                        # caller already passed confirm=True, this reason
+                        # would misdirect them back to a question they
+                        # already answered instead of the real remaining
+                        # blocker (no readable date column).
                         reason=classify_unconfirmable_plan(
                             header_row_looks_like_data=False,
                             date_format=None,
                             field_mapping=proposed.field_mapping,
                             flagged_fields=list(mapping_result.flagged_fields),
+                            header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
                         samples=dict(proposed.sample_values),
+                        # header_position_ambiguous outranks unreadable_date
+                        # in classify_unconfirmable_plan's precedence, so this
+                        # reason can resolve to header_position_ambiguous —
+                        # carry the same evidence the preview would show.
+                        header_position_ambiguous_rows=(
+                            read_result.header_position_ambiguous_rows
+                            if _unreadable_date_ambiguous_header
+                            else ()
+                        ),
+                        header_position_ambiguous_header_cells=(
+                            read_result.header_position_ambiguous_header_cells
+                            if _unreadable_date_ambiguous_header
+                            else ()
+                        ),
                     )
                 )
             outcome = resolve_or_confirm(
@@ -3096,13 +3369,34 @@ class ImportService:
                     emit_metrics=emit_metrics,
                     observations=observations,
                 )
-                # resolve_or_confirm refuses a low tier with its own generic
-                # reason, and a consumed header row is what pinned the tier —
-                # so re-classify before raising, or every surface prescribes a
-                # mapping retry for the one cause no mapping answers. Reached
-                # by a headerless XLSX on first contact: pl.read_excel always
-                # eats row 0 as the header, so _read_excel sets the flag with
-                # no explicit skip_rows involved.
+                # resolve_or_confirm returns "unknown_layout" generically —
+                # both for its own low-tier refusal AND for its ordinary
+                # "first contact always confirms" fallback (no signal, not
+                # self-accepted) — so re-classify before raising, or every
+                # surface prescribes a mapping retry for a cause a mapping
+                # retry cannot answer. In THIS `else:` branch (matched_format
+                # is None, reviewed_plan is None), read_result.header_row_
+                # looks_like_data is always False: it was computed from the
+                # read_file() call above using the pre-header-matching
+                # matched_format, which is None here, so skip_rows was None
+                # and both readers' auto-detection path never flags a
+                # data-looking row AS THE HEADER ITSELF. The header_row_
+                # looks_like_data arm of classify_unconfirmable_plan is
+                # therefore unreachable from this exact call site — it stays
+                # wired here as defense-in-depth for the shared classifier,
+                # which the `reviewed_plan is not None` and `elif
+                # matched_format:` branches above DO reach with True for a
+                # saved/matched format whose explicit skip_rows lands on a
+                # row that itself parses as a transaction.
+                #
+                # read_result.header_position_ambiguous, by contrast, IS
+                # reachable here — auto-detection's own red flag, unrelated
+                # to an explicit skip_rows — so this branch's ordinary
+                # first-contact confirmation request must name it before
+                # this classify_unconfirmable_plan call could see it.
+                _first_contact_ambiguous_header = (
+                    read_result.header_position_ambiguous and not confirm
+                )
                 raise ImportConfirmationRequiredError(
                     dataclasses.replace(
                         outcome,
@@ -3115,12 +3409,78 @@ class ImportService:
                             if isinstance(outcome.proposed, ProposedMapping)
                             else dict(mapping_result.field_mapping),
                             flagged_fields=list(mapping_result.flagged_fields),
+                            # Gated to "not confirm" — see
+                            # classify_unconfirmable_plan's docstring. A
+                            # first-contact file with leading transaction-
+                            # like rows and no signal always reaches here
+                            # with outcome.reason == "unknown_layout" (rule
+                            # 5's ordinary "first contact always confirms"
+                            # fallback). Reclassifying here means the
+                            # caller's first message names the header
+                            # inference instead of a generic "unknown
+                            # layout, pass --confirm" that never mentions it.
+                            header_position_ambiguous=_first_contact_ambiguous_header,
+                        ),
+                        # Carry the evidence whenever the reclassified reason
+                        # can resolve to header_position_ambiguous — same
+                        # precedence rule as the unreadable-date raise above.
+                        header_position_ambiguous_rows=(
+                            read_result.header_position_ambiguous_rows
+                            if _first_contact_ambiguous_header
+                            else ()
+                        ),
+                        header_position_ambiguous_header_cells=(
+                            read_result.header_position_ambiguous_header_cells
+                            if _first_contact_ambiguous_header
+                            else ()
                         ),
                     )
                     if outcome.reason == "unknown_layout"
                     else outcome
                 )
 
+            # outcome.field_mapping is final now (Override/Accept already
+            # resolved) — render the real df, exactly once, before anything
+            # below reads its date-column text (the header-ambiguity gate's
+            # samples, immediately below). A column map_columns only
+            # aliased in here (never named by the caller's own override) is
+            # still untouched native/text at this point, so this one call
+            # is sufficient regardless of how it entered the mapping.
+            df = normalize_excel_date_columns_after_mapping(
+                df,
+                file_type=format_info.file_type,
+                field_mapping=outcome.field_mapping,
+                date_format=date_format_effective,
+            )
+            # Ahead of the self-accept/override/accepted counters below, per
+            # _gate_header_position_ambiguous's own contract: an unrelated
+            # --mapping correction (which just cleared resolve_or_confirm's
+            # OWN gate above, recording nothing yet) must not let this
+            # different gate's refusal get counted as an accepted or
+            # overridden resolution too — the ordering this function
+            # replaces recorded both "overridden" and "declined" for one
+            # refused import, poisoning the confirmation counters used to
+            # calibrate self-accept policy.
+            _gate_header_position_ambiguous(
+                read_result=read_result,
+                reviewed_plan=None,
+                field_mapping=outcome.field_mapping,
+                confidence_tier=confidence.tier,
+                df=df,
+                confirm=confirm,
+                emit_metrics=emit_metrics,
+                observations=observations,
+            )
+
+            # A NEW gate that can still refuse a `Resolved` outcome (as
+            # header_position_ambiguous does above) belongs ABOVE this
+            # point, not below — this exact ordering mistake has now
+            # shipped twice on two different reasons (unreadable_date via
+            # its own date_format_effective-is-None check earlier in this
+            # branch, then header_position_ambiguous here), each time
+            # letting a refused import double-count as both resolved and
+            # declined on this CLI/service path, where `observations` is
+            # `None` and a later rollback cannot undo it.
             if outcome.self_accepted:
                 record_counter(
                     IMPORT_SELF_ACCEPT_TOTAL,
@@ -3191,31 +3551,49 @@ class ImportService:
 
         # Covers the branches that reach here without one — the first-contact
         # branch validates earlier, before it records a confirmation outcome.
-        _validate_date_format_override(df, resolved.field_mapping, date_format_override)
+        #
+        # Validates final_date_format, not resolved.date_format alone: the
+        # "Apply CLI overrides" block below replaces resolved.date_format
+        # with date_format_override (when the caller supplies a fresh one)
+        # via the identical `date_format_override or resolved.date_format`
+        # expression — so final_date_format IS what actually reaches
+        # transform_dataframe. Reusing this one variable for both the
+        # validation and the later assignment is the structural fix that
+        # keeps them from computing different values.
+        # Each branch above already rendered df's date columns, exactly
+        # once, against this same value (resolved.date_format), before
+        # doing anything that reads their text — so this validates the
+        # ALREADY-RENDERED frame, not stale native/mixed text.
+        final_date_format = date_format_override or resolved.date_format
+        _validate_date_format_override(df, resolved.field_mapping, final_date_format)
 
         # All three branches converge here, and it sits ABOVE the success
         # metrics below, because a refusal must not first record a silent
         # format reuse.
         #
-        # Which branch actually reaches it depends on the reader. For CSV the
-        # flag is computed only for an explicit skip_rows, so it can only be
-        # true when a saved or built-in format supplied the skip — the
-        # `elif matched_format:` branch, which asserts confidence="high" and
-        # would otherwise commit. For XLSX `_read_excel` computes it
-        # unconditionally, because pl.read_excel always consumes row 0 as the
-        # header; a first-contact headerless sheet therefore sets it too, and
-        # resolve_or_confirm refuses that at `low` before reaching here — the
-        # re-classification above the raise is what routes it correctly. The
+        # The flag is computed only for an explicit skip_rows on every reader
+        # (CSV and Excel alike — both share _classify_header_rows, and
+        # auto-detection never picks a data-looking row as the header
+        # ITSELF), so it can only be true when a saved or built-in format
+        # supplied the skip — the `elif matched_format:` branch, which
+        # asserts confidence="high" and would otherwise commit. The
         # reviewed-plan branch refuses earlier with the same reason.
+        # header_position_ambiguous (checked separately below) is
+        # auto-detection's own red flag, and unlike this one it IS
+        # confirmable — folding the two together here previously blocked a
+        # legitimate summary-row file even with confirm=True, because this
+        # gate never checks confirm at all.
         #
-        # No caller input clears it: a mapping override cannot un-consume a
-        # header row, and resolve_or_confirm honours an Override at every tier
-        # by design.
+        # No caller input clears THIS reason: a mapping override cannot
+        # un-consume a header row, and resolve_or_confirm honours an
+        # Override at every tier by design.
         if read_result.header_row_looks_like_data:
             # Confidence is imported at module scope, but a sibling branch
             # imports it locally, which makes the name function-local here.
             from moneybin.extractors.confidence import Confidence
-            from moneybin.extractors.tabular.column_mapper import collect_samples
+            from moneybin.extractors.tabular.column_mapper import (
+                collect_field_samples,
+            )
             from moneybin.metrics.registry import (
                 IMPORT_CONFIRMATIONS_TOTAL,
                 IMPORT_REVALIDATION_FAILURE_TOTAL,
@@ -3226,11 +3604,7 @@ class ImportService:
                 ProposedMapping,
             )
 
-            gate_samples = {
-                dest: [v for v in collect_samples(df, column) if v is not None]
-                for dest, column in resolved.field_mapping.items()
-                if column in df.columns
-            }
+            gate_samples = collect_field_samples(df, resolved.field_mapping)
             # This IS the replay guard the registry says the counter waits on:
             # a saved layout that no longer reads its own file. Record it as
             # such, and label the decline with the tier the envelope carries —
@@ -3276,6 +3650,11 @@ class ImportService:
                     samples=gate_samples,
                 )
             )
+
+        # header_position_ambiguous is now gated per-branch, above, at each
+        # branch's own earliest point with a field_mapping to show — see
+        # _gate_header_position_ambiguous's docstring for why it must run
+        # before that branch's own resolution-outcome counters.
 
         # Record format match and detection confidence metrics
         if matched_format:
@@ -3338,7 +3717,14 @@ class ImportService:
                 sign_convention=cast(SignConventionType, sign)
                 if sign
                 else resolved.sign_convention,
-                date_format=date_format_override or resolved.date_format,
+                # Reuses final_date_format (computed and validated above) —
+                # not a fresh `date_format_override or resolved.date_format`
+                # recomputation. Two expressions that happen to agree today
+                # is exactly the gap that shipped the bug this replaced: the
+                # single shared variable is what makes it structurally
+                # impossible for the validated value and the applied value to
+                # diverge, not that today's logic happens to match.
+                date_format=final_date_format,
                 number_format=cast(NumberFormatType, number_format_override)
                 if number_format_override
                 else resolved.number_format,
