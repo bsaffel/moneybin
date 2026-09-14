@@ -27,6 +27,7 @@ import re
 import shlex
 import shutil
 import subprocess  # noqa: S404 -- the policy test queries local Git metadata
+from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
@@ -414,24 +415,41 @@ def _inline_spans(prose: list[tuple[int, str]]) -> list[tuple[int, str]]:
     return spans
 
 
+def _fence_state(text: str) -> Iterator[tuple[str, re.Match[str] | None, bool, bool]]:
+    """Yield `(line, marker, inside, opening)` for every line of a document.
+
+    `marker` is the fence match on a line that opens or closes a block, and
+    `opening` says which; `inside` is true for the lines between them. A marker
+    may be indented under a list item, and a longer marker closes a block only
+    if it starts with the one that opened it. Every fence-aware scan in this
+    module reads this one state machine so none can drift from the others.
+    """
+    fence: str | None = None
+    for line in text.splitlines():
+        match = _FENCE.match(line.strip())
+        if match and (fence is None or line.strip().startswith(fence)):
+            opening = fence is None
+            fence = match.group("fence") if opening else None
+            yield line, match, False, opening
+        else:
+            yield line, None, fence is not None, False
+
+
 def _code_lines(text: str) -> list[_CodeLine]:
     """Return one `_CodeLine` per fenced-block line and inline code span."""
     lines: list[_CodeLine] = []
     prose: list[tuple[int, str]] = []
-    fence: str | None = None
     shell_block = False
-    for number, line in enumerate(text.splitlines(), start=1):
-        match = _FENCE.match(line.strip())
-        if match and (fence is None or line.strip().startswith(fence)):
+    for number, (line, marker, inside, opening) in enumerate(
+        _fence_state(text), start=1
+    ):
+        if marker:
             lines += (_CodeLine(n, c, runnable=False) for n, c in _inline_spans(prose))
             prose = []
-            if fence:
-                fence = None
-            else:
-                fence = match.group("fence")
-                shell_block = match.group("lang").lower() in _SHELL_LANGS
+            if opening:
+                shell_block = marker.group("lang").lower() in _SHELL_LANGS
             continue
-        if fence:
+        if inside:
             if shell_block:
                 lines.append(_CodeLine(number, line, runnable=True))
         else:
@@ -1116,26 +1134,16 @@ def _hidden_stub_counts() -> tuple[int, int]:
     return len(UNIMPLEMENTED_CLI_PATHS) + exit_one, exit_one
 
 
+_LIVE_MCP_SPECS = ("docs/specs/moneybin-mcp.md", "docs/specs/mcp-architecture.md")
+
+
 def _blank_fenced_blocks(text: str) -> str:
     """Replace every fenced code block's characters with spaces, length-preserving."""
-    out: list[str] = []
-    fence: str | None = None
-    for line in text.splitlines(keepends=True):
-        # Same fence rule as `_code_lines`: a marker may be indented under a
-        # list item, and a longer marker closes a block only if it starts
-        # with the one that opened it.
-        opened = _FENCE.match(line.strip())
-        if fence is None and opened:
-            fence = opened.group("fence")
-        elif fence is not None and opened and line.strip().startswith(fence):
-            fence = None
-        elif fence is not None:
-            out.append(
-                " " * (len(line) - 1) + "\n" if line.endswith("\n") else " " * len(line)
-            )
-            continue
-        out.append(line)
-    return "".join(out)
+    out = [
+        " " * len(line) if inside else line
+        for line, _marker, inside, _opening in _fence_state(text)
+    ]
+    return "\n".join(out) + ("\n" if text.endswith("\n") else "")
 
 
 def _stated_figures() -> list[_Figure]:
@@ -1179,13 +1187,17 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "MCP tool-name prefixes",
             "docs/guides/mcp-server.md",
-            (rf"\b{n} (?:literal )?tool-name prefixes\b",),
-            (len(prefixes),),
+            (
+                rf"\b{n} (?:literal )?tool-name prefixes\b",
+                rf"\b{n} prefixes compose {n} domain groups\b",
+            ),
+            (len(prefixes), len(domains)),
         ),
         _Figure(
             "export bundle tables",
             "docs/guides/cli-reference.md",
-            (rf"\b{n}-table (?:canonical |portability )?(?:bundle|catalog)\b",),
+            # `\[?` admits a link opener between the count and its noun.
+            (rf"\b{n}-table \[?(?:canonical |portability )?(?:bundle|catalog)\b",),
             (len(BUNDLE_TABLES),),
         ),
         _Figure(
@@ -1261,21 +1273,21 @@ def test_public_docs_stated_figures_match_code() -> None:
                         stated_in_home = True
         if not stated_in_home:
             violations.append(f"{figure.home} no longer states the {figure.label}")
-        # The MCP spec is outside the user-facing scan and may restate a
-        # figure beside its own contract; a restatement there must still be
-        # the derived value.
-        spec = _REPO_ROOT / "docs" / "specs" / "moneybin-mcp.md"
-        spec_text = spec.read_text()
-        spec_flat = _blank_fenced_blocks(spec_text).replace("\n", " ")
-        for pattern in figure.patterns:
-            for found in re.finditer(pattern.replace(" ", r"\s+"), spec_flat):
-                stated = tuple(_as_int(group) for group in found.groups() if group)
-                if stated != figure.expected[: len(stated)]:
-                    number = spec_text.count("\n", 0, found.start()) + 1
-                    violations.append(
-                        f"docs/specs/moneybin-mcp.md:{number}: `{found.group(0)}` "
-                        f"states {stated}; the code derives {figure.expected}"
-                    )
+        # The live MCP specs are outside the user-facing scan and may restate
+        # a figure beside their own contract; a restatement there must still
+        # be the derived value.
+        for spec in _LIVE_MCP_SPECS:
+            spec_text = (_REPO_ROOT / spec).read_text()
+            spec_flat = _blank_fenced_blocks(spec_text).replace("\n", " ")
+            for pattern in figure.patterns:
+                for found in re.finditer(pattern.replace(" ", r"\s+"), spec_flat):
+                    stated = tuple(_as_int(group) for group in found.groups() if group)
+                    if stated != figure.expected[: len(stated)]:
+                        number = spec_text.count("\n", 0, found.start()) + 1
+                        violations.append(
+                            f"{spec}:{number}: `{found.group(0)}` states "
+                            f"{stated}; the code derives {figure.expected}"
+                        )
     assert not violations, "Public docs state a figure the code contradicts:\n" + (
         "\n".join(violations)
     )
