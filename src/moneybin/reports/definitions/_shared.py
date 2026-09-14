@@ -9,7 +9,7 @@ the MCP decorator via its own classified-error path.
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 # Month bound as YYYY-MM. Enforced because the runners canonicalize with
 # substr(?, 1, 7), which would let a malformed "2024-1" through and produce
@@ -29,6 +29,12 @@ def validate_date(value: str, param: str) -> None:
     """Raise ValueError if ``value`` is not a YYYY-MM-DD date string."""
     if not _DATE_RE.match(value):
         raise ValueError(f"{param} must be an ISO date (YYYY-MM-DD), got {value!r}")
+    try:
+        date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(
+            f"{param} must be an ISO date (YYYY-MM-DD), got {value!r}"
+        ) from exc
 
 
 CASHFLOW_GROUPINGS: tuple[str, ...] = ("account", "category", "account-and-category")
@@ -56,6 +62,7 @@ DRIFT_STATUSES: tuple[str, ...] = (
     "currency-mismatch",
     "all",
 )
+REALIZED_FX_COVERAGE: tuple[str, ...] = ("complete", "incomplete", "all")
 
 
 def default_window(months: int = 12) -> tuple[str, str]:

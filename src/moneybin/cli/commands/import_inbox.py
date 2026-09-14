@@ -69,6 +69,7 @@ def _print_sync_text(result: InboxSyncResult) -> None:
     # because one wrong-account recovery hint is hard enough to keep correct.
     from moneybin.cli.commands.import_cmd import (
         echo_accounts_created,
+        echo_disputed_row_fields,
         format_account_candidate,
     )
 
@@ -134,6 +135,28 @@ def _print_sync_text(result: InboxSyncResult) -> None:
                         f"       candidate: {format_account_candidate(c)}",
                         err=True,
                     )
+        elif reason == "header_position_ambiguous":
+            # Routed on the reason, not the tier: the gate always packs
+            # tier="low" for this reason, so the generic low-tier branch
+            # below would print the wrong recovery. Sidecar variant, not the
+            # general CLI/MCP one — see its own docstring for why.
+            from moneybin.services.import_confirmation import (
+                header_position_ambiguous_recovery_sidecar,
+            )
+
+            # Already allowlisted (disputed_row_fields) where the pending
+            # entry was built — the sidecar/entry never carries raw cells,
+            # so there is nothing left to re-select here, only to render.
+            raw_rows: Any = item.get("header_position_ambiguous_rows")
+            echo_disputed_row_fields(
+                cast("list[dict[str, str]]", raw_rows)
+                if isinstance(raw_rows, list)
+                else []
+            )
+            typer.echo(
+                f"   {header_position_ambiguous_recovery_sidecar(str(moved_to))}",
+                err=True,
+            )
         elif tier != "low":
             typer.echo(
                 f"   Run 'moneybin import confirm {moved_to} --accept' to ratify "

@@ -601,6 +601,7 @@ def import_files_command(
     except Exception as _exc:  # dispatch on type below
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
+            header_position_ambiguous_recovery,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
@@ -676,6 +677,10 @@ def import_files_command(
                     )
                 elif outcome.reason == "header_row_consumed":
                     confirm_actions.append(header_row_consumed_recovery())
+                elif outcome.reason == "header_position_ambiguous":
+                    confirm_actions.append(
+                        header_position_ambiguous_recovery(file_path_str)
+                    )
                 elif outcome.reason == "unreadable_date":
                     confirm_actions.append(unreadable_date_recovery(file_path_str))
                 else:
@@ -982,6 +987,47 @@ def _accounts_created_payload(
     return [
         {"account_id": a.account_id, "display_name": a.display_name} for a in accounts
     ]
+
+
+def echo_disputed_rows(
+    rows: Sequence[Sequence[str]],
+    header_cells: Sequence[str],
+    field_mapping: Mapping[str, str],
+) -> None:
+    """Show the row(s) behind a header_position_ambiguous confirm.
+
+    Selects via ``disputed_row_fields`` (date/amount/description cells
+    only — every other cell omitted, never printed) then renders via
+    ``echo_disputed_row_fields``. Pass the PROPOSED mapping when only one
+    exists yet (first-contact confirm). The inbox sidecar replay path
+    (``import_inbox.py``) already has the ALLOWLISTED shape persisted — it
+    calls ``echo_disputed_row_fields`` directly rather than re-selecting
+    from raw rows it no longer has.
+    """
+    if not rows:
+        return
+    from moneybin.services.import_confirmation import disputed_row_fields
+
+    echo_disputed_row_fields(disputed_row_fields(rows, header_cells, field_mapping))
+
+
+def echo_disputed_row_fields(fields_by_row: Sequence[Mapping[str, str]]) -> None:
+    """Render an already-allowlisted disputed-row projection.
+
+    Same routing as ``echo_accounts_created``: row content is file data, not
+    static text, so it goes through ``typer.echo(err=True)`` rather than the
+    log pipeline — ``log_to_file`` defaults to True. Names a row with
+    nothing displayable explicitly, rather than printing a blank line.
+    """
+    if not fields_by_row:
+        return
+    typer.echo("   Disputed row(s):", err=True)
+    for fields in fields_by_row:
+        if not fields:
+            typer.echo("     (no displayable fields)", err=True)
+            continue
+        rendered = ", ".join(f"{dest}={value}" for dest, value in fields.items())
+        typer.echo(f"     {rendered}", err=True)
 
 
 def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
@@ -1708,6 +1754,17 @@ def _render_confirmation_prompt(
     typer.echo(f"\n{tier_icon}  Confirmation required ({tier} confidence)")
     typer.echo(f"   File: {file_path_str}")
     typer.echo(f"   Reason: {outcome.reason}")
+    # No-op for every reason but header_position_ambiguous, whose evidence
+    # this is: a caller ratifying with --confirm must see the disputed row.
+    # Only a ProposedMapping proposal names a field_mapping to resolve
+    # column identity against; every other proposal shape omits every cell.
+    echo_disputed_rows(
+        outcome.header_position_ambiguous_rows,
+        outcome.header_position_ambiguous_header_cells,
+        outcome.proposed.field_mapping
+        if isinstance(outcome.proposed, ProposedMapping)
+        else {},
+    )
     if outcome.error_message:
         typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
 
@@ -1986,8 +2043,42 @@ def import_confirm_command(
         _parse_account_metadata(list(account_meta)) if account_meta else None
     )
 
+    # `import confirm` has no review-only mode of its own (bare invocation
+    # with neither --accept nor --mapping is a usage error above), so
+    # --accept is the only moment a sidecar-originated ratification is ever
+    # about to happen. Render the sidecar's persisted disputed-row evidence
+    # here rather than requiring a separate `import preview` first — an old
+    # sidecar with no such key (or no sidecar at all) renders nothing, same
+    # as today.
+    if accept:
+        sidecar_path = file_path.with_name(file_path.name + ".pending.yml")
+        if sidecar_path.exists():
+            import yaml
+
+            sidecar_data: object = None
+            try:
+                sidecar_data = yaml.safe_load(sidecar_path.read_text(encoding="utf-8"))
+            except (OSError, yaml.YAMLError):
+                pass
+            disputed_raw: object = None
+            if isinstance(sidecar_data, dict):
+                disputed_raw = cast(dict[str, Any], sidecar_data).get(
+                    "header_position_ambiguous_rows"
+                )
+            disputed_rows: list[dict[str, str]] = []
+            if isinstance(disputed_raw, list):
+                for candidate_row in cast(list[Any], disputed_raw):
+                    if isinstance(candidate_row, dict):
+                        typed_row = cast(dict[str, Any], candidate_row)
+                        disputed_rows.append({
+                            str(k): str(v) for k, v in typed_row.items()
+                        })
+            echo_disputed_row_fields(disputed_rows)
+
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
+        ProposedMapping,
+        header_position_ambiguous_recovery,
         header_row_consumed_recovery,
         unreadable_date_recovery,
     )
@@ -2068,6 +2159,8 @@ def import_confirm_command(
             )
         elif outcome.reason == "header_row_consumed":
             confirm_actions.append(header_row_consumed_recovery())
+        elif outcome.reason == "header_position_ambiguous":
+            confirm_actions.append(header_position_ambiguous_recovery(str(file_path)))
         elif outcome.reason == "unreadable_date":
             # `import confirm` carries no --date-format, so the recovery is a
             # different command, not a different flag on this one.
@@ -2147,6 +2240,18 @@ def import_confirm_command(
         elif outcome.reason == "header_row_consumed":
             logger.error("❌ A transaction row was consumed as the header.")
             logger.info(f"💡 {header_row_consumed_recovery()}")
+        elif outcome.reason == "header_position_ambiguous":
+            logger.error(
+                "❌ A row before the detected header looks like a transaction."
+            )
+            echo_disputed_rows(
+                outcome.header_position_ambiguous_rows,
+                outcome.header_position_ambiguous_header_cells,
+                outcome.proposed.field_mapping
+                if isinstance(outcome.proposed, ProposedMapping)
+                else {},
+            )
+            logger.info(f"💡 {header_position_ambiguous_recovery(str(file_path))}")
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
             logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")
@@ -2559,7 +2664,11 @@ def import_preview(
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.extractors.tabular.column_mapper import map_columns
     from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.readers import read_file
+    from moneybin.extractors.tabular.readers import (
+        normalize_excel_date_columns_after_mapping,
+        normalize_excel_date_columns_for_detection,
+        read_file,
+    )
 
     source = Path(file_path)
 
@@ -2649,6 +2758,18 @@ def import_preview(
                     matched_format = fmt
                     break
 
+        # This command has no --date-format flag, so the only declared format
+        # that can ever reach here is a matched format's own persisted one.
+        # detection_df is a throwaway copy — never imported, never shown as
+        # a sample — that only exists so map_columns below can recognize a
+        # native-typed date column's content; df itself stays untouched
+        # until the final render, after the mapping resolves.
+        detection_df = normalize_excel_date_columns_for_detection(
+            df,
+            file_type=format_info.file_type,
+            date_format=matched_format.date_format if matched_format else None,
+        )
+
         typer.echo(f"\nFile: {source.name}")
         typer.echo(f"Type: {format_info.file_type}")
         if format_info.delimiter:
@@ -2673,8 +2794,27 @@ def import_preview(
                 "(date + amount) — this may be a headerless file misread as having "
                 "a header. Re-run with a corrected --format or check the source file."
             )
+        if read_result.header_position_ambiguous:
+            # Dismissible, unlike the flag above: ratifying the detected
+            # header position unblocks it. `import preview` has no --confirm
+            # option of its own — use the shared helper, which names the
+            # commands that actually clear this gate (`import files
+            # --confirm` / `import confirm --accept`). The recovery text
+            # stays static (safe for the log pipeline); the disputed row's
+            # own content goes through echo_disputed_rows, stderr-only, so
+            # this warning's evidence never reaches a log file. The row
+            # itself is echoed further down, once the mapping resolves —
+            # echo_disputed_rows needs a field_mapping to resolve column
+            # identity, and neither branch below has committed to one yet.
+            from moneybin.services.import_confirmation import (
+                header_position_ambiguous_recovery,
+            )
+
+            logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
+        final_field_mapping: dict[str, str]
+        final_effective_date_format: str | None
         if matched_format:
             typer.echo(
                 f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
@@ -2685,12 +2825,14 @@ def import_preview(
             typer.echo("\nColumn mapping:")
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
+            final_field_mapping = matched_format.field_mapping
+            final_effective_date_format = matched_format.date_format
         else:
             from moneybin.config import get_settings
 
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
-                df,
+                detection_df,
                 overrides=overrides,
                 t_high=bands.t_high,
                 t_med=bands.t_med,
@@ -2722,6 +2864,25 @@ def import_preview(
                 )
             if mapping_result.number_format:
                 typer.echo(f"Number format: {mapping_result.number_format}")
+            final_field_mapping = mapping_result.field_mapping
+            final_effective_date_format = mapping_result.date_format
+
+        if read_result.header_position_ambiguous:
+            echo_disputed_rows(
+                read_result.header_position_ambiguous_rows,
+                read_result.header_position_ambiguous_header_cells,
+                final_field_mapping,
+            )
+
+        # The ONLY render of df — exactly once, against the FINAL mapping,
+        # whether a column got there via matched_format/--override or
+        # map_columns's own alias detection over detection_df above.
+        df = normalize_excel_date_columns_after_mapping(
+            df,
+            file_type=format_info.file_type,
+            field_mapping=final_field_mapping,
+            date_format=final_effective_date_format,
+        )
 
         # Show sample rows
         sample_n = min(5, len(df))

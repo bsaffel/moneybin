@@ -162,6 +162,16 @@ class ImportConfirmationPayload(TypedDict, total=False):
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
     sign_sample_rows: list[ImportConfirmationSignSample]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # The disputed row(s) behind reason='header_position_ambiguous',
+    # allowlisted (disputed_row_fields, applied in confirmation_payload_dict)
+    # to only the date/amount/description cells that answer "is this a
+    # transaction?" — every other cell is OMITTED, not masked (identifiers.md
+    # "Account identifiers": no shape-based masker closes the short-key hole).
+    # DESCRIPTION like samples above — already filtered, not relying on the
+    # tier alone.
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ]
 
 
 @row_set(NO_ROW_SET)
@@ -208,6 +218,11 @@ class CLIConfirmationRequiredPayload:
     sign_evidence: Annotated[list[str], DataClass.DESCRIPTION]
     sign_sample_rows: list[ImportConfirmationSignSample]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # Mirrors ImportConfirmationPayload's field of the same name; already
+    # allowlisted by confirmation_payload_dict (disputed_row_fields).
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ]
 
 
 @row_set(NO_ROW_SET)
@@ -313,6 +328,13 @@ class ImportPreviewPayload:
     ``sample_values`` carries raw file content that may include PII
     (merchant names, description text); annotated as DESCRIPTION (MEDIUM)
     so the middleware applies the appropriate consent gate.
+    ``header_position_ambiguous_rows`` is raw file content the same way —
+    the actual disputed row(s) ``header_position_ambiguous`` names, so a
+    confirm asking "is this a transaction?" shows the row in question
+    instead of just the fact that one exists (design-principles.md, "Magic
+    stays visible"). Each row is ``{dest_field: cell}`` for only the
+    date/amount/description fields that answer that question
+    (``disputed_row_fields``) — every other cell is omitted, never shown.
     """
 
     file: Annotated[str, DataClass.RECORD_ID]
@@ -334,6 +356,10 @@ class ImportPreviewPayload:
     has_header: Annotated[bool, DataClass.AGGREGATE]
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
+    header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ] = field(default_factory=list)
 
 
 @row_set(NO_ROW_SET)
@@ -362,6 +388,10 @@ class ImportTabularPreviewCoarsePayload(BaseModel):
     has_header: Annotated[bool, DataClass.AGGREGATE]
     rows_in_file: Annotated[int, DataClass.AGGREGATE]
     header_row_looks_like_data: Annotated[bool, DataClass.AGGREGATE]
+    header_position_ambiguous: Annotated[bool, DataClass.AGGREGATE] = False
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ] = Field(default_factory=list)
 
 
 @row_set("rows")
@@ -705,6 +735,16 @@ class ImportInboxPendingEntry(TypedDict, total=False):
     moved_to: Annotated[str, DataClass.RECORD_ID]
     sidecar: Annotated[str, DataClass.RECORD_ID]
     account_proposals: list[ImportConfirmationAccountProposal]
+    # Present only for reason='header_position_ambiguous'; already allowlisted
+    # (disputed_row_fields) where the entry is built, same as
+    # ImportConfirmationPayload's field of the same name. This is the live
+    # drain summary; the persisted `.pending.yml` sidecar carries the
+    # identical projection under the same key (see
+    # header_position_ambiguous_recovery_sidecar) so a later
+    # `import confirm --accept` also has evidence to show.
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ]
 
 
 @row_set(NO_ROW_SET)
@@ -956,6 +996,16 @@ class ImportConfirmRequiredPayload(BaseModel):
     account_proposals: list[ImportConfirmationAccountProposal] = Field(
         default_factory=list
     )
+    # The disputed row(s) behind reason='header_position_ambiguous', already
+    # allowlisted by confirmation_payload_dict (disputed_row_fields).
+    # Declared here because
+    # header_position_ambiguous_recovery_mcp() names this exact field — a
+    # Pydantic model silently drops an undeclared kwarg (its default
+    # extra='ignore'), so omitting this would let that recovery text point
+    # at a field this response never carries.
+    header_position_ambiguous_rows: Annotated[
+        list[dict[str, str]], DataClass.DESCRIPTION
+    ] = Field(default_factory=list)
 
     # No sign_* fields: this payload is built only where the reason is NOT
     # sign_convention, so the proposal is never a SignConventionProposal and

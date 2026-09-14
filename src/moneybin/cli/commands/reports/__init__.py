@@ -8,9 +8,9 @@ CLI-only by design — ``reports-dynamic.md`` names no MCP identity for a lifecy
 verb or for the verify surface.
 
 The view-backed reports (cash_flow, spending_trend, recurring_subscriptions,
-merchant_activity, large-transactions, balance-drift) are generated from
-``@report`` runners in ``moneybin.reports.definitions`` and registered via
-``register_reports_cli``.
+merchant_activity, large-transactions, balance-drift, realized_fx) are
+generated from ``@report`` runners in ``moneybin.reports.definitions`` and
+registered via ``register_reports_cli``.
 ``networth`` / ``networth-history`` are NetworthService-backed and stay
 hand-written for flag and text ergonomics while executing through the catalog.
 """

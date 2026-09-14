@@ -18,6 +18,7 @@ from moneybin.reports._framework.contract import (
     Binding,
     ReportSemantics,
     Runner,
+    bound_class,
     bound_value,
 )
 from moneybin.reports._framework.registry import spec_of
@@ -27,6 +28,7 @@ from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
 from moneybin.reports.definitions.merchant_activity import merchant_activity
+from moneybin.reports.definitions.realized_fx import realized_fx
 from moneybin.reports.definitions.recurring_subscriptions import recurring_subscriptions
 from moneybin.reports.definitions.spending_trend import spending_trend
 
@@ -39,6 +41,7 @@ _CORE_REPORT_IDS = {
     "merchant_activity": "core:merchant_activity",
     "large_transactions": "core:large_transactions",
     "balance_drift": "core:balance_drift",
+    "realized_fx": "core:realized_fx",
 }
 _FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
 #: The one promise every report's `fx_basis` makes, however it converts. What
@@ -64,6 +67,10 @@ _EXPECTED_DESCRIPTIONS = {
         "Drift is asserted balance minus the independent transaction-derived "
         "position for assertion_date."
     ),
+    "realized_fx": (
+        "Disposed amount is in ``currency_code``; proceeds, cost basis, fees, "
+        "and gain/loss are in ``home_currency``."
+    ),
 }
 
 
@@ -77,11 +84,69 @@ def _rows(db: Database, runner: Runner, **params: Any) -> list[dict[str, Any]]:
     return [dict(zip(cols, r, strict=False)) for r in cur.fetchall()]
 
 
+def test_realized_fx_filters_are_canonicalized_and_typed() -> None:
+    """Every optional filter binds to the matching report field and class."""
+    query = realized_fx(
+        None,  # type: ignore[arg-type]  # pure SQL runner does not read db
+        from_date="2026-01-01",
+        to_date="2026-12-31",
+        currency=" eur ",
+        coverage="incomplete",
+    )
+
+    assert [bound_value(binding) for binding in query.params] == [
+        "2026-01-01",
+        "2026-12-31",
+        "EUR",
+        "incomplete",
+    ]
+    assert [bound_class(binding) for binding in query.params] == [
+        DataClass.TXN_DATE,
+        DataClass.TXN_DATE,
+        DataClass.CURRENCY,
+        DataClass.TXN_TYPE,
+    ]
+    assert "AND disposal_date >= ?" in query.sql
+    assert "AND disposal_date <= ?" in query.sql
+    assert "AND currency_code = ?" in query.sql
+    assert "AND coverage_status = ?" in query.sql
+    assert query.sql.count("?") == 4
+    assert query.period == "2026-01-01 to 2026-12-31"
+
+
+@pytest.mark.parametrize(
+    ("parameters", "message"),
+    [
+        ({"from_date": "2026/01/01"}, "from_date must be an ISO date"),
+        ({"from_date": "2026-02-30"}, "from_date must be an ISO date"),
+        ({"to_date": "2026-1-01"}, "to_date must be an ISO date"),
+        ({"currency": "EURO"}, "currency_code must be exactly 3 uppercase letters"),
+        ({"coverage": "covered"}, "Unknown coverage: covered"),
+    ],
+)
+def test_realized_fx_rejects_invalid_filters(
+    parameters: dict[str, str], message: str
+) -> None:
+    """Malformed filters fail before DuckDB can compare them lexically."""
+    with pytest.raises(ValueError, match=message):
+        realized_fx(None, **parameters)  # type: ignore[arg-type]
+
+
+def test_realized_fx_rejects_inverted_date_range() -> None:
+    """A report window cannot end before it starts."""
+    with pytest.raises(ValueError, match="from_date must be on or before to_date"):
+        realized_fx(  # type: ignore[arg-type]
+            None,
+            from_date="2026-02-02",
+            to_date="2026-02-01",
+        )
+
+
 def test_every_report_id_names_the_view_it_reads() -> None:
     """The id, the view, and the derived command are one name.
 
     Requirement 13 of `reports-net-worth-sql-surface.md` is a convention until a
-    test enforces it, and four of these six had drifted before the rename that
+    test enforces it, and four of these seven had drifted before the rename that
     added this guard. `cli_name` is `name` with hyphens, so pinning `name` pins
     the command too.
     """
@@ -118,11 +183,19 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
         assert monetary_classes.intersection(spec.classes.values())
         assert semantics.unit == "currency"
-        # Rows are segmented, so the per-row column is the authority for
-        # which currency an amount is in — not one envelope-level field.
-        assert semantics.currency == "currency_code"
         assert semantics.fx_basis is not None
-        assert _NEVER_BLENDED in semantics.fx_basis
+        if name == "realized_fx":
+            # This row deliberately carries two units. Treating either column
+            # as the one report currency would re-price the other one's values
+            # as though they shared a denomination.
+            assert semantics.currency is None
+            assert semantics.fx_date is None
+            assert "mixed-unit" in semantics.fx_basis
+        else:
+            # Rows are segmented, so the per-row column is the authority for
+            # which currency an amount is in — not one envelope-level field.
+            assert semantics.currency == "currency_code"
+            assert _NEVER_BLENDED in semantics.fx_basis
 
         if name in _FLOW_REPORTS:
             assert semantics.kind == "flow"
@@ -447,6 +520,17 @@ _BINDING_CLASSES: list[tuple[str, Runner, dict[str, Any], tuple[str, ...]]] = [
         {"account": "A1", "status": "drift", "since": "2026-01-01"},
         ("record_id", "txn_type", "txn_date"),
     ),
+    (
+        "realized_fx",
+        realized_fx,
+        {
+            "from_date": "2026-01-01",
+            "to_date": "2026-12-31",
+            "currency": "EUR",
+            "coverage": "complete",
+        },
+        ("txn_date", "txn_date", "currency", "txn_type"),
+    ),
 ]
 
 
@@ -758,6 +842,12 @@ def _install_mirror_fixture(db: Database, name: str) -> None:
         _install_merchant_activity_view(db, jpy_rows=1)
     elif name == "recurring_subscriptions":
         _install_recurring(db)
+    elif name == "realized_fx":
+        db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+        projection = ", ".join(
+            f"NULL AS {column.name}" for column in spec_of(realized_fx).columns
+        )
+        db.execute(f"CREATE OR REPLACE VIEW reports.realized_fx AS SELECT {projection}")
     elif name == "spending_trend":
         _install_spending_trend(db)
     else:
@@ -775,6 +865,7 @@ def _install_mirror_fixture(db: Database, name: str) -> None:
         (large_transactions, "large_transactions"),
         (merchant_activity, "merchant_activity"),
         (recurring_subscriptions, "recurring_subscriptions"),
+        (realized_fx, "realized_fx"),
         (spending_trend, "spending_trend"),
     ],
     ids=lambda value: value if isinstance(value, str) else "",

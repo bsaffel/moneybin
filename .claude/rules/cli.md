@@ -99,11 +99,10 @@ Every E2E test, every shell autocomplete, and every CLI invocation pays the full
       build_server(...).run()
   ```
 
-  Say *why* in a plain comment, and never reach for `# noqa: PLC0415`. Ruff's
-  `select` omits `PL`, so that marker suppresses nothing — it only looks
-  official, which is how 17 wrong justifications rode one unchallenged until
-  MB-168 tested them. `RUF100` (`select`, MB-181) now rejects any inert `noqa`
-  directly in `ruff check .`, not just the `PL` family.
+  Say *why* in a plain comment, and never reach for `# noqa: PLC0415`: ruff's
+  `select` omits `PL`, so the marker suppresses nothing and only looks
+  official — which is how 17 wrong justifications rode unchallenged until
+  MB-168 tested them. `RUF100` now rejects any inert `noqa` in `ruff check .`.
 
 - **Verify with `importtime`.** When adding a new command module, confirm the cold-start path stays clean:
 
@@ -155,48 +154,22 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 ### Keeping the console readable
 
 WARNING and above always reach the console. Below that, a record is hidden only
-if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`.
-Everything else prints. That list holds two kinds of entry — third-party
-libraries that narrate every call (`sqlmesh`, `httpx`, …) and MoneyBin modules
-whose INFO is per-run bookkeeping the log file should keep and the terminal
-should not. Read the constant for the current membership; each entry carries
-the reason it earned a place.
+if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`;
+everything else prints.
 
 **`logger.debug` is not "hide from console" — it is "drop everywhere."** The
-root logger sits at INFO, so a DEBUG record is never emitted and never reaches
-the log file either. That distinction decides which of two tools to reach for:
-
-| The line is… | Use | Why |
-|---|---|---|
-| Already said by a `typer.echo` or another surviving INFO line | `logger.debug` | The file keeps the other copy. `sync pull` reported its categorization total three times from three layers. |
-| Detail worth keeping in the file, but in the subsystem's vocabulary rather than the user's | denylist prefix | The file keeps it; the console does not. "Tier 4: 5 potential transfers found" — the user has no tiers; "Loaded 5 Plaid accounts" — their Chase card is not a Plaid account. |
-
-Getting this backwards is easy and quiet: demoting the per-tier match counts to
-debug looked like console cleanup, but `MatchResult.summary()` reports only
-run-wide totals, so the per-tier split left the log file entirely. Before
-demoting, name the other place the information survives.
-
-**`typer.echo` does not reach the log file.** It writes to stderr directly. A
-count that exists only in a `typer.echo` is absent from the log, which is why
-the Plaid row counts stay at INFO behind a denylist prefix instead.
-
-**A denylist is the deliberate choice here.** An allowlist would be quieter as
-new dependencies arrive, but it inverts the default for ~168 `logger.info` sites
-and turns every one whose output a user needs into a silent regression — MCP's
-host stderr, `log_to_file: false`, schema-migration progress, and "your
-`--institution` flag was ignored" each broke that way when it was tried in #356.
-What must be hidden is enumerable; what must stay visible is not.
-
-**Adding a prefix hides it from every stream at every level**, including
-`--verbose` — but only while a log file exists to hold the copy. Under
-`log_to_file: false`, or when the log directory is missing, stderr is the only
-sink and the filter stands down entirely, because
-`docs/guides/observability.md` and `threat-model.md` both promise stderr is
-unaffected by that setting.
-
-Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`, which
-checks both directions — denylisted prefixes are hidden, an unnamed logger still
-prints — and by `TestMcpStreamKeepsInfoOnStderr` for the host channel.
+root logger sits at INFO, so a DEBUG record never reaches the log file either.
+Before demoting a line, name the other place the information survives — and
+note that `typer.echo` is not that place, because it writes to stderr and never
+reaches the log file. Reach for `logger.debug` only when a surviving
+`typer.echo` or INFO line already says it; when the detail belongs in the file
+but not the terminal, add a denylist prefix instead. Getting this backwards is
+easy and quiet: demoting the per-tier match counts looked like console cleanup,
+but `MatchResult.summary()` reports only run-wide totals, so the per-tier split
+left the log file entirely. Why the denylist is deliberate rather than an
+allowlist, and what `log_to_file: false` changes:
+[`.claude/references/console-log-routing.md`](../references/console-log-routing.md).
+Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
 
 ## Standard Flags on Read-Only Commands
 
@@ -266,10 +239,9 @@ Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
 structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
 it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
 
-**No module is exempt.** The second guard carried an `_AWAITING_RENDER_ROWS`
-set for the eight modules the audit's file list did not name; all eight have
-migrated and the set is gone. Every CLI module is held to the rule
-unconditionally.
+**No module is exempt** — every CLI module is held to these three guards
+unconditionally. The `_AWAITING_RENDER_ROWS` set that once carried eight
+unmigrated modules is gone; do not reintroduce a waiting list.
 
 **A per-unit price is not an amount.** `fx list`'s rate, `investments prices
 list`'s close, and `investments holdings`' average cost are stored to ten

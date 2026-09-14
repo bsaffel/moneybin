@@ -50,6 +50,24 @@ def collect_samples(df: pl.DataFrame, col: str) -> list[str | None]:
     return [str(v) if v is not None else None for v in vals]
 
 
+def collect_field_samples(
+    df: pl.DataFrame, field_mapping: dict[str, str]
+) -> dict[str, list[str]]:
+    """Non-None sample values for every mapped destination field.
+
+    The one builder for every caller-visible sample set (a preview, a
+    confirmation gate) — pass a frame already rendered under the mapping
+    being shown, never a throwaway detection copy: a column rendered there
+    for format detection can show a shape the real import never reproduces
+    for a destination the render doesn't touch.
+    """
+    return {
+        dest: [v for v in collect_samples(df, column) if v is not None]
+        for dest, column in field_mapping.items()
+        if column in df.columns
+    }
+
+
 @dataclass
 class MappingResult:
     """Result of column mapping (Stage 3 output)."""
@@ -127,6 +145,7 @@ def map_columns(
     t_high: float = 0.90,
     t_med: float = 0.70,
     structural_red_flag: bool = False,
+    declared_date_format: str | None = None,
 ) -> MappingResult:
     """Map source columns to destination fields.
 
@@ -143,6 +162,14 @@ def map_columns(
             that makes the mapping untrustworthy regardless of score. Forces
             the ``low`` tier so the propose->confirm gate engages instead of
             an agent self-accepting.
+        declared_date_format: A caller-declared format (e.g. an explicit
+            ``--date-format`` override) threaded into every ``detect_date_
+            format`` call this function makes, so a format outside the
+            fixed candidate list (``%Y%m%d``, a time-bearing format) is
+            still recognized instead of only ever reaching the real import
+            through a separate, later render. See ``detect_date_format``'s
+            own docstring for the scoring rule and why a wrong declaration
+            still falls through rather than winning silently.
 
     Returns:
         MappingResult with mapping, confidence, and metadata.
@@ -176,7 +203,9 @@ def map_columns(
     date_format = None
     if "transaction_date" in mapping:
         date_vals = _samples.get("transaction_date", [])
-        date_format, _ = detect_date_format(date_vals)
+        date_format, _ = detect_date_format(
+            date_vals, declared_format=declared_date_format
+        )
         if date_format is None:
             flagged.append("transaction_date")
 
@@ -193,14 +222,18 @@ def map_columns(
     discovery_order = ("transaction_date", "amount", "description")
     for req_field in discovery_order:
         if req_field not in mapping:
-            candidate = _discover_by_content(df, req_field, claimed)
+            candidate = _discover_by_content(
+                df, req_field, claimed, declared_date_format=declared_date_format
+            )
             if candidate:
                 mapping[req_field] = candidate
                 claimed.add(candidate)
                 flagged.append(req_field)
                 _samples[req_field] = collect_samples(df, candidate)
                 if req_field == "transaction_date" and date_format is None:
-                    date_format, _ = detect_date_format(_samples[req_field])
+                    date_format, _ = detect_date_format(
+                        _samples[req_field], declared_format=declared_date_format
+                    )
 
     # Sign convention inference
     sign_result = infer_sign_convention(
@@ -249,6 +282,8 @@ def _discover_by_content(
     df: pl.DataFrame,
     target_field: str,
     claimed: set[str],
+    *,
+    declared_date_format: str | None = None,
 ) -> str | None:
     """Discover a destination field from column content analysis.
 
@@ -256,6 +291,9 @@ def _discover_by_content(
         df: Source DataFrame to scan.
         target_field: Destination field name to find a column for.
         claimed: Set of already-claimed column names to skip.
+        declared_date_format: See ``map_columns``. Threaded through to
+            ``_score_column_for_field``; ignored for every ``target_field``
+            other than ``transaction_date``.
 
     Returns:
         Best-matching column name, or None if no candidate scores > 0.
@@ -270,7 +308,9 @@ def _discover_by_content(
         if not clean:
             continue
 
-        score = _score_column_for_field(clean, target_field)
+        score = _score_column_for_field(
+            clean, target_field, declared_date_format=declared_date_format
+        )
         if score > 0:
             candidates.append((col, score))
 
@@ -280,18 +320,28 @@ def _discover_by_content(
     return None
 
 
-def _score_column_for_field(values: list[str], field_name: str) -> float:
+def _score_column_for_field(
+    values: list[str],
+    field_name: str,
+    *,
+    declared_date_format: str | None = None,
+) -> float:
     """Score how well a column's content matches a target field type.
 
     Args:
         values: Non-empty sample string values from the column.
         field_name: Destination field name to score against.
+        declared_date_format: See ``map_columns``. Only consulted when
+            ``field_name == "transaction_date"``.
 
     Returns:
         Score in [0.0, 1.0]; 0.0 means no match.
     """
     if field_name == "transaction_date":
-        date_fmt, confidence = detect_date_format(values)  # type: ignore[arg-type]  # list[str] satisfies list[str | None]
+        date_fmt, confidence = detect_date_format(
+            values,  # type: ignore[arg-type]  # list[str] satisfies list[str | None]
+            declared_format=declared_date_format,
+        )
         if date_fmt:
             return 0.9 if confidence == "high" else 0.6
         return 0.0

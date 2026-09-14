@@ -106,7 +106,10 @@ from moneybin.protocol.pagination import (
     reject_inverted_keyset,
     validate_keyset_shape,
 )
-from moneybin.services.import_confirmation import sign_convention_effect
+from moneybin.services.import_confirmation import (
+    disputed_row_fields,
+    sign_convention_effect,
+)
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.utils.file import file_sha256
 
@@ -848,10 +851,17 @@ def _import_preview_tabular(
     answers a column question, not a "the header row is a transaction" one.
     """
     from moneybin.config import get_settings
-    from moneybin.extractors.tabular.column_mapper import collect_samples, map_columns
+    from moneybin.extractors.tabular.column_mapper import (
+        collect_field_samples,
+        map_columns,
+    )
     from moneybin.extractors.tabular.field_aliases import FIELD_ALIASES
     from moneybin.extractors.tabular.format_detector import detect_format
-    from moneybin.extractors.tabular.readers import read_file
+    from moneybin.extractors.tabular.readers import (
+        normalize_excel_date_columns_after_mapping,
+        normalize_excel_date_columns_for_detection,
+        read_file,
+    )
     from moneybin.services.import_confirmation import (
         MappingValidationError,
         coerce_confidence_tier,
@@ -865,8 +875,17 @@ def _import_preview_tabular(
     try:
         format_info = detect_format(path, source_bytes=source_bytes)
         read_result = read_file(path, format_info, source_bytes=source_bytes)
+        # No saved/matched format and no date-format parameter exist on this
+        # preview path. detection_df is a throwaway copy — never imported,
+        # never shown as a sample — that only exists so map_columns /
+        # detect_date_format can recognize a native-typed date column's
+        # content; read_result.df stays untouched until the final render,
+        # below.
+        detection_df = normalize_excel_date_columns_for_detection(
+            read_result.df, file_type=format_info.file_type, date_format=None
+        )
         mapping_result = map_columns(
-            read_result.df,
+            detection_df,
             overrides=mapping,
             t_high=bands.t_high,
             t_med=bands.t_med,
@@ -878,7 +897,6 @@ def _import_preview_tabular(
     field_mapping = mapping_result.field_mapping
     unmapped_columns = mapping_result.unmapped_columns
     confidence = mapping_result.confidence
-    sample_values = mapping_result.sample_values
     sign_convention = mapping_result.sign_convention
     number_format = mapping_result.number_format
     if mapping:
@@ -901,22 +919,29 @@ def _import_preview_tabular(
         unmapped_columns = [
             c for c in read_result.df.columns if c not in field_mapping.values()
         ]
-        # An override can swap the amount shape, which retires the losing
-        # destination — keep samples and sign in step with the merged mapping
-        # or the plan advertises a column it no longer loads and a split rule
-        # against a single amount (which rejects every row).
-        sample_values = {
-            dest: values
-            for dest, values in sample_values.items()
-            if dest in field_mapping
-        }
-        for dest, column in field_mapping.items():
-            if dest not in sample_values:
-                sample_values[dest] = [
-                    value
-                    for value in collect_samples(read_result.df, column)
-                    if value is not None
-                ]
+
+    # The ONLY render of read_result.df — exactly once, against the FINAL
+    # mapping, whether a column got there via the caller's own `mapping`
+    # override or map_columns's own alias detection. No --date-format
+    # parameter exists on this preview path, so the detector's own
+    # mapping_result.date_format is always the effective one. field_mapping
+    # and mapping_result.date_format are both already final here, before
+    # anything below reads the frame's date-column text.
+    read_result.df = normalize_excel_date_columns_after_mapping(
+        read_result.df,
+        file_type=format_info.file_type,
+        field_mapping=field_mapping,
+        date_format=mapping_result.date_format,
+    )
+    # Every caller-visible sample comes from the just-rendered frame under
+    # the FINAL field_mapping — never mapping_result.sample_values, which
+    # map_columns computed from detection_df: detection_df renders every
+    # string column for format detection, so a native column mapped to a
+    # non-date field (a Memo mapped to memo) would otherwise show a
+    # rendering the real import never reproduces for it.
+    sample_values = collect_field_samples(read_result.df, field_mapping)
+
+    if mapping:
         sign_convention = coerce_sign_convention(
             field_mapping=field_mapping, detected=sign_convention
         )
@@ -969,6 +994,17 @@ def _import_preview_tabular(
             has_header=read_result.has_header,
             rows_in_file=read_result.rows_in_file,
             header_row_looks_like_data=read_result.header_row_looks_like_data,
+            header_position_ambiguous=read_result.header_position_ambiguous,
+            # DataClass.DESCRIPTION drives sensitivity-tier classification only
+            # (privacy/redaction.py's _TRANSFORMS maps it to _passthrough), not
+            # value masking — so this field needs its own selection pass.
+            # field_mapping is the FINAL mapping here (the render above
+            # already used it), so the disputed row reflects what imports.
+            header_position_ambiguous_rows=disputed_row_fields(
+                read_result.header_position_ambiguous_rows,
+                read_result.header_position_ambiguous_header_cells,
+                field_mapping,
+            ),
         ),
         # Consistent with the PDF branches; the @mcp_tool decorator also stamps
         # medium from ImportPreviewPayload (sample_values is row-level content).
@@ -1107,6 +1143,11 @@ def import_preview_coarse(
             # Carried so a later refusal re-scores against the same evidence the
             # caller reviewed, instead of a clean mapping it never saw.
             flagged_fields=list(data.flagged_fields),
+            # Persisted so the confirm-time replay knows the preview already
+            # surfaced this — replaying THIS plan is itself the ratification
+            # (see ReviewedTabularPlan's docstring), unlike header_row_looks_
+            # like_data above.
+            header_position_ambiguous=data.header_position_ambiguous,
         ).to_dict()
     sha256, size = _bytes_identity(source_bytes)
     issued_at = datetime.now(UTC)
@@ -1121,6 +1162,7 @@ def import_preview_coarse(
     # to survive the preview_id rewrite at the end of this function.
     from moneybin.services.import_confirmation import (
         classify_unconfirmable_plan,
+        header_position_ambiguous_recovery_mcp,
         header_row_consumed_recovery_mcp,
         unreadable_date_recovery_mcp,
     )
@@ -1131,7 +1173,11 @@ def import_preview_coarse(
     # One classifier, shared with both service branches: which recovery a plan
     # needs was decided three separate ways and corrected one site at a time,
     # and each divergence shipped a hint that could not resolve the refusal it
-    # accompanied.
+    # accompanied. Deliberately NOT passing header_position_ambiguous
+    # (default False): this preview's own data.header_position_ambiguous
+    # field already disclosed the ambiguity before the caller chose to call
+    # import_confirm — see classify_unconfirmable_plan's docstring and the
+    # matching comment on the service's reviewed-plan branch.
     plan_reason = (
         classify_unconfirmable_plan(
             header_row_looks_like_data=bool(
@@ -1157,6 +1203,16 @@ def import_preview_coarse(
             actions = [
                 "Use import_confirm(preview_id=...) before the preview expires.",
             ]
+            # header_position_ambiguous does NOT force plan_is_unconfirmable —
+            # unlike header_row_looks_like_data, confirming this plan ratifies
+            # the detected header position rather than restaging an
+            # unconfirmable one. Still worth naming explicitly: the caller
+            # should look at data.header_position_ambiguous / data.samples
+            # before ratifying, not discover it only after import_confirm.
+            if reviewed_plan is not None and reviewed_plan.get(
+                "header_position_ambiguous"
+            ):
+                actions.append(header_position_ambiguous_recovery_mcp())
         elif plan_reason == "header_row_consumed":
             actions = [header_row_consumed_recovery_mcp()]
         elif plan_reason == "unreadable_date":
@@ -1233,11 +1289,16 @@ def import_preview_coarse(
         # Only a confirmable plan gains anything from naming the real
         # preview_id; overwriting unconditionally discarded the correction hint
         # and sent the agent to a confirm call guaranteed to be refused.
+        # Replace only the placeholder entry (always actions[0] here — see the
+        # `not plan_is_unconfirmable` branch above) rather than the whole
+        # list: a header_position_ambiguous warning appended there is a
+        # second entry the agent must still see, and reassigning `actions`
+        # outright silently dropped it.
         if not plan_is_unconfirmable:
-            actions = [
-                f"Use import_confirm(preview_id='{preview_id}') before the preview "
-                "expires.",
-            ]
+            actions[0] = (
+                f"Use import_confirm(preview_id='{preview_id}') before the "
+                "preview expires."
+            )
     elif isinstance(final_payload, ImportPdfBridgePreviewPayload):
         actions = [
             f"Use import_confirm(preview_id='{preview_id}', "
@@ -2173,6 +2234,13 @@ def _import_confirm_coarse_confirmation_actions(
         )
 
         actions.append(header_row_consumed_recovery_mcp())
+        return actions
+    if outcome.reason == "header_position_ambiguous":
+        from moneybin.services.import_confirmation import (
+            header_position_ambiguous_recovery_mcp,
+        )
+
+        actions.append(header_position_ambiguous_recovery_mcp())
         return actions
     if outcome.reason == "unreadable_date":
         # The generic hint below prescribes a mapping= retry, which cannot

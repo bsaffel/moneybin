@@ -80,10 +80,10 @@ them and still runs:
 
 A service-backed report instead declares one `ServiceReportSpec` with its
 parameters, output columns, privacy classes, semantics, executor, and
-validator. It has no SQL model to derive lineage from, so its complete expected
-parameter and output class maps must also be added to
-`test_service_report_privacy_maps_match_independent_contract`; see
-"Service-backed reports" below.
+validator. The class map that stands in for the derivation it cannot have is
+not a spec field — it lives in the test named under "Service-backed reports use
+an independent reviewed class map" below, and must be updated in the same
+change.
 
 A SQL view with no runner instead gets its classes from the generated module —
 see "Runner-less views" below.
@@ -230,13 +230,9 @@ CRITICAL class for it over-declares across tiers, which the comparison above
 allows) but masks a column that is safe to expose and is not the pattern to
 copy into a new report.
 
-This applies to `ServiceReportSpec` parameters as well as output columns:
-exact `account_id` / `account_ids` parameters are `RECORD_ID`. Service-backed
-reports have no SQL model for source-lineage derivation, so they require an
-independently written expected column and parameter class map in
-`tests/moneybin/test_reports/test_catalog.py::test_service_report_privacy_maps_match_independent_contract`.
-That test enumerates the complete service-backed registry, so adding a report
-without reviewing its privacy contract fails CI. The registry-wide
+This applies to `ServiceReportSpec` parameters as well as output columns: exact
+`account_id` / `account_ids` parameters are `RECORD_ID`, declared in the
+reviewed map described below. The registry-wide
 `test_registered_account_id_metadata_uses_opaque_record_id_class` separately
 checks the opaque-ID naming invariant across both report kinds.
 

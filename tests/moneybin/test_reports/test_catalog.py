@@ -253,12 +253,27 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
     assert unsegmented == []
 
 
+def test_realized_fx_declares_every_currency_in_its_mixed_unit_rows() -> None:
+    """The disposed, Home, and conversion-leg units are all explicit."""
+    report = next(
+        item
+        for item in get_report_catalog().list()
+        if item.report_id == "core:realized_fx"
+    )
+
+    assert {
+        name
+        for name, data_class in report.classes.items()
+        if data_class is DataClass.CURRENCY
+    } == {"currency_code", "home_currency", "from_currency", "to_currency"}
+
+
 def test_only_reports_whose_rows_price_exactly_declare_an_fx_date() -> None:
     """Set equality, because both halves of this membership are load-bearing.
 
     Declaring `fx_date` opts a report's rows into display conversion, which is
     defensible only where one row holds one amount and one date to price it on.
-    Five of the eight packaged reports put `currency_code` in their GROUP BY,
+    Five packaged reports put `currency_code` in their GROUP BY,
     so pricing each row into one display currency would return several rows
     sharing a grain key — one month and category in two currencies, both
     relabelled USD, with nothing left to tell them apart or add them up.
@@ -679,6 +694,31 @@ def test_report_without_a_currency_column_states_no_currency() -> None:
 
     assert "currency_code" not in execution.columns
     assert execution.display_currency is None
+
+
+def test_mixed_unit_report_states_no_single_display_currency() -> None:
+    """The envelope must not label Home-currency gains as disposed Currency."""
+    spec = next(
+        report
+        for report in get_report_catalog().list()
+        if report.report_id == "core:realized_fx"
+    )
+
+    result = build_catalog_result(
+        spec,
+        parameters={},
+        records=[
+            {
+                "currency_code": "EUR",
+                "home_currency": "USD",
+                "gain_loss": Decimal("5.00"),
+            }
+        ],
+        columns=["currency_code", "home_currency", "gain_loss"],
+        max_rows=100,
+    )
+
+    assert result.to_envelope().to_dict()["summary"]["display_currency"] is None
 
 
 @pytest.mark.parametrize("cls", [ReportResult, CatalogReportExecution])

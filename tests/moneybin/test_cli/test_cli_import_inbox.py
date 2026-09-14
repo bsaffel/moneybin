@@ -227,6 +227,60 @@ def test_inbox_drain_low_tier_mapping_hint_omits_accept(
     assert "fuzzy.csv --accept" not in result.stderr
 
 
+def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """header_position_ambiguous must recommend --accept despite tier="low".
+
+    ``_gate_header_position_ambiguous`` always packs this reason with
+    tier="low" (Confidence(score=0.0, tier="low", ...)), so a generic
+    low-tier branch would wrongly claim "--accept would be rejected" —
+    exactly backwards, since --accept is the recovery this reason's own
+    gate ratifies on, and the one the persisted sidecar
+    (inbox_service.py) already recommends. Must also NOT recommend
+    `import files ... --confirm`: that command never archives the
+    pending file, so the next inbox sync would reprocess it and
+    duplicate every transaction just loaded.
+    """
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[],
+        failed=[],
+        pending=[
+            {
+                "filename": "data_before_header.csv",
+                "channel": "tabular",
+                "tier": "low",
+                "score": 0.0,
+                "reason": "header_position_ambiguous",
+                "moved_to": "pending/2026-05/data_before_header.csv",
+                "sidecar": "pending/2026-05/data_before_header.csv.pending.yml",
+                "header_position_ambiguous_rows": [
+                    {
+                        "transaction_date": "2026-01-01",
+                        "amount": "42.50",
+                        "description": "Coffee",
+                    }
+                ],
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.stderr
+    assert "data_before_header.csv --accept" in result.stderr
+    assert "would be rejected" not in result.stderr
+    assert "--mapping" not in result.stderr
+    assert "import files" not in result.stderr
+    # The disputed row is live drain-summary data, not part of the
+    # row-free persisted sidecar — the drain must still show it.
+    # Already allowlisted (disputed_row_fields) by the time it reaches
+    # here, so the rendering is dest=value pairs, not raw positional cells.
+    assert (
+        "transaction_date=2026-01-01, amount=42.50, description=Coffee" in result.stderr
+    )
+
+
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
     """--output json emits a JSON envelope with sync payload."""
     patch_inbox.sync.return_value = InboxSyncResult(

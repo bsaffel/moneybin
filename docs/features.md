@@ -73,11 +73,11 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 
 ## Reports
 
-Eight registered report routes back both the CLI and MCP surfaces, and you can
-save your own beside them (below). Six use SQL runners over curated `reports.*`
+Nine registered report routes back both the CLI and MCP surfaces, and you can
+save your own beside them (below). Seven use SQL runners over curated `reports.*`
 views; the two net-worth routes are service-backed and share `reports.net_worth`. Reports accept date-range filters (`--from-month` / `--to-month` on time-windowed reports like `cash-flow` and `spending-trend`, `--as-of` for snapshots like `networth`, plus `--account` and `--category` where they apply); grains vary per report. -> [Reports guide](guides/reports.md) · [CLI reference](guides/cli-reference.md) · [MCP server guide](guides/mcp-server.md)
 
-The six SQL-runner routes use declarative `@report` definitions; the two service-backed net-worth routes keep their specialized execution path. The shared catalog derives parameters and masking without adding MCP tool slots. See [Extensibility](#extensibility).
+The seven SQL-runner routes use declarative `@report` definitions; the two service-backed net-worth routes keep their specialized execution path. The shared catalog derives parameters and masking without adding MCP tool slots. See [Extensibility](#extensibility).
 
 - **`reports.net_worth`** — Cross-account total with period-over-period change.
 - **`reports.cash_flow`** — Income vs spending by month.
@@ -86,6 +86,7 @@ The six SQL-runner routes use declarative `@report` definitions; the two service
 - **`reports.merchant_activity`** — Per-merchant spend rollup.
 - **`reports.large_transactions`** — Outlier filter for human review.
 - **`reports.balance_drift`** — Drift between asserted and computed balances.
+- **`reports.realized_fx`** — Realized foreign-exchange gain/loss per consumed Currency lot, with incomplete unmatched-inventory placeholders left visible.
 
 ### Reading a report in one currency
 
@@ -96,7 +97,7 @@ Omit it and the target is the profile's home currency.
 
 Three reports convert, because each of their rows is one event on one date:
 `large_transactions` at its transaction date, `balance_drift` at its assertion
-date, and `networth` at its balance date. The other five aggregate with the
+date, and `networth` at its balance date. Five aggregate with the
 currency in their grouping key, so a row is already a per-currency subtotal;
 pricing it would put two currencies behind one figure. Those stay sub-totalled
 per currency, as does any report whose rates are not on disk — `moneybin
@@ -104,6 +105,11 @@ refresh` gathers them, since a read never fetches. Ask for a currency
 explicitly and the reason appears in `summary.degraded_reason`; the
 home-currency default falls back quietly, so a profile that has set one is not
 warned on every report it cannot price.
+
+`realized_fx` is the ninth report and a deliberate mixed-unit exception:
+`disposed_amount` stays in `currency_code` while `proceeds`, `cost_basis`,
+`fee_amount`, and `gain_loss` stay in `home_currency`. Display conversion does
+not re-price those audited amounts.
 
 Nothing converted is stored. The original amount and its currency stay
 untouched in every table, and a converted figure is recomputed on each read;
@@ -115,7 +121,7 @@ combined position once conversion has priced them into the same one.
 ### Your own reports
 
 `moneybin reports create <name> --sql "SELECT ..."` saves a query as a durable
-report alongside the eight above. It appears in `reports list`, runs through
+report alongside the nine above. It appears in `reports list`, runs through
 `reports run`, and exports through `moneybin export report` — the same catalog,
 the same response envelope, the same masking. You never declare privacy classes:
 MoneyBin derives them from the SQL at save time and stores them, so a routing
@@ -206,7 +212,7 @@ blocker.
 
 MoneyBin is built on the assumption that you'll want to track your money your way — and that an AI agent is a first-class way to make that happen. The schema, the reports, and the import pipeline are stable contracts an agent can read and build against, so you (or Claude Code, or Cursor) can scaffold a custom report, importer, or tracker on top of your own data.
 
-- **Declarative reports (implemented)** — Eight registered report routes share one catalog. Six use `@report` SQL runners and two net-worth routes use service-backed definitions; the framework derives CLI commands, the `reports` catalog entry, parameter flags, and column masking from those definitions. New reports extend the catalog without adding MCP tool slots.
+- **Declarative reports (implemented)** — Nine registered report routes share one catalog. Seven use `@report` SQL runners and two net-worth routes use service-backed definitions; the framework derives CLI commands, the `reports` catalog entry, parameter flags, and column masking from those definitions. New reports extend the catalog without adding MCP tool slots.
 - **The extension contract (in flight)** — A contributor-facing surface for adding your own **reports**, **analysis packages**, and **data providers**, with a Quality Scale (Bronze → Platinum). Designed in [`extension-contracts.md`](specs/extension-contracts.md); v1 ships two reference packages (`assets`, `us_tax`) at Platinum quality as worked examples.
 
 ## What's planned
@@ -215,7 +221,7 @@ These are visible gaps a migrant or agent author will notice. See [Roadmap](road
 
 - **Budgeting** — Monthly budgets, target-vs-actual, rollovers. Planned.
 - **Daily valued-holdings series and net-worth integration** — A dated series of what each position was worth on each day, and folding investment positions into net worth. Independent price feeds and your own price marks shipped alongside the ledger, tax lots, four-method cost basis, realized gain/loss (1099-B surface), and broker-carried market value — see [Investments](#investments) above. Planned (core, not a package).
-- **Multi-currency** — Original currency is captured from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. Reports that sum money sub-total each currency separately rather than adding dollars to euros; `moneybin profile set home_currency EUR` records which one the profile treats as home, and is the currency `--display-currency` defaults to; `moneybin system doctor` flags accounts whose currency is unknown. Profiles can also declare report display targets with `moneybin profile set display_currency_targets EUR,GBP`, so refresh stores the direct provider pairs those reads need. Exchange rates, with your own corrections outranking the provider, ship today — see [Accounts and balances](#accounts-and-balances). Three of the eight reports price their rows into one currency at read time; the five that aggregate per currency stay sub-totalled and say why. FX gain/loss is planned. -> [Multi-currency guide](guides/multi-currency.md)
+- **Multi-currency** — Original currency is captured from OFX and Plaid instead of being silently assumed USD, and every transaction and balance resolves its currency from its own source or its account's setting. Reports that sum money sub-total each currency separately rather than adding dollars to euros; `moneybin profile set home_currency EUR` records which one the profile treats as home, and is the currency `--display-currency` defaults to; `moneybin system doctor` flags accounts whose currency is unknown. Profiles can also declare report display targets with `moneybin profile set display_currency_targets EUR,GBP`, so refresh stores the direct provider pairs those reads need. Exchange rates, with your own corrections outranking the provider, ship today — see [Accounts and balances](#accounts-and-balances). Three reports price their rows into one currency at read time; five aggregate per currency and stay sub-totalled; `realized_fx` preserves `currency_code` and `home_currency` on each mixed-unit row. Realized FX accounting and its per-lot report are implemented, with a deliberate EUR/USD statement tie-out still required before the result is trusted against real data. -> [Multi-currency guide](guides/multi-currency.md)
 - **Web UI dashboard** — Local web UI plus Streamable HTTP MCP transport (so remote clients like ChatGPT web can reach MoneyBin). Planned.
 - **Hosted tier** — Same code, hosted. Planned.
 - **Drop-any-PDF import** — AI-assisted extraction of bank-statement PDFs: native-text statements extract locally and free, harder layouts escalate to the AI agent you're already driving MoneyBin with, and a learned recipe replays for free next time. Transaction-shaped rows route to `core`; everything else lands as queryable JSON seeds. **Phase 2a shipped (PR #233)** — auto-derived recipes persist to `app.pdf_formats` keyed by layout fingerprint, reconcile to within 1¢ of the statement's reported balance delta, and replay deterministically on subsequent imports. **Phase 2b bridge round-trip shipped** — a layout the deterministic rung can't crack escalates to the agent you're driving MoneyBin with (with a plain transparency notice), and your confirmed recipe is re-run, reconciled against the statement balances, and loaded; every hand-off is audit-logged (MCP surface today). A drifted saved recipe now auto-recovers (re-derived and version-bumped on the next import instead of stranding the broken recipe), and a scanned/image-only PDF with no text layer returns an explicit "needs a vision-capable backend" message rather than failing opaquely. See [`smart-import-pdf.md`](specs/smart-import-pdf.md).
