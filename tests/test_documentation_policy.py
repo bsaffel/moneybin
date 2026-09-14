@@ -1134,6 +1134,25 @@ def _hidden_stub_paths() -> list[str]:
     return stubs
 
 
+def _blank_fenced_blocks(text: str) -> str:
+    """Replace every fenced code block's characters with spaces, length-preserving."""
+    out: list[str] = []
+    fence: str | None = None
+    for line in text.splitlines(keepends=True):
+        opened = _FENCE.match(line)
+        if fence is None and opened:
+            fence = opened.group("fence")
+        elif fence is not None and line.strip() == fence:
+            fence = None
+        elif fence is not None:
+            out.append(
+                " " * (len(line) - 1) + "\n" if line.endswith("\n") else " " * len(line)
+            )
+            continue
+        out.append(line)
+    return "".join(out)
+
+
 def _stated_figures() -> list[_Figure]:
     import csv
 
@@ -1181,7 +1200,7 @@ def _stated_figures() -> list[_Figure]:
         _Figure(
             "export bundle tables",
             "docs/guides/cli-reference.md",
-            (rf"\b{n}-table\b",),
+            (rf"\b{n}-table (?:canonical |portability )?(?:bundle|catalog)\b",),
             (len(BUNDLE_TABLES),),
         ),
         _Figure(
@@ -1235,9 +1254,10 @@ def test_public_docs_stated_figures_match_code() -> None:
         for document in documents:
             relative = document.relative_to(_REPO_ROOT).as_posix()
             text = document.read_text()
-            # Newline → space keeps every offset, so a phrase split across a
-            # hard wrap still matches and its line number is still right.
-            flat = text.replace("\n", " ")
+            # Blanking fences and turning newlines into spaces both keep every
+            # offset, so a phrase split across a hard wrap still matches, a
+            # transcript's numbers are never read, and line numbers stay right.
+            flat = _blank_fenced_blocks(text).replace("\n", " ")
             for pattern in figure.patterns:
                 for found in re.finditer(pattern.replace(" ", r"\s+"), flat):
                     stated = tuple(_as_int(group) for group in found.groups() if group)
