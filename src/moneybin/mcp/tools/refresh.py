@@ -34,10 +34,14 @@ def refresh_run(
     categorization are best-effort. Identity backfill is also best-effort per
     domain: ``identity_errors`` contains only ``accounts`` and/or ``merchants``
     when proposal generation fails, while successful domains point to their
-    ``reviews(kind=...)`` queue. Only a SQLMesh apply error sets the top-level
-    ``error``; every other step reports its own in its ``stages`` entry. (A
-    first-load missing-view precondition is not a crash: that step comes back
-    ``ran=false`` with no error.)
+    ``reviews(kind=...)`` queue.
+
+    A blocking failure sets the top-level ``error`` — the SQLMesh apply step,
+    or an ``investment_match`` crash that kept apply from running at all (a
+    precondition whenever ``transform`` is requested); every other step
+    reports its own in its ``stages`` entry. (A first-load missing-view
+    precondition is not a crash: that step comes back ``ran=false`` with no
+    error.)
 
     ``stages`` holds one entry per step this run executed, each carrying that
     step's own ``counts``, its ``error``, and whether it ``ran``. A step the

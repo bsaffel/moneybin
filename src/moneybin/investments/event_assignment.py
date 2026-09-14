@@ -5,9 +5,27 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from moneybin import error_codes
+from moneybin.errors import UserError
+
 type EvidenceBand = Literal["native", "exact", "fuzzy"]
 type Objective = tuple[int, int, int]
 type Solution = tuple[Objective, int, int]
+
+# _solve_component's DP memoizes one entry per distinct reachable "available
+# claims" subset. Claim *count* alone does not predict that memo's size: a
+# component can carry many claims and still stay cheap when it is sparse (a
+# 1,002-claim, 1,001-candidate star reaches only ~1,000 memo entries, well
+# under a second — see test_event_assignment_sparse.py), while a *densely*
+# overlapping one — repeated indistinguishable events, same security, amount,
+# and date on both sides, forming an n x n candidate graph — roughly doubles
+# the memo with every additional event per side (measured: n=10 -> 6,144
+# entries/0.10s, n=12 -> 28,672/0.61s, n=14 -> 131,072/3.7s; the review that
+# raised this cited ~7.4s for n=15). So the bound is on actual DP work done,
+# not on a structural stand-in for it: it lets the cheap sparse case through
+# and stops the dense one while it is still comfortably sub-second, with
+# margin before the doubling trend reaches the review's 7.4s case.
+MAX_COMPONENT_STATES = 20_000
 
 
 @dataclass(frozen=True)
@@ -72,6 +90,22 @@ def _solve_component(candidates: list[Candidate]) -> Assignment:
     initial = (1 << len(claims)) - 1
     stack = [initial]
     while stack:
+        if len(memo) > MAX_COMPONENT_STATES:
+            # Fail visibly rather than continue the exponential solve: memo
+            # size is what actually tracks this DP's cost (see the module
+            # comment on MAX_COMPONENT_STATES) — checked here, before
+            # allocating any further transitions or stack entries.
+            raise UserError(
+                f"Investment matching component ({len(candidates)} "
+                f"candidates, {len(claims)} claims) exceeded "
+                f"{MAX_COMPONENT_STATES} assignment states while solving — "
+                "its cost is exponential for densely overlapping candidates, "
+                "so it refuses rather than risk a long stall or memory "
+                "exhaustion. This happens when many same-day events with "
+                "identical evidence (security, amount, date) repeat across "
+                "both histories.",
+                code=error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE,
+            )
         available = stack[-1]
         if available in memo:
             stack.pop()

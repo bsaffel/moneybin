@@ -1358,6 +1358,39 @@ def test_refresh_omits_a_stage_the_caller_never_asked_for(
     assert [s.step for s in result.stages] == ["investment_match", "transform"]
 
 
+def test_refresh_surfaces_a_blocking_investment_match_failure(
+    monkeypatch: pytest.MonkeyPatch, patched_services: dict[str, MagicMock]
+) -> None:
+    """A blocking investment_match crash must not read as a clean skip.
+
+    Regression for the PR #608 review finding: the early return this branch
+    takes reported ``applied=False`` but left the top-level ``error`` at
+    ``None``, so every embedded caller (``SyncService.pull``, batch import,
+    inbox sync) that reads only ``RefreshResult.error`` — see
+    ``test_pull_surfaces_refresh_error_on_failure`` for that passthrough —
+    could report success after raw data loaded even though apply never ran
+    and ``core.*`` stayed stale.
+    """
+
+    def _blocked_investment_match(_db: Database, *, actor: str) -> StageOutcome:
+        return StageOutcome(
+            step="investment_match", ran=True, error="injected planner failure"
+        )
+
+    monkeypatch.setattr(
+        "moneybin.orchestration.refresh._run_investment_match_step",
+        _blocked_investment_match,
+    )
+
+    result = refresh(db=MagicMock(spec=Database), steps=["transform"])
+
+    assert result.applied is False
+    assert result.error == "injected planner failure"
+    # Apply never ran at all — not just that it reported no error.
+    assert result.stage("transform") is None
+    patched_services["transform_apply"].assert_not_called()
+
+
 def test_refresh_marks_a_requested_categorize_that_could_not_run(
     patched_services: dict[str, MagicMock],
 ) -> None:

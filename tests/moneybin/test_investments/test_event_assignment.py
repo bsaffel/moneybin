@@ -1,10 +1,17 @@
 """Whole-event assignment maximizes evidence coverage without arbitrary ties."""
 
 from itertools import permutations
+from time import perf_counter
 
 import pytest
 
-from moneybin.investments.event_assignment import Candidate, solve_candidates
+from moneybin import error_codes
+from moneybin.errors import UserError
+from moneybin.investments.event_assignment import (
+    MAX_COMPONENT_STATES,
+    Candidate,
+    solve_candidates,
+)
 
 
 def test_coverage_beats_a_stronger_smaller_proposal() -> None:
@@ -110,3 +117,37 @@ def test_empty_input_leaves_every_event_standalone() -> None:
     result = solve_candidates([])
     assert result.objective == (0, 0, 0)
     assert result.proposals == ()
+
+
+def test_dense_component_over_the_state_bound_fails_visibly() -> None:
+    """A densely-overlapping component refuses rather than risk the blowup.
+
+    Regression for the PR #608 review finding: ``_solve_component``'s DP
+    memoizes one entry per distinct reachable "available claims" subset, and
+    a component of repeated indistinguishable events (same security, amount,
+    and date on both histories) makes that grow exponentially — the review
+    cited ~7.4s for a 15x15 fully-connected event graph. 12x12 already
+    exceeds the bound and, thanks to it, fails in well under a second instead
+    of continuing the exponential solve — this test proves both the refusal
+    and its speed. Its companion,
+    ``test_sparse_star_retains_all_1001_equally_optimal_relationships`` in
+    test_event_assignment_sparse.py, proves the bound tracks actual DP work
+    rather than raw claim count: that component has far more claims than
+    this one but stays under the bound and solves normally, because it is
+    sparse rather than densely overlapping.
+    """
+    n = 12
+    candidates = [
+        Candidate((f"a{i}", f"b{j}"), "exact") for i in range(n) for j in range(n)
+    ]
+    start = perf_counter()
+
+    with pytest.raises(UserError) as exc_info:
+        solve_candidates(candidates)
+
+    # Generous relative to the ~0.2s measured locally — the point is that the
+    # bound aborts the solve, not that it hits a precise budget.
+    assert perf_counter() - start < 5.0
+    assert exc_info.value.code == error_codes.INVESTMENT_MATCH_COMPONENT_TOO_LARGE
+    assert str(len(candidates)) in exc_info.value.message
+    assert str(MAX_COMPONENT_STATES) in exc_info.value.message

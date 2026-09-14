@@ -138,8 +138,9 @@ def refresh_command(
     only their domain in `identity_errors`. The rates step gathers the exchange
     rates this profile's own transactions, balances and holdings imply, so
     reports can convert without reaching the network; a pair the provider could
-    not answer is reported and retried next run. Only a SQLMesh apply error
-    exits non-zero.
+    not answer is reported and retried next run. Only a blocking apply
+    failure exits non-zero — the SQLMesh apply step itself, or an
+    investment-planning crash that kept apply from running at all.
     """
     from moneybin.adapters.refresh_adapters import (
         refresh_envelope,
@@ -162,10 +163,15 @@ def refresh_command(
     ):
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
+    # investment_match is a precondition for apply whenever "transform" is
+    # requested (expand_steps always adds it alongside "transform"); a
+    # blocking crash there skips apply outright and sets `result.error` the
+    # same way an apply failure does (see `refresh()`), so `blocked_transform`
+    # exists only to pick the right message below — the exit-code decisions
+    # further down read `result.error` alone, same as every embedded caller.
     investment_stage = result.stage("investment_match")
     blocked_transform = (
         "transform" in requested
-        and not result.applied
         and investment_stage is not None
         and investment_stage.error is not None
     )

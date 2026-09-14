@@ -537,10 +537,12 @@ class RefreshRunPayload:
 
     ``error`` is DESCRIPTION (Tier.MEDIUM): a SQLMesh error type name is
     non-PII, but we conservatively classify it as DESCRIPTION since error
-    strings in adjacent tooling sometimes embed model paths. It describes the
-    apply step alone — the only step that can hard-fail. Every other step
-    reports its own error inside its ``stages`` entry, so a caller reads one
-    place per step rather than a flat field per step.
+    strings in adjacent tooling sometimes embed model paths. It describes a
+    blocking failure — the SQLMesh apply step, or an ``investment_match``
+    crash that kept apply from running at all (a precondition whenever
+    ``transform`` is requested). Every other step reports its own error
+    inside its ``stages`` entry, so a caller reads one place per step rather
+    than a flat field per step.
 
     ``identity_errors`` contains only fixed domain labels and is therefore
     TXN_TYPE (Tier.LOW). It stays a top-level list because it names *which*
