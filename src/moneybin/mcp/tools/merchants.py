@@ -145,6 +145,7 @@ def merchants_create(
             created=created, skipped=skipped, error_details=error_details
         ),
         total_count=len(merchants),
+        returned_count=len(merchants),
         actions=[
             "Use merchants to review all merchant mappings",
         ],
@@ -178,6 +179,7 @@ def merchants_links_pending() -> ResponseEnvelope[MerchantLinksPendingPayload]:
     return build_envelope(
         data=payload,
         total_count=n_pending,
+        returned_count=len(payload.groups),
         actions=[
             "Use identity_links_decide with kind='merchant_link', "
             "decision='accept', decision_id, and target_id to bind",

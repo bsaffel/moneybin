@@ -629,6 +629,7 @@ def investments_securities_links_pending() -> ResponseEnvelope[
     return build_envelope(
         data=payload,
         total_count=n_pending,
+        returned_count=len(payload.groups),
         actions=[
             "Use identity_links_decide with kind='security_link', "
             "decision='accept', decision_id, and target_id to apply the "

@@ -505,6 +505,7 @@ def transactions_categorize_commit(
         return build_envelope(
             data=empty.to_payload(),
             total_count=0,
+            returned_count=0,
             actions=[
                 "Use transactions_categorize_rules to review auto-created rules",
                 "Use reviews(kind='categorization') to fetch the next batch",
@@ -518,6 +519,7 @@ def transactions_categorize_commit(
     return build_envelope(
         data=result.to_payload(),
         total_count=len(items),
+        returned_count=len(items),
         actions=[
             "Use transactions_categorize_rules to review auto-created rules",
             "Use reviews(kind='categorization') to fetch the next batch",
@@ -587,9 +589,11 @@ def transactions_categorize_rules_create(
             0,
             "Use reviews(kind='rule_conflicts') to decide the refused rule(s)",
         )
+    payload = result.to_payload()
     return build_envelope(
-        data=result.to_payload(),
+        data=payload,
         total_count=len(rules),
+        returned_count=len(payload.rule_ids),
         actions=actions,
     )
 

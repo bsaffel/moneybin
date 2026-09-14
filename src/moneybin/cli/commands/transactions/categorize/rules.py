@@ -284,10 +284,12 @@ def rules_create(
                 "Use `moneybin transactions categorize rules resolve` to decide "
                 "the refused rule(s)",
             )
+        payload = result.to_payload()
         envelope = build_envelope(
-            data=result.to_payload(),
+            data=payload,
             sensitivity="low",
             total_count=len(rules),
+            returned_count=len(payload.rule_ids),
             actions=actions,
         )
         render_or_json(envelope, output, cli_actor="rules_create")

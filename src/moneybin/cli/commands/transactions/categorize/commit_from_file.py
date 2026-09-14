@@ -131,6 +131,7 @@ def categorize_commit_from_file(
         data=result.to_payload(),
         sensitivity="medium",
         total_count=input_count,
+        returned_count=input_count,
         actions=[
             "Use `moneybin transactions categorize rules list` to review "
             "auto-created rules",
