@@ -25,7 +25,6 @@ from moneybin.tables import (
     MANUAL_TRANSACTIONS,
     OFX_ACCOUNTS,
     OFX_BALANCES,
-    OFX_INSTITUTIONS,
     OFX_TRANSACTIONS,
     PDF_SEEDS,
     TABULAR_ACCOUNTS,
@@ -68,7 +67,7 @@ REVERT_TABLES: dict[str, list[TableRef]] = {
     "parquet": _TABULAR_RAW_TABLES,
     "feather": _TABULAR_RAW_TABLES,
     "pipe": _TABULAR_RAW_TABLES,
-    "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES, OFX_INSTITUTIONS],
+    "ofx": [OFX_TRANSACTIONS, OFX_ACCOUNTS, OFX_BALANCES],
     # Manual cash entries and manual investment events share source_type
     # "manual" but write to different raw tables; revert is keyed on import_id
     # and each batch's rows live in exactly one table, so listing both is safe

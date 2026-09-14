@@ -136,43 +136,14 @@ def test_extract_from_file_creates_dataframes(
     )
 
     # Check all expected tables are present
-    assert "institutions" in results
     assert "accounts" in results
     assert "transactions" in results
     assert "balances" in results
 
     # Check that results are DataFrames
-    assert isinstance(results["institutions"], pl.DataFrame)
     assert isinstance(results["accounts"], pl.DataFrame)
     assert isinstance(results["transactions"], pl.DataFrame)
     assert isinstance(results["balances"], pl.DataFrame)
-
-
-@pytest.mark.unit
-def test_extract_institutions_data(
-    sample_ofx_file: Path, extractor_config: OFXProviderConfig
-) -> None:
-    """Test that institution data is extracted correctly."""
-    extractor = OFXExtractor(extractor_config)
-    results = extractor.extract_from_file(
-        sample_ofx_file, import_id=_IMPORT_ID, source_origin=_SOURCE_ORIGIN
-    )
-
-    institutions = results["institutions"]
-
-    # Should have at least one institution
-    assert len(institutions) >= 1
-
-    # Check expected columns
-    assert "organization" in institutions.columns
-    assert "fid" in institutions.columns
-    assert "source_file" in institutions.columns
-    assert "extracted_at" in institutions.columns
-
-    # Check values
-    first_row = institutions.row(0, named=True)
-    assert first_row["organization"] == "Test Bank"
-    assert first_row["fid"] == "12345"
 
 
 @pytest.mark.unit
@@ -362,7 +333,6 @@ def test_convenience_function(sample_ofx_file: Path) -> None:
     )
 
     # Check all expected tables are present
-    assert "institutions" in results
     assert "accounts" in results
     assert "transactions" in results
     assert "balances" in results
@@ -451,7 +421,7 @@ class TestExtractorPopulatesBatchColumns:
         assert all(v == "ofx" for v in txns["source_type"].to_list())
 
     def test_all_dataframes_have_import_id_and_source_type(self) -> None:
-        """All four DataFrames carry import_id and source_type."""
+        """All three DataFrames carry import_id and source_type."""
         fixture = FIXTURES_DIR / "ofx" / "sample_minimal.ofx"
         if not fixture.exists():
             pytest.skip("OFX fixture not present yet")
@@ -463,13 +433,13 @@ class TestExtractorPopulatesBatchColumns:
             source_origin="minimal_bank",
         )
 
-        for name in ("institutions", "accounts", "transactions", "balances"):
+        for name in ("accounts", "transactions", "balances"):
             df = result[name]
             assert "import_id" in df.columns, f"{name} missing import_id"
             assert "source_type" in df.columns, f"{name} missing source_type"
 
-    def test_institution_name_comes_from_file_not_caller(self) -> None:
-        """Institution org comes from <FI><ORG> in the file, not from a caller hint."""
+    def test_institution_org_comes_from_file_not_caller(self) -> None:
+        """institution_org comes from <FI><ORG> in the file, not from a caller hint."""
         fixture = FIXTURES_DIR / "ofx" / "sample_minimal.ofx"
         if not fixture.exists():
             pytest.skip("OFX fixture not present yet")
@@ -481,11 +451,11 @@ class TestExtractorPopulatesBatchColumns:
             source_origin=_SOURCE_ORIGIN,
         )
 
-        institutions = result["institutions"]
-        assert len(institutions) >= 1
-        first = institutions.row(0, named=True)
+        accounts = result["accounts"]
+        assert len(accounts) >= 1
+        first = accounts.row(0, named=True)
         # The fixture has <ORG>SAMPLE BANK</ORG>
-        assert first["organization"] == "SAMPLE BANK"
+        assert first["institution_org"] == "SAMPLE BANK"
 
 
 def _txn_row(
