@@ -38,7 +38,10 @@ from moneybin.extractors.account_identity import (
 )
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
-from moneybin.extractors.tabular.account_label import parse_account_label
+from moneybin.extractors.tabular.account_label import (
+    last4_from_account_number,
+    parse_account_label,
+)
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -1026,33 +1029,6 @@ def reject_unhonored_account_signals(
     )
 
 
-def _validate_explicit_tabular_sign_shape(
-    field_mapping: dict[str, str],
-    sign: SignConventionType,
-) -> None:
-    """Reject an explicit sign convention that cannot read the mapped columns."""
-    has_split_amount = (
-        "debit_amount" in field_mapping and "credit_amount" in field_mapping
-    )
-    if sign == "split_debit_credit" and not has_split_amount:
-        raise UserError(
-            "Sign convention 'split_debit_credit' does not fit this file's "
-            "columns: the mapping resolves a single amount column, which this "
-            "convention does not read. Re-run with --sign negative_is_expense "
-            "or --sign negative_is_income, or map both debit_amount and "
-            "credit_amount; nothing was imported.",
-            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
-        )
-    if sign != "split_debit_credit" and has_split_amount:
-        raise UserError(
-            f"Sign convention {sign!r} does not fit this file's columns: the "
-            "mapping resolves a debit/credit pair, which this convention does "
-            "not read. Re-run with --sign split_debit_credit, or map one amount "
-            "column; nothing was imported.",
-            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
-        )
-
-
 def per_file_failure(
     exc: Exception,
 ) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
@@ -1293,21 +1269,6 @@ def _to_account_number_mask(raw: str | None) -> str | None:
     if len(digits) < 4:
         return stripped
     return f"****{digits[-4:]}"
-
-
-def _last4_from_account_number(value: object) -> str | None:
-    """Last 4 digits of a mapped account-number column value, else None.
-
-    The account-number column holds the real (or already-masked) number, so its
-    trailing 4 digits are an authoritative last4 — used as a fallback when the
-    display label carries none. Distinct from ``parse_account_label``, which only
-    trusts a recognized last-4 *pattern* in a free-text display name. Tabular
-    columns are read as strings (``infer_schema_length=0``), so no float coercion.
-    """
-    if value is None:
-        return None
-    digits = "".join(c for c in str(value) if c.isdigit())
-    return digits[-4:] if len(digits) >= 4 else None
 
 
 def _normalize_pdf_amount(row: dict[str, Any], sign_convention: str) -> Decimal:
@@ -2799,10 +2760,9 @@ class ImportService:
         Returns:
             ImportResult with summary.
         """
-        import polars as pl
-
         from moneybin.extractors.tabular import TabularExtractor
         from moneybin.extractors.tabular.column_mapper import map_columns
+        from moneybin.extractors.tabular.extractor import build_account_dataframe
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.formats import (
             TabularFormat,
@@ -2815,6 +2775,9 @@ class ImportService:
             normalize_excel_date_columns_after_mapping,
             normalize_excel_date_columns_for_detection,
             read_file,
+        )
+        from moneybin.extractors.tabular.sign_convention import (
+            validate_explicit_sign_shape,
         )
         from moneybin.extractors.tabular.transforms import transform_dataframe
         from moneybin.utils import slugify
@@ -3700,7 +3663,7 @@ class ImportService:
                 code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
         if sign:
-            _validate_explicit_tabular_sign_shape(
+            validate_explicit_sign_shape(
                 resolved.field_mapping,
                 cast(SignConventionType, sign),
             )
@@ -3922,7 +3885,7 @@ class ImportService:
             label_parsed_by_key[native_key] = (clean_name, label_last4)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[native_key] = l4
                         break
             source_accounts.append(
@@ -3977,7 +3940,7 @@ class ImportService:
                 ):
                     if number_last4_by_key.get(aid):
                         continue
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[aid] = l4
             # Per-account institution from a mapped Institution column (Tiller-style):
             # first non-null value per account key. An institution embedded only in a
@@ -4028,7 +3991,7 @@ class ImportService:
             label_parsed_by_key[native_key] = (placeholder_name, None)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[native_key] = l4
                         break
             bare_src = SourceAccount(
@@ -4192,46 +4155,23 @@ class ImportService:
             # diagnostic detail on the operator's side of the boundary.
             raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
-        # Stage 5: Load — one account record per unique account
-        unique_ids = sorted(acct_id_to_name.keys())
-        # Reuse the Phase 1 parse (label_last4) with the account-number column as
-        # fallback — same last4 the resolver saw, never a second parse pass.
-        acct_id_to_last4: dict[str, str | None] = {}
-        for aid in acct_id_to_name:
-            l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
-            acct_id_to_last4[aid] = f"****{l4}" if l4 else None
-        # institution_name per account: per-account institution applies only when
-        # the multi-account branch actually ran (no explicit --account-name/
-        # --account-id); an explicit account on a multi-account-detected format
-        # keeps the shared format/file institution (Decision 8). Single-account
-        # uses the shared institution for its one row.
-        #
-        # `raw_institution_name` holds both halves, decided in Phase 1 — it also
-        # feeds the mint report, which must state this value before this stage
-        # writes it. Its shared half falls back to `institution` (resolved from
-        # the format or the filename at Stage 1) because matched_format is
-        # None for an unregistered import. Without that fallback the account's
-        # dim row stores institution_name=NULL, and a later cross-source twin
-        # can't match it on (institution, last4) — breaking the CSV-first
-        # matching direction.
-        account_institutions = [raw_institution_name(aid) for aid in unique_ids]
-        account_df = pl.DataFrame({
-            "account_id": unique_ids,
-            "account_name": [acct_id_to_name[aid] for aid in unique_ids],
-            # Decided in Phase 1 alongside the mint report, for the same reason
-            # institution_name is: dim_accounts names the account by this column
-            # and the report has to state that name before this stage writes it.
-            "account_label": [source_label_by_key.get(aid) for aid in unique_ids],
-            "account_number": [None] * len(unique_ids),
-            "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
-            "account_type": [None] * len(unique_ids),
-            "institution_name": account_institutions,
-            "currency": [None] * len(unique_ids),
-            "source_file": [str(file_path)] * len(unique_ids),
-            "source_type": [source_type] * len(unique_ids),
-            "source_origin": [source_origin] * len(unique_ids),
-            "import_id": [import_id] * len(unique_ids),
-        })
+        # Stage 5: Load — one account record per unique account. institution_by_key
+        # falls back to `institution` (resolved from the format or the filename at
+        # Stage 1) because matched_format is None for an unregistered import —
+        # without that fallback the account's dim row stores institution_name=NULL,
+        # and a later cross-source twin can't match it on (institution, last4).
+        institution_by_key = {aid: raw_institution_name(aid) for aid in acct_id_to_name}
+        account_df = build_account_dataframe(
+            acct_id_to_name=acct_id_to_name,
+            source_label_by_key=source_label_by_key,
+            label_parsed_by_key=label_parsed_by_key,
+            number_last4_by_key=number_last4_by_key,
+            institution_by_key=institution_by_key,
+            file_path=file_path,
+            source_type=source_type,
+            source_origin=source_origin,
+            import_id=import_id,
+        )
 
         rows_imported = extractor.load_transactions(transform_result.transactions)
         extractor.load_accounts(account_df)
@@ -4273,9 +4213,12 @@ class ImportService:
                 observations=None,
             )
 
-        result.accounts = len(unique_ids)
+        result.accounts = len(acct_id_to_name)
         result.transactions = rows_imported
-        result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
+        result.details = {
+            "transactions": rows_imported,
+            "accounts": len(acct_id_to_name),
+        }
         result.sign_correction_suggested = transform_result.sign_correction_suggested
         result.field_mapping = dict(resolved.field_mapping)
 

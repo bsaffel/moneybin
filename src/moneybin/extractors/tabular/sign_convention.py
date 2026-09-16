@@ -9,6 +9,8 @@ Determines how the source represents expenses vs income:
 import re
 from dataclasses import dataclass
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.extractors.tabular.formats import SignConventionType
 
 # Word-boundary "credit" match for credit-card context detection. Without
@@ -99,3 +101,30 @@ def infer_sign_convention(
         convention="negative_is_expense",
         reason="Mixed positive/negative values — standard convention",
     )
+
+
+def validate_explicit_sign_shape(
+    field_mapping: dict[str, str],
+    sign: SignConventionType,
+) -> None:
+    """Reject an explicit sign convention that cannot read the mapped columns."""
+    has_split_amount = (
+        "debit_amount" in field_mapping and "credit_amount" in field_mapping
+    )
+    if sign == "split_debit_credit" and not has_split_amount:
+        raise UserError(
+            "Sign convention 'split_debit_credit' does not fit this file's "
+            "columns: the mapping resolves a single amount column, which this "
+            "convention does not read. Re-run with --sign negative_is_expense "
+            "or --sign negative_is_income, or map both debit_amount and "
+            "credit_amount; nothing was imported.",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
+        )
+    if sign != "split_debit_credit" and has_split_amount:
+        raise UserError(
+            f"Sign convention {sign!r} does not fit this file's columns: the "
+            "mapping resolves a debit/credit pair, which this convention does "
+            "not read. Re-run with --sign split_debit_credit, or map one amount "
+            "column; nothing was imported.",
+            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
+        )
