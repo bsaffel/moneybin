@@ -47,9 +47,9 @@ Parameter defaults live in `DatabaseConfig` (`src/moneybin/config.py`): `time_co
 
 ### Lifecycle commands
 
-Every flag and subcommand is in the generated [`db` CLI reference](../reference/cli/db.md). What the reference cannot carry is the semantics: `db init` creates the profile database and stores its key (`--passphrase` switches it to passphrase mode), `db lock` drops the key from the keychain so subsequent commands fail until `db unlock` re-derives it, and `db key rotate` mints a fresh key and re-encrypts the file in place. `db key export`, `import`, and `verify` are not implemented — see [What is not built yet](#what-is-not-built-yet).
+Every flag and subcommand is in the generated [`db` CLI reference](../reference/cli/db.md). What the reference cannot carry is the semantics: `db init` creates the profile database and stores its key (`--passphrase` switches it to passphrase mode), `db lock` drops the key from the keychain so subsequent commands fail until the key is back. `db unlock` puts it back only on a passphrase-mode database, by re-deriving it from the passphrase and the stored salt; on an auto-key database (the default) there is no salt, `db unlock` exits `1`, and `db lock` does not warn before deleting the only copy of the key. Run `db key show` and store the key before locking an auto-key profile, then reopen it with `MONEYBIN_DATABASE__ENCRYPTION_KEY`. `db key rotate` mints a fresh key and re-encrypts the file in place. `db key export`, `import`, and `verify` are not implemented — see [What is not built yet](#what-is-not-built-yet).
 
-`db info` reports lock state, key mode, and row counts without unlocking a locked database:
+`db info` reports the file size, key mode, and lock state without unlocking a locked database. The table count, the per-table row counts, and the DuckDB version below appear only on an unlocked database: a locked one is never opened, so the output stops after the `Lock state: locked` line.
 
 ```console
 $ uv run moneybin db info
@@ -326,6 +326,7 @@ No other processes have moneybin.duckdb open
 
 ## What is not built yet
 
+- **`db lock` does not check the key mode.** On an auto-key profile it deletes the only copy of the key without a warning, and `db unlock` cannot rebuild it (no passphrase salt exists). The recovery path is the key you saved from `db key show` before locking, supplied through `MONEYBIN_DATABASE__ENCRYPTION_KEY`; without it the file and every backup made under that key are unreadable. ([Lifecycle commands](#lifecycle-commands))
 - **No key envelope: `db key export` and `db key verify` exit `1`, `db key import` needs an argument it can do nothing with.** All three are hidden from `db key --help` and stay invocable so an existing script keeps its exit code. Move a key by hand — `db key show` into a password manager, or `MONEYBIN_DATABASE__ENCRYPTION_KEY` on the target machine.
 
   `db key export` and `db key verify` each print one line to stderr and exit `1`: ⚠️  This command is not yet implemented. Support for encryption key export (respectively, verification) is planned — run `moneybin --help` for what works today.

@@ -396,7 +396,9 @@ Ranked from strongest guarantee to smallest change:
    through an agent, it reaches the provider like any other tool result. Pair it
    with the CLI or a local model (options 1–2) to close that path too.
 4. **`moneybin db lock` when you're not actively using the agent.** A locked
-   profile can't be opened by a new MCP session at all.
+   profile can't be opened by a new MCP session at all. On an auto-key profile
+   save the key with `db key show` first: `db unlock` re-derives a key only
+   from a passphrase ([Database security](database-security.md#lifecycle-commands)).
 
 ---
 

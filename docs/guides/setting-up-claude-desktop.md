@@ -43,7 +43,7 @@ Using profile: demo
 }
 ```
 
-`--print` shows the entry without writing it. Drop `--print` and add `-y` to write it into the config file. Three lines are trimmed from the block above: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran.
+`--print` shows the entry without writing it. Drop `--print` and add `-y` to write it into the config file. Three lines are trimmed from the block above: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set).
 
 ```bash
 moneybin mcp install --client claude-desktop -y

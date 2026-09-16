@@ -70,7 +70,7 @@ Using profile: demo
 }
 ```
 
-Three lines are trimmed from that block: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran.
+Three lines are trimmed from that block: the `args` pair `"--directory"` and the absolute path of the checkout `uv` runs from, and the `"MONEYBIN_HOME"` entry inside `env`, which holds the absolute path of the MoneyBin home directory that was set when install ran (the `env` block appears only when `MONEYBIN_HOME` is set).
 
 `command` is the **absolute path** to `uv`, resolved when you run install. That is deliberate: macOS clients launched from the GUI (Claude Desktop, Cursor) do not inherit your shell's `PATH`, so a bare `uv` resolves to nothing and the server dies at launch with an error the client reports as a generic failure. If `uv` isn't on your `PATH` at install time either, the bare name is emitted and the client will tell you it couldn't start.
 
@@ -419,7 +419,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 ## Troubleshooting
 
-**Server doesn't start.** Most common: the database is locked. Run `moneybin db unlock` to unlock the active profile's database before launching the client. If the unlock prompt errors out, check that you've created a profile (`moneybin profile create <name>`) and that the profile passphrase is set up.
+**Server doesn't start.** Most common: the database is locked. Run `moneybin db unlock` to unlock the active profile's database before launching the client. If the unlock prompt errors out, check that you've created a profile (`moneybin profile create <name>`) and that the profile passphrase is set up. `db unlock` re-derives a key only on a passphrase-mode database; an auto-key profile that was locked is reopened by supplying its saved key through `MONEYBIN_DATABASE__ENCRYPTION_KEY` ([Database security](database-security.md#lifecycle-commands)).
 
 **Client doesn't see any tools.** Restart the client after install — most clients read MCP config only at launch. If the client is restarted and still empty, run `moneybin mcp config path --client <name>` to print the resolved config path, then verify the file exists and contains a `MoneyBin` entry under `mcpServers` (or `servers` for VS Code, `[mcp_servers.<name>]` for Codex).
 
