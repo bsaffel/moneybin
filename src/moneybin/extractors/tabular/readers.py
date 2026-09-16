@@ -558,14 +558,23 @@ def _looks_like_data_row(
             visible": calibrated to certainty, not silent guessing).
 
     Returns:
-        True when at least one cell is a date and at least one is an amount.
+        True when a date and an amount are found in distinct cells.
     """
-    has_date = any(
-        detect_date_format([c], declared_format=declared_date_format)[0] is not None
-        for c in cells
-    )
-    has_amount = any(_is_amount(c) for c in cells)
-    return has_date and has_amount
+    # Distinct cells, not just "a date exists and an amount exists": no
+    # built-in _DATE_FORMATS value parses as an amount, but a declared
+    # compact format (e.g. %Y%m%d) does -- "20260105" is both. Without this
+    # check, a single such cell with no real amount in the row (a preamble
+    # line like "Statement date,20260131") would double-count as its own
+    # date AND its own amount and read as data.
+    date_idx = {
+        i
+        for i, c in enumerate(cells)
+        if detect_date_format([c], declared_format=declared_date_format)[0] is not None
+    }
+    if not date_idx:
+        return False
+    amount_idx = {i for i, c in enumerate(cells) if _is_amount(c)}
+    return bool(amount_idx - date_idx)
 
 
 def _looks_like_header(cells: list[str]) -> bool:

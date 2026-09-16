@@ -11,7 +11,9 @@ from moneybin.extractors.tabular.column_mapper import map_columns
 from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _classify_excel_headerless_via_fastexcel,  # pyright: ignore[reportPrivateUsage]
+    _classify_header_rows,  # pyright: ignore[reportPrivateUsage]
     _detect_header,  # pyright: ignore[reportPrivateUsage]
+    _looks_like_data_row,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     normalize_excel_date_columns_after_mapping,
     normalize_excel_date_columns_for_detection,
@@ -177,6 +179,48 @@ class TestCSVReader:
         assert result.has_header is True
         assert list(result.df.columns) == ["Date", "Amount", "Description"]
         assert len(result.df) == 2
+
+    def test_declared_date_format_single_cell_is_not_both_date_and_amount(
+        self,
+    ) -> None:
+        """A declared compact format must not double-count one cell.
+
+        Review finding on #604's fix: under a declared ``%Y%m%d``, a value like
+        ``20260105`` parses as both a date AND an amount (unlike any
+        built-in ``_DATE_FORMATS`` value, none of which parses as an
+        amount), so a row carrying a date with no real amount elsewhere must
+        not read as data merely because that one cell satisfies both tests.
+        """
+        assert _looks_like_data_row(["20260105", "Coffee"], "%Y%m%d") is False
+        # Unchanged without the declaration -- documents the pre-existing,
+        # still-correct behavior this fix must not disturb.
+        assert _looks_like_data_row(["20260105", "Coffee"]) is False
+
+    def test_declared_date_format_preamble_line_is_not_ambiguous(self) -> None:
+        """A one-cell preamble line must not trigger a spurious confirm.
+
+        Companion to the single-cell case above at the ``_classify_header_
+        rows`` level: a "Statement date,20260131" preamble line above a real
+        header must not be flagged as ambiguous data just because its date
+        cell also parses as an amount under the declared format.
+        """
+        rows = [
+            ["Statement date", "20260131"],
+            ["Date", "Amount", "Description"],
+            ["20260105", "42.50", "Coffee"],
+            ["20260106", "-12.00", "Lunch"],
+        ]
+        assert _classify_header_rows(rows, "%Y%m%d") == (1, True, False, (), ())
+
+    def test_declared_date_format_row_with_real_amount_still_counts_as_data(
+        self,
+    ) -> None:
+        """A genuine data row (distinct date and amount cells) still counts.
+
+        Guards the fix itself: requiring distinct cells must not regress the
+        headerless case #604 exists to fix.
+        """
+        assert _looks_like_data_row(["20260105", "42.50", "Coffee"], "%Y%m%d") is True
 
     def test_summary_row_above_header_not_headerless(self, tmp_path: Path) -> None:
         """A summary/opening-balance line above the real header is preamble.
