@@ -1,0 +1,1 @@
+A headerless CSV or Excel file whose dates use a format outside the built-in detection list (for example `%Y%m%d`, importable today via an explicit `--date-format`) no longer loses its first transaction to header detection. Passing the declared format through to header/headerless classification lets it recognize the row as data instead of eating it as a header.

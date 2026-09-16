@@ -2821,6 +2821,19 @@ class ImportService:
                 encoding_override=effective_encoding,
                 no_size_limit=no_size_limit,
             )
+            # Earliest declared-format signal available before the read: an
+            # explicit --date-format, or an explicit --format's own saved
+            # date_format. The header-signature match (below, once df.columns
+            # is known) can name matched_format later than this, so it isn't
+            # available yet — a headerless file matched only by signature
+            # still relies on the built-in _DATE_FORMATS scan for THIS read.
+            # See _looks_like_data_row's docstring for why this closes #604:
+            # a caller-declared format outside _DATE_FORMATS (e.g. %Y%m%d)
+            # would otherwise never be recognized as data, so a genuinely
+            # headerless file loses its first row to the (0, True) fallback.
+            header_detection_date_format = date_format_override or (
+                matched_format.date_format if matched_format else None
+            )
             read_result = read_file(
                 file_path,
                 format_info,
@@ -2833,6 +2846,7 @@ class ImportService:
                 else None,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
+                declared_date_format=header_detection_date_format,
             )
         else:
             from moneybin.extractors.tabular.format_detector import FormatInfo
@@ -2850,6 +2864,7 @@ class ImportService:
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
                 has_header=reviewed_plan.has_header,
+                declared_date_format=reviewed_plan.date_format,
             )
         df = read_result.df
 

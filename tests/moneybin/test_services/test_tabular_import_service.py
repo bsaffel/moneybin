@@ -2070,6 +2070,73 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 3
 
+    def test_headerless_csv_declared_date_format_keeps_first_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """A caller-declared date format outside ``_DATE_FORMATS`` closes #604.
+
+        ``_looks_like_data_row`` only recognized a date via the built-in
+        ``_DATE_FORMATS`` list, so a genuinely headerless file whose dates use
+        a format outside it (``%Y%m%d``) had no row that read as data —
+        header detection fell back to eating row 0 as a header, dropping the
+        first transaction with no way to recover it. Threading
+        ``date_format`` into header/headerless classification itself (not
+        just the later column-mapping stage #591 already covers) fixes this.
+        """
+        from moneybin.services.import_service import ImportService
+
+        csv = tmp_path / "headerless_yyyymmdd.csv"
+        csv.write_text(
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        result = ImportService(db).import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y%m%d",
+        )
+
+        assert result.rows_loaded == 3
+
+    def test_headerless_excel_declared_date_format_keeps_first_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Excel mirrors the CSV fix (#604) for a plain-number compact date.
+
+        ``_excel_cell_text`` only normalizes ``datetime``/``date`` objects to
+        ISO for the classification sample, so a compact date written as a
+        plain number (``20260105``, not a native Excel date cell) reaches
+        header detection as literal text outside ``_DATE_FORMATS`` — the
+        same gap as the CSV case, on the Excel reader's own sampling path.
+        """
+        import openpyxl
+
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([20260105, -4.50, "Coffee"])
+        ws.append([20260106, 100.00, "Salary"])
+        ws.append([20260107, -20.00, "Groceries"])
+        xlsx = tmp_path / "headerless_yyyymmdd.xlsx"
+        wb.save(xlsx)
+
+        result = ImportService(db).import_file(
+            xlsx,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+            date_format="%Y%m%d",
+        )
+
+        assert result.rows_loaded == 3
+
     def test_a_dirty_prefix_does_not_refuse_a_file_the_format_reads(
         self, db: Database, tmp_path: Path
     ) -> None:

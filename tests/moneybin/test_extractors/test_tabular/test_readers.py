@@ -130,6 +130,54 @@ class TestCSVReader:
         result = read_file(f, info)
         assert len(result.df) == 3
 
+    def test_headerless_csv_declared_date_format_keeps_first_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A declared date format outside ``_DATE_FORMATS`` must be recognized.
+
+        Issue #604: ``_looks_like_data_row`` only recognized a date via the
+        built-in ``_DATE_FORMATS`` list, so a genuinely headerless file whose
+        dates use a format outside it (``%Y%m%d``) had no row that read as
+        data — ``_classify_header_rows`` fell back to ``(0, True)`` and ate
+        row 0 as a header with no way to recover it. Without the declared
+        format this same file loses row 0; passing it through recognizes the
+        row as data instead.
+        """
+        f = _write_csv(
+            tmp_path / "headerless_yyyymmdd.csv",
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+
+        # Baseline: with no declared format, the pre-existing gap this issue
+        # tracks still applies — row 0 is eaten as a header.
+        baseline = read_file(f, info)
+        assert baseline.has_header is True
+        assert len(baseline.df) == 2
+
+        result = read_file(f, info, declared_date_format="%Y%m%d")
+        assert result.has_header is False
+        assert len(result.df) == 3
+
+    def test_declared_date_format_does_not_break_header_detection(
+        self, tmp_path: Path
+    ) -> None:
+        """A declared format must not make a real header row look like data.
+
+        Header labels (``Date``, ``Amount``, ``Description``) never parse as
+        a date under any format, so passing a caller's ``--date-format``
+        alongside a normally-headered file must leave detection unchanged.
+        """
+        f = _write_csv(
+            tmp_path / "headered_yyyymmdd.csv",
+            "Date,Amount,Description\n20260105,42.50,Coffee\n20260106,10.00,Tea\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info, declared_date_format="%Y%m%d")
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert len(result.df) == 2
+
     def test_summary_row_above_header_not_headerless(self, tmp_path: Path) -> None:
         """A summary/opening-balance line above the real header is preamble.
 
@@ -596,6 +644,38 @@ class TestExcelReader:
         assert result.header_row_looks_like_data is False
         assert len(result.df) == 2
         assert result.rows_in_file == 2
+
+    def test_headerless_excel_declared_date_format_keeps_row0(
+        self, tmp_path: Path
+    ) -> None:
+        """Excel mirrors the CSV fix for a declared date format (#604).
+
+        A compact numeric date like ``20260105`` written as a plain number
+        (not a native Excel date cell) reaches the classifier as literal
+        text via ``_excel_cell_text`` (``str(value)``, since it is neither
+        ``datetime.datetime`` nor ``datetime.date``) — ``%Y%m%d`` is outside
+        ``_DATE_FORMATS``, so without the declared format this file loses
+        row 0 the same way the CSV case does.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([20260105, 42.50, "Coffee"])
+        ws.append([20260106, 10.00, "Tea"])
+        path = tmp_path / "headerless_yyyymmdd.xlsx"
+        wb.save(path)
+
+        baseline = read_file(path, FormatInfo(file_type="excel"))
+        assert baseline.has_header is True
+        assert len(baseline.df) == 1
+
+        result = read_file(
+            path, FormatInfo(file_type="excel"), declared_date_format="%Y%m%d"
+        )
+        assert result.has_header is False
+        assert len(result.df) == 2
 
     def test_blank_spacer_column_before_a_native_date_column_imports_correctly(
         self, tmp_path: Path
