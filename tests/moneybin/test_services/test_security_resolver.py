@@ -264,7 +264,7 @@ def test_contradicting_cusip_disqualifies_ticker_automatch(db: Database) -> None
     )
     assert SecurityResolver(db).resolve_all() == {"minted": 1}
     assert _bindings(db)[0][2] != sid
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
 
 
 def test_contradicting_isin_disqualifies_ticker_automatch(db: Database) -> None:
@@ -299,7 +299,7 @@ def test_contradicting_cusip_disqualifies_fuzzy_name_proposal(db: Database) -> N
         cusip="111111111",
     )
     assert SecurityResolver(db).resolve_all() == {"minted": 1}
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
 
 
 def test_fuzzy_name_mints_provisionally_and_proposes(db: Database) -> None:
@@ -338,8 +338,37 @@ def test_resolve_all_refreshes_review_pending_gauge(db: Database) -> None:
 
     SecurityResolver(db).resolve_all()
 
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
     assert SECURITY_LINK_REVIEW_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — testing prometheus internals
+
+
+def test_gauge_and_envelope_count_pending_in_different_units(db: Database) -> None:
+    """A tied provider ref must export 2 on the gauge and 1 on the envelope.
+
+    Regression guard for the unit these two counts silently diverged on
+    (#610): ``SecurityLinkDecisionsRepo.count_pending`` briefly served both
+    ``refresh_security_link_pending_gauge`` (raw decision rows) and
+    ``SecurityLinksService.count_pending`` (distinct provider refs) from one
+    query, so fixing the envelope's unit silently changed the gauge's too. One
+    provider ref with two tied candidates must export 2 on
+    ``SECURITY_LINK_REVIEW_PENDING`` (one Prometheus sample per review row)
+    while ``count_pending_provider_refs`` — the envelope's total_count unit —
+    reports 1 for the same fixture.
+    """
+    sids = {
+        _catalog(db, f"Apple Inc. ({i})", ticker=f"AAPL{i}", cusip="037833100")
+        for i in range(2)
+    }
+    _raw_security(db, "sec_1", security_name="Apple", cusip="037833100")
+
+    assert SecurityResolver(db).resolve_all() == {"proposed": 1}
+
+    pending = SecurityLinkDecisionsRepo(db).list_pending()
+    assert {p["candidate_security_id"] for p in pending} == sids
+
+    assert SecurityLinkDecisionsRepo(db).count_pending_decisions() == 2
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
+    assert SECURITY_LINK_REVIEW_PENDING._value.get() == 2  # type: ignore[reportPrivateUsage] — testing prometheus internals
 
 
 def test_no_candidate_mints_and_binds(db: Database) -> None:
@@ -373,7 +402,7 @@ def test_rejected_pairing_never_reproposed(db: Database) -> None:
         security_type="etf",
     )
     assert SecurityResolver(db).resolve_all() == {"minted": 1}
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
 
 
 def test_rejected_tie_candidate_is_not_reproposed(db: Database) -> None:
@@ -657,7 +686,7 @@ def test_stem_and_share_class_in_one_batch_mint_separately(
         "SELECT COUNT(DISTINCT security_id) FROM app.securities"
     ).fetchone()
     assert rows is not None and rows[0] == 2
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     assert len({r[2] for r in _bindings(db)}) == 2  # each ref on its own security
 
 
@@ -695,7 +724,7 @@ def test_contradicting_cusip_disqualifies_suffix_strip_proposal(db: Database) ->
         cusip="422806208",
     )
     assert SecurityResolver(db).resolve_all() == {"minted": 1}
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
 
 
 def test_fuzzy_name_tie_surfaces_every_duplicate_never_picks_by_id_order(
@@ -779,7 +808,7 @@ def test_nameless_securities_never_propose_a_placeholder_merge(db: Database) -> 
     _raw_security(db, "sec_1", security_name=None)
     _raw_security(db, "sec_2", security_name=None)
     assert SecurityResolver(db).resolve_all() == {"minted": 2}
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     rows = db.execute(
         "SELECT COUNT(DISTINCT security_id) FROM app.securities"
     ).fetchone()
@@ -891,7 +920,7 @@ def test_cross_sync_pending_provisional_never_offered_as_merge_candidate(
     ).fetchone()
     assert provisional_row is not None
     provisional = provisional_row[0]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
     # Sync 2: a brand-new plaid security on the same fuzzy-matching name.
     _raw_security(
@@ -995,7 +1024,7 @@ def test_two_institution_security_resolves_identically_regardless_of_insertion_o
     assert counts == {"auto_bound": 1}
     securities = db.execute("SELECT COUNT(*) FROM app.securities").fetchone()
     assert securities is not None and securities[0] == 1  # no provisional twin minted
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     bindings = _bindings(db)
     assert {b[2] for b in bindings} == {sid}  # both institutions bind the SAME security
     ref_pairs = {(b[0], b[1]) for b in bindings}

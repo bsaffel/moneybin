@@ -284,7 +284,7 @@ def test_accept_rebinds_deletes_and_accepts(
     assert _accepted_binding(db) == merge_setup["survivor"]
     assert not _security_exists(db, merge_setup["provisional"])
     assert _security_exists(db, merge_setup["survivor"])
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
     assert decision is not None
     assert decision["status"] == "accepted"
@@ -484,7 +484,7 @@ def test_accept_auto_rejects_sibling_decisions(
     assert sibling_row is not None and sibling_row["status"] == "rejected"
     unrelated_row = repo.fetch_by_id(unrelated.target_id)
     assert unrelated_row is not None and unrelated_row["status"] == "pending"
-    assert repo.count_pending() == 1
+    assert repo.count_pending_provider_refs() == 1
 
 
 def test_accept_audit_chain_shares_one_parent(
@@ -688,7 +688,7 @@ def test_unremappable_selection_blocks_merge(
     # Nothing changed: binding still on the provisional, decision still pending,
     # provisional catalog row intact, selection untouched.
     assert _accepted_binding(db) == merge_setup["provisional"]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
     assert _security_exists(db, merge_setup["provisional"])
     assert LotSelectionsRepo(db).list_for_disposal("itx_sell") == [
         ("lot_gone000000", Decimal("5"))
@@ -718,7 +718,7 @@ def test_selection_on_a_third_securitys_lot_blocks_merge(
         )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_accept_blocks_when_core_absent_and_selections_exist(
@@ -739,7 +739,7 @@ def test_accept_blocks_when_core_absent_and_selections_exist(
         )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_accept_proceeds_when_core_absent_and_no_selections(
@@ -783,7 +783,7 @@ def test_accept_wrong_into_raises(db: Database, merge_setup: dict[str, str]) -> 
         SecurityLinksService(db).accept_merge(merge_setup["decision_id"], into=other)
 
     # Rolled back: still pending, provisional binding untouched.
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
     assert _accepted_binding(db) == merge_setup["provisional"]
     assert _security_exists(db, merge_setup["provisional"])
 
@@ -809,7 +809,7 @@ def test_accept_raises_when_ref_is_unbound(
             merge_setup["decision_id"], into=merge_setup["survivor"]
         )
 
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
@@ -844,7 +844,7 @@ def test_accept_raises_when_provisional_is_user_authored(db: Database) -> None:
 
     assert _accepted_binding(db, ref_value=_REF_VALUE) == user_bound
     assert _security_exists(db, user_bound)
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_accept_raises_when_candidate_is_missing(
@@ -861,7 +861,7 @@ def test_accept_raises_when_candidate_is_missing(
         )
 
     assert _accepted_binding(db) == merge_setup["provisional"]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_accept_raises_when_ref_is_already_bound_to_the_candidate(
@@ -884,7 +884,7 @@ def test_accept_raises_when_ref_is_already_bound_to_the_candidate(
             merge_setup["decision_id"], into=merge_setup["survivor"]
         )
 
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 # ---------------------------------------------------------------- gauge
@@ -905,7 +905,7 @@ def test_accept_refreshes_the_review_pending_gauge(
         merge_setup["decision_id"], into=merge_setup["survivor"]
     )
 
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     assert SECURITY_LINK_REVIEW_PENDING._value.get() == 0  # type: ignore[reportPrivateUsage] — testing prometheus internals
 
 
@@ -926,7 +926,7 @@ def test_reject_refreshes_the_review_pending_gauge(
 
     SecurityLinksService(db).reject_merge(merge_setup["decision_id"])
 
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
     assert SECURITY_LINK_REVIEW_PENDING._value.get() == 1  # type: ignore[reportPrivateUsage] — testing prometheus internals
 
 
@@ -940,7 +940,7 @@ def test_reject_keeps_minted_security(
 
     assert _security_exists(db, merge_setup["provisional"])
     assert _accepted_binding(db) == merge_setup["provisional"]
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 0
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 0
     decision = SecurityLinkDecisionsRepo(db).fetch_by_id(merge_setup["decision_id"])
     assert decision is not None and decision["status"] == "rejected"
 
@@ -963,7 +963,7 @@ def test_reject_leaves_sibling_candidates_pending(
 
     row = SecurityLinkDecisionsRepo(db).fetch_by_id(sibling.target_id)
     assert row is not None and row["status"] == "pending"
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_reject_twice_raises(db: Database, merge_setup: dict[str, str]) -> None:
@@ -1032,7 +1032,7 @@ def test_accept_rolls_back_entirely_on_any_write_failure(
     # (ref_kind, ref_value), so count_pending() — the review-unit count —
     # is 1, not 2. list_pending() below proves both rows individually
     # survived the rollback.
-    assert repo.count_pending() == 1
+    assert repo.count_pending_provider_refs() == 1
     assert len(repo.list_pending()) == 2
     decision = repo.fetch_by_id(merge_setup["decision_id"])
     assert decision is not None and decision["status"] == "pending"
@@ -1137,7 +1137,7 @@ def test_pending_groups_tied_candidates_for_the_same_ref(
     # count_pending() must agree with len(groups) — both count the review
     # unit (ref_kind, ref_value), not the 2 raw decision rows, or the MCP
     # envelope's total_count/returned_count disagree on units (MB-175 review).
-    assert SecurityLinkDecisionsRepo(db).count_pending() == 1
+    assert SecurityLinkDecisionsRepo(db).count_pending_provider_refs() == 1
 
 
 def test_pending_candidate_with_deleted_security_has_no_ticker_or_name(

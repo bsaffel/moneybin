@@ -128,8 +128,14 @@ class SecurityLinksService:
     # ------------------------------------------------------------------
 
     def count_pending(self) -> int:
-        """Pending security-link decisions awaiting review (fresh DB -> 0)."""
-        return self._decisions.count_pending()
+        """Distinct provider refs awaiting review (fresh DB -> 0).
+
+        Grouped unit, matching :meth:`pending`'s grouping — see
+        ``SecurityLinkDecisionsRepo.count_pending_provider_refs``. The
+        ``SECURITY_LINK_REVIEW_PENDING`` gauge counts a different unit (raw
+        decision rows); it does not go through this service.
+        """
+        return self._decisions.count_pending_provider_refs()
 
     def list_pending(self) -> list[dict[str, Any]]:
         """Pending, non-reversed decisions ordered ``ref_value, decision_id``."""
