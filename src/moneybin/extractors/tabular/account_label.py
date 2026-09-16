@@ -46,6 +46,21 @@ _TRAILING_TOKEN = re.compile(
 )
 
 
+def last4_from_account_number(value: object) -> str | None:
+    """Last 4 digits of a mapped account-number column value, else None.
+
+    The account-number column holds the real (or already-masked) number, so its
+    trailing 4 digits are an authoritative last4 — used as a fallback when the
+    display label carries none. Distinct from ``parse_account_label``, which only
+    trusts a recognized last-4 *pattern* in a free-text display name. Tabular
+    columns are read as strings (``infer_schema_length=0``), so no float coercion.
+    """
+    if value is None:
+        return None
+    digits = "".join(c for c in str(value) if c.isdigit())
+    return digits[-4:] if len(digits) >= 4 else None
+
+
 def parse_account_label(label: str | None) -> tuple[str, str | None]:
     """Return ``(clean_name, last_four|None)`` parsed from an account label.
 

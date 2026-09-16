@@ -35,6 +35,54 @@ from moneybin.tables import TABULAR_ACCOUNTS, TABULAR_TRANSACTIONS
 logger = logging.getLogger(__name__)
 
 
+def build_account_dataframe(
+    *,
+    acct_id_to_name: dict[str, str],
+    source_label_by_key: dict[str, str],
+    label_parsed_by_key: dict[str, tuple[str, str | None]],
+    number_last4_by_key: dict[str, str | None],
+    institution_by_key: dict[str, str | None],
+    file_path: Path,
+    source_type: str,
+    source_origin: str,
+    import_id: str,
+) -> pl.DataFrame:
+    """One raw.tabular_accounts row per unique account this file presents.
+
+    Every dict is keyed by native account key (``source_account_key``) and
+    populated by the caller's source-account enumeration — this function only
+    shapes the row, it does not decide identity, naming, or institution.
+
+    ``account_label`` and ``institution_name`` are decided by the caller
+    before any row is written, because the mint report has to state the same
+    value this stage stores — two spellings of one expression is how the
+    reported name and the stored one used to drift apart.
+
+    ``account_number_masked`` reuses the caller's parsed last4
+    (``label_parsed_by_key``), falling back to the mapped account-number
+    column's last4 (``number_last4_by_key``) — never a second parse pass.
+    """
+    unique_ids = sorted(acct_id_to_name.keys())
+    account_number_masked: dict[str, str | None] = {}
+    for aid in unique_ids:
+        l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
+        account_number_masked[aid] = f"****{l4}" if l4 else None
+    return pl.DataFrame({
+        "account_id": unique_ids,
+        "account_name": [acct_id_to_name[aid] for aid in unique_ids],
+        "account_label": [source_label_by_key.get(aid) for aid in unique_ids],
+        "account_number": [None] * len(unique_ids),
+        "account_number_masked": [account_number_masked[aid] for aid in unique_ids],
+        "account_type": [None] * len(unique_ids),
+        "institution_name": [institution_by_key.get(aid) for aid in unique_ids],
+        "currency": [None] * len(unique_ids),
+        "source_file": [str(file_path)] * len(unique_ids),
+        "source_type": [source_type] * len(unique_ids),
+        "source_origin": [source_origin] * len(unique_ids),
+        "import_id": [import_id] * len(unique_ids),
+    })
+
+
 class TabularExtractor:
     """Load tabular data into DuckDB raw tables with batch tracking.
 
