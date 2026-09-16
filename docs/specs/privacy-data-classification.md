@@ -581,4 +581,8 @@ by its decorator, and its report-derived result supplies the per-call tier.
 
 The gate proves each protected callback produces the expected redacted result
 and writes privacy-audit events before timing it. Concrete numbers are
-recorded by the serial populated-persona CI run.
+recorded by the serial populated-persona run. Run `make test-perf` locally or
+manually dispatch the **Privacy performance** GitHub Actions workflow. The
+wall-clock budgets are excluded from pull-request and push CI because shared
+runner contention can exceed the thresholds independently of a code change.
+The on-demand benchmark retains all budget, redaction, and audit assertions.
