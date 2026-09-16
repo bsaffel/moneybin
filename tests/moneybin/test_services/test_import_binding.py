@@ -15,7 +15,7 @@ import pytest
 
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.services.account_resolution_types import SourceAccount
+from moneybin.extractors.account_identity import SourceAccount
 from moneybin.services.import_confirmation import ImportConfirmationRequiredError
 from moneybin.services.import_service import ImportService
 from tests.import_helpers import import_answering_gate
@@ -514,7 +514,7 @@ def test_padded_metadata_is_normalized_before_it_is_announced_or_stored(
     fields failed differently. ``display_name`` was padded on both sides at
     once, so nothing *disagreed* and the account was simply named with the
     padding. ``account_subtype`` was the worse half: the mint report's mirror
-    trims it (``account_display_name._stated``) while ``dim_accounts``
+    trims it (``account_identity._stated``) while ``dim_accounts``
     COALESCEs the stored column with no ``TRIM``, so the two readers split.
     Normalizing once at the settings boundary closes both.
     """
@@ -762,7 +762,7 @@ def test_resolve_emits_account_link_metrics(
     """
     from prometheus_client import REGISTRY
 
-    from moneybin.services.account_resolution_types import SourceAccount
+    from moneybin.extractors.account_identity import SourceAccount
     from moneybin.services.account_resolver import AccountResolver
 
     _seed_existing_account(db, account_id="wf_existing01", display_name="WF Checking")
@@ -2032,7 +2032,7 @@ def test_a_source_key_shaped_like_another_accounts_ref_is_refused() -> None:
     while the one they meant stays gated behind a ref that no longer reaches it.
     Neither reading is safe, so the ambiguity is refused and named.
     """
-    from moneybin.services.account_resolution_types import SourceAccount
+    from moneybin.extractors.account_identity import SourceAccount
     from moneybin.services.import_service import (
         _resolve_binding_targets,  # pyright: ignore[reportPrivateUsage]
     )

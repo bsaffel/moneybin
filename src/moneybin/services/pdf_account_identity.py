@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from moneybin.extractors.account_identity import normalize_account_identifier
 from moneybin.extractors.pdf.metadata import ACCOUNT_ID_MASK_CHARACTERS
-from moneybin.services.account_resolution_types import normalize_account_identifier
 from moneybin.utils import slugify
 
 _DOCUMENT_KEY_HEX_LENGTH = 16

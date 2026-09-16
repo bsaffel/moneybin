@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 
 # Reached privately on purpose. reviews.py holds seven sibling row-projections,
 # all module-private; exporting two of them to suit a test would leave the module
@@ -21,7 +22,6 @@ from moneybin.mcp.tools.reviews import (
 )
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.services.account_links_service import AccountLinksService
-from moneybin.services.account_resolution_types import UNNAMED_ACCOUNT_LABEL
 from tests.moneybin.db_helpers import create_core_tables
 
 _PROV = "prov1_acct000"

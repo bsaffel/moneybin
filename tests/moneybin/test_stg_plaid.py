@@ -15,8 +15,8 @@ import yaml
 
 from moneybin.connectors.sync_models import SyncDataResponse
 from moneybin.database import Database, sqlmesh_context
+from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
-from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 
 pytestmark = pytest.mark.integration

@@ -35,8 +35,8 @@ import pytest
 
 from moneybin.connectors.sync_models import SyncDataResponse
 from moneybin.database import Database
+from moneybin.extractors.account_identity import SourceAccount
 from moneybin.extractors.plaid import PlaidExtractor
-from moneybin.services.account_resolution_types import SourceAccount
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.categorization import CategorizationItem, CategorizationService
 from moneybin.tables import OFX_ACCOUNTS, OFX_TRANSACTIONS
