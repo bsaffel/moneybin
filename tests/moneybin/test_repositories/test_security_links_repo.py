@@ -318,7 +318,7 @@ def _propose(repo: SecurityLinkDecisionsRepo, **overrides: Any):
 
 def test_decision_lifecycle_and_pending_count(db: Database) -> None:
     repo = SecurityLinkDecisionsRepo(db)
-    assert repo.count_pending() == 0
+    assert repo.count_pending_provider_refs() == 0
     event = repo.insert(
         ref_kind="plaid_security_id",
         ref_value="sec_plaid_9",
@@ -333,12 +333,12 @@ def test_decision_lifecycle_and_pending_count(db: Database) -> None:
     )
     decision_id = event.target_id
     assert decision_id is not None
-    assert repo.count_pending() == 1
+    assert repo.count_pending_provider_refs() == 1
     fetched = repo.fetch_by_id(decision_id)
     assert fetched is not None
     assert fetched["status"] == "pending"
     repo.update_status(decision_id, status="rejected", decided_by="user", actor="user")
-    assert repo.count_pending() == 0
+    assert repo.count_pending_provider_refs() == 0
     # update_status's targeted UPDATE (status/decided_by/decided_at only) must
     # not omit-and-null the sibling columns it doesn't list.
     after = repo.fetch_by_id(decision_id)
@@ -514,7 +514,7 @@ def test_reverse_raises_when_pending(db: Database) -> None:
     with pytest.raises(ValueError, match="accepted/rejected decisions can be reversed"):
         repo.reverse("dec_pending", reversed_by="user", actor="cli")
 
-    assert repo.count_pending() == 1
+    assert repo.count_pending_provider_refs() == 1
     still_pending = repo.fetch_by_id("dec_pending")
     assert still_pending is not None
     assert still_pending["status"] == "pending"

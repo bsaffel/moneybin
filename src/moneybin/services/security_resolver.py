@@ -76,18 +76,22 @@ _PLACEHOLDER_NAME = "(Plaid security)"
 
 
 def refresh_security_link_pending_gauge(db: Database) -> None:
-    """Set SECURITY_LINK_REVIEW_PENDING from the live pending-decision count.
+    """Set SECURITY_LINK_REVIEW_PENDING from the live pending-decision-row count.
 
     Called at the two sites that change the count: ``resolve_all`` (files new
     pending proposals) and ``SecurityLinksService.accept_merge`` /
     ``reject_merge`` (accept/reject clears them) — mirrors
     ``account_resolver.refresh_account_link_pending_gauge``. Unlike the
     account/merchant precedent, the review unit here is the raw decision row,
-    not a grouped provisional/entity id — ``SecurityLinksService.count_pending``
-    delegates straight to ``SecurityLinkDecisionsRepo.count_pending``, so the
-    gauge mirrors that same query for consistency.
+    not a grouped provisional/entity id, so this calls
+    ``SecurityLinkDecisionsRepo.count_pending_decisions`` — a different method,
+    and a different unit, than ``SecurityLinksService.count_pending`` (the
+    envelope's total_count), which calls the grouped
+    ``count_pending_provider_refs`` instead.
     """
-    SECURITY_LINK_REVIEW_PENDING.set(SecurityLinkDecisionsRepo(db).count_pending())
+    SECURITY_LINK_REVIEW_PENDING.set(
+        SecurityLinkDecisionsRepo(db).count_pending_decisions()
+    )
 
 
 def _norm(value: str | None) -> str | None:
