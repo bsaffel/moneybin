@@ -177,6 +177,7 @@ def privacy_log(
             events=[PrivacyLogRow.from_event(e) for e in events],
         ),
         total_count=len(events) + 1 if has_more else None,
+        returned_count=len(events),
     )
 
 

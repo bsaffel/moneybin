@@ -87,6 +87,7 @@ def matches_pending_envelope(
             matches=[match_pending_row(row) for row in rows],
         ),
         total_count=total_count,
+        returned_count=len(rows),
         actions=actions,
     )
 

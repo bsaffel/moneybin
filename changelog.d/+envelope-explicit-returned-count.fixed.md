@@ -1,0 +1,1 @@
+Response envelopes for paginated reads (`reports`, `sql_query`, categorization and identity-link review queues) now report an accurate `returned_count` and `has_more` when a page comes back empty, instead of silently reporting the full total as returned.
