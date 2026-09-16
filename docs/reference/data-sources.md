@@ -14,7 +14,7 @@ Reference for engineers wiring automation against the import path and for migran
 | Source | `source_type` value | Raw landing tables |
 |--------|---------------------|--------------------|
 | Tabular files (CSV/TSV/Excel/Parquet/Feather) | `csv`, `tsv`, `excel`, `parquet`, `feather` | `raw.tabular_transactions`, `raw.tabular_accounts` |
-| OFX / QFX / QBO | `ofx` | `raw.ofx_transactions`, `raw.ofx_accounts`, `raw.ofx_balances`, `raw.ofx_institutions` |
+| OFX / QFX / QBO | `ofx` | `raw.ofx_transactions`, `raw.ofx_accounts`, `raw.ofx_balances` |
 | PDF statements | `pdf` | `raw.tabular_transactions` (transaction-shaped documents); `raw.pdf_seeds` + generated `raw.pdf_<alias>` views (everything else — no `source_type` column; see the note above) |
 | Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances`; investments: `raw.plaid_securities`, `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, `raw.plaid_investment_holding_lots`, `raw.plaid_investment_holdings_snapshots` |
 | Manual entry | `manual` | `raw.manual_transactions`; investments: `raw.manual_investment_transactions` |
@@ -171,7 +171,7 @@ One extractor, three formats — Open Financial Exchange and its Quicken (QFX) a
 | `<MEMO>` | `memo` |
 | `<CHECKNUM>` | `check_number` |
 
-**Account-level fields parsed:** `account_id`, `routing_number`, `account_type` (raw OFX spelling — e.g. `CHECKING`, `SAVINGS`, `CREDITCARD`; normalized in `core.dim_accounts` per "Account-type normalization" above), `currency_code` (from `<CURDEF>`). Landed in `raw.ofx_accounts`. **Balance fields:** statement `start_date` / `end_date`, `ledger_balance`, `available_balance`, `balance_date`, `currency_code` → `raw.ofx_balances`. **Institution fields:** `<FI><ORG>`, `<FI><FID>` → `raw.ofx_institutions`.
+**Account-level fields parsed:** `account_id`, `routing_number`, `account_type` (raw OFX spelling — e.g. `CHECKING`, `SAVINGS`, `CREDITCARD`; normalized in `core.dim_accounts` per "Account-type normalization" above), `currency_code` (from `<CURDEF>`), and the institution fields `<FI><ORG>` / `<FI><FID>` (as `institution_org` / `institution_fid`). Landed in `raw.ofx_accounts`. **Balance fields:** statement `start_date` / `end_date`, `ledger_balance`, `available_balance`, `balance_date`, `currency_code` → `raw.ofx_balances`.
 
 **Institution resolution.** Two independent resolutions run off the same `<FI>` block (`src/moneybin/extractors/institution_resolution.py`). The **slug** (`source_origin`, an input to the transaction-id content hash) resolves through a chain: `<FI><ORG>` snake-cased → `<FI><FID>` lookup in `seeds.institutions` (5 rows: Chase, Citi, Bank of America, Wells Fargo, U.S. Bank) → filename regex (`wells_fargo`, `chase`, `bank_of_america`, `citi`, `us_bank`, `capital_one`, `discover`, `amex`) → `--institution` override → interactive prompt → `InstitutionResolutionError`. Because `<ORG>` wins whenever a bank publishes one, most banks' slugs never reach the registry step — Chase resolves to `b1`, not `chase`, since Chase's `<ORG>` is `B1`. Separately, `core.dim_accounts.institution_name` (the **display** name) joins `seeds.institutions` on `<FI><FID>` directly, independent of which step produced the slug — this is what turns Chase's opaque `<ORG>` code `B1` into "Chase" for display without touching `source_origin` or transaction-id identity.
 

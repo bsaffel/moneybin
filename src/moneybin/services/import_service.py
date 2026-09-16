@@ -343,7 +343,6 @@ class ImportResult:
     file_type: str
     accounts: int = 0
     transactions: int = 0
-    institutions: int = 0
     balances: int = 0
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
@@ -408,8 +407,6 @@ class ImportResult:
         label = _display_label(self.file_type, Path(self.file_path))
         lines = [f"Imported {label} file: {self.file_path}"]
 
-        if self.institutions:
-            lines.append(f"  Institutions: {self.institutions}")
         if self.accounts:
             lines.append(f"  Accounts: {self.accounts}")
         if self.transactions:
@@ -2333,19 +2330,18 @@ class ImportService:
                 source_bytes=raw,
             )
         except Exception as e:
-            # load() writes each of the four raw.ofx_* tables via
+            # load() writes each of the three raw.ofx_* tables via
             # on_conflict="upsert" (INSERT OR REPLACE, load-bearing for the
             # FITID-collision repair) and none of their primary keys include
-            # import_id. A failure partway through (e.g. institutions/accounts
-            # landed, then transactions raised) therefore does NOT mean "this
-            # import_id's rows are safe to delete" the way tabular/PDF's
+            # import_id. A failure partway through (e.g. accounts landed, then
+            # transactions raised) therefore does NOT mean "this import_id's
+            # rows are safe to delete" the way tabular/PDF's
             # on_conflict="ignore" writes do: a row already present under an
             # older import_id gets replaced in place and re-stamped with THIS
             # import_id, so a DELETE WHERE import_id = ? here would destroy
-            # data from a prior, unrelated import — raw.ofx_institutions most
-            # sharply, since its PK (organization, fid) has no source_file at
-            # all. Finalize with the real partial counts OFXLoadError carries
-            # instead of a hardcoded zero or a destructive cleanup.
+            # data from a prior, unrelated import. Finalize with the real
+            # partial counts OFXLoadError carries instead of a hardcoded zero
+            # or a destructive cleanup.
             #
             # OFXLoadError is raised only once extraction has succeeded and a
             # raw-table write failed, so it is also what keeps the error metric
@@ -2369,7 +2365,6 @@ class ImportService:
             raise
 
         rows_loaded: dict[str, int] = {
-            "institutions": load_result.institutions_loaded,
             "accounts": load_result.accounts_loaded,
             "transactions": load_result.transactions_loaded,
             "balances": load_result.balances_loaded,
@@ -2430,7 +2425,6 @@ class ImportService:
             time.monotonic() - _t0
         )
 
-        result.institutions = rows_loaded["institutions"]
         result.accounts = rows_loaded["accounts"]
         result.transactions = rows_loaded["transactions"]
         result.balances = rows_loaded["balances"]
