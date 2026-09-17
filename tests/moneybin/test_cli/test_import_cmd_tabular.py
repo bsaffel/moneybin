@@ -526,16 +526,7 @@ class TestPreview:
     def test_preview_named_format_date_format_reaches_header_detection(
         self, tmp_path: Path, mocker: Any
     ) -> None:
-        """``--format <name>`` must feed its own date_format into header detection.
-
-        Pre-push review finding on #604: ``ImportService``'s auto-detect path
-        threads a matched format's ``date_format`` into ``read_file`` for
-        header detection, but ``import preview --format <name>`` used to
-        resolve ``matched_format`` only AFTER the read — so a headerless file
-        whose dates use a format outside the built-in ``_DATE_FORMATS`` list
-        (e.g. ``%Y%m%d``) still lost row 0 here, disagreeing with the import
-        it previews.
-        """
+        """``--format <name>`` must feed its own date_format into header detection."""
         from moneybin.extractors.tabular.formats import TabularFormat
 
         csv_file = tmp_path / "headerless_yyyymmdd.csv"
