@@ -382,7 +382,7 @@ def test_adapters_dont_bypass_service_layer() -> None:
             _format_violation(rel, mod, name) for rel, mod, name in violations
         )
         pytest.fail(
-            "Adapter modules must not import from loaders/extractors/matching "
+            "Adapter modules must not import from extractors/matching "
             "without an allowlist entry. Either route through the service or "
             "add the import to ADAPTER_LAYERING_ALLOWLIST with a `# why` "
             f"comment.\n\nViolations:\n{formatted}"
