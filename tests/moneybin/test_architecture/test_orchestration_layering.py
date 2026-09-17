@@ -62,7 +62,6 @@ GUARDED_PACKAGES: frozenset[str] = frozenset({
     "exports",
     "extractors",
     "investments",
-    "loaders",
     "logging",
     "matching",
     "metrics",
@@ -279,8 +278,9 @@ def test_scan_still_looks_at_every_package_below_orchestration() -> None:
 
     assert GUARDED_PACKAGES <= scanned_packages, (
         "Packages below orchestration dropped out of the layering scan: "
-        f"{sorted(GUARDED_PACKAGES - scanned_packages)}. A package moves out "
-        "of this set only by moving to or above the orchestration layer."
+        f"{sorted(GUARDED_PACKAGES - scanned_packages)}. A package leaves this "
+        "set only by moving to or above the orchestration layer, or by being "
+        "deleted outright — drop its entry above in the same change."
     )
 
     # File-level narrowing, which a package-name comparison alone cannot see.
