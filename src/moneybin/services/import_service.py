@@ -2864,7 +2864,6 @@ class ImportService:
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
                 has_header=reviewed_plan.has_header,
-                declared_date_format=reviewed_plan.date_format,
             )
         df = read_result.df
 
