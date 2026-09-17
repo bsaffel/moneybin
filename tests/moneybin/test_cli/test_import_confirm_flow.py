@@ -297,13 +297,11 @@ def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
     assert native_tokens[native_tokens.index("--sign") + 1] == "negative_is_expense"
 
 
-def test_read_option_args_serializes_each_set_option() -> None:
-    """``_read_option_args`` emits every set option's flag and value, in order."""
-    from moneybin.cli.commands.import_cmd import (
-        _read_option_args,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
-    )
+def test_tabular_read_options_cli_args_serializes_each_set_field() -> None:
+    """``cli_args`` emits every set field's flag and value, in order."""
+    from moneybin.services.import_confirmation import TabularReadOptions
 
-    args = _read_option_args(
+    opts = TabularReadOptions(
         format_name="chase_credit",
         date_format="%Y%m%d",
         number_format="european",
@@ -312,7 +310,7 @@ def test_read_option_args_serializes_each_set_option() -> None:
         encoding="latin-1",
     )
 
-    assert args == [
+    assert opts.cli_args() == [
         "--format",
         "chase_credit",
         "--date-format",
@@ -328,60 +326,59 @@ def test_read_option_args_serializes_each_set_option() -> None:
     ]
 
 
-def test_read_option_args_omits_unset_options() -> None:
-    """An unset option contributes neither its flag nor a placeholder value."""
-    from moneybin.cli.commands.import_cmd import (
-        _read_option_args,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
-    )
+def test_tabular_read_options_cli_args_omits_unset_fields() -> None:
+    """An unset field contributes neither its flag nor a placeholder value."""
+    from moneybin.services.import_confirmation import TabularReadOptions
 
-    args = _read_option_args(
-        format_name=None,
+    opts = TabularReadOptions(date_format="%Y%m%d")
+
+    assert opts.cli_args() == ["--date-format", "%Y%m%d"]
+
+
+def test_tabular_read_options_preview_omits_date_and_number_format() -> None:
+    """``preview=True`` drops --date-format/--number-format even when set."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(
+        format_name="chase_credit",
         date_format="%Y%m%d",
-        number_format=None,
-        sheet=None,
-        delimiter=None,
-        encoding=None,
+        number_format="european",
+        sheet="Transactions",
     )
 
-    assert args == ["--date-format", "%Y%m%d"]
+    assert opts.cli_args(preview=True) == [
+        "--format",
+        "chase_credit",
+        "--sheet",
+        "Transactions",
+    ]
 
 
-def test_read_option_args_fragment_is_empty_when_nothing_is_set() -> None:
-    """No trailing space is introduced when every option is unset."""
-    from moneybin.cli.commands.import_cmd import (
-        _read_option_args_fragment,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
-    )
+def test_tabular_read_options_fragment_is_empty_when_nothing_is_set() -> None:
+    """No leading space is introduced when every field is unset."""
+    from moneybin.services.import_confirmation import TabularReadOptions
 
-    fragment = _read_option_args_fragment(
-        format_name=None,
-        date_format=None,
-        number_format=None,
-        sheet=None,
-        delimiter=None,
-        encoding=None,
-    )
-
-    assert fragment == ""
+    assert TabularReadOptions().cli_fragment() == ""
 
 
-def test_read_option_args_fragment_leads_with_one_space_when_set() -> None:
+def test_tabular_read_options_fragment_leads_with_one_space_when_set() -> None:
     """The fragment splices into a sentence with exactly one leading space."""
-    from moneybin.cli.commands.import_cmd import (
-        _read_option_args_fragment,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
-    )
+    from moneybin.services.import_confirmation import TabularReadOptions
 
-    fragment = _read_option_args_fragment(
-        format_name=None,
-        date_format="%Y%m%d",
-        number_format=None,
-        sheet=None,
-        delimiter=None,
-        encoding=None,
-    )
+    fragment = TabularReadOptions(date_format="%Y%m%d").cli_fragment()
 
     assert fragment == " --date-format %Y%m%d"
     line = f"moneybin import confirm foo.csv --accept{fragment}"
     assert "  " not in line
+
+
+def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
+    """A value containing whitespace is shell-quoted so the line stays runnable."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    fragment = TabularReadOptions(sheet="My Transactions").cli_fragment()
+
+    assert fragment == " --sheet 'My Transactions'"
 
 
 class TestImportFilesConfirmFlow:

@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from moneybin.services.import_confirmation import (
         ConfirmationRequired,
         SignConventionProposal,
+        TabularReadOptions,
     )
     from moneybin.services.import_service import (
         BatchImportResult,
@@ -601,12 +602,22 @@ def import_files_command(
     except Exception as _exc:  # dispatch on type below
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
+            TabularReadOptions,
             header_position_ambiguous_recovery,
             header_row_consumed_recovery,
             unreadable_date_recovery,
         )
         from moneybin.services.import_service import (
             ImportRefreshError,
+        )
+
+        read_options = TabularReadOptions(
+            format_name=format_name,
+            date_format=date_format,
+            number_format=number_format,
+            sheet=sheet,
+            delimiter=delimiter,
+            encoding=encoding,
         )
 
         # Ahead of every dispatch below, because none of them reach the
@@ -654,12 +665,7 @@ def import_files_command(
                         account_bindings=account_bindings,
                         proposed_sign=proposed_sign,
                         prior_sign=prior_sign,
-                        format_name=format_name,
-                        date_format=date_format,
-                        number_format=number_format,
-                        sheet=sheet,
-                        delimiter=delimiter,
-                        encoding=encoding,
+                        read_options=read_options,
                     )
                 )
             else:
@@ -677,7 +683,7 @@ def import_files_command(
                     # every binding re-sent together or the printed command
                     # drops the answer already given and never converges.
                     confirm_actions.append(
-                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign, format_name=format_name, date_format=date_format, number_format=number_format, sheet=sheet, delimiter=delimiter, encoding=encoding)}` "
+                        f"Run `{_account_recovery_command(file_path_str, outcome, accept=confirm or overrides is None, mapping=overrides, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, confirm_sign=confirm_sign, sign=sign, read_options=read_options)}` "
                         "to bind each proposed account (adopt an existing id, or "
                         "'new' to keep distinct)."
                     )
@@ -686,24 +692,13 @@ def import_files_command(
                 elif outcome.reason == "header_position_ambiguous":
                     confirm_actions.append(
                         header_position_ambiguous_recovery(
-                            file_path_str,
-                            format_name=format_name,
-                            date_format=date_format,
-                            number_format=number_format,
-                            sheet=sheet,
-                            delimiter=delimiter,
-                            encoding=encoding,
+                            file_path_str, read_options=read_options
                         )
                     )
                 elif outcome.reason == "unreadable_date":
                     confirm_actions.append(
                         unreadable_date_recovery(
-                            file_path_str,
-                            format_name=format_name,
-                            number_format=number_format,
-                            sheet=sheet,
-                            delimiter=delimiter,
-                            encoding=encoding,
+                            file_path_str, read_options=read_options
                         )
                     )
                 else:
@@ -721,14 +716,7 @@ def import_files_command(
                         "fields."
                     )
                     if outcome.confidence.tier != "low":
-                        read_args_str = _read_option_args_fragment(
-                            format_name=format_name,
-                            date_format=date_format,
-                            number_format=number_format,
-                            sheet=sheet,
-                            delimiter=delimiter,
-                            encoding=encoding,
-                        )
+                        read_args_str = read_options.cli_fragment()
                         confirm_actions.append(
                             f"Run `moneybin import confirm {file_path_str} --accept"
                             f"{read_args_str}` as a subcommand."
@@ -736,14 +724,7 @@ def import_files_command(
                 # Same rule as the inbox subfolder recovery: an action is only
                 # worth printing on a channel that can run it.
                 if _can_preview(outcome):
-                    preview_args_str = _read_option_args_fragment(
-                        format_name=format_name,
-                        date_format=None,
-                        number_format=None,
-                        sheet=sheet,
-                        delimiter=delimiter,
-                        encoding=encoding,
-                    )
+                    preview_args_str = read_options.cli_fragment(preview=True)
                     confirm_actions.append(
                         f"Run `moneybin import preview {file_path_str}"
                         f"{preview_args_str}` to inspect the proposal."
@@ -782,12 +763,7 @@ def import_files_command(
                 account_bindings=account_bindings,
                 confirm_sign=confirm_sign,
                 sign=sign,
-                format_name=format_name,
-                date_format=date_format,
-                number_format=number_format,
-                sheet=sheet,
-                delimiter=delimiter,
-                encoding=encoding,
+                read_options=read_options,
             )
             raise typer.Exit(1) from _exc
 
@@ -1313,66 +1289,6 @@ def _tabular_recovery_args(
     return args
 
 
-def _read_option_args(
-    *,
-    format_name: str | None,
-    date_format: str | None,
-    number_format: NumberFormatType | None,
-    sheet: str | None,
-    delimiter: str | None,
-    encoding: str | None,
-) -> list[str]:
-    """Serialize the six options that shape how a tabular file is read.
-
-    Every printed retry command routes through this, so a caller's
-    ``--format``/``--date-format``/``--number-format``/``--sheet``/
-    ``--delimiter``/``--encoding`` survives onto the command MoneyBin prints
-    back — the same rule ``_import_confirm_command`` already states for
-    mapping and account answers.
-    """
-    args: list[str] = []
-    if format_name is not None:
-        args.extend(("--format", format_name))
-    if date_format is not None:
-        args.extend(("--date-format", date_format))
-    if number_format is not None:
-        args.extend(("--number-format", number_format))
-    if sheet is not None:
-        args.extend(("--sheet", sheet))
-    if delimiter is not None:
-        args.extend(("--delimiter", delimiter))
-    if encoding is not None:
-        args.extend(("--encoding", encoding))
-    return args
-
-
-def _read_option_args_fragment(
-    *,
-    format_name: str | None,
-    date_format: str | None,
-    number_format: NumberFormatType | None,
-    sheet: str | None,
-    delimiter: str | None,
-    encoding: str | None,
-) -> str:
-    """``_read_option_args``, as a leading-space fragment for splicing into a line.
-
-    Mirrors ``_import_files_account_args``'s return convention so a caller
-    can append it directly with no double space when nothing is set.
-    """
-    import shlex
-
-    args = _read_option_args(
-        format_name=format_name,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
-    )
-    return f" {shlex.join(args)}" if args else ""
-
-
 def _import_files_account_args(
     *,
     institution: str | None,
@@ -1472,12 +1388,7 @@ def _import_confirm_command(
     account_bindings: dict[str, str] | None,
     account_metadata: dict[str, dict[str, str]] | None,
     bridge_response: Path | None = None,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: NumberFormatType | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> str:
     """Serialize one public `import confirm` request losslessly.
 
@@ -1497,12 +1408,13 @@ def _import_confirm_command(
     command refuses alongside it. The bridge takes ``--confirm``, not
     ``--accept``, so the two are mutually exclusive here as well.
 
-    ``format_name``/``date_format``/``number_format``/``sheet``/``delimiter``/
-    ``encoding`` shape how the file is read at all — dropping them re-runs
+    ``read_options`` shapes how the file is read at all — dropping it re-runs
     header/date detection blind on a retry, which for a headerless file whose
     dates fall outside the built-in formats re-eats row 0 as a header again.
     """
     import shlex
+
+    from moneybin.services.import_confirmation import TabularReadOptions
 
     parts = ["moneybin", "import", "confirm", file_path_str]
     if bridge_response is not None:
@@ -1513,16 +1425,7 @@ def _import_confirm_command(
         parts.append("--confirm-sign")
     if sign is not None:
         parts.extend(("--sign", sign))
-    parts.extend(
-        _read_option_args(
-            format_name=format_name,
-            date_format=date_format,
-            number_format=number_format,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
-        )
-    )
+    parts.extend((read_options or TabularReadOptions()).cli_args())
     if institution is not None:
         parts.extend(("--institution", institution))
     if account_id is not None:
@@ -1555,12 +1458,7 @@ def _account_recovery_command(
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
     bridge_response: Path | None = None,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: NumberFormatType | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> str:
     """Name the command that answers this account confirmation — one, for every channel.
 
@@ -1616,12 +1514,7 @@ def _account_recovery_command(
         account_bindings=bindings,
         account_metadata=account_metadata,
         bridge_response=bridge_response,
-        format_name=format_name,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
+        read_options=read_options,
     )
 
 
@@ -1639,12 +1532,7 @@ def _sign_recovery_commands(
     account_metadata: dict[str, dict[str, str]] | None = None,
     proposed_sign: str | None = None,
     prior_sign: str | None = None,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: NumberFormatType | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> list[str]:
     """The two honest recoveries for a sign-convention confirmation.
 
@@ -1676,12 +1564,7 @@ def _sign_recovery_commands(
             account_name=account_name,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
-            format_name=format_name,
-            date_format=date_format,
-            number_format=number_format,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
+            read_options=read_options,
         )
         native_command = _import_confirm_command(
             file_path_str,
@@ -1695,12 +1578,7 @@ def _sign_recovery_commands(
             account_name=account_name,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
-            format_name=format_name,
-            date_format=date_format,
-            number_format=number_format,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
+            read_options=read_options,
         )
         return [
             f"Approve the inferred credit-card inversion: {approve_command}",
@@ -1799,12 +1677,7 @@ def _render_sign_convention_prompt(
     account_name: str | None = None,
     account_bindings: dict[str, str] | None = None,
     account_metadata: dict[str, dict[str, str]] | None = None,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: NumberFormatType | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> None:
     """Print the interactive prompt for a sign-convention confirmation.
 
@@ -1854,12 +1727,7 @@ def _render_sign_convention_prompt(
         account_metadata=account_metadata,
         proposed_sign=proposed.sign_convention,
         prior_sign=proposed.prior_sign_convention,
-        format_name=format_name,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
+        read_options=read_options,
     ):
         typer.echo(f"     {line}")
     typer.echo()
@@ -1879,12 +1747,7 @@ def _render_confirmation_prompt(
     account_metadata: dict[str, dict[str, str]] | None = None,
     confirm_sign: bool = False,
     sign: SignConventionType | None = None,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: NumberFormatType | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> None:
     """Print a human-readable confirmation summary for an unknown-layout encounter.
 
@@ -1897,6 +1760,7 @@ def _render_confirmation_prompt(
     from moneybin.services.import_confirmation import (
         ProposedMapping,
         SignConventionProposal,
+        TabularReadOptions,
     )
 
     # A card sign-convention proposal is not an unknown-layout / validation
@@ -1918,26 +1782,15 @@ def _render_confirmation_prompt(
             account_name=account_name,
             account_bindings=account_bindings,
             account_metadata=account_metadata,
-            format_name=format_name,
-            date_format=date_format,
-            number_format=number_format,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
+            read_options=read_options,
         )
         return
 
     quoted_path = shlex.quote(file_path_str)
+    opts = read_options or TabularReadOptions()
     # Leading-space fragment, like `_import_files_account_args`: splices into
     # a sentence with no double space when nothing is set.
-    read_args_str = _read_option_args_fragment(
-        format_name=format_name,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
-    )
+    read_args_str = opts.cli_fragment()
     tier = outcome.confidence.tier
     tier_icon = {"high": "✅", "medium": "⚠️", "low": "❓"}.get(tier, "❓")
 
@@ -2006,12 +1859,7 @@ def _render_confirmation_prompt(
                 account_metadata=account_metadata,
                 confirm_sign=confirm_sign,
                 sign=sign,
-                format_name=format_name,
-                date_format=date_format,
-                number_format=number_format,
-                sheet=sheet,
-                delimiter=delimiter,
-                encoding=encoding,
+                read_options=read_options,
             )
         )
     else:
@@ -2031,14 +1879,7 @@ def _render_confirmation_prompt(
                 f"{read_args_str}   (dedicated confirm subcommand)"
             )
     if _can_preview(outcome):
-        preview_args_str = _read_option_args_fragment(
-            format_name=format_name,
-            date_format=None,
-            number_format=None,
-            sheet=sheet,
-            delimiter=delimiter,
-            encoding=encoding,
-        )
+        preview_args_str = opts.cli_fragment(preview=True)
         typer.echo(
             f"     moneybin import preview {quoted_path}{preview_args_str}   "
             "(inspect proposal in detail)"
@@ -2329,9 +2170,19 @@ def import_confirm_command(
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
         ProposedMapping,
+        TabularReadOptions,
         header_position_ambiguous_recovery,
         header_row_consumed_recovery,
         unreadable_date_recovery,
+    )
+
+    read_options = TabularReadOptions(
+        format_name=format_name,
+        date_format=date_format,
+        number_format=number_format,
+        sheet=sheet,
+        delimiter=delimiter,
+        encoding=encoding,
     )
 
     try:
@@ -2402,12 +2253,7 @@ def import_confirm_command(
                     account_metadata=parsed_metadata,
                     proposed_sign=proposed_sign,
                     prior_sign=prior_sign,
-                    format_name=format_name,
-                    date_format=date_format,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
+                    read_options=read_options,
                 )
             )
         elif outcome.reason == "account_confirmation":
@@ -2416,7 +2262,7 @@ def import_confirm_command(
             # partial state, and add the missing binding. Generic alternate
             # mapping hints remain irrelevant here.
             confirm_actions.append(
-                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response, format_name=format_name, date_format=date_format, number_format=number_format, sheet=sheet, delimiter=delimiter, encoding=encoding)}` "
+                f"Re-run `{_account_recovery_command(str(file_path), outcome, accept=accept, mapping=parsed_mapping, save_format=save_format, institution=institution, account_id=account_id, account_name=account_name, account_metadata=parsed_metadata, confirm_sign=confirm_sign, sign=sign, bridge_response=bridge_response, read_options=read_options)}` "
                 "to bind each proposed account (adopt an existing id, or 'new' "
                 "to keep distinct)."
             )
@@ -2425,52 +2271,25 @@ def import_confirm_command(
         elif outcome.reason == "header_position_ambiguous":
             confirm_actions.append(
                 header_position_ambiguous_recovery(
-                    str(file_path),
-                    format_name=format_name,
-                    date_format=date_format,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
+                    str(file_path), read_options=read_options
                 )
             )
         elif outcome.reason == "unreadable_date":
             confirm_actions.append(
-                unreadable_date_recovery(
-                    str(file_path),
-                    format_name=format_name,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
-                )
+                unreadable_date_recovery(str(file_path), read_options=read_options)
             )
         else:
             confirm_actions.append(
                 "Re-run with --mapping <field>=<column> to override specific fields."
             )
             if outcome.confidence.tier != "low":
-                read_args_str = _read_option_args_fragment(
-                    format_name=format_name,
-                    date_format=date_format,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
-                )
+                read_args_str = read_options.cli_fragment()
                 confirm_actions.append(
                     f"Re-run `moneybin import confirm {file_path} --accept"
                     f"{read_args_str}` to accept the proposed mapping as-is."
                 )
         if _can_preview(outcome):
-            preview_args_str = _read_option_args_fragment(
-                format_name=format_name,
-                date_format=None,
-                number_format=None,
-                sheet=sheet,
-                delimiter=delimiter,
-                encoding=encoding,
-            )
+            preview_args_str = read_options.cli_fragment(preview=True)
             confirm_actions.append(
                 f"Run `moneybin import preview {file_path}{preview_args_str}` "
                 "to inspect the proposal."
@@ -2505,12 +2324,7 @@ def import_confirm_command(
                 account_metadata=parsed_metadata,
                 confirm_sign=confirm_sign,
                 sign=sign,
-                format_name=format_name,
-                date_format=date_format,
-                number_format=number_format,
-                sheet=sheet,
-                delimiter=delimiter,
-                encoding=encoding,
+                read_options=read_options,
             )
         elif outcome.reason == "account_confirmation":
             # The layout is settled; replay the current inputs and add the
@@ -2537,12 +2351,7 @@ def import_confirm_command(
                     # bridge response, and so cannot finish the agent-authored
                     # import the user was answering the gate for.
                     bridge_response=bridge_response,
-                    format_name=format_name,
-                    date_format=date_format,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
+                    read_options=read_options,
                 )
                 + "`."
             )
@@ -2563,27 +2372,14 @@ def import_confirm_command(
             logger.info(
                 "💡 "
                 + header_position_ambiguous_recovery(
-                    str(file_path),
-                    format_name=format_name,
-                    date_format=date_format,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
+                    str(file_path), read_options=read_options
                 )
             )
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
             logger.info(
                 "💡 "
-                + unreadable_date_recovery(
-                    str(file_path),
-                    format_name=format_name,
-                    number_format=number_format,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
-                )
+                + unreadable_date_recovery(str(file_path), read_options=read_options)
             )
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (
@@ -2591,14 +2387,7 @@ def import_confirm_command(
             )
             logger.error(msg)
             if _can_preview(outcome):
-                preview_args_str = _read_option_args_fragment(
-                    format_name=format_name,
-                    date_format=None,
-                    number_format=None,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
-                )
+                preview_args_str = read_options.cli_fragment(preview=True)
                 logger.info(
                     "💡 Inspect the proposal with `moneybin import preview "
                     f"{file_path}{preview_args_str}` and re-run with a "
@@ -3159,6 +2948,7 @@ def import_preview(
             # echo_disputed_rows needs a field_mapping to resolve column
             # identity, and neither branch below has committed to one yet.
             from moneybin.services.import_confirmation import (
+                TabularReadOptions,
                 header_position_ambiguous_recovery,
             )
 
@@ -3166,10 +2956,12 @@ def import_preview(
                 "⚠️  "
                 + header_position_ambiguous_recovery(
                     str(source),
-                    format_name=format_name,
-                    sheet=sheet,
-                    delimiter=delimiter,
-                    encoding=encoding,
+                    read_options=TabularReadOptions(
+                        format_name=format_name,
+                        sheet=sheet,
+                        delimiter=delimiter,
+                        encoding=encoding,
+                    ),
                 )
             )
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")

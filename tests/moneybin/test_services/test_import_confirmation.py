@@ -18,6 +18,7 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     Resolved,
     SignConventionProposal,
+    TabularReadOptions,
     disputed_row_fields,
     header_position_ambiguous_recovery,
     resolve_or_confirm,
@@ -1084,11 +1085,13 @@ class TestUnreadableDateRecovery:
         """
         message = unreadable_date_recovery(
             "/data/plain.csv",
-            format_name="chase_credit",
-            number_format="european",
-            sheet="Transactions",
-            delimiter=";",
-            encoding="latin-1",
+            read_options=TabularReadOptions(
+                format_name="chase_credit",
+                number_format="european",
+                sheet="Transactions",
+                delimiter=";",
+                encoding="latin-1",
+            ),
         )
         preview_clause, files_clause = message.split("import files", 1)
         assert "--format chase_credit" in preview_clause
@@ -1119,12 +1122,14 @@ class TestHeaderPositionAmbiguousRecovery:
     def test_set_read_options_appear_on_both_commands(self) -> None:
         message = header_position_ambiguous_recovery(
             "/data/plain.csv",
-            format_name="chase_credit",
-            date_format="%Y%m%d",
-            number_format="european",
-            sheet="Transactions",
-            delimiter=";",
-            encoding="latin-1",
+            read_options=TabularReadOptions(
+                format_name="chase_credit",
+                date_format="%Y%m%d",
+                number_format="european",
+                sheet="Transactions",
+                delimiter=";",
+                encoding="latin-1",
+            ),
         )
         files_clause, confirm_clause = message.split("import confirm", 1)
         for clause in (files_clause, confirm_clause):

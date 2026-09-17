@@ -375,45 +375,57 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     }
 
 
-def _cli_read_option_args(
-    *,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: str | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
-) -> list[str]:
-    """Serialize the file-reading options a CLI recovery command must carry.
+@dataclass(frozen=True, slots=True)
+class TabularReadOptions:
+    """The caller's file-reading options, repeated on every printed retry command.
 
-    Local twin of ``import_cmd.py``'s ``_read_option_args`` — the service
-    layer cannot import the CLI module, so the identical six-flag logic lives
-    here for the recovery text this module prints.
+    One shared value object rather than six loose kwargs threaded through
+    every recovery function and call site — the loose-kwargs shape is exactly
+    what let one site drop one option in the first place. The CLI (which may
+    import this service module) builds one instance per invocation and passes
+    it down instead of the individual fields.
     """
-    args: list[str] = []
-    if format_name is not None:
-        args.extend(("--format", format_name))
-    if date_format is not None:
-        args.extend(("--date-format", date_format))
-    if number_format is not None:
-        args.extend(("--number-format", number_format))
-    if sheet is not None:
-        args.extend(("--sheet", sheet))
-    if delimiter is not None:
-        args.extend(("--delimiter", delimiter))
-    if encoding is not None:
-        args.extend(("--encoding", encoding))
-    return args
+
+    format_name: str | None = None
+    date_format: str | None = None
+    number_format: NumberFormatType | None = None
+    sheet: str | None = None
+    delimiter: str | None = None
+    encoding: str | None = None
+
+    def cli_args(self, *, preview: bool = False) -> list[str]:
+        """Serialize as CLI flag/value pairs.
+
+        ``import preview`` has no ``--date-format``/``--number-format``, so
+        ``preview=True`` omits them regardless of whether they are set.
+        """
+        args: list[str] = []
+        if self.format_name is not None:
+            args.extend(("--format", self.format_name))
+        if not preview and self.date_format is not None:
+            args.extend(("--date-format", self.date_format))
+        if not preview and self.number_format is not None:
+            args.extend(("--number-format", self.number_format))
+        if self.sheet is not None:
+            args.extend(("--sheet", self.sheet))
+        if self.delimiter is not None:
+            args.extend(("--delimiter", self.delimiter))
+        if self.encoding is not None:
+            args.extend(("--encoding", self.encoding))
+        return args
+
+    def cli_fragment(self, *, preview: bool = False) -> str:
+        """``cli_args``, shlex-joined with one leading space, or ``""`` when empty."""
+        import shlex
+
+        args = self.cli_args(preview=preview)
+        return f" {shlex.join(args)}" if args else ""
 
 
 def unreadable_date_recovery(
     file_path: str,
     *,
-    format_name: str | None = None,
-    number_format: str | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> str:
     """Name both recoveries for a date column nothing could parse.
 
@@ -428,31 +440,21 @@ def unreadable_date_recovery(
     and `--date-format` aimed at the wrong column would just be refused again.
     Mirrors the MCP hint in import_tools.py; keep the two in step.
 
-    The other five read options ride along on the ``import files`` retry
-    (``format_name``/``number_format``/``sheet``/``delimiter``/``encoding``),
-    but never a caller-supplied ``date_format`` — that is the value that just
+    The other five read options ride along on the ``import files`` retry, but
+    never the caller-supplied ``date_format`` — that is the value that just
     failed, and the printed command already carries its own ``<strptime>``
     placeholder for it.
     """
     import shlex
+    from dataclasses import replace
 
+    opts = read_options or TabularReadOptions()
     # Quoted like every other suggested command in the CLI: a bank export
     # lands in "Bank Exports/" often enough that an unquoted path makes the
     # prescribed recovery uncopyable exactly when the user needs it.
     quoted = shlex.quote(file_path)
-    # import preview has no --number-format flag, so its args are a subset.
-    preview_args = _cli_read_option_args(
-        format_name=format_name, sheet=sheet, delimiter=delimiter, encoding=encoding
-    )
-    preview_args_str = f" {shlex.join(preview_args)}" if preview_args else ""
-    files_args = _cli_read_option_args(
-        format_name=format_name,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
-    )
-    files_args_str = f" {shlex.join(files_args)}" if files_args else ""
+    preview_args_str = opts.cli_fragment(preview=True)
+    files_args_str = replace(opts, date_format=None).cli_fragment()
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
@@ -571,12 +573,7 @@ def header_row_consumed_recovery_mcp() -> str:
 def header_position_ambiguous_recovery(
     file_path: str,
     *,
-    format_name: str | None = None,
-    date_format: str | None = None,
-    number_format: str | None = None,
-    sheet: str | None = None,
-    delimiter: str | None = None,
-    encoding: str | None = None,
+    read_options: TabularReadOptions | None = None,
 ) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
@@ -596,15 +593,7 @@ def header_position_ambiguous_recovery(
     import shlex
 
     quoted = shlex.quote(file_path)
-    read_args = _cli_read_option_args(
-        format_name=format_name,
-        date_format=date_format,
-        number_format=number_format,
-        sheet=sheet,
-        delimiter=delimiter,
-        encoding=encoding,
-    )
-    read_args_str = f" {shlex.join(read_args)}" if read_args else ""
+    read_args_str = (read_options or TabularReadOptions()).cli_fragment()
     return (
         "A row before the detected header also reads as a transaction. If "
         "it is a balance summary or similar preamble, the detected header is "
