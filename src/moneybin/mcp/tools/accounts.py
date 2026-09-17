@@ -532,6 +532,7 @@ def accounts_links_pending() -> ResponseEnvelope[AccountLinksPendingPayload]:
     return build_envelope(
         data=payload,
         total_count=n_pending,
+        returned_count=len(payload.groups),
         actions=[
             "Use identity_links_decide with kind='account_link', decision='accept', "
             "decision_id, and target_id to merge after confirmation",

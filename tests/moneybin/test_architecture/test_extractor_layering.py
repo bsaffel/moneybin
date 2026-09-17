@@ -40,38 +40,7 @@ MODULE_IMPORT = "<module>"
 
 # Allowlist entries are (module_relpath, imported_module, imported_name) triples.
 # `module_relpath` is relative to src/moneybin/ for stability across moves.
-EXTRACTOR_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
-    # why: ofx_source_accounts() (moved out of ImportService in MB-52 slice 1,
-    # PR #585) builds SourceAccount/AccountNameFacts value objects that
-    # currently live under services/. MB-246 relocates them to a layer both
-    # extractors/ and services/ can import; remove these five entries and the
-    # DEPRECATED markers in extractors/ofx/extractor.py once it lands.
-    (
-        "extractors/ofx/extractor.py",
-        "moneybin.services.account_display_name",
-        "AccountNameFacts",
-    ),
-    (
-        "extractors/ofx/extractor.py",
-        "moneybin.services.account_display_name",
-        "account_category",
-    ),
-    (
-        "extractors/ofx/extractor.py",
-        "moneybin.services.account_display_name",
-        "derived_last_four",
-    ),
-    (
-        "extractors/ofx/extractor.py",
-        "moneybin.services.account_resolution_types",
-        "SourceAccount",
-    ),
-    (
-        "extractors/ofx/extractor.py",
-        "moneybin.services.account_resolution_types",
-        "normalize_account_identifier",
-    ),
-})
+EXTRACTOR_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset()
 
 
 def _is_guarded(module: str) -> bool:

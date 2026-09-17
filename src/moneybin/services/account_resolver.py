@@ -18,7 +18,14 @@ from typing import Any
 import duckdb
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    SourceAccount,
+    mask_embedded_account_number,
+    normalize_account_identifier,
+)
 from moneybin.extractors.institution_resolution import slug_for_institution_name
+from moneybin.extractors.pdf.identity import legacy_pdf_identifier_key
 from moneybin.extractors.tabular.account_matching import AccountMatch, match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
@@ -28,16 +35,12 @@ from moneybin.metrics.registry import (
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
 from moneybin.repositories.account_links_repo import AccountLinksRepo
 from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
     AccountCandidate,
     AccountProposal,
     ResolvedAccount,
-    SourceAccount,
     is_a_name,
-    normalize_account_identifier,
 )
 from moneybin.services.ledger_overlap import fetch_ledger_spans, probe_ledger_overlap
-from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -53,7 +56,7 @@ logger = logging.getLogger(__name__)
 #: for masked account numbers. Named rather than inlined because the query below
 #: is an f-string, where the literal would have to be spelled ``\\p{{L}}`` —
 #: two escapes deep, in a pattern that must stay identical to the one in
-#: dim_accounts.sql and to ``account_display_name._has_letter``.
+#: dim_accounts.sql and to ``account_identity._has_letter``.
 _SQL_HAS_LETTER = r"\p{L}"
 
 #: A four-digit run in any script, the test that stops a label already stating
@@ -64,12 +67,12 @@ _SQL_HAS_LETTER = r"\p{L}"
 #: of the mask. Named for the same reason ``_SQL_HAS_LETTER`` is -- the
 #: f-string below would spell it two escapes deep -- and it must stay identical
 #: to dim_accounts.sql, which cannot spell it ``\d{4}`` either: DuckDB's RE2
-#: reads that as ASCII, so only the mirror in ``account_display_name`` may.
+#: reads that as ASCII, so only the mirror in ``account_identity`` may.
 _SQL_HAS_FOUR_DIGIT_RUN = r"\p{Nd}{4}"
 
 #: The unnamed sentinel as a SQL literal, interpolated for the same reason
 #: ``_SQL_HAS_LETTER`` is: the label arms below must refuse exactly what
-#: dim_accounts.sql and ``account_display_name.usable_source_label`` refuse,
+#: dim_accounts.sql and ``account_identity.usable_source_label`` refuse,
 #: and binding it to the constant is what keeps a rename from splitting them.
 _SQL_UNNAMED_LABEL = f"'{UNNAMED_ACCOUNT_LABEL}'"
 
@@ -899,12 +902,6 @@ class AccountResolver:
         )
         if existing is not None:
             if existing != account_id:
-                # Imported here, not at module scope: import_service imports this
-                # module, so a top-level import closes the cycle.
-                from moneybin.services.import_service import (
-                    mask_embedded_account_number,
-                )
-
                 # Masked for the reason the contradicted-binding refusal is: an
                 # account id is not always a minted surrogate, and this one
                 # reaches a log file, which outlives the session.

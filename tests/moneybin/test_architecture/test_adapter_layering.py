@@ -306,6 +306,15 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "load_builtin_formats",
     ),
+    # mask_embedded_account_number is a pure string function (regex substitution,
+    # no DB/IO) — the CLI masks a caller-supplied key before logging a refusal.
+    # Relocated by MB-52 slice 3 from moneybin.services.import_service, where
+    # this import was unguarded; the function itself did not change.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.account_identity",
+        "mask_embedded_account_number",
+    ),
 })
 
 
@@ -363,12 +372,16 @@ def _collect_imports(path: Path, src_root: Path = SRC) -> list[tuple[str, str, s
 
 
 def _scan_adapters() -> list[tuple[str, str, str]]:
-    """Walk every adapter file and collect guarded imports."""
+    """Walk every adapter file and collect guarded imports.
+
+    Includes ``__init__.py``: a command-package initializer is ordinary
+    adapter code (MB-246 found `cli/commands/accounts/__init__.py` importing a
+    guarded-package symbol that this scan had never inspected), not a
+    re-export shim exempt from the convention.
+    """
     triples: list[tuple[str, str, str]] = []
     for root in ADAPTER_ROOTS:
         for path in sorted(root.rglob("*.py")):
-            if path.name == "__init__.py":
-                continue
             triples.extend(_collect_imports(path))
     return triples
 

@@ -1,0 +1,1 @@
+The SECURITY_LINK_REVIEW_PENDING metric counted review groups instead of pending decision rows, so a security reference with two tied merge candidates reported 1 where it previously reported 2. The gauge and the security-links review envelope now read separate counts, each in its own documented unit.

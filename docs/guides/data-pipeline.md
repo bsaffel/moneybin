@@ -74,8 +74,7 @@ Owned by Python: every loader writes to a source-specific `raw` table via `Datab
 
 | Table | Source | Written by |
 |---|---|---|
-| `raw.ofx_institutions` | OFX/QFX/QBO headers | `import files` |
-| `raw.ofx_accounts` | OFX/QFX/QBO account blocks | `import files` |
+| `raw.ofx_accounts` | OFX/QFX/QBO account blocks (including institution org/FID) | `import files` |
 | `raw.ofx_transactions` | OFX/QFX/QBO transactions | `import files` |
 | `raw.ofx_balances` | OFX/QFX/QBO balance snapshots | `import files` |
 | `raw.tabular_accounts` | CSV/TSV/Excel/Parquet/Feather account columns | `import files` |
@@ -97,7 +96,6 @@ Owned by SQLMesh. All views, all recomputed on each transform. Two naming patter
 
 | View | Role |
 |---|---|
-| `prep.stg_ofx__institutions` | Normalize OFX institution rows |
 | `prep.stg_ofx__accounts` | Normalize OFX account rows |
 | `prep.stg_ofx__transactions` | Normalize OFX transaction rows; cast `date_posted` to `DATE`, trim payee strings |
 | `prep.stg_ofx__balances` | Normalize OFX balance snapshots |

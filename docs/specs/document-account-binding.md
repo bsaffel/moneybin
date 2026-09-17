@@ -912,10 +912,10 @@ honest answer for those; minting a stand-in would put a value into a column
 that names bytes nobody hashed. §Migration step 7 adds it on those terms.
 
 **The column is wider than R10's table, and the difference is what it does.**
-Sixteen `raw.*` schema files carry `source_file` today. R10 names the eight
+Fifteen `raw.*` schema files carry `source_file` today. R10 names the eight
 whose *primary key* changes — three of them already Plaid tables
 (`raw_plaid_investment_holdings`, `_snapshots`, `_holding_lots`). The other
-eight take `source_document_key` as a plain descriptive column and keep their
+seven take `source_document_key` as a plain descriptive column and keep their
 existing keys, which are built on the source's own ids rather than on a
 document:
 
@@ -926,16 +926,15 @@ document:
 | `raw_plaid_balances` | `extractors/plaid/schema/` |
 | `raw_plaid_investment_transactions` | `extractors/plaid/schema/` |
 | `raw_plaid_securities` | `extractors/plaid/schema/` |
-| `raw_ofx_institutions` | `extractors/ofx/schema/` |
 | `raw_pdf_seeds` | `sql/schema/` |
 | `raw_import_log` | `sql/schema/` (already named above) |
 
 **Enumerate rather than search, because the files are not where a reader
 looks.** Only `raw_import_log.sql` and `raw_pdf_seeds.sql` live under
-`sql/schema/`; the other fourteen live under `extractors/<channel>/schema/`. A
-`grep` of `sql/schema/` therefore returns two of sixteen, and the resulting
-list looks complete long before it is — which is how the five Plaid tables and
-`raw_ofx_institutions` go missing from a change that must touch all of them.
+`sql/schema/`; the other thirteen live under `extractors/<channel>/schema/`. A
+`grep` of `sql/schema/` therefore returns two of fifteen, and the resulting
+list looks complete long before it is — which is how the five Plaid tables go
+missing from a change that must touch all of them.
 
 **Truncation: 16 hex characters**, matching `transaction_id` and
 `migrations.py:35`'s documented 64-bit content-hash convention, rather than
@@ -1134,12 +1133,11 @@ The migration must:
    key is satisfied without an API call.
 2. Clear the remaining re-derivable `raw.*` tables, which hold no identity the
    new shape changes: the five `raw.plaid_*` tables named in §Data Model,
-   `raw.ofx_institutions`, `raw.pdf_seeds`, and
-   `raw.import_preview_snapshots` — the last holding staged bytes that are
-   deleted on consumption anyway.
+   `raw.pdf_seeds`, and `raw.import_preview_snapshots` — the last holding
+   staged bytes that are deleted on consumption anyway.
 
-   **Eight cleared, but only seven take the new column.** Those seven carry
-   `source_file` today, so all seven fall under §Data Model's rule and acquire
+   **Seven cleared, but only six take the new column.** Those six carry
+   `source_file` today, so all six fall under §Data Model's rule and acquire
    a `NOT NULL` `source_document_key` that only a re-import can fill — which is
    what makes clearing the thing that satisfies it. `raw.import_preview_snapshots`
    is the exception on both counts: it has no `source_file` (it keys on
@@ -1581,14 +1579,13 @@ key that table names. Seven are a positional swap;
 `raw_tabular_transactions.sql` is not, because R13 also drops `transaction_id`
 from it.
 
-- The seven further schema files that carry `source_file` without holding it
+- The six further schema files that carry `source_file` without holding it
   in a primary key, each taking `source_document_key` as a plain column and
-  R10's `source_file` → `source_path` rename (§Data Model lists all eight,
-  `raw_import_log.sql` being the eighth and already named above):
+  R10's `source_file` → `source_path` rename (§Data Model lists all seven,
+  `raw_import_log.sql` being the seventh and already named above):
   `extractors/plaid/schema/raw_plaid_transactions.sql`,
   `raw_plaid_accounts.sql`, `raw_plaid_balances.sql`,
-  `raw_plaid_investment_transactions.sql`, `raw_plaid_securities.sql`;
-  `extractors/ofx/schema/raw_ofx_institutions.sql`; and
+  `raw_plaid_investment_transactions.sql`, `raw_plaid_securities.sql`; and
   `sql/schema/raw_pdf_seeds.sql`. Note the two directories: **only**
   `raw_import_log.sql` and `raw_pdf_seeds.sql` are under `sql/schema/`, and
   every other raw schema this spec touches is under
@@ -1601,7 +1598,7 @@ on an unknown column or a missing `NOT NULL`. Each channel's producer moves
 together with its schema: the tabular and OFX transforms, the Plaid extractor,
 the Google Sheets adapters, and **the PDF seed writer**
 (`extractors/pdf/seed_store.py:107`, which constructs its row with a literal
-`"source_file"` key). `raw.pdf_seeds` is one of the eight tables gaining
+`"source_file"` key). `raw.pdf_seeds` is one of the seven tables gaining
 `source_document_key` and is cleared in migration step 2, so omitting its
 producer fails the first seed-path PDF import after V052 in exactly the way the
 synthetic-writer, gsheet-loader, and import-log-writer gaps already found. This
@@ -1864,7 +1861,7 @@ Three other forms are wrong:
   one partition and delete all but one row. The `COALESCE` is what makes NULL
   safe.
 
-**Other models** — the remainder of the 22 referencing `source_file`, of which
+**Other models** — the remainder of the 21 referencing `source_file`, of which
 the load-bearing ones are `int_transactions__unioned.sql`,
 `int_transactions__matched.sql`, `stg_plaid__investment_holdings.sql`,
 `int_plaid__opening_positions.sql`, `stg_plaid__opening_lots.sql`,
@@ -2019,8 +2016,8 @@ Per `docs/specs/observability.md`, registered in
     are the test: an over-broad clear is silent data loss, and a missed clear
     leaves rows carrying a `NOT NULL` document key that nothing can fill.
 
-    **The fixture seeds all 22 affected tables** — the eight reshaped in step
-    1 (five emptied, three carrying rows), the eight cleared in step 2, and
+    **The fixture seeds all 21 affected tables** — the eight reshaped in step
+    1 (five emptied, three carrying rows), the seven cleared in step 2, and
     the six preserved in step 3. Seeding only some of them makes one half
     vacuous without failing: seed only the survivors and "every cleared table
     is empty" is trivially true of a table that started empty, which is
@@ -2290,7 +2287,7 @@ ship today.
   (`engine.py:294-307`), so an uncertain pair is dropped instead of reviewed. A
   blank description scores `0.30 × 1.0 + 0.70 × 0.0 = 0.30` and vanishes. That
   is a matcher-posture decision reaching well beyond re-imports.
-- **`_pdf_alias`** (`import_service.py:989`) still builds `raw.pdf_<alias>`
+- **`pdf_alias`** (`extractors/pdf/fingerprint.py`) still builds `raw.pdf_<alias>`
   view names from the filename stem. A naming surface, not identity — but a
   rename does create a second view.
 - **Promoting a recurring export to a registered format** at the moment the

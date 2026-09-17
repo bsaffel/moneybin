@@ -49,7 +49,6 @@ CORE_UNCATEGORIZED_QUEUE = TableRef("core", "uncategorized_queue", audience="int
 OFX_ACCOUNTS = TableRef("raw", "ofx_accounts")
 OFX_TRANSACTIONS = TableRef("raw", "ofx_transactions")
 OFX_BALANCES = TableRef("raw", "ofx_balances")
-OFX_INSTITUTIONS = TableRef("raw", "ofx_institutions")
 PLAID_ACCOUNTS = TableRef("raw", "plaid_accounts")
 PLAID_TRANSACTIONS = TableRef("raw", "plaid_transactions")
 PLAID_BALANCES = TableRef("raw", "plaid_balances")

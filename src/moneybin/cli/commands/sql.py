@@ -90,6 +90,7 @@ def sql_query_command(
             data=result.records,
             sensitivity=tier_to_sensitivity(result.tier).value,
             total_count=result.total_count,
+            returned_count=len(result.records),
             classes_returned=result.classes_returned,
         )
 

@@ -22,11 +22,11 @@ import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal
 
 import duckdb
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import IncomingTransaction
 from moneybin.metrics.registry import ACCOUNT_LINK_OVERLAP_PROBES_TOTAL
 from moneybin.tables import FCT_TRANSACTIONS
 
@@ -152,15 +152,6 @@ def fetch_ledger_spans(
         for row in rows
         if row[1] is not None and row[2] is not None
     }
-
-
-@dataclass(frozen=True)
-class IncomingTransaction:
-    """One normalized incoming row available before an account is resolved."""
-
-    transaction_date: date
-    amount: Decimal
-    currency_code: str | None
 
 
 def probe_incoming_ledger_overlap(

@@ -6,13 +6,19 @@ import_id/source_origin left NULL — these are 'pre-batch-tracking' rows
 that cannot be reverted via import revert.
 
 Idempotent: skips columns that already exist on a fresh install.
+
+MB-256: originally added raw.ofx_institutions to this list too. A later
+migration drops that table entirely, and its schema DDL file is gone, so a
+fresh install never creates it -- leaving the entry here would ALTER a table
+that doesn't exist and fail every fresh install. Already-upgraded databases
+keep the columns V003 already added; this edit only changes what a fresh
+install runs.
 """
 
 _TABLE_COLUMNS = {
     "raw.ofx_transactions": ["import_id", "source_type", "source_origin"],
     "raw.ofx_accounts": ["import_id", "source_type"],
     "raw.ofx_balances": ["import_id", "source_type"],
-    "raw.ofx_institutions": ["import_id", "source_type"],
 }
 
 

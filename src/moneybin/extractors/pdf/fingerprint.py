@@ -19,10 +19,13 @@ Limitations
 
 from __future__ import annotations
 
+import hashlib
 import json
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from moneybin.extractors.pdf.ir import PdfDocument
+from moneybin.utils import slugify
 
 
 def serialize_fingerprint(fp: dict[str, Any]) -> str:
@@ -156,3 +159,42 @@ def compute_fingerprint(doc: PdfDocument) -> dict[str, Any]:
 def match_format(fp: dict[str, Any], repo: PdfFormatsRepo) -> PdfFormat | None:
     """Look up a saved format by fingerprint; return None on miss."""
     return repo.get_by_fingerprint(fp)
+
+
+def pdf_alias(file_path: Path) -> str:
+    """Resolve the seed alias from the file stem.
+
+    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_``
+    prefix is added by the view-name construction, so the alias itself can
+    start with any character (including digits) — the view regex sees
+    ``pdf_{alias}``, not just ``{alias}``.
+
+    Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
+    builder's 63-char limit. When truncation would silently merge distinct
+    long filenames (two PDFs whose slugified stems share the first 59
+    chars), a 4-char content-hash suffix preserves uniqueness within the
+    same ceiling.
+    """
+    slug = slugify(file_path.stem).replace("-", "_")
+    if not slug:
+        slug = "import"
+    if len(slug) > 59:
+        suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
+        slug = f"{slug[:54]}_{suffix}"
+    return slug
+
+
+def pdf_format_name(fp: dict[str, Any]) -> str:
+    """Deterministic first-contact format name: issuer slug + fingerprint hash.
+
+    Single source of truth for the ``app.pdf_formats.name`` of an auto-derived
+    or bridge-authored recipe on first contact. Both
+    ``ImportService._import_pdf_transactions`` (deterministic) and
+    ``ImportService.apply_pdf_bridge_response`` (bridge) derive the name this
+    way — the hash is built from ``serialize_fingerprint(fp)`` so it stays
+    byte-for-byte identical to the JSON the repo stores and looks up by; any
+    drift between call sites would silently break duplicate detection.
+    """
+    issuer_slug = slugify(fp.get("issuer", "unknown"))
+    digest = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12]
+    return f"{issuer_slug}_{digest}"

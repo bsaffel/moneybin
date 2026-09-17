@@ -25,31 +25,21 @@ from pydantic import BaseModel, Field, field_validator
 
 from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, FilePath, ProviderSource
+from moneybin.extractors.account_identity import (
+    AccountNameFacts,
+    SourceAccount,
+    account_category,
+    derived_last_four,
+    normalize_account_identifier,
+)
 from moneybin.extractors.institution_resolution import (
     display_name_for_fid,
     slug_for_fid,
 )
 from moneybin.extractors.ofx.config import OFXProviderConfig
-
-# DEPRECATED: extractors-to-services — extractors/ should not import from
-# services/ (upward layering inversion); allowlisted in
-# test_extractor_layering.py pending MB-246, which relocates SourceAccount and
-# friends to a layer both extractors/ and services/ can import.
-from moneybin.services.account_display_name import (
-    AccountNameFacts,
-    account_category,
-    derived_last_four,
-)
-
-# DEPRECATED: extractors-to-services — see MB-246 (same as above).
-from moneybin.services.account_resolution_types import (
-    SourceAccount,
-    normalize_account_identifier,
-)
 from moneybin.tables import (
     OFX_ACCOUNTS,
     OFX_BALANCES,
-    OFX_INSTITUTIONS,
     OFX_TRANSACTIONS,
 )
 from moneybin.utils.parsing import coerce_to_decimal
@@ -429,20 +419,14 @@ def ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccou
 class OFXLoadResult:
     """Per-table row counts returned by :meth:`OFXExtractor.load`."""
 
-    institutions_loaded: int
     accounts_loaded: int
     transactions_loaded: int
     balances_loaded: int
 
     @property
     def total_rows(self) -> int:
-        """Sum across all four raw.ofx_* tables."""
-        return (
-            self.institutions_loaded
-            + self.accounts_loaded
-            + self.transactions_loaded
-            + self.balances_loaded
-        )
+        """Sum across all three raw.ofx_* tables."""
+        return self.accounts_loaded + self.transactions_loaded + self.balances_loaded
 
 
 class OFXLoadError(RuntimeError):
@@ -452,16 +436,14 @@ class OFXLoadError(RuntimeError):
     failure. This matters because every ``raw.ofx_*`` write uses
     ``on_conflict="upsert"`` (``INSERT OR REPLACE`` — load-bearing for the
     FITID-collision repair, see ``_disambiguate_colliding_fitids``), and none
-    of the four tables' primary keys include ``import_id``: re-importing a
+    of the three tables' primary keys include ``import_id``: re-importing a
     file whose rows already exist replaces those rows and re-stamps them with
-    *this* attempt's ``import_id`` — ``raw.ofx_institutions`` most sharply,
-    since its PK (``organization``, ``fid``) has no ``source_file`` at all, so
-    loading any file from a known institution re-stamps its shared row. A
-    caller that doesn't know what was actually written cannot safely clean up
-    on failure — a DELETE scoped to this ``import_id`` would remove rows that
-    belong to a previously successful import. The caller must instead
-    finalize the batch with these real partial counts, never a hardcoded
-    zero and never a same-``import_id`` DELETE.
+    *this* attempt's ``import_id``. A caller that doesn't know what was
+    actually written cannot safely clean up on failure — a DELETE scoped to
+    this ``import_id`` would remove rows that belong to a previously
+    successful import. The caller must instead finalize the batch with these
+    real partial counts, never a hardcoded zero and never a same-``import_id``
+    DELETE.
     """
 
     def __init__(self, message: str, *, rows_loaded: OFXLoadResult) -> None:
@@ -561,7 +543,7 @@ class OFXExtractor:
                 leaving a window a synced folder can rewrite.
 
         Returns:
-            dict with DataFrames for institutions, accounts, transactions, balances.
+            dict with DataFrames for accounts, transactions, balances.
 
         Raises:
             FileNotFoundError: If the file doesn't exist.
@@ -582,9 +564,6 @@ class OFXExtractor:
             source_file = str(file_path)
 
             results = {
-                "institutions": self._extract_institutions(
-                    ofx, source_file, extraction_timestamp, import_id, source_origin
-                ),
                 "accounts": self._extract_accounts(
                     ofx, source_file, extraction_timestamp, import_id, source_origin
                 ),
@@ -597,8 +576,7 @@ class OFXExtractor:
             }
 
             logger.info(
-                f"Extracted {len(results['institutions'])} institution(s), "
-                f"{len(results['accounts'])} account(s), "
+                f"Extracted {len(results['accounts'])} account(s), "
                 f"{len(results['transactions'])} transaction(s)"
             )
 
@@ -648,13 +626,11 @@ class OFXExtractor:
             source_bytes=source_bytes,
         )
         rows_loaded: dict[str, int] = {
-            "institutions": 0,
             "accounts": 0,
             "transactions": 0,
             "balances": 0,
         }
         for table_key, qualified in (
-            ("institutions", OFX_INSTITUTIONS.full_name),
             ("accounts", OFX_ACCOUNTS.full_name),
             ("transactions", OFX_TRANSACTIONS.full_name),
             ("balances", OFX_BALANCES.full_name),
@@ -668,62 +644,15 @@ class OFXExtractor:
                 raise OFXLoadError(
                     f"OFX raw-table write failed on {table_key}: {type(e).__name__}",
                     rows_loaded=OFXLoadResult(
-                        institutions_loaded=rows_loaded["institutions"],
                         accounts_loaded=rows_loaded["accounts"],
                         transactions_loaded=rows_loaded["transactions"],
                         balances_loaded=rows_loaded["balances"],
                     ),
                 ) from e
         return OFXLoadResult(
-            institutions_loaded=rows_loaded["institutions"],
             accounts_loaded=rows_loaded["accounts"],
             transactions_loaded=rows_loaded["transactions"],
             balances_loaded=rows_loaded["balances"],
-        )
-
-    def _extract_institutions(
-        self,
-        ofx: Any,
-        source_file: str,
-        extraction_timestamp: datetime,
-        import_id: str,
-        source_origin: str,
-    ) -> pl.DataFrame:
-        """Extract institution information from OFX data.
-
-        ``raw.ofx_institutions.organization`` is part of the primary key, so a
-        NULL ORG element would break the insert. Fall back to ``source_origin``
-        (the resolved slug) so files lacking ``<FI><ORG>`` still load.
-        """
-        institutions_data: list[dict[str, Any]] = []
-
-        for account in ofx.accounts:
-            if account.institution:
-                institution_data = {
-                    "organization": account.institution.organization or source_origin,
-                    "fid": account.institution.fid,
-                    "source_file": source_file,
-                    "extracted_at": extraction_timestamp.isoformat(),
-                    "import_id": import_id,
-                    "source_type": "ofx",
-                }
-                institutions_data.append(institution_data)
-
-        # Deduplicate institutions
-        if institutions_data:
-            df = pl.DataFrame(institutions_data)
-            return df.unique(  # pyright: ignore[reportUnknownMemberType]  # polars stubs partially unknown
-                subset=["organization", "fid"], maintain_order=True
-            )
-        return pl.DataFrame(
-            schema={
-                "organization": pl.String,
-                "fid": pl.String,
-                "source_file": pl.String,
-                "extracted_at": pl.String,
-                "import_id": pl.String,
-                "source_type": pl.String,
-            }
         )
 
     def _extract_accounts(

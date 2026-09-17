@@ -118,7 +118,7 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
     migration must not raise BinderException during schema-comment application.
 
     Reproduces the bug where Database.__init__ ran _apply_comments BEFORE
-    migrations: a pre-V003 ofx_institutions table (no import_id, no
+    migrations: a pre-V003 ofx_accounts table (no import_id, no
     source_type) caused COMMENT ON COLUMN to fail because the column did
     not yet exist on the live table — even though V003 would add it
     moments later.
@@ -129,8 +129,8 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
         db_path, secret_store=mock_secret_store, no_auto_upgrade=True, read_only=False
     )
     try:
-        db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN import_id")
-        db.execute("ALTER TABLE raw.ofx_institutions DROP COLUMN source_type")
+        db.execute("ALTER TABLE raw.ofx_accounts DROP COLUMN import_id")
+        db.execute("ALTER TABLE raw.ofx_accounts DROP COLUMN source_type")
         _reset_seeds_categories_for_v014_replay(db)
         db.execute("DELETE FROM app.schema_migrations WHERE version >= 3")
     finally:
@@ -144,7 +144,7 @@ def test_init_does_not_fail_when_existing_table_missing_new_columns(
             row[0]
             for row in db2.execute(
                 "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema = 'raw' AND table_name = 'ofx_institutions'"
+                "WHERE table_schema = 'raw' AND table_name = 'ofx_accounts'"
             ).fetchall()
         }
         assert "import_id" in cols

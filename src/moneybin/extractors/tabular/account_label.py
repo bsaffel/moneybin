@@ -6,7 +6,7 @@ Aggregator exports embed the last 4 of the account number in the account
 ``account-identity-resolution.md`` this last4 is a **Tier-B suggestion** — it
 corroborates a candidate and makes it recognizable, never an auto-merge key.
 
-Distinct from ``import_service._to_account_number_mask``, which takes the
+Distinct from ``extractors.pdf.metadata.to_account_number_mask``, which takes the
 trailing 4 of *any* digit run: this only yields a last4 when a recognized
 last-4 *pattern* matches, so a name like ``365 Savings`` (a stray 3-digit
 token, no last4) yields ``None`` rather than a false ``365``. A bare trailing
@@ -44,6 +44,21 @@ _TRAILING_TOKEN = re.compile(
     r"\s*[\(\[]?\s*(?:(?:ending(?:\s+in)?|ends?\s+in)\s+)?[.…*x#·\-\s]*\d{4}\s*[\)\]]?\s*$",
     re.IGNORECASE,
 )
+
+
+def last4_from_account_number(value: object) -> str | None:
+    """Last 4 digits of a mapped account-number column value, else None.
+
+    The account-number column holds the real (or already-masked) number, so its
+    trailing 4 digits are an authoritative last4 — used as a fallback when the
+    display label carries none. Distinct from ``parse_account_label``, which only
+    trusts a recognized last-4 *pattern* in a free-text display name. Tabular
+    columns are read as strings (``infer_schema_length=0``), so no float coercion.
+    """
+    if value is None:
+        return None
+    digits = "".join(c for c in str(value) if c.isdigit())
+    return digits[-4:] if len(digits) >= 4 else None
 
 
 def parse_account_label(label: str | None) -> tuple[str, str | None]:

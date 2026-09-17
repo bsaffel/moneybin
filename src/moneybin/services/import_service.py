@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 import duckdb
 
@@ -29,9 +29,33 @@ if TYPE_CHECKING:
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    AccountNameFacts,
+    IncomingTransaction,
+    SourceAccount,
+    derived_last_four,
+    mask_embedded_account_number,
+)
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
-from moneybin.extractors.tabular.account_label import parse_account_label
+from moneybin.extractors.pdf.confidence import sign_sample_rows
+from moneybin.extractors.pdf.fingerprint import pdf_alias, pdf_format_name
+from moneybin.extractors.pdf.identity import (
+    PdfAccountIdentity,
+    derive_pdf_source_account,
+    legacy_pdf_identifier_key,
+)
+from moneybin.extractors.pdf.metadata import to_account_number_mask
+from moneybin.extractors.pdf.routing import (
+    incoming_pdf_transactions,
+    normalize_pdf_amount,
+    pdf_account_type,
+)
+from moneybin.extractors.tabular.account_label import (
+    last4_from_account_number,
+    parse_account_label,
+)
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
@@ -54,16 +78,9 @@ from moneybin.orchestration.refresh import step_outcome as _step_outcome
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
-from moneybin.services.account_display_name import (
-    AccountNameFacts,
-    account_category,
-    derived_last_four,
-)
 from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
     AccountProposalDict,
     ResolvedAccount,
-    SourceAccount,
     is_reserved_account_name,
 )
 from moneybin.services.account_resolver import AccountResolver
@@ -76,10 +93,7 @@ from moneybin.services.import_confirmation import (
     ProposedMapping,
     SignConventionProposal,
 )
-from moneybin.services.ledger_overlap import (
-    IncomingTransaction,
-    probe_incoming_ledger_overlap,
-)
+from moneybin.services.ledger_overlap import probe_incoming_ledger_overlap
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
@@ -132,87 +146,6 @@ class CreatedAccount:
 
     account_id: str
     display_name: str
-
-
-# Five digits, counted across any single NON-ALPHANUMERIC separator. Four is
-# the masked last-four banks print (and the shape of a year), so it stays;
-# anything longer in an account label is a number, not a label.
-#
-# **A whole word ends an account number. Nothing else does.**
-#
-# That sentence is the rule, and it is the fourth attempt at it. The first three
-# each described the *gap* between two digits and each shipped a leak: "-", then
-# any single non-alphanumeric ("." "/" "_"), then any run of three ("12AB34CD56"
-# masked but "12ABCD34EFGH56" did not). Every one was a guess about how account
-# numbers are punctuated, and an issuer who punctuated them differently walked
-# straight through. Stop guessing at the gap's *shape* and name what actually
-# separates two labels: a word.
-#
-# So a run of digits continues across a gap that is either
-#
-#   - whitespace-free  — "12ABCD34", "1234-5678", "12X3456789": letters and
-#     punctuation inside one token are part of the identifier, however long; or
-#   - letter-free      — "4111 1111 1111", "1234 - 5678": spacing and
-#     punctuation between digit groups, however long.
-#
-# and stops at a gap that is neither, which is exactly a whitespace-delimited
-# alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
-# tokens, and "Retirement Plan 2024 Rewards" keeps its name instead of collapsing to
-# "****2024".
-#
-# Every quantifier here must have exactly one way to match a given gap, because
-# this runs on file-supplied labels and a failed match backtracks through every
-# alternative. An earlier version wrote the second branch as
-# `[^0-9A-Za-z]*\s[^0-9A-Za-z]*`, whose leading run can itself match whitespace
-# — so a run of N spaces had N places to put the `\s`, and a label that ended up
-# not matching cost 2^N. 165 characters took half a second; every further pair
-# of spaces doubled it. Excluding whitespace from the leading run pins `\s` to
-# the *first* one, which leaves a single parse. The two branches are disjoint on
-# whitespace count (zero vs. at least one), so no gap can take both.
-#
-# The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
-# masks whole rather than leaving an "X" stub that publishes the prefix.
-#
-# The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
-# right side to err on: an over-masked label is legible, an under-masked one is
-# an account number.
-_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
-# The lookbehind is the other half of keeping this linear. Without it the
-# leading [A-Za-z]* is retried from every character of a long letter run,
-# rescanning the whole run each time — quadratic, 1.2s on a 20k-character label,
-# and labels come from the file. A match can only begin where the identifier
-# does, so requiring a non-alphanumeric (or string start) before it makes every
-# interior retry fail in O(1) instead of O(n). It changes no result: a match
-# that could start mid-token is already found from that token's start, where the
-# greedy prefix covers the same span.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(
-    rf"(?<![0-9A-Za-z])[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
-)
-
-
-def mask_embedded_account_number(label: str) -> str:
-    """Mask an account number embedded in a derived account label.
-
-    ``parse_account_label`` lifts out a *recognized masked* last-four —
-    ``(...7777)``, ``x7777``, a bare trailing group — so the shapes it leaves
-    behind are the ones that matter, and grouping is what makes them dangerous:
-    ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
-    ``Checking 4111 1111 1111``, twelve digits of a card number in a field
-    declared ``USER_NOTE`` and shown unmasked wherever a mint is reported.
-
-    Masks the run rather than the whole string, because naming what was created
-    is the entire purpose of the field: "Checking 987654321098" has to become
-    "Checking ****1098", not "****1098". The kept four are the run's last four
-    *digits*, so a grouped number, a contiguous one, and an alphanumeric one
-    mask alike — and the suffix stays four digits, the form every other masked
-    surface in the codebase shows.
-    """
-
-    def _mask(match: re.Match[str]) -> str:
-        digits = re.sub(r"\D", "", match.group())
-        return f"****{digits[-4:]}"
-
-    return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
 
 
 #: What ``mask_embedded_account_number`` leaves behind, so a residue can be
@@ -343,7 +276,6 @@ class ImportResult:
     file_type: str
     accounts: int = 0
     transactions: int = 0
-    institutions: int = 0
     balances: int = 0
     date_range: str = ""
     details: dict[str, int] = field(default_factory=dict)
@@ -408,8 +340,6 @@ class ImportResult:
         label = _display_label(self.file_type, Path(self.file_path))
         lines = [f"Imported {label} file: {self.file_path}"]
 
-        if self.institutions:
-            lines.append(f"  Institutions: {self.institutions}")
         if self.accounts:
             lines.append(f"  Accounts: {self.accounts}")
         if self.transactions:
@@ -630,28 +560,6 @@ _BRIDGE_ELIGIBLE_REASONS: frozenset[str] = frozenset({
 _CARD_SIGN_CONFIDENCE = Confidence(
     score=0.75, tier="medium", flagged=("sign_convention",), missing_required=()
 )
-
-# How many rows the sign proposal shows as before/after samples.
-_SIGN_SAMPLE_LIMIT = 3
-
-
-def _sign_sample_rows(
-    rows: list[dict[str, Any]], *, limit: int = _SIGN_SAMPLE_LIMIT
-) -> list[dict[str, str]]:
-    """Show the flip concretely: what the statement printed vs what we'd record."""
-    from decimal import Decimal
-
-    samples: list[dict[str, str]] = []
-    for row in rows[:limit]:
-        printed = row.get("amount")
-        if printed is None:
-            continue
-        samples.append({
-            "description": str(row.get("description", ""))[:60],
-            "as_printed": str(printed),
-            "as_recorded": str(-Decimal(str(printed))),
-        })
-    return samples
 
 
 @dataclass(frozen=True)
@@ -1029,33 +937,6 @@ def reject_unhonored_account_signals(
     )
 
 
-def _validate_explicit_tabular_sign_shape(
-    field_mapping: dict[str, str],
-    sign: SignConventionType,
-) -> None:
-    """Reject an explicit sign convention that cannot read the mapped columns."""
-    has_split_amount = (
-        "debit_amount" in field_mapping and "credit_amount" in field_mapping
-    )
-    if sign == "split_debit_credit" and not has_split_amount:
-        raise UserError(
-            "Sign convention 'split_debit_credit' does not fit this file's "
-            "columns: the mapping resolves a single amount column, which this "
-            "convention does not read. Re-run with --sign negative_is_expense "
-            "or --sign negative_is_income, or map both debit_amount and "
-            "credit_amount; nothing was imported.",
-            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
-        )
-    if sign != "split_debit_credit" and has_split_amount:
-        raise UserError(
-            f"Sign convention {sign!r} does not fit this file's columns: the "
-            "mapping resolves a debit/credit pair, which this convention does "
-            "not read. Re-run with --sign split_debit_credit, or map one amount "
-            "column; nothing was imported.",
-            code=error_codes.IMPORT_INVALID_SIGN_CONVENTION,
-        )
-
-
 def per_file_failure(
     exc: Exception,
 ) -> tuple[str, str | None, str | None, dict[str, Any] | None]:
@@ -1184,166 +1065,6 @@ def rekey_bare_proposals_for_path(
     for proposal in account_proposals:
         if str(proposal.get("source_account_key", "")).endswith(f"-{digest}"):
             proposal["source_account_key"] = new_key
-
-
-def _pdf_alias(file_path: Path) -> str:
-    """Resolve the seed alias from the file stem.
-
-    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_``
-    prefix is added by the view-name construction, so the alias itself can
-    start with any character (including digits) — the view regex sees
-    ``pdf_{alias}``, not just ``{alias}``.
-
-    Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
-    builder's 63-char limit. When truncation would silently merge distinct
-    long filenames (two PDFs whose slugified stems share the first 59
-    chars), a 4-char content-hash suffix preserves uniqueness within the
-    same ceiling.
-    """
-    import hashlib
-
-    from moneybin.utils import slugify
-
-    slug = slugify(file_path.stem).replace("-", "_")
-    if not slug:
-        slug = "import"
-    if len(slug) > 59:
-        suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
-        slug = f"{slug[:54]}_{suffix}"
-    return slug
-
-
-def _pdf_format_name(fp: dict[str, Any]) -> str:
-    """Deterministic first-contact format name: issuer slug + fingerprint hash.
-
-    Single source of truth for the ``app.pdf_formats.name`` of an auto-derived
-    or bridge-authored recipe on first contact. Both ``_import_pdf_transactions``
-    (deterministic) and ``apply_pdf_bridge_response`` (bridge) derive the name
-    this way — the hash is built from ``serialize_fingerprint(fp)`` so it stays
-    byte-for-byte identical to the JSON the repo stores and looks up by; any
-    drift between call sites would silently break duplicate detection.
-    """
-    from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
-    from moneybin.utils import slugify
-
-    issuer_slug = slugify(fp.get("issuer", "unknown"))
-    digest = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12]
-    return f"{issuer_slug}_{digest}"
-
-
-def _pdf_account_type(decision: "RouteDecision") -> str | None:
-    """The account_type a PDF import stamps on ``raw.tabular_accounts``.
-
-    A ``negative_is_income`` recipe carries a "this is a credit card" verdict:
-    either human-confirmed on the deterministic rung (the ``--confirm`` sign
-    gate) or agent-authored via the bridge recipe, which reaches
-    ``_import_pdf_transactions`` through ``apply_pdf_bridge_response`` →
-    ``route_forced_recipe`` and does NOT run the sign gate. Either way
-    ``credit`` follows from the recipe's own convention — a fact about the
-    account, not a guess. prep normalizes it through ``seeds.account_type_map``
-    like every other source's spelling.
-
-    Tolerates a missing recipe rather than asserting one: ``_pdf_source_account``
-    also calls this, and it runs on a decision whose recipe the caller may not
-    have narrowed yet. A recipe-less decision has stated no convention, so the
-    document's own captured type is the answer.
-
-    It does NOT drive liability signing, despite the shared word: PDF balances
-    reach ``core.fct_balances`` through the tabular_balances CTE, which applies
-    no type-based negation at all (the ``IN ('credit','loan')`` negation is
-    scoped to plaid_balances). This value feeds ``display_name`` and the
-    ``accounts --type`` filter — which is why the mint report reads it here too,
-    from the one expression, rather than deriving a second answer.
-    """
-    if decision.recipe is not None and (
-        decision.recipe.sign_convention == "negative_is_income"
-    ):
-        return "credit"
-    return decision.metadata.account_type
-
-
-def _to_account_number_mask(raw: str | None) -> str | None:
-    """Reduce a captured PDF account identifier to a last-4 display mask.
-
-    Statement layouts emit account identifiers in several forms:
-
-      ``Account Number: 123456789``  → raw = "123456789"  → ``"****6789"``
-      ``Account ending in 1234``     → raw = "1234"       → ``"****1234"``
-      ``Account Number: ****1234``   → raw = "****1234"   → ``"****1234"``
-
-    The ``raw.tabular_accounts.account_number_masked`` column is contract-
-    defined as a last-4 display mask. Storing the full captured token there
-    would leak a real institution account number into a column that downstream
-    consumers treat as already masked. Apply the reduction at the import
-    boundary so the raw schema's privacy contract is preserved.
-
-    Normalisation is load-bearing for privacy and partial-evidence consistency,
-    not PDF source-native identity. The output populates the masked raw-account
-    field and candidate display; PDF identity is derived separately from the
-    document digest and usable statement evidence.
-
-    Returns the original string when fewer than 4 digits are present (e.g. an
-    institution-specific token, or a fully-masked "xxxx") so we never silently
-    drop a captured value — and never fabricate a short "last 4" that would
-    look authoritative to the institution+last4 merge signal.
-    """
-    if raw is None:
-        return None
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    digits = "".join(c for c in stripped if c.isdigit())
-    if len(digits) < 4:
-        return stripped
-    return f"****{digits[-4:]}"
-
-
-def _last4_from_account_number(value: object) -> str | None:
-    """Last 4 digits of a mapped account-number column value, else None.
-
-    The account-number column holds the real (or already-masked) number, so its
-    trailing 4 digits are an authoritative last4 — used as a fallback when the
-    display label carries none. Distinct from ``parse_account_label``, which only
-    trusts a recognized last-4 *pattern* in a free-text display name. Tabular
-    columns are read as strings (``infer_schema_length=0``), so no float coercion.
-    """
-    if value is None:
-        return None
-    digits = "".join(c for c in str(value) if c.isdigit())
-    return digits[-4:] if len(digits) >= 4 else None
-
-
-def _normalize_pdf_amount(row: dict[str, Any], sign_convention: str) -> Decimal:
-    """Return one PDF row's canonical amount before or during loading."""
-    zero = Decimal("0")
-    if sign_convention == "split_debit_credit":
-        return Decimal(str(row.get("credit", zero))) - Decimal(
-            str(row.get("debit", zero))
-        )
-    amount = Decimal(str(row.get("amount", zero)))
-    return -amount if sign_convention == "negative_is_income" else amount
-
-
-def _incoming_pdf_transactions(
-    decision: "RouteDecision",
-) -> tuple[IncomingTransaction, ...]:
-    """Normalize routed PDF rows for pre-load candidate evidence."""
-    if decision.recipe is None:
-        return ()
-    transactions: list[IncomingTransaction] = []
-    for row in decision.rows:
-        transaction_date = row.get("date")
-        if not isinstance(transaction_date, date):
-            continue
-        currency = decision.metadata.currency_code
-        transactions.append(
-            IncomingTransaction(
-                transaction_date=transaction_date,
-                amount=_normalize_pdf_amount(row, decision.recipe.sign_convention),
-                currency_code=str(currency) if currency is not None else None,
-            )
-        )
-    return tuple(transactions)
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -1803,24 +1524,6 @@ def _refuse_contradicted_bindings(
         )
 
 
-class PdfAccountIdentity(NamedTuple):
-    """What a PDF statement says about its account, and whether it said anything.
-
-    ``identity_unknown`` is returned beside the account rather than derived again
-    at each call site: the gate and the resolve pass have to agree about whether
-    the file stated an identity, and re-testing the anchor separately is exactly
-    the drift ``_pdf_source_account``'s own contract rules out.
-    """
-
-    source: SourceAccount
-    identity_unknown: bool
-
-    @property
-    def fallback_keys(self) -> tuple[str, ...]:
-        """The gate's ``fallback_keys`` argument for this identity."""
-        return (self.source.source_account_key,) if self.identity_unknown else ()
-
-
 def _pdf_source_account(
     decision: "RouteDecision",
     *,
@@ -1830,158 +1533,76 @@ def _pdf_source_account(
     document_sha256: str,
     source_file: str | None = None,
 ) -> PdfAccountIdentity:
-    """Derive the account identity a PDF statement presents, without resolving.
+    """Resolve the identity a PDF statement presents, then apply pin key-borrowing.
 
-    Shared by the confirm gate (which runs before ``begin_import``) and the
-    resolve pass in ``_import_pdf_transactions``, so the identity the user
-    ratifies is exactly the one bound.
+    ``derive_pdf_source_account`` builds the pure identity — everything
+    ``SourceAccount`` needs from the routed decision and captured metadata,
+    with no DB access. This wrapper adds the two ``AccountResolver`` reads a
+    pin needs, which is why it stays in ``services/`` rather than
+    ``extractors/`` (Invariant: an extractor may not touch the database).
 
-    Every PDF gets a document-content ``source_native`` key. A complete captured
-    identifier separately becomes a validated-routing-scoped ``full_number``
-    strong ref inside the encrypted database; a masked, last-four-only, or
-    issuer-only value remains weak evidence. This prevents two
-    same-issuer/same-last-four accounts from sharing a native key while
-    preserving exact-file re-import idempotency.
+    A pin (agents/users pointing a statement at an existing dim_accounts row)
+    says WHICH account this document belongs to. It does not change what the
+    document's own key is, so it normally travels in ``explicit_account_id``
+    alone and the native key stays derived.
 
-    A statement with no readable account number has no account identity of its
-    own. Its document key still makes the file idempotent, while
-    ``identity_unknown`` sends it through the gate's fallback pick-list.
+    Except that the derived key is the document's BYTES, and a bank hands out
+    a byte-different PDF for the same statement (fresh internal timestamps).
+    transaction_id folds the canonical account, which the pin holds still, so
+    a re-download that moves only the source key forks staging's
+    (transaction_id, account_id) dedup and counts the statement twice. So a
+    pin reuses the key this account already answers to — the same rule the
+    tabular channel applies, and the reason both call _reusable_pinned_keys.
+
+    Applies whether or not the document names an account, because
+    ``derive_pdf_account_identity`` keys EVERY statement by its bytes — an
+    anchored one included — so being anchored buys no stability here. The
+    collision that document key prevents (two same-issuer/same-last-four
+    accounts sharing a key) is a question about inferred identity, and a pin
+    states the account outright, so there is nothing left to disambiguate.
+
+    Several remembered keys take the first in the lookup's stable order
+    rather than refusing or minting. One key per adopted statement is the
+    ordinary state of any card with a history, so minting there would re-open
+    the double count for the accounts holding the most; refusing would
+    hard-fail an import the user has no --account-name to disambiguate with.
+    Which key it lands on does not matter — transaction_id already separates
+    the statements — only that both imports of one statement land on the same
+    one.
+
+    Gated on the document's own key being unknown, because
+    _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
+    is accepted elsewhere. Substituting the target's key first answers that
+    trivially and loads another account's statement here; a document that
+    already named its account keeps saying so.
+
+    "Elsewhere" means another account, not this one. A key the pin target
+    already owns contradicts nothing — and it is the ordinary state here,
+    because the borrowed import below teaches this document's own key to the
+    target. Reading that back as a reason to stop borrowing would send the
+    NEXT import of the same regenerated statement to its own digest while the
+    previous one sits under the borrowed key, splitting one statement across
+    two keys — the exact double count the borrowing exists to prevent.
     """
-    from moneybin.services.pdf_account_identity import derive_pdf_account_identity
-    from moneybin.utils import slugify
-
-    if decision.fp is None:
-        # Defensive: route_pdf_import attaches fp on every outcome that reaches
-        # the transactions path; this guards a hand-built RouteDecision.
-        raise ValueError("PDF routing returned outcome='transactions' but fp is None")
-    issuer = decision.fp.get("issuer", "unknown")
-    derived = derive_pdf_account_identity(
-        issuer=issuer,
-        identifier=decision.metadata.account_id,
+    identity = derive_pdf_source_account(
+        decision,
+        resolved_alias=resolved_alias,
+        account_id_override=account_id_override,
         document_sha256=document_sha256,
-        identifier_is_complete=decision.metadata.account_id_complete,
-        routing_number=decision.metadata.routing_number,
-    )
-    # Whether the document named an account, independent of its idempotency key.
-    anchored = derived.has_usable_identifier
-    derived_key = derived.source_account_key
-    source = SourceAccount(
-        source_type="pdf",
-        source_origin=derived.source_origin,
-        source_account_key=derived_key,
-        account_name=(
-            decision.metadata.account_label
-            or decision.metadata.product_name
-            or resolved_alias
-        ),
-        # account_label is captured from a printed "Account Name:"/"Account
-        # Nickname:" line -- a label the account holder set, the PDF analogue
-        # of Plaid's acc.name and a tabular --account-name. product_name is
-        # the card/product's marketing name (identical across every holder of
-        # that product) and resolved_alias is the filename slug; neither is
-        # authored, so the flag must follow account_label specifically, not
-        # merely "account_name is non-empty".
-        account_name_is_user_set=decision.metadata.account_label is not None,
-        account_number=derived.scoped_full_number,
-        institution=issuer or None,
-        # Before document keys, an anchorless PDF used its filename alias.
-        # Preserve that accepted binding as review-only migration evidence.
-        legacy_source_account_key=(
-            derived.legacy_source_account_key
-            or (resolved_alias if not anchored else None)
-        ),
-        legacy_source_origin=(
-            derived.legacy_source_origin or (slugify(issuer) if not anchored else None)
-        ),
-        legacy_source_account_key_is_filename_alias=(
-            derived.legacy_source_account_key is None and not anchored
-        ),
         source_file=source_file,
-        # None for a digits-free token ("xxxx"), which correctly denies the
-        # institution+last4 signal and routes to name review rather than
-        # inventing a strong match.
-        last_four=derived.last_four,
-        # What core.dim_accounts will name this account, built from the three
-        # values _import_pdf_transactions writes to raw.tabular_accounts for it:
-        # the issuer, the recipe-implied account type, and the last-4 display
-        # mask. Not `derived.last_four`, which answers a different question (it
-        # is None for a digits-free token so the institution+last4 match cannot
-        # fire); the model reads the masked column and strips it to digits.
-        name_facts=AccountNameFacts(
-            institution_name=issuer or None,
-            category=account_category(_pdf_account_type(decision)),
-            last_four=derived_last_four(
-                _to_account_number_mask(decision.metadata.account_id)
-            ),
-            # Same value and same condition as account_name_is_user_set below
-            # -- a captured "Account Name:"/"Account Nickname:" line is the
-            # only PDF-side source that counts as authored. Masked the way
-            # every other display-safe label site is (mask_embedded_account_
-            # number), never the raw captured text.
-            source_label=(
-                mask_embedded_account_number(decision.metadata.account_label)
-                if decision.metadata.account_label
-                else None
-            ),
-        ),
-        explicit_account_id=account_id_override,
-        # Set even when no key is borrowed below; _teach_unpinned_key ignores it
-        # once it equals source_account_key.
-        unpinned_account_key=derived_key if account_id_override else None,
     )
-    # A pin (agents/users pointing a statement at an existing dim_accounts row)
-    # says WHICH account this document belongs to. It does not change what the
-    # document's own key is, so it normally travels in explicit_account_id
-    # alone and the native key stays derived.
-    #
-    # Except that the derived key is the document's BYTES, and a bank hands out
-    # a byte-different PDF for the same statement (fresh internal timestamps).
-    # transaction_id folds the canonical account, which the pin holds still, so
-    # a re-download that moves only the source key forks staging's
-    # (transaction_id, account_id) dedup and counts the statement twice. So a
-    # pin reuses the key this account already answers to — the same rule the
-    # tabular channel applies, and the reason both call _reusable_pinned_keys.
-    #
-    # Applies whether or not the document names an account, because
-    # derive_pdf_account_identity keys EVERY statement by its bytes — an
-    # anchored one included — so being anchored buys no stability here. The
-    # collision that document key prevents (two same-issuer/same-last-four
-    # accounts sharing a key) is a question about inferred identity, and a pin
-    # states the account outright, so there is nothing left to disambiguate.
-    #
-    # Several remembered keys take the first in the lookup's stable order
-    # rather than refusing or minting. One key per adopted statement is the
-    # ordinary state of any card with a history, so minting there would re-open
-    # the double count for the accounts holding the most; refusing would
-    # hard-fail an import the user has no --account-name to disambiguate with.
-    # Which key it lands on does not matter — transaction_id already separates
-    # the statements — only that both imports of one statement land on the same
-    # one.
-    #
-    # Gated on the document's own key being unknown, because
-    # _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
-    # is accepted elsewhere. Substituting the target's key first answers that
-    # trivially and loads another account's statement here; a document that
-    # already named its account keeps saying so.
-    #
-    # "Elsewhere" means another account, not this one. A key the pin target
-    # already owns contradicts nothing — and it is the ordinary state here,
-    # because the borrowed import below teaches this document's own key to the
-    # target. Reading that back as a reason to stop borrowing would send the
-    # NEXT import of the same regenerated statement to its own digest while the
-    # previous one sits under the borrowed key, splitting one statement across
-    # two keys — the exact double count the borrowing exists to prevent.
+    source = identity.source
     document_owner = resolver.accepted_native_account_id(source)
     if account_id_override and document_owner in (None, account_id_override):
         reusable = _reusable_pinned_keys(
             resolver,
             account_id=account_id_override,
             source_type="pdf",
-            source_origin=derived.source_origin,
+            source_origin=source.source_origin,
         )
         if reusable:
             source = dataclasses.replace(source, source_account_key=reusable[0])
-    return PdfAccountIdentity(source=source, identity_unknown=not anchored)
+    return PdfAccountIdentity(source=source, identity_unknown=identity.identity_unknown)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2333,19 +1954,18 @@ class ImportService:
                 source_bytes=raw,
             )
         except Exception as e:
-            # load() writes each of the four raw.ofx_* tables via
+            # load() writes each of the three raw.ofx_* tables via
             # on_conflict="upsert" (INSERT OR REPLACE, load-bearing for the
             # FITID-collision repair) and none of their primary keys include
-            # import_id. A failure partway through (e.g. institutions/accounts
-            # landed, then transactions raised) therefore does NOT mean "this
-            # import_id's rows are safe to delete" the way tabular/PDF's
+            # import_id. A failure partway through (e.g. accounts landed, then
+            # transactions raised) therefore does NOT mean "this import_id's
+            # rows are safe to delete" the way tabular/PDF's
             # on_conflict="ignore" writes do: a row already present under an
             # older import_id gets replaced in place and re-stamped with THIS
             # import_id, so a DELETE WHERE import_id = ? here would destroy
-            # data from a prior, unrelated import — raw.ofx_institutions most
-            # sharply, since its PK (organization, fid) has no source_file at
-            # all. Finalize with the real partial counts OFXLoadError carries
-            # instead of a hardcoded zero or a destructive cleanup.
+            # data from a prior, unrelated import. Finalize with the real
+            # partial counts OFXLoadError carries instead of a hardcoded zero
+            # or a destructive cleanup.
             #
             # OFXLoadError is raised only once extraction has succeeded and a
             # raw-table write failed, so it is also what keeps the error metric
@@ -2369,7 +1989,6 @@ class ImportService:
             raise
 
         rows_loaded: dict[str, int] = {
-            "institutions": load_result.institutions_loaded,
             "accounts": load_result.accounts_loaded,
             "transactions": load_result.transactions_loaded,
             "balances": load_result.balances_loaded,
@@ -2430,7 +2049,6 @@ class ImportService:
             time.monotonic() - _t0
         )
 
-        result.institutions = rows_loaded["institutions"]
         result.accounts = rows_loaded["accounts"]
         result.transactions = rows_loaded["transactions"]
         result.balances = rows_loaded["balances"]
@@ -2805,10 +2423,9 @@ class ImportService:
         Returns:
             ImportResult with summary.
         """
-        import polars as pl
-
         from moneybin.extractors.tabular import TabularExtractor
         from moneybin.extractors.tabular.column_mapper import map_columns
+        from moneybin.extractors.tabular.extractor import build_account_dataframe
         from moneybin.extractors.tabular.format_detector import detect_format
         from moneybin.extractors.tabular.formats import (
             TabularFormat,
@@ -2821,6 +2438,9 @@ class ImportService:
             normalize_excel_date_columns_after_mapping,
             normalize_excel_date_columns_for_detection,
             read_file,
+        )
+        from moneybin.extractors.tabular.sign_convention import (
+            validate_explicit_sign_shape,
         )
         from moneybin.extractors.tabular.transforms import transform_dataframe
         from moneybin.utils import slugify
@@ -3706,7 +3326,7 @@ class ImportService:
                 code=error_codes.IMPORT_INVALID_NUMBER_FORMAT,
             )
         if sign:
-            _validate_explicit_tabular_sign_shape(
+            validate_explicit_sign_shape(
                 resolved.field_mapping,
                 cast(SignConventionType, sign),
             )
@@ -3928,7 +3548,7 @@ class ImportService:
             label_parsed_by_key[native_key] = (clean_name, label_last4)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[native_key] = l4
                         break
             source_accounts.append(
@@ -3983,7 +3603,7 @@ class ImportService:
                 ):
                     if number_last4_by_key.get(aid):
                         continue
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[aid] = l4
             # Per-account institution from a mapped Institution column (Tiller-style):
             # first non-null value per account key. An institution embedded only in a
@@ -4034,7 +3654,7 @@ class ImportService:
             label_parsed_by_key[native_key] = (placeholder_name, None)
             if acct_num_col and acct_num_col in df.columns:
                 for value in df[acct_num_col].to_list():
-                    if l4 := _last4_from_account_number(value):
+                    if l4 := last4_from_account_number(value):
                         number_last4_by_key[native_key] = l4
                         break
             bare_src = SourceAccount(
@@ -4198,46 +3818,23 @@ class ImportService:
             # diagnostic detail on the operator's side of the boundary.
             raise ValueError(f"Transform failed: {type(e).__name__}") from e
 
-        # Stage 5: Load — one account record per unique account
-        unique_ids = sorted(acct_id_to_name.keys())
-        # Reuse the Phase 1 parse (label_last4) with the account-number column as
-        # fallback — same last4 the resolver saw, never a second parse pass.
-        acct_id_to_last4: dict[str, str | None] = {}
-        for aid in acct_id_to_name:
-            l4 = label_parsed_by_key[aid][1] or number_last4_by_key.get(aid)
-            acct_id_to_last4[aid] = f"****{l4}" if l4 else None
-        # institution_name per account: per-account institution applies only when
-        # the multi-account branch actually ran (no explicit --account-name/
-        # --account-id); an explicit account on a multi-account-detected format
-        # keeps the shared format/file institution (Decision 8). Single-account
-        # uses the shared institution for its one row.
-        #
-        # `raw_institution_name` holds both halves, decided in Phase 1 — it also
-        # feeds the mint report, which must state this value before this stage
-        # writes it. Its shared half falls back to `institution` (resolved from
-        # the format or the filename at Stage 1) because matched_format is
-        # None for an unregistered import. Without that fallback the account's
-        # dim row stores institution_name=NULL, and a later cross-source twin
-        # can't match it on (institution, last4) — breaking the CSV-first
-        # matching direction.
-        account_institutions = [raw_institution_name(aid) for aid in unique_ids]
-        account_df = pl.DataFrame({
-            "account_id": unique_ids,
-            "account_name": [acct_id_to_name[aid] for aid in unique_ids],
-            # Decided in Phase 1 alongside the mint report, for the same reason
-            # institution_name is: dim_accounts names the account by this column
-            # and the report has to state that name before this stage writes it.
-            "account_label": [source_label_by_key.get(aid) for aid in unique_ids],
-            "account_number": [None] * len(unique_ids),
-            "account_number_masked": [acct_id_to_last4[aid] for aid in unique_ids],
-            "account_type": [None] * len(unique_ids),
-            "institution_name": account_institutions,
-            "currency": [None] * len(unique_ids),
-            "source_file": [str(file_path)] * len(unique_ids),
-            "source_type": [source_type] * len(unique_ids),
-            "source_origin": [source_origin] * len(unique_ids),
-            "import_id": [import_id] * len(unique_ids),
-        })
+        # Stage 5: Load — one account record per unique account. institution_by_key
+        # falls back to `institution` (resolved from the format or the filename at
+        # Stage 1) because matched_format is None for an unregistered import —
+        # without that fallback the account's dim row stores institution_name=NULL,
+        # and a later cross-source twin can't match it on (institution, last4).
+        institution_by_key = {aid: raw_institution_name(aid) for aid in acct_id_to_name}
+        account_df = build_account_dataframe(
+            acct_id_to_name=acct_id_to_name,
+            source_label_by_key=source_label_by_key,
+            label_parsed_by_key=label_parsed_by_key,
+            number_last4_by_key=number_last4_by_key,
+            institution_by_key=institution_by_key,
+            file_path=file_path,
+            source_type=source_type,
+            source_origin=source_origin,
+            import_id=import_id,
+        )
 
         rows_imported = extractor.load_transactions(transform_result.transactions)
         extractor.load_accounts(account_df)
@@ -4279,9 +3876,12 @@ class ImportService:
                 observations=None,
             )
 
-        result.accounts = len(unique_ids)
+        result.accounts = len(acct_id_to_name)
         result.transactions = rows_imported
-        result.details = {"transactions": rows_imported, "accounts": len(unique_ids)}
+        result.details = {
+            "transactions": rows_imported,
+            "accounts": len(acct_id_to_name),
+        }
         result.sign_correction_suggested = transform_result.sign_correction_suggested
         result.field_mapping = dict(resolved.field_mapping)
 
@@ -4714,7 +4314,7 @@ class ImportService:
         #    fire here: we already gated on outcome=="transactions" above, and
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
-        resolved_alias = _pdf_alias(canonical)
+        resolved_alias = pdf_alias(canonical)
 
         # Account-identity gate, same position as the deterministic path's: after
         # routing settles, before begin_import. A bridge recipe is agent-authored,
@@ -4738,7 +4338,7 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
-            incoming_transactions=_incoming_pdf_transactions(decision),
+            incoming_transactions=incoming_pdf_transactions(decision),
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -4936,7 +4536,7 @@ class ImportService:
                     proposed=SignConventionProposal(
                         sign_convention=recipe.sign_convention,
                         evidence=decision.card_markers,
-                        sample_rows=_sign_sample_rows(decision.rows),
+                        sample_rows=sign_sample_rows(decision.rows),
                         # Without this every surface renders the first-contact
                         # card framing, which is backwards for an
                         # income → expense repair: it would describe --confirm
@@ -4991,7 +4591,7 @@ class ImportService:
                 proposed=SignConventionProposal(
                     sign_convention="negative_is_income",
                     evidence=decision.card_markers,
-                    sample_rows=_sign_sample_rows(decision.rows),
+                    sample_rows=sign_sample_rows(decision.rows),
                 ),
                 reason="sign_convention",
                 # A deterministic PDF has no bridge recipe to re-run, so the CLI
@@ -5268,7 +4868,7 @@ class ImportService:
 
         canonical = file_path.resolve()
         result = ImportResult(file_path=str(canonical), file_type="pdf")
-        resolved_alias = _pdf_alias(canonical)
+        resolved_alias = pdf_alias(canonical)
 
         # Extract + route BEFORE opening an import_log row. A bridge escalation
         # and an extraction failure both load nothing, so neither should leave
@@ -5406,7 +5006,7 @@ class ImportService:
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
-                incoming_transactions=_incoming_pdf_transactions(decision),
+                incoming_transactions=incoming_pdf_transactions(decision),
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -5655,8 +5255,6 @@ class ImportService:
                 [str(canonical)],
             ).fetchall()
         }
-        from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
-
         legacy_identifier_refs = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
@@ -5751,7 +5349,7 @@ class ImportService:
         }
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
-            amt = _normalize_pdf_amount(row, sign_conv)
+            amt = normalize_pdf_amount(row, sign_conv)
             # rows are canonical-keyed by routing._canonicalize_rows. Credit-card
             # layouts with both columns produce "date" and "post_date"; we keep
             # them on distinct DB columns so neither overwrites the other.
@@ -5922,7 +5520,7 @@ class ImportService:
             # builds — the report has to state the name this row will produce
             # before the row exists. on_conflict="ignore" below means a type
             # Plaid/OFX already set is never clobbered.
-            account_type = _pdf_account_type(decision)
+            account_type = pdf_account_type(decision)
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [source_account.account_name],
@@ -5941,7 +5539,7 @@ class ImportService:
                     else None
                 ],
                 "account_number": [None],
-                "account_number_masked": [_to_account_number_mask(raw_account_id)],
+                "account_number_masked": [to_account_number_mask(raw_account_id)],
                 "account_type": [account_type],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [decision.metadata.currency_code],
@@ -6002,9 +5600,9 @@ class ImportService:
         # trigger the cleanup DELETE on rows that already landed successfully.
         # Both are best-effort: the import succeeds either way.
         # First-contact format name (issuer slug + fingerprint hash). Shared
-        # with apply_pdf_bridge_response via _pdf_format_name so the two paths
+        # with apply_pdf_bridge_response via pdf_format_name so the two paths
         # can never drift on the naming scheme — see that helper.
-        first_contact_format_name = _pdf_format_name(fp)
+        first_contact_format_name = pdf_format_name(fp)
 
         # Backfill format columns on raw.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
@@ -6012,22 +5610,22 @@ class ImportService:
         # entry would carry NULL format_name/format_source and users could
         # not tell whether a replay or auto-derive served the import.
         if decision.matched_format_name is not None:
-            pdf_format_name: str | None = decision.matched_format_name
+            resolved_format_name: str | None = decision.matched_format_name
             pdf_format_source = "saved"
         elif save_format:
-            pdf_format_name = first_contact_format_name
+            resolved_format_name = first_contact_format_name
             pdf_format_source = "detected"
         else:
             # First-contact import that intentionally won't persist a recipe;
             # leave format_name NULL so it doesn't look saveable to operators
             # tailing import_log.
-            pdf_format_name = None
+            resolved_format_name = None
             pdf_format_source = "detected"
         try:
             import_log.update_format(
                 self._db,
                 import_id,
-                format_name=pdf_format_name,
+                format_name=resolved_format_name,
                 format_source=pdf_format_source,
             )
         except Exception:  # observability stamp must not roll back data

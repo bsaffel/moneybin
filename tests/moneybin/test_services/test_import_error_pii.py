@@ -148,7 +148,7 @@ def test_masking_a_hostile_account_label_terminates(
     Asserted as a wall-clock bound rather than a pattern property because that
     is the failure a user experiences — a hung import.
     """
-    from moneybin.services.import_service import mask_embedded_account_number
+    from moneybin.extractors.account_identity import mask_embedded_account_number
 
     start = time.perf_counter()
     mask_embedded_account_number(hostile)
@@ -531,9 +531,9 @@ def test_the_contradicted_binding_refusal_masks_both_account_ids(
     above documents. The remembered owner is worse than caller input: the caller
     never typed it, so echoing it verbatim discloses an id they had not seen.
     """
+    from moneybin.extractors.account_identity import SourceAccount
     from moneybin.repositories.account_links_repo import AccountLinksRepo
     from moneybin.services import import_service
-    from moneybin.services.account_resolution_types import SourceAccount
     from moneybin.services.account_resolver import AccountResolver
 
     owner_acctid = "123456789012"

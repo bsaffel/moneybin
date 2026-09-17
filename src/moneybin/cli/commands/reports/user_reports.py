@@ -121,6 +121,7 @@ def reports_list(
             data=[entry.model_dump(mode="json") for entry in entries],
             sensitivity=sensitivity,
             total_count=len(entries),
+            returned_count=len(entries),
             classes_returned=catalog_classes_returned(sensitivity),
         ),
         output,

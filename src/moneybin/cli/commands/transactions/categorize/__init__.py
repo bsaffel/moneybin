@@ -227,8 +227,6 @@ def categorize_commit(
         result = CategorizationResult(applied=0, skipped=0, errors=0, error_details=[])
     result.merge_parse_errors(parse_errors)
 
-    input_count = len(items) + len(parse_errors)
-
     def _render_table(_: object) -> None:
         logger.info(
             f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
@@ -243,7 +241,6 @@ def categorize_commit(
     envelope = build_envelope(
         data=result.to_payload(),
         sensitivity="medium",
-        total_count=input_count,
         actions=[
             "Use `moneybin transactions categorize rules list` to review "
             "auto-created rules",

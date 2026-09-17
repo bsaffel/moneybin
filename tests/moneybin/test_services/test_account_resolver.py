@@ -9,12 +9,9 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL, SourceAccount
 from moneybin.repositories.account_links_repo import AccountLinksRepo
-from moneybin.services.account_resolution_types import (
-    UNNAMED_ACCOUNT_LABEL,
-    AccountProposal,
-    SourceAccount,
-)
+from moneybin.services.account_resolution_types import AccountProposal
 from moneybin.services.account_resolver import (
     _FALLBACK_CANDIDATE_CAP,  # pyright: ignore[reportPrivateUsage]
     AccountResolver,

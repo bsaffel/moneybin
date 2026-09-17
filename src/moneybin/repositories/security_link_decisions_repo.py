@@ -16,6 +16,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any, ClassVar
 
+import duckdb
+
 from moneybin.database import Database
 from moneybin.repositories.base import LinkDecisionsRepoBase
 from moneybin.services.audit_service import AuditEvent
@@ -164,6 +166,40 @@ class SecurityLinkDecisionsRepo(LinkDecisionsRepoBase):
             status="rejected", order_by=("ref_value", "decision_id")
         )
 
-    def count_pending(self) -> int:
-        """Pending-decision count for the review sweep (fresh DB -> 0)."""
+    def count_pending_provider_refs(self) -> int:
+        """Distinct (ref_kind, ref_value) pairs with pending decisions (fresh DB -> 0).
+
+        The review unit is the provider ref, not the raw decision row —
+        ``pending()`` groups tied candidates for the same ref into one group
+        (``security_links_service.py::pending`` docstring), so this must count
+        the same unit or ``total_count``/``returned_count`` disagree
+        (MB-175 review). Mirrors ``count_pending_merchant_link_decisions``'s
+        distinct-pair count. Used by ``SecurityLinksService.count_pending``
+        (the envelope). For the raw decision-row count the
+        ``SECURITY_LINK_REVIEW_PENDING`` gauge needs, see
+        :meth:`count_pending_decisions`.
+        """
+        try:
+            row = self._db.execute(
+                f"""
+                SELECT COUNT(*) FROM (
+                    SELECT DISTINCT ref_kind, ref_value
+                    FROM {self.table_ref.full_name}
+                    WHERE status = 'pending'
+                )
+                """,  # noqa: S608  # TableRef constant, no user values
+            ).fetchone()
+        except duckdb.CatalogException:
+            return 0
+        return int(row[0]) if row else 0
+
+    def count_pending_decisions(self) -> int:
+        """Raw pending decision-row count, ties counted individually (fresh DB -> 0).
+
+        Distinct from :meth:`count_pending_provider_refs`: one provider ref
+        with two tied candidates counts as 2 here and 1 there. This is the
+        unit ``refresh_security_link_pending_gauge`` needs for
+        ``SECURITY_LINK_REVIEW_PENDING`` — a Prometheus counter over rows, not
+        review groups.
+        """
         return self._count_pending()

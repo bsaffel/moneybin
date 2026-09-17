@@ -319,7 +319,7 @@ SELECT
        export; the importer masks it, which makes it safe to show but not a
        name, and "****1098" identifies the account strictly worse than
        "Test Bank …1098" does. Mirrored by
-       services/account_display_name.py::usable_source_label, which the mint
+       extractors/account_identity.py::usable_source_label, which the mint
        report derives through before any of this has run.
        'Unnamed account' is excluded from both label arms because it is this
        ladder's own terminal arm — the one string that says nothing could name

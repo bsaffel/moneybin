@@ -7,10 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from moneybin.database import Database
-from moneybin.services.import_service import (
-    ImportService,
-    _pdf_alias,  # type: ignore[reportPrivateUsage]
-)
+from moneybin.extractors.pdf.fingerprint import pdf_alias
+from moneybin.services.import_service import ImportService
 
 
 @pytest.mark.integration
@@ -18,7 +16,7 @@ def test_import_pdf_lands_as_seed(db: Database, simple_statement_pdf: Path) -> N
     result = ImportService(db).import_file(simple_statement_pdf, refresh=False)
     assert result.file_type == "pdf"
     assert result.import_id is not None
-    # View name = "pdf_" + _pdf_alias(None, fixture).
+    # View name = "pdf_" + pdf_alias(None, fixture).
     # For "simple_statement.pdf", that resolves to "pdf_simple_statement".
     row = db.execute("SELECT COUNT(*) FROM raw.pdf_simple_statement").fetchone()
     assert row is not None
@@ -78,13 +76,13 @@ def test_import_pdf_zero_rows_raises(db: Database, empty_statement_pdf: Path) ->
     ],
 )
 def test_pdf_alias_resolves(filename: str, expected: str) -> None:
-    assert _pdf_alias(Path(filename)) == expected
+    assert pdf_alias(Path(filename)) == expected
 
 
 def test_pdf_alias_long_stems_avoid_collision() -> None:
     """Distinct long filenames sharing a 59-char prefix get distinct aliases."""
-    a = _pdf_alias(Path("bank_statement_checking_account_january_2024.pdf"))
-    b = _pdf_alias(Path("bank_statement_checking_account_january_2025.pdf"))
+    a = pdf_alias(Path("bank_statement_checking_account_january_2024.pdf"))
+    b = pdf_alias(Path("bank_statement_checking_account_january_2025.pdf"))
     # Both inputs are <60 chars, so neither triggers truncation — they
     # naturally diverge. The collision case is for >59-char stems.
     assert a != b
@@ -92,8 +90,8 @@ def test_pdf_alias_long_stems_avoid_collision() -> None:
     # Now exercise the truncation path explicitly.
     long_a = "x" * 56 + "_january_2024"
     long_b = "x" * 56 + "_january_2025"
-    alias_a = _pdf_alias(Path(long_a + ".pdf"))
-    alias_b = _pdf_alias(Path(long_b + ".pdf"))
+    alias_a = pdf_alias(Path(long_a + ".pdf"))
+    alias_b = pdf_alias(Path(long_b + ".pdf"))
     assert len(alias_a) <= 59
     assert len(alias_b) <= 59
     assert alias_a != alias_b, (
