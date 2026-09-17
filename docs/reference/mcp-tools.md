@@ -36,7 +36,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`profile_set`](#profile_set) | Set the profile's home currency or report display-currency targets (ISO 4217). | write, idempotent | at least `low` |
 | [`refresh_run`](#refresh_run) | Run the post-load refresh pipeline. | write, idempotent | at least `medium` |
 | [`reports`](#reports) | Browse registered financial reports or run one by stable report ID. | read-only, idempotent | up to `critical` |
-| [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `high` |
+| [`reviews`](#reviews) | Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. | read-only, idempotent | up to `critical` |
 | [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
@@ -544,7 +544,7 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 Return exact review counts or one normalized pending/history queue with deterministic cursor pagination. kind='rule_conflicts' holds categorization rules refused because an active rule already matches the same transactions under a different category; each row names the rule deciding today and the category the refused rule wanted.
 
-Access: read-only, idempotent. Sensitivity: up to `high`.
+Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|

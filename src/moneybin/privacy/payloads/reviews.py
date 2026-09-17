@@ -403,6 +403,7 @@ class InvestmentFieldChoiceOption(BaseModel):
     observation_version: Annotated[str, DataClass.RECORD_ID]
 
 
+@row_set(NO_ROW_SET)
 class InvestmentFieldChoice(BaseModel):
     """One conflicting leg field (``event_choices.issue_choices``) and its options."""
 
@@ -414,6 +415,7 @@ class InvestmentFieldChoice(BaseModel):
     choices: list[InvestmentFieldChoiceOption]
 
 
+@row_set(NO_ROW_SET)
 class InvestmentSupersededComponent(BaseModel):
     """One prior accepted Proposal a new Proposal would replace.
 

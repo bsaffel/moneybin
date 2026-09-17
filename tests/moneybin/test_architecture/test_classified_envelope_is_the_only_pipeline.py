@@ -52,6 +52,12 @@ EXEMPT: dict[tuple[str, str], str] = {
         "Masks one pending entry through its declared type before it becomes "
         "part of a bare-dict payload; there is no typed envelope to build."
     ),
+    ("cli/commands/investments/matches.py", "redact_typed"): (
+        "Masks the typed details of each row before the TEXT path prints them. "
+        "The envelope itself is built and rendered through `render_or_json`, "
+        "which redacts only the JSON path by design, so the terminal render "
+        "has no builder call to absorb this one."
+    ),
     ("cli/commands/import_cmd.py", "redact_typed"): (
         "Masks a nested `confirmation_payload` inside a bare dict, and an "
         "account proposal rendered to the terminal. Neither value rides a "
