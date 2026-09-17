@@ -225,25 +225,13 @@ class TestCSVReader:
     def test_declared_date_format_amount_colliding_with_date_still_counts(
         self,
     ) -> None:
-        """A row's amount cell parsing as a date too must not block detection.
-
-        Round-2 review finding: removing every date cell before checking for
-        an amount over-corrected -- a row whose separate amount cell ALSO
-        parses under the declared format (a 6-digit ``%y%m%d`` date and a
-        whole-number amount, common for currencies without cents) was
-        wrongly rejected as data, reintroducing #604 for this shape.
-        """
+        """An amount that also parses as the declared date still counts as data."""
         assert _looks_like_data_row(["260105", "151215", "x"], "%y%m%d") is True
 
     def test_headerless_csv_amount_colliding_with_declared_date_keeps_row0(
         self, tmp_path: Path
     ) -> None:
-        """Reader-level companion: row 0's amount also parses as the declared date.
-
-        A headerless file whose first row's whole-number amount happens to
-        read as a valid ``%y%m%d`` date under the caller's declared format
-        must still keep that row, not fall back to eating it as a header.
-        """
+        """A headerless row 0 whose amount parses as the declared date is kept."""
         f = _write_csv(
             tmp_path / "headerless_yymmdd_colliding_amount.csv",
             "260105,151215,Coffee\n260106,20.00,Tea\n260107,-5.00,Lunch\n",

@@ -560,12 +560,10 @@ def _looks_like_data_row(
     Returns:
         True when a date cell and an amount cell exist at different positions.
     """
-    # A date and an amount at DIFFERENT positions: under a declared compact
-    # format (e.g. %Y%m%d), one cell can parse as both, so a lone such cell
-    # must not read as data alone (a "Statement date,20260131" preamble
-    # line). Removing every date cell before checking for an amount (a set
-    # subtraction) over-corrects: it also rejects a real row whose separate
-    # amount cell happens to parse as a date under the same format.
+    # Pair a date with an amount in a different cell: under a declared compact
+    # format one cell can parse as both and must not count twice
+    # ("Statement date,20260131"), while a real amount may also parse as a
+    # date ("260105,151215").
     date_idx = {
         i
         for i, c in enumerate(cells)
