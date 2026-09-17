@@ -4,7 +4,7 @@
 MoneyBin exposes one **50-tool standard registry** to every generic MCP client,
 spanning 13 user-facing domain groups across 17 literal tool-name prefixes (a
 prefix is the part of a tool name before the first underscore).
-A capable host may optionally defer schemas from that same registry to reduce prompt cost,
+A capable host may defer schemas from that same registry to reduce prompt cost,
 but tool names, approvals, allowlists, annotations, and audit identity do not
 change. Reports are registered catalog entries behind the single `reports`
 tool, not extra tool slots.
@@ -20,11 +20,37 @@ from the code into the [MCP tool reference](../reference/mcp-tools.md).
 
 ## Connect and orient
 
-Install a client entry with:
+Install a client entry with `moneybin mcp install --client <name>`. Pass
+`--print` to see the exact bytes without writing any file:
 
-```bash
-moneybin mcp install --client <name>
+```console
+$ uv run moneybin mcp install --client claude-desktop --print
+Using profile: demo
+{
+  "mcpServers": {
+    "MoneyBin (demo)": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": [
+        "run",
+        "moneybin",
+        "--profile",
+        "demo",
+        "mcp",
+        "serve"
+      ],
+      "env": {
+      }
+    }
+  }
+}
 ```
+
+Three lines are trimmed from that block: the two `args` entries
+`"--directory"` and the absolute path of the checkout `uv` runs from, and the
+`"MONEYBIN_HOME"` entry inside `env`, which carries the absolute path of the
+MoneyBin home directory that was set when install ran (the `env` block appears
+only when `MONEYBIN_HOME` is set). Every option the command takes is in the
+[`moneybin mcp` reference](../reference/cli/mcp.md#moneybin-mcp-install).
 
 [`mcp-clients.md`](mcp-clients.md) lists the supported clients, config paths,
 and restart requirements. Remove the MoneyBin entry from that client config to
@@ -46,15 +72,20 @@ Alongside the tools, the server registers seven prompts — conversation starter
 a client can offer as a menu entry. Client support varies; run
 `moneybin mcp list-prompts` for the live catalog of your installed version.
 
-| Prompt | Purpose |
-|---|---|
-| `monthly_review` | Review spending, cash flow, balances, and recurring charges. |
-| `categorization_organize` | Work through uncategorized transactions and propose rules. |
-| `review_auto_rules` | Review pending auto-categorization rules before accepting them. |
-| `onboarding` | Import initial data, verify accounts, and inspect categorization coverage. |
-| `curate_recent_transactions` | Add useful tags and notes to recent transactions. |
-| `review_curation_history` | Summarize recent curation activity from the audit log. |
-| `sync_review` | Review sync health and suggest next steps. |
+```console
+$ uv run moneybin mcp list-prompts
+Registered MCP tools — full surface visible at connect
+  categorization_organize  Organize uncategorized transactions into categories.
+  curate_recent_transactions  Walk the user through curating recently-imported transactions.
+  monthly_review  Monthly financial review — spending, budget status, and trends.
+  onboarding  First-time setup — import data and establish baseline.
+  review_auto_rules  Review persisted categorization rules and apply confirmed state changes.
+  review_curation_history  Summarize the last 7 days of curation activity from the audit log.
+  sync_review  Review sync health and suggest the next action.
+```
+
+The first line is a log record the server emits while it builds the registry,
+not a heading over the list: the seven indented rows are prompts.
 
 All seven are defined in
 [`src/moneybin/mcp/prompts.py`](../../src/moneybin/mcp/prompts.py). Each returns
@@ -96,9 +127,26 @@ records, connector egress, and local-model use.
 
 ## Contract status
 
-The 50-tool registry is operating. It advertises zero output schemas and has
-passed its deterministic contract check. Observed host-native deferral evidence remains absent.
-Promotion remains blocked until both observed context-budget evidence and observed
-host-native-deferral evidence exist. Do not add a tool, report
-slot, profile, pack, or reconnect mode without the admission record in the
-scaling spec.
+The registry is at its 50-tool limit, advertises zero output schemas, and
+passes its deterministic contract check. No host has been measured deferring
+MoneyBin's schemas, and no context-budget measurement exists; until both
+measurements exist, no tool, report slot, profile, pack, or reconnect mode is
+added without the admission record in the scaling spec.
+
+## What is not built yet
+
+- **Consent gating is not enforced.** The consent ledger records grants, but no
+  tool call is refused or degraded on the basis of one. Treat anything a
+  cloud-hosted client asks for as shared with that client's model provider;
+  [`what-the-ai-sees.md`](what-the-ai-sees.md) states the boundary field by
+  field.
+- **No `mcp uninstall` command.** Remove the MoneyBin entry from the client's
+  config file by hand;
+  [`mcp-clients.md`](mcp-clients.md#uninstall-and-reset) lists the file and the
+  key per client.
+- **Host-native schema deferral is unobserved.** No host has been measured
+  deferring MoneyBin's schemas. Generic clients receive all 50 tool schemas at
+  connect.
+- **No output schemas.** Every tool returns the documented envelope, and clients
+  that can validate structured output have nothing to validate against. Read the
+  payload shapes from the [MCP tool reference](../reference/mcp-tools.md).
