@@ -379,11 +379,11 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
 class TabularReadOptions:
     """The caller's file-reading options, repeated on every printed retry command.
 
-    One value object rather than six loose kwargs threaded through every
-    recovery function and call site, so a new printed command cannot carry
-    some of the caller's options and silently drop the rest. The CLI (which
-    may import this service module) builds one instance per invocation and
-    passes it down instead of the individual fields.
+    Every command MoneyBin prints must be the command it would accept back,
+    so a retry hint carries the caller's read options as one unit — it cannot
+    repeat some of them and drop the rest. Lives here, not in the CLI, because
+    the recovery text this module builds needs it and the CLI may import from
+    services while the reverse is forbidden.
     """
 
     format_name: str | None = None

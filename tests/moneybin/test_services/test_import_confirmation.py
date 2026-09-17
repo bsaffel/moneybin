@@ -1108,6 +1108,26 @@ class TestUnreadableDateRecovery:
         # concrete override — only the placeholder.
         assert message.count("--date-format") == 1
 
+    def test_the_failed_date_format_is_dropped_from_the_retry(self) -> None:
+        """A caller's own `date_format` must not reach the printed retry.
+
+        The value object carries every read option, this one included, so
+        dropping it is an explicit step rather than a shape the type
+        prevents. A retry that repeated it would re-run with the format
+        that just failed, and click takes the last `--date-format` wins.
+        """
+        message = unreadable_date_recovery(
+            "/data/plain.csv",
+            read_options=TabularReadOptions(
+                date_format="%Y%m%d",
+                encoding="latin-1",
+            ),
+        )
+        assert "%Y%m%d" not in message
+        assert "--date-format <strptime>" in message
+        assert message.count("--date-format") == 1
+        assert "--encoding latin-1" in message
+
 
 class TestHeaderPositionAmbiguousRecovery:
     """The recovery text for a row before the detected header."""

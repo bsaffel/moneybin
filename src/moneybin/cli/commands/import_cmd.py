@@ -642,6 +642,7 @@ def import_files_command(
             # to re-run with --confirm or --mapping instead.
             outcome = _exc.outcome
             file_path_str = str(file_paths[0]) if len(file_paths) == 1 else ""
+            quoted_path = shlex.quote(file_path_str)
             envelope_data = _confirmation_envelope_data(outcome)
             confirm_actions: list[str] = []
             if outcome.reason == "sign_convention":
@@ -718,7 +719,6 @@ def import_files_command(
                         "fields."
                     )
                     if outcome.confidence.tier != "low":
-                        quoted_path = shlex.quote(file_path_str)
                         read_args_str = read_options.cli_fragment()
                         confirm_actions.append(
                             f"Run `moneybin import confirm {quoted_path} --accept"
@@ -727,7 +727,6 @@ def import_files_command(
                 # Same rule as the inbox subfolder recovery: an action is only
                 # worth printing on a channel that can run it.
                 if _can_preview(outcome):
-                    quoted_path = shlex.quote(file_path_str)
                     preview_args_str = read_options.cli_fragment(preview=True)
                     confirm_actions.append(
                         f"Run `moneybin import preview {quoted_path}"
@@ -2190,6 +2189,7 @@ def import_confirm_command(
         delimiter=delimiter,
         encoding=encoding,
     )
+    quoted_path = shlex.quote(str(file_path))
 
     try:
         with handle_cli_errors(cli_actor="import_confirm_command"):
@@ -2289,14 +2289,12 @@ def import_confirm_command(
                 "Re-run with --mapping <field>=<column> to override specific fields."
             )
             if outcome.confidence.tier != "low":
-                quoted_path = shlex.quote(str(file_path))
                 read_args_str = read_options.cli_fragment()
                 confirm_actions.append(
                     f"Re-run `moneybin import confirm {quoted_path} --accept"
                     f"{read_args_str}` to accept the proposed mapping as-is."
                 )
         if _can_preview(outcome):
-            quoted_path = shlex.quote(str(file_path))
             preview_args_str = read_options.cli_fragment(preview=True)
             confirm_actions.append(
                 f"Run `moneybin import preview {quoted_path}{preview_args_str}` "
@@ -2395,7 +2393,6 @@ def import_confirm_command(
             )
             logger.error(msg)
             if _can_preview(outcome):
-                quoted_path = shlex.quote(str(file_path))
                 preview_args_str = read_options.cli_fragment(preview=True)
                 logger.info(
                     "💡 Inspect the proposal with `moneybin import preview "

@@ -833,6 +833,28 @@ class TestDeclaredDateFormatConfirmConverges:
         assert match, action
         return match.group(1).replace("<account_id|new>", "new")
 
+    def _run_printed_preview_commands(self, actions: list[str], csv_file: Path) -> int:
+        """Run every printed `moneybin import preview` command verbatim.
+
+        The preview hints are printed beside the confirm hints and are just as
+        copy-pasteable, so they get the same treatment: split the command out
+        of the action text, assert the path survived as one token, and run it.
+        An unquoted path or a flag `import preview` does not accept (it has no
+        `--date-format`) fails here rather than in a user's terminal.
+        """
+        ran = 0
+        for action in actions:
+            match = re.search(r"`(moneybin import preview[^`]*)`", action)
+            if match is None:
+                continue
+            tokens = shlex.split(match.group(1))
+            assert str(csv_file) in tokens, tokens
+            assert "--date-format" not in tokens, tokens
+            preview_result = runner.invoke(app, tokens[2:])
+            assert preview_result.exit_code == 0, preview_result.output
+            ran += 1
+        return ran
+
     def _converge(
         self,
         csv_file: Path,
@@ -870,6 +892,7 @@ class TestDeclaredDateFormatConfirmConverges:
             if payload["data"]["status"] == "ok":
                 return
             assert payload["data"]["status"] == "confirmation_required", payload
+            self._run_printed_preview_commands(payload["actions"], csv_file)
             printed = self._extract_confirm_command(payload["actions"])
             assert "--date-format %Y%m%d" in printed, printed
             tokens = shlex.split(printed)
@@ -950,10 +973,10 @@ class TestDeclaredDateFormatConfirmConverges:
 
         Every hint MoneyBin prints has to be the command it would accept
         back verbatim — a bare, unquoted path breaks that the moment the
-        source file lives under a directory like "Bank Exports/". This
-        covers the CLI's own `_render_confirmation_prompt`-adjacent hints
-        (`import confirm --accept`, `import preview`), not only the
-        already-quoted `_import_confirm_command` builder.
+        source file lives under a directory like "Bank Exports/". Both the
+        `import confirm` and the `import preview` hints are run as printed;
+        `test_every_printed_hint_runs_from_a_spaced_directory` covers the
+        hints `import confirm` itself prints.
         """
         spaced_dir = tmp_path / "bank exports"
         spaced_dir.mkdir()
@@ -991,3 +1014,97 @@ class TestDeclaredDateFormatConfirmConverges:
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3
+
+    def _spaced_headerless_csv(self, tmp_path: Path) -> Path:
+        spaced_dir = tmp_path / "bank exports"
+        spaced_dir.mkdir()
+        csv_file = spaced_dir / "headerless_yyyymmdd.csv"
+        csv_file.write_text(
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+        return csv_file
+
+    def test_confirm_prints_runnable_hints_from_a_spaced_directory(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`import confirm` prints its own hints, from its own handler.
+
+        The convergence above only reaches the hints `import files` prints
+        and the account-binding recovery. A rejected override leaves the
+        layout unsettled, which is the branch where `import_confirm_command`
+        builds its own accept-retry and preview hints.
+        """
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+        csv_file = self._spaced_headerless_csv(tmp_path)
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--date-format",
+                "%Y%m%d",
+                "--mapping",
+                "transaction_date=no_such_column",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["data"]["status"] == "confirmation_required", payload
+
+        assert self._run_printed_preview_commands(payload["actions"], csv_file) == 1
+        retry = self._extract_confirm_command(payload["actions"])
+        tokens = shlex.split(retry)
+        assert str(csv_file) in tokens, tokens
+        assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
+
+    def test_confirm_mapping_failure_hint_is_runnable_from_a_spaced_directory(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The TTY branch's `💡 Inspect the proposal` hint is a command too.
+
+        It is logged, not returned in the envelope, so it is only reachable
+        with a terminal attached — and it interpolates the same path.
+        """
+        import logging
+
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+        csv_file = self._spaced_headerless_csv(tmp_path)
+
+        with caplog.at_level(logging.INFO):
+            result = runner.invoke(
+                app,
+                [
+                    "confirm",
+                    str(csv_file),
+                    "--date-format",
+                    "%Y%m%d",
+                    "--mapping",
+                    "transaction_date=no_such_column",
+                ],
+            )
+
+        assert result.exit_code == 1, result.output
+        match = re.search(r"`(moneybin import preview[^`]*)`", caplog.text)
+        assert match, caplog.text
+        tokens = shlex.split(match.group(1))
+        assert str(csv_file) in tokens, tokens
+        assert "--date-format" not in tokens, tokens
