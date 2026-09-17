@@ -215,12 +215,12 @@ def refresh_command(
             output,
             cli_actor="refresh_command",
         )
-        if result.error is not None or blocked_transform:
+        if result.error is not None:
             raise typer.Exit(1)
         return
 
     if quiet:
-        if result.error is not None or blocked_transform:
+        if result.error is not None:
             raise typer.Exit(1)
         return
 

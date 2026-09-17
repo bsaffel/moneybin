@@ -116,8 +116,7 @@ def investments_matches_run(
         raise typer.Exit(1)
     if output != OutputFormat.JSON:
         count = (
-            stage.counts.get("pending_unique", 0)
-            + stage.counts.get("pending_competing", 0)
+            stage.count("pending_unique") + stage.count("pending_competing")
             if stage is not None and stage.ran
             else None
         )

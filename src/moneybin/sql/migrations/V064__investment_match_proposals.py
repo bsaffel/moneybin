@@ -1,10 +1,14 @@
 """V064: add durable review-only investment-match Proposals."""
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def migrate(conn: Any) -> None:
     """Add the Proposal lifecycle without modifying source or Golden rows."""
+    logger.debug("V064: CREATE TABLE app.investment_match_decisions")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS app.investment_match_decisions (
             proposal_id VARCHAR PRIMARY KEY,

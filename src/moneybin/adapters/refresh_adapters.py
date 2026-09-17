@@ -336,8 +336,8 @@ def refresh_envelope(
         investment_stage is not None
         and investment_stage.ran
         and (
-            investment_stage.counts.get("pending_unique", 0)
-            + investment_stage.counts.get("pending_competing", 0)
+            investment_stage.count("pending_unique")
+            + investment_stage.count("pending_competing")
         )
     ):
         actions.append(

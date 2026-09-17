@@ -90,7 +90,7 @@ def test_rejection_exclusion_emits_its_bounded_metric_after_commit(
     )
     counter = MagicMock()
     monkeypatch.setattr(
-        "moneybin.services.investment_matching_service.investment_match_proposals_total",
+        "moneybin.services.investment_matching_service.INVESTMENT_MATCH_PROPOSALS_TOTAL",
         counter,
     )
     result = service.run()

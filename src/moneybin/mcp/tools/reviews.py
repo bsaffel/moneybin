@@ -995,12 +995,15 @@ def _review_actions(
     next_cursor: str | None,
 ) -> list[str]:
     """Return queue-native decision and continuation actions."""
-    if kind == "investment_matches":
-        actions = ["Investment matching is review-only; decisions are not available."]
-    elif status == "history":
+    # History is checked first because it applies to every kind: no queue offers
+    # a decision over settled rows, so the review-only note would displace the
+    # one action that is useful there — the way back to the pending queue.
+    if status == "history":
         actions = [
             f"Open the active queue with reviews(kind={kind!r}, status='pending')"
         ]
+    elif kind == "investment_matches":
+        actions = ["Investment matching is review-only; decisions are not available."]
     else:
         decision_tool = (
             "reviews_decide"

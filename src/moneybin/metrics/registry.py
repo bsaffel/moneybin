@@ -11,17 +11,6 @@ from collections.abc import Iterable
 
 from prometheus_client import Counter, Gauge, Histogram
 
-investment_match_proposals_total = Counter(
-    "moneybin_investment_match_proposals_total",
-    "Committed investment planner dispositions",
-    ["band", "outcome"],
-)
-investment_match_duration_seconds = Histogram(
-    "moneybin_investment_match_duration_seconds",
-    "Investment matching operation duration",
-    ["operation"],
-)
-
 # ── Import pipeline ──────────────────────────────────────────────────────────
 
 IMPORT_RECORDS_TOTAL = Counter(
@@ -727,6 +716,18 @@ SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
     "Security-reference resolution outcomes by winning rung: cusip | isin | "
     "ticker | name (resolved), or unresolved | ambiguous (raised).",
     labelnames=("rung",),
+)
+
+INVESTMENT_MATCH_PROPOSALS_TOTAL = Counter(
+    "moneybin_investment_match_proposals_total",
+    "Committed investment planner dispositions",
+    ["band", "outcome"],
+)
+
+INVESTMENT_MATCH_DURATION_SECONDS = Histogram(
+    "moneybin_investment_match_duration_seconds",
+    "Investment matching operation duration",
+    ["operation"],
 )
 
 

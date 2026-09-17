@@ -11,8 +11,8 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.investments.event_planning import evaluate_plan
 from moneybin.metrics.registry import (
-    investment_match_duration_seconds,
-    investment_match_proposals_total,
+    INVESTMENT_MATCH_DURATION_SECONDS,
+    INVESTMENT_MATCH_PROPOSALS_TOTAL,
 )
 from moneybin.repositories.investment_match_decisions_repo import (
     InvestmentMatchDecisionsRepo,
@@ -184,10 +184,10 @@ class InvestmentMatchingService:
             raise
         try:
             for band, outcome in dispositions:
-                investment_match_proposals_total.labels(
+                INVESTMENT_MATCH_PROPOSALS_TOTAL.labels(
                     band=band, outcome=outcome
                 ).inc()
-            investment_match_duration_seconds.labels(operation="plan").observe(
+            INVESTMENT_MATCH_DURATION_SECONDS.labels(operation="plan").observe(
                 perf_counter() - started
             )
         except Exception:

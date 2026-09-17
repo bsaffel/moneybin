@@ -10,7 +10,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, cast, get_args
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import duckdb
@@ -24,6 +24,7 @@ from moneybin.mcp.tools import reviews as reviews_module
 from moneybin.mcp.tools.reviews import (
     _identity_binding,  # pyright: ignore[reportPrivateUsage]
     _preview_identity_decisions,  # pyright: ignore[reportPrivateUsage]  # the untested wiring is the subject
+    _review_actions,  # pyright: ignore[reportPrivateUsage]  # the cross-kind branch order is the subject
     identity_links_decide_coarse,
     register_review_coarse_reads,
     register_review_coarse_writes,
@@ -32,7 +33,10 @@ from moneybin.mcp.tools.reviews import (
 )
 from moneybin.metrics.registry import MERCHANT_EXEMPLAR_COUNT
 from moneybin.orchestration.refresh import RefreshResult
-from moneybin.privacy.payloads.reviews import IdentityLinksDecidePayload
+from moneybin.privacy.payloads.reviews import (
+    IdentityLinksDecidePayload,
+    ReviewQueueKind,
+)
 from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.protocol.write_contracts import (
     AccountLinkDecisionRequest,
@@ -3803,3 +3807,28 @@ async def test_rule_conflict_decision_reprioritizes_beside_the_existing_rule() -
             "WHERE is_active ORDER BY priority"
         ).fetchall()
     assert [row[1] for row in rows] == [10, 100]
+
+
+@pytest.mark.parametrize("kind", get_args(ReviewQueueKind))
+def test_every_history_queue_offers_the_way_back_to_pending(kind: str) -> None:
+    """No kind may lose the only navigation a settled queue can offer.
+
+    ``investment_matches`` used to be matched before ``status``, so its history
+    view answered with the review-only note and nothing else — the one kind an
+    agent could reach and then not leave. Decisions are unavailable over every
+    kind's history, so that note belongs to the pending branch alone.
+    """
+    actions = _review_actions(
+        kind=cast(Any, kind), status="history", limit=10, next_cursor=None
+    )
+    assert f"reviews(kind={kind!r}, status='pending')" in " ".join(actions)
+    assert not any("review-only" in action for action in actions)
+
+
+def test_investment_matches_still_declares_review_only_while_pending() -> None:
+    """The note the reorder moved off history has to survive where it applies."""
+    actions = _review_actions(
+        kind="investment_matches", status="pending", limit=10, next_cursor=None
+    )
+    assert any("review-only" in action for action in actions)
+    assert not any("reviews_decide" in action for action in actions)
