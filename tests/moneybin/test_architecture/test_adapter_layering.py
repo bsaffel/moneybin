@@ -306,6 +306,15 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "load_builtin_formats",
     ),
+    # mask_embedded_account_number is a pure string function (regex substitution,
+    # no DB/IO) — the CLI masks a caller-supplied key before logging a refusal.
+    # Relocated by MB-52 slice 3 from moneybin.services.import_service, where
+    # this import was unguarded; the function itself did not change.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.account_identity",
+        "mask_embedded_account_number",
+    ),
 })
 
 

@@ -22,6 +22,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.extractors.account_identity import mask_embedded_account_number
 from moneybin.investments.identity import manual_identity_sql
 from moneybin.matching.reconciliation import record_account_merge_retirements
 from moneybin.repositories.account_link_decisions_repo import AccountLinkDecisionsRepo
@@ -633,14 +634,6 @@ class AccountLinksService:
         from moneybin.services.account_resolver import (
             AccountResolver,
             refresh_account_link_pending_gauge,
-        )
-
-        # Deferred so this module does not become a second eager path onto
-        # import_service's graph. It is on the CLI cold path today only through
-        # inbox_service, and a module-level import here would keep it there
-        # even after that one is deferred. Only the refusal below needs it.
-        from moneybin.services.import_service import (  # cold-start hygiene
-            mask_embedded_account_number,
         )
 
         if account_id == candidate_account_id:
