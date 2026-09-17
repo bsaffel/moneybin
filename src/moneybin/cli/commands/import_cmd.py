@@ -2717,23 +2717,11 @@ def import_preview(
     overrides = _parse_overrides(override)
 
     with handle_cli_errors():
-        # Stage 1: Detect format
-        format_info = detect_format(
-            source,
-            delimiter_override=delimiter,
-            encoding_override=encoding,
-        )
-
-        # Stage 2: Read file
-        read_result = read_file(source, format_info, sheet=sheet)
-        df = read_result.df
-
-        if len(df) == 0:
-            logger.warning(f"⚠️  No data rows found in {source.name}")
-            return
-
-        # Stage 3: Column mapping — load built-in + user-saved formats
-        matched_format = None
+        # Load built-in + user-saved formats once, before the read: an
+        # explicitly named --format's date_format must reach header
+        # detection (read_file), matching how ImportService's own
+        # --format/--date-format path already feeds it. matches_headers
+        # still needs the read's own columns, so that fallback stays below.
         from moneybin.database import (
             DatabaseKeyError,
             DatabaseNotInitializedError,
@@ -2745,21 +2733,46 @@ def import_preview(
                 all_formats, _ = _load_all_formats(preview_db)
         except (DatabaseNotInitializedError, DatabaseKeyError):
             all_formats, _ = _load_all_formats(None)
+
+        matched_format = None
         if format_name:
             matched_format = all_formats.get(format_name)
             if matched_format is None:
                 logger.warning(
                     f"⚠️  Format {format_name!r} not found in available formats"
                 )
-        else:
+
+        # Stage 1: Detect format
+        format_info = detect_format(
+            source,
+            delimiter_override=delimiter,
+            encoding_override=encoding,
+        )
+
+        # Stage 2: Read file. This command has no --date-format flag, so the
+        # only declared format that can ever reach here is a matched format's
+        # own persisted one.
+        read_result = read_file(
+            source,
+            format_info,
+            sheet=sheet,
+            declared_date_format=matched_format.date_format if matched_format else None,
+        )
+        df = read_result.df
+
+        if len(df) == 0:
+            logger.warning(f"⚠️  No data rows found in {source.name}")
+            return
+
+        # Stage 3: Column mapping — match by headers only when no --format
+        # was named; needs the read's own columns, so this runs after read_file.
+        if not format_name:
             headers = list(df.columns)
             for fmt in all_formats.values():
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
 
-        # This command has no --date-format flag, so the only declared format
-        # that can ever reach here is a matched format's own persisted one.
         # detection_df is a throwaway copy — never imported, never shown as
         # a sample — that only exists so map_columns below can recognize a
         # native-typed date column's content; df itself stays untouched

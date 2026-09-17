@@ -523,6 +523,52 @@ class TestPreview:
         assert "2 in file = 0 skipped + 0 header + 2 read" in result.output
         assert not any("parses as a transaction" in r.message for r in caplog.records)
 
+    def test_preview_named_format_date_format_reaches_header_detection(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """``--format <name>`` must feed its own date_format into header detection.
+
+        Pre-push review finding on #604: ``ImportService``'s auto-detect path
+        threads a matched format's ``date_format`` into ``read_file`` for
+        header detection, but ``import preview --format <name>`` used to
+        resolve ``matched_format`` only AFTER the read — so a headerless file
+        whose dates use a format outside the built-in ``_DATE_FORMATS`` list
+        (e.g. ``%Y%m%d``) still lost row 0 here, disagreeing with the import
+        it previews.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        csv_file = tmp_path / "headerless_yyyymmdd.csv"
+        csv_file.write_text(
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="yyyymmdd_test",
+            institution_name="Test",
+            file_type="csv",
+            header_signature=["Date", "Amount", "Description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y%m%d",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(csv_file), "--format", saved_format.name]
+        )
+
+        assert result.exit_code == 0
+        assert "Header row detected: False" in result.output
+        assert "Rows: 3" in result.output
+
     def test_preview_header_position_ambiguous_uses_shared_recovery_text(
         self, tmp_path: Path, caplog: LogCaptureFixture
     ) -> None:
