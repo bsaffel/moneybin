@@ -118,10 +118,16 @@ Usage: `moneybin import confirm [OPTIONS] FILE_PATH`
 |---|---|---|---|
 | `--accept` | flag |  | Accept the detected mapping as-is. |
 | `--mapping` | text, repeatable |  | Partial-merge override (repeatable): --mapping field=column. |
+| `--format, -f` | text |  | Use a specific named format (bypass auto-detection). |
 | `--bridge-response` | path |  | JSON file containing a PDF bridge {recipe, rows} response. |
 | `--confirm` | flag |  | Confirm a PDF bridge recipe's ledger-wide sign inversion. |
 | `--confirm-sign` | flag |  | Explicitly approve an inferred tabular sign inversion (pair with --accept). For a PDF statement use `import files <path> --confirm`; the MCP equivalent is import_confirm(preview_id=...) on a sign preview, which asks the human rather than asserting their approval. |
 | `--sign` | one of `negative_is_expense`, `negative_is_income`, `split_debit_credit` |  | Explicit tabular sign-convention override. Use negative_is_expense to keep amounts as printed. |
+| `--date-format` | text |  | Date format override (strptime format string, e.g. %%Y-%%m-%%d). |
+| `--number-format` | one of `us`, `european`, `swiss_french`, `zero_decimal` |  | Number format override. |
+| `--sheet` | text |  | Excel sheet name (default: auto-select largest). |
+| `--delimiter` | text |  | Explicit delimiter for text formats. |
+| `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1). |
 | `--institution, -i` | text |  | Institution override, carried over from the 'import files' call that raised this confirmation. Same meaning as on 'import files': consulted for OFX/QFX/QBO only when the file's \<FI>\<ORG>, FID lookup, and filename heuristic all yield nothing. Ignored for tabular and PDF files, which resolve their institution from the matched format and filename. |
 | `--account-id` | text |  | Account ID to associate with imported transactions. Not honored for OFX/QFX/QBO, which name their own accounts and can carry several — use --account-binding there; supplying it is refused rather than ignored. |
 | `--account-name` | text |  | Account name to associate with imported transactions. |
