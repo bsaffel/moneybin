@@ -161,7 +161,8 @@ class ConfirmationRequired:
     because `resolve_or_confirm` honours an `Override` at every tier by
     design — the caller's column correction outranks a low score — and that
     is right for a mapping problem and wrong for this one, which no column
-    correction touches. Surfaces route it to source repair, not a retry.
+    correction touches. Surfaces route it to the saved format whose skip_rows
+    caused it, never to a column retry.
 
     `reason='header_position_ambiguous'` is `header_row_consumed`'s
     dismissible sibling: auto-detection picked a header-like row that has a
@@ -558,35 +559,38 @@ def classify_unconfirmable_plan(
 def header_row_consumed_recovery() -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
-    Identical substance to the MCP wording below and deliberately adjacent to
-    it: there is no command to offer on either surface, because MoneyBin
-    exposes no skip-rows override. Only the closing sentence differs, since a
-    CLI reader re-runs a command rather than re-previewing through a tool.
+    Only an explicit saved format's ``skip_rows`` reaches this reason —
+    auto-detection never reads a data row as the header, and no built-in
+    format sets ``skip_rows`` (see ``test_no_builtin_format_sets_skip_rows``).
     """
     return (
         "This file's first row was read as column names, but it parses as a "
         "transaction — a real record was consumed as the header. No --mapping "
-        "or --override correction can recover it, and MoneyBin exposes no "
-        "skip-rows override. Add a header row to the source file, or correct "
-        "the saved format's skip_rows, then import it again."
+        "or --override correction can recover it. The saved format named "
+        "with --format skips more leading rows than this file has before its "
+        "header. Re-run `moneybin import files <file>` without --format so "
+        "the header is detected fresh. No command edits a saved format's "
+        "skip_rows, so naming that format again fails the same way; to "
+        "remove it, run `moneybin import formats delete <name>`."
     )
 
 
 def header_row_consumed_recovery_mcp() -> str:
     """The only honest recovery when a transaction was read as the header.
 
-    Takes no file path because there is no command to run: MoneyBin exposes
-    no skip-rows override (`skip_rows` is only ever written from detection),
-    so every mapping retry restages the same unconfirmable plan. Shared by
-    the preview- and confirm-side action builders — keeping one text per
-    state is what stops the two from drifting, which they did for three
-    consecutive review rounds.
+    Unreachable today: no tabular MCP tool names a format, and a persisted
+    preview never carries an explicit ``skip_rows``. Mirrors the CLI recovery
+    for the shared classifier. Shared by the preview- and confirm-side action
+    builders — one text per state, which stopped the two from drifting.
     """
     return (
         "This file's first row was read as column names, but it parses as a "
         "transaction — a real record was consumed as the header. No column "
-        "correction can recover it, and MoneyBin exposes no skip-rows "
-        "override. Add a header row to the source file and preview it again."
+        "correction can recover it. A saved format's skip_rows skips more "
+        "leading rows than this file has before its header. Import the file "
+        "again without naming that format so the header is detected fresh, "
+        "or remove the format with import_revert(operation="
+        "'delete_saved_format', format_name=<name>)."
     )
 
 
@@ -597,12 +601,13 @@ def header_position_ambiguous_recovery(
 ) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
-    UNLIKE `header_row_consumed_recovery`, this names a command that actually
-    resolves the gate: nothing has been consumed yet, so `--confirm` (or
-    `import confirm ... --accept`) ratifies the detected header position and
-    the import proceeds. Names the other honest option too — if the row
-    above the header is a real transaction, not a balance summary, the fix
-    is in the source file, and no flag changes that.
+    UNLIKE `header_row_consumed_recovery`'s recoveries — which work around a
+    row already gone — this one resolves the gate directly: nothing has been
+    consumed yet, so `--confirm` (or `import confirm ... --accept`) ratifies
+    the detected header position and the import proceeds. Names the other
+    honest option too — if the row above the header is a real transaction,
+    not a balance summary, the fix is in the source file, and no flag
+    changes that.
 
     Deliberately row-free: this text can reach the log pipeline
     (`log_to_file` defaults to True), so the disputed row's own content
@@ -629,9 +634,10 @@ def header_position_ambiguous_recovery(
 def header_position_ambiguous_recovery_mcp() -> str:
     """The dismissible recovery for an ambiguous auto-detected header, MCP.
 
-    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`, this
-    one has a command to offer, because confirming the SAME preview ratifies
-    the detected header position rather than restaging an unconfirmable plan.
+    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`'s
+    recoveries — which work around a row already gone — confirming the SAME
+    preview here ratifies the detected header position directly rather than
+    restaging an unconfirmable plan.
     The disputed row's own content lives in `data.header_position_ambiguous_
     rows` rather than inlined here — the same reason `data.sample_
     values` isn't inlined into this text either.

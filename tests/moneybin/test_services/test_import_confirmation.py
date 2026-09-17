@@ -21,6 +21,8 @@ from moneybin.services.import_confirmation import (
     TabularReadOptions,
     disputed_row_fields,
     header_position_ambiguous_recovery,
+    header_row_consumed_recovery,
+    header_row_consumed_recovery_mcp,
     resolve_or_confirm,
     unreadable_date_recovery,
     validate_partial_mapping,
@@ -1170,6 +1172,29 @@ class TestHeaderPositionAmbiguousRecovery:
             "--encoding",
         ):
             assert flag not in message
+
+
+class TestHeaderRowConsumedRecovery:
+    """The consumed-header recovery text, CLI and MCP.
+
+    Both must name the recoveries proven in
+    ``test_tabular_import_service.py`` (re-import without naming the stale
+    format; delete it) and must no longer send a caller to fix something
+    MoneyBin exposes no way to fix — a saved format's ``skip_rows``.
+    """
+
+    def test_cli_names_the_proven_recoveries(self) -> None:
+        message = header_row_consumed_recovery()
+        assert "without --format" in message
+        assert "moneybin import formats delete" in message
+        assert "correct the saved format" not in message
+        assert "Add a header row" not in message
+
+    def test_mcp_names_the_proven_recoveries(self) -> None:
+        message = header_row_consumed_recovery_mcp()
+        assert "delete_saved_format" in message
+        assert "correct the saved format" not in message
+        assert "Add a header row" not in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:

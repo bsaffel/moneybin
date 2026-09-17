@@ -71,6 +71,44 @@ def _make_mapping_result(
     )
 
 
+def _make_stale_skip_format_fixture(db: Database, tmp_path: Path, name: str) -> Path:
+    """Write a headed CSV and save a format whose skip_rows skips past it.
+
+    Reproduces the only reachable cause of ``header_row_consumed``: a saved
+    format's ``skip_rows`` was tuned against a preamble line this export no
+    longer has, so the explicit skip now lands on the first transaction.
+    """
+    from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+
+    csv = tmp_path / f"{name}.csv"
+    csv.write_text(
+        "Date,Amount,Description\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+        encoding="utf-8",
+    )
+    save_format_to_db(
+        db,
+        TabularFormat(
+            name=name,
+            institution_name="Test",
+            file_type="csv",
+            delimiter=",",
+            encoding="utf-8",
+            header_signature=["date", "amount", "description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+            skip_rows=1,
+        ),
+        actor="test",
+    )
+    return csv
+
+
 class TestDetectFileType:
     """Test that file extensions are detected correctly."""
 
@@ -1919,6 +1957,112 @@ class TestTabularConfirmationFlow:
             IMPORT_KNOWN_FORMAT_REUSE_TOTAL.labels(channel="tabular")._value.get()  # type: ignore[reportPrivateUsage]
             == reuse_before
         )
+
+    def test_no_builtin_format_sets_skip_rows(self) -> None:
+        """The recovery text names only saved formats: no built-in reaches this."""
+        from moneybin.extractors.tabular.formats import load_builtin_formats
+
+        for fmt in load_builtin_formats().values():
+            assert fmt.skip_rows == 0
+
+    def test_naming_the_stale_format_again_fails_the_same_way(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Recovery: re-import without ``--format``; naming it again still fails.
+
+        Reproduces the only reachable cause of ``header_row_consumed`` (a
+        saved format's ``skip_rows`` tuned against a preamble this export no
+        longer has) and proves both halves of the recovery text: dropping
+        the format loads every row, and no command edits the saved format's
+        ``skip_rows``, so naming it again reproduces the exact same refusal.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = _make_stale_skip_format_fixture(db, tmp_path, "stale_skip_convergence")
+        service = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_convergence",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+        result = service.import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+        assert result.rows_loaded == 2
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_convergence",
+                save_format=False,
+            )
+        assert exc_info.value.outcome.reason == "header_row_consumed"
+
+    def test_deleting_the_stale_format_also_recovers_every_row(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """Recovery: delete the stale saved format, then re-import.
+
+        Uses the same service call CLI ``import formats delete`` and MCP
+        ``import_revert`` both use.
+        """
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        csv = _make_stale_skip_format_fixture(db, tmp_path, "stale_skip_delete")
+        service = ImportService(db)
+
+        with pytest.raises(ImportConfirmationRequiredError):
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_delete",
+                save_format=False,
+            )
+
+        service.delete_saved_format_confirmed(
+            "stale_skip_delete", actor="test", verify=lambda live: None
+        )
+        with pytest.raises(ValueError, match="Unknown format 'stale_skip_delete'"):
+            service.import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_delete",
+                save_format=False,
+            )
+
+        result = service.import_file(
+            csv,
+            account_name="test",
+            refresh=False,
+            confirm=True,
+            save_format=False,
+        )
+
+        assert result.rows_loaded == 2
 
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database

@@ -1066,10 +1066,9 @@ class InboxService:
                     "(the subfolder names the account)."
                 )
         elif reason == "header_row_consumed":
-            # Nothing to run: no --accept, --mapping, or --date-format touches
-            # a row already consumed as column names. The file stays in
-            # pending/ until the source (or the saved format's skip_rows) is
-            # corrected, which is the honest instruction.
+            # No --accept, --mapping or --date-format recovers a consumed
+            # header row; inbox sync never names a format, so only the
+            # shared classifier reaches this branch.
             actions.append(header_row_consumed_recovery())
         elif reason == "header_position_ambiguous":
             # Unlike header_row_consumed, --accept genuinely resolves this —

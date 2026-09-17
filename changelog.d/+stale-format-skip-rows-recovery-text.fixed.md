@@ -1,0 +1,1 @@
+`moneybin import files --format <name>` stopping because a saved format's `skip_rows` consumed a transaction as the header now tells you to re-run without `--format`, and how to delete the saved format, instead of advice no command supports.
