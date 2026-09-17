@@ -393,18 +393,19 @@ class TabularReadOptions:
     delimiter: str | None = None
     encoding: str | None = None
 
-    def cli_args(self, *, preview: bool = False) -> list[str]:
+    def cli_args(self) -> list[str]:
         """Serialize as CLI flag/value pairs.
 
-        ``import preview`` has no ``--date-format``/``--number-format``, so
-        ``preview=True`` omits them regardless of whether they are set.
+        One serialization for every command MoneyBin prints: ``import files``,
+        ``import confirm`` and ``import preview`` accept the same six options,
+        so no caller has to remember which of them a given command omits.
         """
         args: list[str] = []
         if self.format_name is not None:
             args.extend(("--format", self.format_name))
-        if not preview and self.date_format is not None:
+        if self.date_format is not None:
             args.extend(("--date-format", self.date_format))
-        if not preview and self.number_format is not None:
+        if self.number_format is not None:
             args.extend(("--number-format", self.number_format))
         if self.sheet is not None:
             args.extend(("--sheet", self.sheet))
@@ -414,11 +415,11 @@ class TabularReadOptions:
             args.extend(("--encoding", self.encoding))
         return args
 
-    def cli_fragment(self, *, preview: bool = False) -> str:
+    def cli_fragment(self) -> str:
         """``cli_args``, shlex-joined with one leading space, or ``""`` when empty."""
         import shlex
 
-        args = self.cli_args(preview=preview)
+        args = self.cli_args()
         return f" {shlex.join(args)}" if args else ""
 
 
@@ -453,18 +454,20 @@ def unreadable_date_recovery(
     # lands in "Bank Exports/" often enough that an unquoted path makes the
     # prescribed recovery uncopyable exactly when the user needs it.
     quoted = shlex.quote(file_path)
-    preview_args_str = opts.cli_fragment(preview=True)
-    files_args_str = replace(opts, date_format=None).cli_fragment()
+    # Neither printed command repeats the format that just failed — the
+    # preview would re-read the file with it, and the retry carries its own
+    # <strptime> placeholder in its place.
+    read_args_str = replace(opts, date_format=None).cli_fragment()
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
         "while the real dates sit in an unmapped one — re-run with `--mapping "
         "transaction_date=<source_column>`, which re-runs detection against "
-        f"that column; `moneybin import preview {quoted}{preview_args_str}` "
+        f"that column; `moneybin import preview {quoted}{read_args_str}` "
         "names the file's columns. If the mapped column is right and its "
         "format is simply unrecognized, no mapping can change that: re-run "
         f"`moneybin import files {quoted} --confirm --date-format "
-        f"<strptime>{files_args_str}`."
+        f"<strptime>{read_args_str}`."
     )
 
 

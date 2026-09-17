@@ -335,8 +335,13 @@ def test_tabular_read_options_cli_args_omits_unset_fields() -> None:
     assert opts.cli_args() == ["--date-format", "%Y%m%d"]
 
 
-def test_tabular_read_options_preview_omits_date_and_number_format() -> None:
-    """``preview=True`` drops --date-format/--number-format even when set."""
+def test_tabular_read_options_serializes_one_set_for_every_command() -> None:
+    """There is no per-command subset: all three accept all six options.
+
+    `import preview` gained `--date-format`/`--number-format` so that the
+    command MoneyBin prints reads the file the same way as the import it
+    previews. One serialization, no caller deciding what to omit.
+    """
     from moneybin.services.import_confirmation import TabularReadOptions
 
     opts = TabularReadOptions(
@@ -346,9 +351,13 @@ def test_tabular_read_options_preview_omits_date_and_number_format() -> None:
         sheet="Transactions",
     )
 
-    assert opts.cli_args(preview=True) == [
+    assert opts.cli_args() == [
         "--format",
         "chase_credit",
+        "--date-format",
+        "%Y%m%d",
+        "--number-format",
+        "european",
         "--sheet",
         "Transactions",
     ]
@@ -934,7 +943,10 @@ class TestImportFilesConfirmFlow:
         preview_line = next(
             ln for ln in result.output.splitlines() if "import preview" in ln
         )
-        for line in (confirm_line, mapping_line, accept_line):
+        # Every printed line carries the same set, the preview line included:
+        # a preview that read the file differently than the import it
+        # previews would report a different header decision and row count.
+        for line in (confirm_line, mapping_line, accept_line, preview_line):
             assert "--date-format %Y%m%d" in line, line
             assert "--sheet Transactions" in line, line
             # shlex quotes ';' as a shell metacharacter.
@@ -942,12 +954,6 @@ class TestImportFilesConfirmFlow:
                 "--delimiter" in line
                 and shlex.split(line)[shlex.split(line).index("--delimiter") + 1] == ";"
             ), line
-        # import preview has no --date-format flag; the fragment must omit it
-        # while still carrying the options preview genuinely accepts.
-        assert "--sheet Transactions" in preview_line, preview_line
-        preview_tokens = shlex.split(preview_line)
-        assert preview_tokens[preview_tokens.index("--delimiter") + 1] == ";"
-        assert "--date-format" not in preview_line, preview_line
 
     def test_repeating_one_ref_with_two_answers_is_refused(
         self, mock_db: MagicMock, tmp_path: Path, caplog: pytest.LogCaptureFixture

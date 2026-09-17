@@ -727,7 +727,7 @@ def import_files_command(
                 # Same rule as the inbox subfolder recovery: an action is only
                 # worth printing on a channel that can run it.
                 if _can_preview(outcome):
-                    preview_args_str = read_options.cli_fragment(preview=True)
+                    preview_args_str = read_options.cli_fragment()
                     confirm_actions.append(
                         f"Run `moneybin import preview {quoted_path}"
                         f"{preview_args_str}` to inspect the proposal."
@@ -1882,7 +1882,7 @@ def _render_confirmation_prompt(
                 f"{read_args_str}   (dedicated confirm subcommand)"
             )
     if _can_preview(outcome):
-        preview_args_str = opts.cli_fragment(preview=True)
+        preview_args_str = opts.cli_fragment()
         typer.echo(
             f"     moneybin import preview {quoted_path}{preview_args_str}   "
             "(inspect proposal in detail)"
@@ -2295,7 +2295,7 @@ def import_confirm_command(
                     f"{read_args_str}` to accept the proposed mapping as-is."
                 )
         if _can_preview(outcome):
-            preview_args_str = read_options.cli_fragment(preview=True)
+            preview_args_str = read_options.cli_fragment()
             confirm_actions.append(
                 f"Run `moneybin import preview {quoted_path}{preview_args_str}` "
                 "to inspect the proposal."
@@ -2393,7 +2393,7 @@ def import_confirm_command(
             )
             logger.error(msg)
             if _can_preview(outcome):
-                preview_args_str = read_options.cli_fragment(preview=True)
+                preview_args_str = read_options.cli_fragment()
                 logger.info(
                     "💡 Inspect the proposal with `moneybin import preview "
                     f"{quoted_path}{preview_args_str}` and re-run with a "
@@ -2765,6 +2765,16 @@ def import_preview(
         "-f",
         help="Use a specific named format (bypass auto-detection)",
     ),
+    date_format: str | None = typer.Option(
+        None,
+        "--date-format",
+        help="Date format override (strptime format string, e.g. %%Y-%%m-%%d).",
+    ),
+    number_format: NumberFormatType | None = typer.Option(
+        None,
+        "--number-format",
+        help="Number format override.",
+    ),
     sheet: str | None = typer.Option(
         None, "--sheet", help="Excel sheet name (default: auto-select largest)"
     ),
@@ -2822,6 +2832,8 @@ def import_preview(
             flag
             for flag, value in (
                 ("--format", format_name),
+                ("--date-format", date_format),
+                ("--number-format", number_format),
                 ("--sheet", sheet),
                 ("--delimiter", delimiter),
                 ("--encoding", encoding),
@@ -2883,14 +2895,19 @@ def import_preview(
             encoding_override=encoding,
         )
 
-        # Stage 2: Read file. This command has no --date-format flag, so the
-        # only declared format that can ever reach here is a matched format's
-        # own persisted one.
+        # An explicit --date-format outranks a matched format's persisted one,
+        # the same precedence ImportService applies, so the preview reads the
+        # file exactly as the import it previews will.
+        declared_date_format = date_format or (
+            matched_format.date_format if matched_format else None
+        )
+
+        # Stage 2: Read file.
         read_result = read_file(
             source,
             format_info,
             sheet=sheet,
-            declared_date_format=matched_format.date_format if matched_format else None,
+            declared_date_format=declared_date_format,
         )
         df = read_result.df
 
@@ -2906,6 +2923,12 @@ def import_preview(
                 if fmt.matches_headers(headers):
                     matched_format = fmt
                     break
+            # A signature match can only land here, after the read, so the
+            # format it carries informs the mapping stages below but never
+            # the header decision above. An explicit --date-format still wins.
+            declared_date_format = date_format or (
+                matched_format.date_format if matched_format else None
+            )
 
         # detection_df is a throwaway copy — never imported, never shown as
         # a sample — that only exists so map_columns below can recognize a
@@ -2914,7 +2937,7 @@ def import_preview(
         detection_df = normalize_excel_date_columns_for_detection(
             df,
             file_type=format_info.file_type,
-            date_format=matched_format.date_format if matched_format else None,
+            date_format=declared_date_format,
         )
 
         typer.echo(f"\nFile: {source.name}")
@@ -2964,6 +2987,8 @@ def import_preview(
                     str(source),
                     read_options=TabularReadOptions(
                         format_name=format_name,
+                        date_format=date_format,
+                        number_format=number_format,
                         sheet=sheet,
                         delimiter=delimiter,
                         encoding=encoding,
@@ -2979,13 +3004,17 @@ def import_preview(
                 f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
             )
             typer.echo(f"Sign convention: {matched_format.sign_convention}")
-            typer.echo(f"Date format: {matched_format.date_format}")
-            typer.echo(f"Number format: {matched_format.number_format}")
+            # An explicit flag outranks the saved format's own value, on both
+            # lines, because that is the value the import will use.
+            typer.echo(f"Date format: {declared_date_format}")
+            typer.echo(
+                f"Number format: {number_format or matched_format.number_format}"
+            )
             typer.echo("\nColumn mapping:")
             for field, col in matched_format.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
             final_field_mapping = matched_format.field_mapping
-            final_effective_date_format = matched_format.date_format
+            final_effective_date_format = declared_date_format
         else:
             from moneybin.config import get_settings
 
@@ -2996,6 +3025,7 @@ def import_preview(
                 t_high=bands.t_high,
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
+                declared_date_format=declared_date_format,
             )
             typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():
@@ -3011,18 +3041,21 @@ def import_preview(
                 typer.echo(f"Date format: {mapping_result.date_format}")
             else:
                 # Name only what THIS command accepts: preview takes
-                # --override, not --mapping, and no --date-format at all.
-                # The other half of the recovery therefore has to name the
-                # command that does carry it.
+                # --override, not --mapping.
                 typer.echo(
                     "Date format: not detected — re-run with `--override "
                     "transaction_date=<column>` if the wrong column matched; "
                     "if the mapped column is right, its format is unrecognized "
-                    "and only `moneybin import files <file> --confirm "
-                    "--date-format <strptime>` can read it"
+                    "and `--date-format <strptime>` declares it"
                 )
-            if mapping_result.number_format:
-                typer.echo(f"Number format: {mapping_result.number_format}")
+            # A declared --number-format is what the import will parse with, so
+            # report it rather than the detected value it overrides. Detection
+            # runs over the chosen amount column's values and never selects
+            # that column, so this changes the reported interpretation only.
+            if number_format or mapping_result.number_format:
+                typer.echo(
+                    f"Number format: {number_format or mapping_result.number_format}"
+                )
             final_field_mapping = mapping_result.field_mapping
             final_effective_date_format = mapping_result.date_format
 

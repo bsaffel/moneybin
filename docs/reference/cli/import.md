@@ -225,6 +225,8 @@ Usage: `moneybin import preview [OPTIONS] FILE_PATH`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--format, -f` | text |  | Use a specific named format (bypass auto-detection) |
+| `--date-format` | text |  | Date format override (strptime format string, e.g. %%Y-%%m-%%d). |
+| `--number-format` | one of `us`, `european`, `swiss_french`, `zero_decimal` |  | Number format override. |
 | `--sheet` | text |  | Excel sheet name (default: auto-select largest) |
 | `--delimiter` | text |  | Explicit delimiter for text formats |
 | `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1) |

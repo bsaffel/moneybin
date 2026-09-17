@@ -833,14 +833,21 @@ class TestDeclaredDateFormatConfirmConverges:
         assert match, action
         return match.group(1).replace("<account_id|new>", "new")
 
-    def _run_printed_preview_commands(self, actions: list[str], csv_file: Path) -> int:
+    def _run_printed_preview_commands(
+        self,
+        actions: list[str],
+        csv_file: Path,
+        *,
+        expect_rows: int,
+        expect_header: bool,
+    ) -> int:
         """Run every printed `moneybin import preview` command verbatim.
 
-        The preview hints are printed beside the confirm hints and are just as
-        copy-pasteable, so they get the same treatment: split the command out
-        of the action text, assert the path survived as one token, and run it.
-        An unquoted path or a flag `import preview` does not accept (it has no
-        `--date-format`) fails here rather than in a user's terminal.
+        Exiting 0 is not the bar. A preview that reports a different row count
+        than the import it previews is the defect, so the reported
+        reconciliation is checked against the read the confirmation itself
+        made: strip `--date-format` from the printed hint and a headerless
+        file reports one row fewer, under a header it does not have.
         """
         ran = 0
         for action in actions:
@@ -849,9 +856,14 @@ class TestDeclaredDateFormatConfirmConverges:
                 continue
             tokens = shlex.split(match.group(1))
             assert str(csv_file) in tokens, tokens
-            assert "--date-format" not in tokens, tokens
             preview_result = runner.invoke(app, tokens[2:])
             assert preview_result.exit_code == 0, preview_result.output
+            assert f"Rows: {expect_rows}" in preview_result.output, (
+                preview_result.output
+            )
+            assert f"Header row detected: {expect_header}" in preview_result.output, (
+                preview_result.output
+            )
             ran += 1
         return ran
 
@@ -862,6 +874,7 @@ class TestDeclaredDateFormatConfirmConverges:
         mocker: Any,
         caplog: pytest.LogCaptureFixture,
         *,
+        has_header: bool,
         max_rounds: int = 4,
     ) -> None:
         """Drive `import files` → repeated `import confirm` to a terminal `ok`."""
@@ -892,7 +905,12 @@ class TestDeclaredDateFormatConfirmConverges:
             if payload["data"]["status"] == "ok":
                 return
             assert payload["data"]["status"] == "confirmation_required", payload
-            self._run_printed_preview_commands(payload["actions"], csv_file)
+            self._run_printed_preview_commands(
+                payload["actions"],
+                csv_file,
+                expect_rows=3,
+                expect_header=has_header,
+            )
             printed = self._extract_confirm_command(payload["actions"])
             assert "--date-format %Y%m%d" in printed, printed
             tokens = shlex.split(printed)
@@ -933,7 +951,7 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker, caplog)
+        self._converge(csv_file, db, mocker, caplog, has_header=False)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3, (
@@ -957,7 +975,7 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker, caplog)
+        self._converge(csv_file, db, mocker, caplog, has_header=True)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3
@@ -986,7 +1004,7 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker, caplog)
+        self._converge(csv_file, db, mocker, caplog, has_header=False)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3
@@ -1010,7 +1028,7 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker, caplog)
+        self._converge(csv_file, db, mocker, caplog, has_header=True)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3
@@ -1061,7 +1079,10 @@ class TestDeclaredDateFormatConfirmConverges:
         payload = json.loads(result.output)
         assert payload["data"]["status"] == "confirmation_required", payload
 
-        assert self._run_printed_preview_commands(payload["actions"], csv_file) == 1
+        ran = self._run_printed_preview_commands(
+            payload["actions"], csv_file, expect_rows=3, expect_header=False
+        )
+        assert ran == 1
         retry = self._extract_confirm_command(payload["actions"])
         tokens = shlex.split(retry)
         assert str(csv_file) in tokens, tokens
@@ -1107,4 +1128,10 @@ class TestDeclaredDateFormatConfirmConverges:
         assert match, caplog.text
         tokens = shlex.split(match.group(1))
         assert str(csv_file) in tokens, tokens
-        assert "--date-format" not in tokens, tokens
+        assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
+        preview_result = runner.invoke(app, tokens[2:])
+        assert preview_result.exit_code == 0, preview_result.output
+        assert "Rows: 3" in preview_result.output, preview_result.output
+        assert "Header row detected: False" in preview_result.output, (
+            preview_result.output
+        )

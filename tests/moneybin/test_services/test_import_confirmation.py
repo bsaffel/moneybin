@@ -1098,7 +1098,7 @@ class TestUnreadableDateRecovery:
         assert "--sheet Transactions" in preview_clause
         assert "--delimiter ';'" in preview_clause or "--delimiter ;" in preview_clause
         assert "--encoding latin-1" in preview_clause
-        assert "--number-format" not in preview_clause  # import preview lacks it
+        assert "--number-format european" in preview_clause
         assert "--format chase_credit" in files_clause
         assert "--number-format european" in files_clause
         assert "--sheet Transactions" in files_clause
