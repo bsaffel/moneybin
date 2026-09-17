@@ -164,6 +164,20 @@ def refresh_rate_gap_hints(steps: RefreshStepOutcome | None) -> list[str]:
     return hints
 
 
+def _match_retry() -> RecoveryAction:
+    """One match retry, so the blocked-planner path offers what the normal one does."""
+    return RecoveryAction(
+        tool="refresh_run",
+        arguments={"steps": ["match"]},
+        rationale=(
+            "Cross-source matching crashed mid-refresh; re-run just "
+            "the match step to retry."
+        ),
+        confidence="suggested",
+        idempotent=True,
+    )
+
+
 def refresh_step_actions(
     steps: RefreshStepOutcome | None, *, apply_failed: bool
 ) -> list[RecoveryAction]:
@@ -199,14 +213,26 @@ def refresh_step_actions(
     earns a targeted retry even though every other step stays withheld.
     ``expand_steps`` always folds ``investment_match`` back in alongside
     ``transform``, so the retry targets ``transform`` to re-run both.
+
+    That exception carries ``match`` with it. ``refresh`` records a match crash
+    on its stage and keeps going into investment planning, so both errors can
+    arrive on the same result — and the ``transform`` retry expands to the
+    planner and the apply, never to the cash matcher. Withholding the match
+    retry here leaves an agent that ran every action offered with matching
+    still incomplete, which is the opposite of what the withholding rule is
+    for: nothing about this apply is broken, so neither retry is doomed.
     """
     if steps is None:
         return []
     investment_error = _stage_error(steps, "investment_match")
+    match_error = _stage_error(steps, "match")
     if apply_failed:
         if investment_error is None:
             return []
-        return [
+        blocked: list[RecoveryAction] = []
+        if match_error is not None:
+            blocked.append(_match_retry())
+        blocked.extend([
             RecoveryAction(
                 tool="refresh_run",
                 arguments={"steps": ["transform"]},
@@ -227,21 +253,11 @@ def refresh_step_actions(
                 confidence="suggested",
                 idempotent=True,
             ),
-        ]
+        ])
+        return blocked
     actions: list[RecoveryAction] = []
-    if _stage_error(steps, "match") is not None:
-        actions.append(
-            RecoveryAction(
-                tool="refresh_run",
-                arguments={"steps": ["match"]},
-                rationale=(
-                    "Cross-source matching crashed mid-refresh; re-run just "
-                    "the match step to retry."
-                ),
-                confidence="suggested",
-                idempotent=True,
-            )
-        )
+    if match_error is not None:
+        actions.append(_match_retry())
     if investment_error is not None:
         actions.append(
             RecoveryAction(

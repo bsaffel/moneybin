@@ -90,6 +90,11 @@ WITH routing_audits AS (
   JOIN prep.int_manual__investment_identity AS i
     ON i.source_transaction_id = m.source_transaction_id
   UNION ALL
+  /* COALESCE the generations the way int_manual__investment_identity does: a missing
+     routing audit is an empty correction trail, not an absent identity. A cash-only
+     Plaid event carries no source_security_key, so sg misses while has_resolved_identity
+     still admits the event — leaving NULL here fails InvestmentMatchDetails validation
+     and takes the whole review queue down with the one row. */
   SELECT DISTINCT
     p.investment_transaction_id,
     p.source_type,
@@ -98,8 +103,8 @@ WITH routing_audits AS (
     CASE WHEN p.ledger_include THEN p.investment_transaction_id END,
     ar.account_id,
     p.security_id,
-    ag.identity_generation,
-    sg.identity_generation,
+    COALESCE(ag.identity_generation, SHA256('')),
+    COALESCE(sg.identity_generation, SHA256('')),
     NULL::TEXT,
     p.type,
     p.subtype,

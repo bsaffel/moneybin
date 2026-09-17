@@ -493,6 +493,32 @@ async def test_a_blocking_investment_match_crash_is_not_withheld_by_apply_failed
 
 
 @pytest.mark.unit
+async def test_a_match_crash_beside_a_blocked_planner_keeps_its_own_retry() -> None:
+    """The transform retry re-runs the planner and the apply, never the cash matcher.
+
+    `refresh` records a match crash on its stage and keeps going into investment
+    planning, so both errors reach one result. Offering only the transform retry
+    there leaves an agent that ran every action with matching still incomplete —
+    and `match` leads, because CANONICAL_STEPS runs it before the planner.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            stages=(
+                _match_stage(error="matcher blew up"),
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            )
+        ),
+        apply_failed=True,
+    )
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions] == [
+        ["match"],
+        ["transform"],
+        None,
+    ]
+
+
+@pytest.mark.unit
 async def test_a_blocked_investment_match_earns_a_transform_retry_through_the_envelope() -> (
     None
 ):

@@ -230,8 +230,25 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
                             ],
                         }
                     ],
-                    "supersedes_decision_ids": [],
-                    "supersession": [],
+                    "supersedes_decision_ids": ["proposal-prior-122"],
+                    # Both are populated so the two render branches they gate
+                    # actually execute. `alternatives` reaches the ` / ` join
+                    # and `supersession` reaches `prior.model_dump()`; left at
+                    # their empty defaults, a shape mismatch in either ships
+                    # undetected. `supersession` is [] in the shipped planner
+                    # (review-only refuses every decision, so nothing is ever
+                    # accepted), which is exactly why the renderer needs a
+                    # fixture rather than a caller to exercise it.
+                    "alternatives": [["native-manual", "native-plaid-alt"]],
+                    "supersession": [
+                        {
+                            "decision_id": "proposal-prior-122",
+                            "status": "accepted",
+                            "members": ["native-manual"],
+                            "reserved_rows": [["plaid", "origin", "native-plaid"]],
+                            "current_successors": ["proposal-review-123"],
+                        }
+                    ],
                     "downstream_effects": {"golden_membership_changed": False},
                 }),
             )
@@ -273,6 +290,16 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
         "golden_membership_changed",
     ):
         assert value in result.stdout
+    # Without the lifecycle status a terminal reader cannot tell why a settled
+    # Proposal is in the history at all — every row there renders the same id
+    # and confidence, and only JSON carried the state that separates them. The
+    # label is asserted too: "pending" reaches stdout from the view's own status
+    # either way, so the value alone proves nothing on the pending route.
+    assert "Status" in result.stdout
+    assert ("pending" if command == "pending" else "superseded") in result.stdout
+    # The two branches the fixture above exists to reach.
+    assert "native-manual / native-plaid-alt" in result.stdout
+    assert "proposal-prior-122" in result.stdout
     # The leg's raw, user-authored account_id must reach the text table
     # masked, never bare — the CLI text path applies no redaction by design
     # (render_or_json's docstring), so the command itself must mask it.

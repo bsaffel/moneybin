@@ -41,6 +41,7 @@ def _inspect(status: str, output: OutputFormat, quiet: bool) -> None:
                 render_summary(
                     [
                         ("Proposal", row.decision_id),
+                        ("Status", row.status),
                         ("Confidence", details.confidence_band),
                     ],
                     title=row.summary,
