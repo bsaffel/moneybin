@@ -1,11 +1,10 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-14 -->
 # What the AI Provider Sees
 
 When you drive MoneyBin with an AI agent, some of your financial data reaches
 the model provider behind that agent — Anthropic, OpenAI, Google, or whoever
 your MCP client is configured against. This page states exactly what, so you can
-decide before you connect. It is written to be accurate, not reassuring; where a
-protection is planned rather than shipped, it says so.
+decide before you connect.
 
 The one-sentence version: **anything the agent reads to answer you, the model
 provider receives** — except account and routing numbers, which are masked
@@ -90,6 +89,18 @@ the MCP tools and the CLI `--output json` surface alike:
 
 - **Account identifiers** → `****1234` (last four kept).
 - **Routing numbers** → `*****` (fully masked).
+
+Read the accounts table on the demo profile and the masking is in the payload,
+not in the renderer:
+
+```console
+$ uv run moneybin sql query "SELECT display_name, institution_name, last_four, routing_number FROM core.dim_accounts ORDER BY display_name LIMIT 3" --output json
+Using profile: demo
+{"status": "ok", "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "critical", "display_currency": null}, "data": [{"display_name": "Ally Bank savings \u20260002", "institution_name": "Ally Bank", "last_four": "****0002", "routing_number": null}, {"display_name": "Chase Bank checking \u20260001", "institution_name": "Chase Bank", "last_four": "****0001", "routing_number": null}, {"display_name": "Chase Bank credit card", "institution_name": "Chase Bank", "last_four": null, "routing_number": null}], "actions": []}
+```
+
+`institution_name` and `display_name` come back whole, `last_four` comes back
+masked, and an MCP client receives the same object for the same query.
 
 This is enforced by **field classification**, not convention. Every tool in
 MoneyBin's 50-tool standard registry must declare the privacy class of each field it
@@ -185,6 +196,20 @@ so "scrubbed description" is not the same as "scrubbed payload." No other tool
 minimizes at all; the reads and reports above send the merchant name and every
 other field in the clear.
 
+The CLI returns the same records the MCP tool does, so you can read the payload
+before an agent ever sees one:
+
+```console
+$ uv run moneybin transactions categorize assist --limit 2 --output json
+Using profile: demo
+audit: tool=transactions_categorize_assist sensitivity=medium metadata={'txn_count': 2, 'account_filter': None}
+{"status": "ok", "summary": {"total_count": 2, "returned_count": 2, "has_more": false, "sensitivity": "medium", "display_currency": null}, "data": {"transactions": [{"transaction_id": "5bbc2331ca753a4b", "description_scrubbed": "TARGET", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "-"}, {"transaction_id": "8621e03e0d342b35", "description_scrubbed": "ONLINE PAYMENT CHASE CARD", "memo_scrubbed": "", "source_type": "csv", "transaction_type": null, "check_number": null, "is_transfer": false, "transfer_pair_id": null, "payment_channel": null, "amount_sign": "+"}]}, "actions": []}
+```
+
+There is no `amount`, no `transaction_date`, and no `account_id` field in that
+payload — only `amount_sign`. `check_number` is present and null on these two
+rows; on a check it carries the number.
+
 ---
 
 ## What the agent gets is scoped to what it asked for
@@ -212,6 +237,22 @@ The provider sees the *results of the queries the agent ran*, not your database:
   minted from your own spreadsheet headers or document fields — that scan is the
   only masking there is. Disconnect the sheet with `moneybin gsheet disconnect
   <connection-id> --purge` if its cells should not reach a model.
+
+  A read of the demo profile's OFX rows shows both halves of that floor at once:
+
+  ```console
+  $ uv run moneybin sql query "SELECT source_transaction_id, date_posted, payee, amount FROM raw.ofx_transactions ORDER BY date_posted DESC LIMIT 3"
+  Using profile: demo
+  source_transaction_id | date_posted | payee | amount
+  SYN****...2886 | 2025-12-31 00:00:00 | CAR WASH #3180 BOISE ID | -18.43
+  SYN****...2883 | 2025-12-30 00:00:00 | TARGET #4058 SEATTLE WA | -55.82
+  SYN****...2882 | 2025-12-29 00:00:00 | TRADER JOE'S #9114 CHARLOTTE NC | -42.85
+  ```
+
+  The digit run inside `source_transaction_id` is masked in place by the value
+  scan; the four-digit store numbers in `payee` are below the eight-digit
+  threshold and pass through, as does every amount and date. A real account
+  number of four to seven digits would pass through the same way.
 - Typed reads return the rows matching the filter the agent chose, capped and
   paginated.
 
@@ -296,6 +337,22 @@ own" — not "the model can never see them."
   not tamper-proof evidence against someone who already holds your key (see
   [audit-log integrity](threat-model.md#audit-log-integrity)).
 
+The two `--output json` reads earlier on this page wrote one privacy-log line
+each:
+
+```console
+$ uv run moneybin privacy log --last 2
+Using profile: demo
+2026-09-14T18:59:32.905483+00:00 | tool_call | cli.categorize_assist | sensitivity=medium classes=description,record_id,txn_type rows=2
+2026-09-14T18:59:30.779320+00:00 | tool_call | cli.sql_query | sensitivity=critical classes=institution,institution_account_number,routing_number,user_note rows=3
+```
+
+The SQL text, the account names, and the descriptions those calls returned are
+absent — the line carries the tier, the classes, and the row count and nothing
+else. On the CLI the line is written by the `--output json` path; a text-mode
+read writes none. Every MCP tool call writes one. The flags `privacy log` takes
+are in the [`privacy` CLI reference](../reference/cli/privacy.md).
+
 ---
 
 ## Training and retention
@@ -339,7 +396,9 @@ Ranked from strongest guarantee to smallest change:
    through an agent, it reaches the provider like any other tool result. Pair it
    with the CLI or a local model (options 1–2) to close that path too.
 4. **`moneybin db lock` when you're not actively using the agent.** A locked
-   profile can't be opened by a new MCP session at all.
+   profile can't be opened by a new MCP session at all. On an auto-key profile
+   save the key with `db key show` first: `db unlock` re-derives a key only
+   from a passphrase ([Database security](database-security.md#lifecycle-commands)).
 
 ---
 
@@ -347,7 +406,25 @@ Ranked from strongest guarantee to smallest change:
 
 MoneyBin is [AGPL-3.0](../licensing.md) — the masking, the classification
 contract, the `sql_query` gate, and the per-call log are all in the source tree
-under `src/moneybin/privacy/`. Nothing on this page asks you to take our word for
-it; read the code, or drive `moneybin demo` and watch the envelopes. If you find
-this page drifting from the code, that is a bug — the code is the source of
-truth.
+under `src/moneybin/privacy/`: the masking transforms in `redaction.py`, the
+column classes in `taxonomy.py`, the `sql_query` gate in `sql_query.py`, and the
+per-call log in `log.py`. Where this page and that code disagree, the code
+governs.
+
+---
+
+## What is not built yet
+
+- **Consent gating.** The consent ledger records grants and revocations; no
+  tool's output changes with consent state. To see what a session actually
+  pulled, read `moneybin privacy log`.
+- **One-time grant expiry.** A grant taken as one-time persists until you revoke
+  it. Revoke it yourself with `moneybin privacy revoke <category>`.
+- **Verified-local mode.** CRITICAL fields stay masked whatever model the client
+  runs against; there is no unmask-when-local switch. For unmasked access, use
+  the local operator commands `moneybin db query` / `db shell`, which involve no
+  model.
+- **Free-text PII scrubbing outside categorization assist.** Notes, descriptions,
+  import samples, and audit snapshots are not scanned for account numbers or
+  SSNs. Keep such values out of free text, or ask the question on the CLI
+  instead of through an agent.

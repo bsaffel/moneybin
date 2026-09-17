@@ -1,7 +1,7 @@
-<!-- Last reviewed: 2026-09-13 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Data Pipeline
 
-Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. This guide walks the layers, explains what each one's job is, names the actual models in the repo, and shows where consumers should query from.
+Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. Each section below takes one layer and gives its writer, its models as they are spelled in the repo, and the surface a consumer reads it from.
 
 For the one-page distillation, see [`docs/architecture.md`](../architecture.md). For column-level schema, see [`docs/reference/data-model.md`](../reference/data-model.md). For the canonical depth reference (invariants, layer rules, the writer-coordination contract), see [`docs/specs/architecture-shared-primitives.md`](../specs/architecture-shared-primitives.md).
 
@@ -236,6 +236,29 @@ candidate. It bounds the scoring weights and is validated against
 `high_confidence_threshold`; tuning it will not move a pair between auto-merge
 and review. Transfer detection uses `transfer_review_threshold` instead.
 
+`transactions matches pending` prints the queue one connected component at a time, so a chain of candidates that share a row is read as a unit rather than as separate pairs:
+
+```console
+$ uv run moneybin transactions matches pending
+Using profile: demo
+
+── component bfa2535a3612 (1 edge(s)) ──
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ bfa2535a3612 │ transfer │ -    │ 0.92  │ ofx    │ csv    │
+└──────────────┴──────────┴──────┴───────┴────────┴────────┘
+
+── component 4fe64d06652c (1 edge(s)) ──
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━┳━━━━━━━━┓
+┃ match id     ┃ type     ┃ tier ┃ score ┃ type a ┃ type b ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━╇━━━━━━━━┩
+│ 4fe64d06652c │ transfer │ -    │ 0.92  │ ofx    │ ofx    │
+└──────────────┴──────────┴──────┴───────┴────────┴────────┘
+```
+
+`--limit` defaults to 50, so this run shows the first 50 pending matches on this profile; the 48 components not shown have the same shape, and every one on this page is `type = transfer`. Raise `--limit` to read the rest of the queue.
+
 Notably **not** part of the comparison: payee fuzzy match (description similarity does the work), merchant ID, category, or any field that the matcher itself is supposed to harmonize downstream. Dedup is identity, not normalization.
 
 ## Amendments and corrections
@@ -254,10 +277,10 @@ The invariant: `raw.*` is the system of record. If you need to undo, revert the 
 Your category, tags, notes, and splits live in `app.transaction_*` keyed by `transaction_id`. Whether they follow a row across `refresh` depends on whether the `transaction_id` itself changes:
 
 - **Stable case (unchanged source).** Re-running `refresh` against the same raw rows produces the same `transaction_id`s (hashes are deterministic). All `app.*` curation joins back cleanly — nothing moves.
-- **Match-group change.** If a previously-unmatched row gains a dedup partner (or loses one), its `transaction_id` flips from `hash(single tuple)` to `hash(sorted set of tuples)` or vice versa. The category row in `app.transaction_categories` then refers to a `transaction_id` that no longer exists in `core.fct_transactions` — it becomes an orphan. Categorization will re-run against the new gold row, but **any user-typed category the orphaned row carried does not migrate automatically**.
+- **Match-group change.** If a previously-unmatched row gains a dedup partner (or loses one), its `transaction_id` flips from `hash(single tuple)` to `hash(sorted set of tuples)` or vice versa. The superseded id is recorded in `app.transaction_id_aliases`, and the curation rows keyed to it — category, notes, tags, splits — move to the new id at the moment of the re-key, so a user-typed category follows the row. A second pass heals curation stranded by a re-key that rows *disappearing* caused (an import revert, a Plaid removal), and undoing a merge returns the curation to the revived rows.
 - **Source-row hash change.** Editing the underlying CSV (different date, amount, or description) produces a different content-hash, so it's a different transaction entirely — see "Amendments and corrections."
 
-If you confirm or reject a pending match in `moneybin review`, expect potentially-orphaned user categorizations on the affected rows. Recategorize after the `refresh`.
+Confirming or rejecting a pending match in `moneybin review` re-keys the affected rows on the next `refresh`; their categories, notes, tags, and splits follow.
 
 ## Transfers vs dedup
 
@@ -272,15 +295,36 @@ Both share the `app.match_decisions` table — `match_type = 'dedup'` versus `ma
 
 `refresh` is the post-load cascade: gsheet → match → investment_match → transform → categorize → identity → rates. Idempotent. Safe to retry. It's the right answer when you want derived state to catch up with new raw data.
 
-```bash
-moneybin refresh                         # full cascade
-moneybin refresh --step match            # matcher only
-moneybin refresh --step transform        # SQLMesh apply only
-moneybin refresh --step categorize       # categorization engines only
-moneybin refresh --step identity         # identity proposal backfill only
-moneybin refresh --step rates            # exchange-rate gather only
-moneybin refresh --step match --step transform   # subset, in order
+Run with no arguments and every stage reports itself, whether or not it found work:
+
+```console
+$ uv run moneybin refresh
+Using profile: demo
+Running transforms
+Transforms completed in 7.06s
+Account-link backfill wrote 0 new pending decisions
+Merchant linking complete: 0 linked automatically, 0 sent for review.
+Pipeline:
+  Sheets: 0 pulled, 0 rows
+  Matching: 0 merged, 0 to review, 0 transfers to review
+  Transforms: rebuilt
+  Categorization: 0 categorized (0 merchant, 0 rule, 0 provider)
+  Identity: 0 accounts linked, 0 merchants bound
+  Rates: skipped (nothing examined)
+✅ Refresh complete in 7.06s
 ```
+
+`--step` narrows the cascade, and the summary shrinks to the steps that ran:
+
+```console
+$ uv run moneybin refresh --step match
+Using profile: demo
+Pipeline:
+  Matching: 0 merged, 0 to review, 0 transfers to review
+✅ Partial refresh complete (steps: match)
+```
+
+`--step` is repeatable and runs its steps in cascade order regardless of the order you pass them. The flag list and every other option live in [`docs/reference/cli/refresh.md`](../reference/cli/refresh.md), generated from the command itself.
 
 `import files` and `sync pull` invoke the full cascade automatically. Reach for the explicit `moneybin refresh` when:
 
@@ -408,6 +452,29 @@ GROUP BY 1, 2
 ORDER BY 1, 2;
 ```
 
+Run through `db query`, one row per (source, month):
+
+```console
+$ uv run moneybin db query "SELECT source_type, date_trunc('month', transaction_date) AS month, count(*) AS row_count, sum(amount) AS net_amount, sum(amount_absolute) AS gross_amount FROM core.fct_transactions GROUP BY 1, 2 ORDER BY 1, 2;"
+⚠️  Direct DB access — no privacy middleware applies.
+   Account numbers and sensitive fields are NOT masked here.
+   For agent-mediated access with privacy enforcement, use:
+     moneybin sql query "<your SQL>"
+Using profile: demo
++-------------+---------------------+-----------+------------+--------------+
+| source_type |        month        | row_count | net_amount | gross_amount |
++-------------+---------------------+-----------+------------+--------------+
+| csv         | 2023-01-01 00:00:00 | 32        | 0.00       | 1993.46      |
+| csv         | 2023-02-01 00:00:00 | 38        | 0.00       | 3064.68      |
+| csv         | 2023-03-01 00:00:00 | 42        | 0.00       | 3094.32      |
+| csv         | 2023-04-01 00:00:00 | 40        | 0.00       | 2902.06      |
+| csv         | 2023-05-01 00:00:00 | 42        | 0.00       | 3220.28      |
+| csv         | 2023-06-01 00:00:00 | 40        | 0.00       | 3722.44      |
++-------------+---------------------+-----------+------------+--------------+
+```
+
+The full result is 72 rows — two source types over 36 months — and the last 66 are trimmed above. Read `net_amount` per source, not across them: on this profile all 36 CSV months net to `0.00` and none of the 36 OFX months does — a property of this synthetic profile, not a reconciliation result.
+
 `source_type` here reflects the canonical (highest-priority) source of each gold row; matched rows count once. To trace the full provenance — including which sources merged into each row and how many contributed — join through `meta.fct_transaction_provenance`:
 
 ```sql
@@ -426,6 +493,50 @@ LIMIT 50;
 ```
 
 Compare these counts against your source-file row counts (the per-file totals in `moneybin import history`) to confirm every row reached `core`. Discrepancies usually mean either (a) dedup collapsed multiple sources into one gold row — visible as `source_count > 1` above — or (b) `refresh` hasn't run since the last import.
+
+`import status` gives the same check from the raw side — every `raw.*` table with its row count and, where the table carries dates, its span:
+
+```console
+$ uv run moneybin import status
+Using profile: demo
+
+Imported Data Summary
+============================================================
+  raw.exchange_rates: 0 rows
+  raw.gsheet_seeds: 0 rows
+  raw.import_log: 0 rows
+  raw.import_preview_snapshots: 0 rows
+  raw.manual_investment_transactions: 0 rows
+  raw.manual_transactions: 0 rows
+  raw.ofx_accounts: 2 rows
+  raw.ofx_balances: 2 rows
+  raw.ofx_institutions: 0 rows
+  raw.ofx_transactions: 1,381 rows  (2023-01-01 to 2025-12-31)
+  raw.pdf_seeds: 0 rows
+  raw.plaid_accounts: 0 rows
+  raw.plaid_balances: 0 rows
+  raw.plaid_transactions: 0 rows
+  raw.tabular_accounts: 2 rows
+  raw.tabular_transactions: 1,505 rows  (2023-01-06 to 2025-12-31)
+```
+
+A raw table at `0 rows` is not an error — it is a source this profile has never used. Seven zero-row investment, securities, and price tables are trimmed from the listing above for the same reason.
+
+`system doctor` is the assertion-level check. It reports the number of invariants it ran and the number of transactions it ran them over, and says nothing else when they all hold:
+
+```console
+$ uv run moneybin system doctor
+Using profile: demo
+
+65 invariants checked across 2,886 transactions — all passing
+```
+
+## What is not built yet
+
+- **No per-step progress from `refresh`.** The command returns when the whole cascade finishes or fails; there is no incremental signal while it runs. Run `moneybin logs cli --follow` in a second terminal if you need to see where a long run is, or drive the stages one at a time with `--step` so each returns its own summary.
+- **`moneybin review --interactive` is not built.** The bare `moneybin review --type matches` reports the count and `--confirm <match_id>` / `--confirm-all` act on it; there is no item-by-item walk. List candidates with `moneybin transactions matches pending` and confirm by id.
+- **Concurrent `refresh` is not supported.** DuckDB is single-writer per file: a second `refresh` against the same database retries on backoff until the 10 s write-lock budget elapses, then raises `DatabaseLockError`. Run one driver at a time; queue imports and let a single `refresh` settle them.
+- **`moneybin refresh --step` cannot select `gsheet`.** The CLI's five selectable steps are `match`, `transform`, `categorize`, `identity`, and `rates`; MCP `refresh_run(steps=[...])` accepts all six. Use `moneybin gsheet pull` to request a sheet pull from the CLI.
 
 ## Where to go from here
 

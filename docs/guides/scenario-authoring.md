@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Scenario Authoring Guide
 
 How to write a scenario test that exercises the whole pipeline end-to-end against a synthetic dataset or a hand-authored fixture, with assertions that survive code changes. Companion: [`synthetic-data.md`](synthetic-data.md) covers the generator that scenarios consume.
@@ -9,9 +9,9 @@ The framing for "what is a scenario test versus a unit or E2E test" lives in [`.
 
 ---
 
-## Bug-Repro Recipe
+## Bug-repro recipe
 
-This is the path most contributors land on. If you have a bug — a broken import, a wrong category assignment, a dedup that collapsed records that should have stayed separate — this is the seven-step recipe.
+Seven steps, for a bug of any shape — a broken import, a wrong category assignment, a dedup that collapsed records that should have stayed separate.
 
 1. **Reproduce the bug locally with a minimal input.** Trim a CSV down to 3–5 rows, including the one that triggers the bug. If the bug needs the synthetic generator, narrow it to one persona + one year + one seed.
 2. **Copy the canonical scenario test.** `cp tests/scenarios/test_basic_full_pipeline.py tests/scenarios/test_<bug-slug>.py`. The slug should describe the broken behavior, not the input — `csv-amazon-trailing-comma`, not `amazon-csv-bug`.
@@ -25,7 +25,7 @@ If you don't know which tier your bug lives in: start with Tier 1 (the structura
 
 ---
 
-## Anatomy of a Scenario
+## Anatomy of a scenario
 
 A scenario has up to three pieces:
 
@@ -71,7 +71,7 @@ assertions:
       scale: 2
 ```
 
-That's the minimum: one fixture, one assertion, no evaluations, no expectations, default `gates: required_assertions: all` (inherited). Add complexity as the bug shape requires.
+That is the minimum: one fixture, one assertion, no evaluations, no expectations, and the inherited default `gates: required_assertions: all`. Every other block is optional.
 
 ### Worked example: `test_basic_full_pipeline.py`
 
@@ -179,7 +179,7 @@ def test_idempotency_rerun() -> None:
 
 ---
 
-## The Independent-Derivation Rule
+## The independent-derivation rule
 
 Verbatim from `.claude/rules/testing.md`:
 
@@ -193,17 +193,17 @@ Verbatim from `.claude/rules/testing.md`:
 
 **Forbidden:** observe-and-paste (running the scenario, watching the output, pasting it into the YAML) and bare tolerance bands without a formula. When code change breaks an expectation, fix the code first — updating an expectation requires a written PR justification explaining why the new value is correct in itself.
 
-This rule has caught real bugs in this codebase. It produces the only kind of test that survives a refactor: one whose expected value can be re-derived from first principles without reading the implementation.
+The rule is checkable one assertion at a time: every expected value, expectation, and tolerance in a scenario must be re-derivable from one of the three paths above — the input fixture, the generator config, or hand-authored ground truth — without reading the implementation. A value that can only be produced by running the pipeline fails the rule.
 
 ---
 
-## Assertion Taxonomy
+## Assertion taxonomy
 
 Per [`testing-scenario-comprehensive.md`](../specs/testing-scenario-comprehensive.md), every scenario is evaluated against five tiers. Tier 1 is required for every scenario; tiers 2–5 are conditional on what the scenario exercises. Declare your coverage in the test docstring (`tiers: T1, T2-balanced-transfers, T3-incremental`).
 
 For a bug-repro PR: Tier 1 plus the single Tier 2 / Tier 3 assertion that captures the bug shape is enough.
 
-### Tier 1 — Structural Invariants (every scenario)
+### Tier 1 — structural invariants (every scenario)
 
 | Assertion | What it asserts | Use when |
 |---|---|---|
@@ -218,7 +218,9 @@ For a bug-repro PR: Tier 1 plus the single Tier 2 / Tier 3 assertion that captur
 | `assert_date_bounds` | All dates fall within the scenario's declared window | Always |
 | `assert_transform_audit` with `audit: fct_transactions_sign_convention` | Every amount is classifiable and its derived direction columns agree | Always |
 
-### Tier 2 — Semantic Correctness (when applicable)
+`ASSERTION_REGISTRY` in `tests/scenarios/_runner/_assertion_registry.py` owns the list of names a YAML may call; this table is a copy of it as reviewed on 2026-09-14.
+
+### Tier 2 — semantic correctness (when applicable)
 
 | Assertion | What it asserts | Use when |
 |---|---|---|
@@ -228,9 +230,11 @@ For a bug-repro PR: Tier 1 plus the single Tier 2 / Tier 3 assertion that captur
 | `assert_distribution_within_bounds` | Match confidence (or amount) distribution within expected bounds | Multi-source matching or amount-distribution checks |
 | `verify_match_decision` (with `expected="not_matched"`) | Negative cases: labeled non-matches that must NOT collapse | Any scenario with positive matching expectations |
 
+The `assert_*` names come from `_assertion_registry.py`, the `score_*` names from `_runner/_evaluation_registry.py`, and `verify_match_decision` is dispatched from `_runner/_expectation_registry.py`; this table is a copy of those three as reviewed on 2026-09-14.
+
 **Negative expectations are required wherever positive expectations exist.** A test asserting "these N records match" must also assert "these other M records do NOT match" — otherwise you catch under-matching but miss over-matching. See `tests/scenarios/data/dedup-negative-fixture.yaml` for the canonical pattern.
 
-### Tier 3 — Pipeline Behavior
+### Tier 3 — pipeline behavior
 
 Harness primitives live in `tests/scenarios/_harnesses.py`. They drive the pipeline rather than introspect data.
 
@@ -242,7 +246,9 @@ Harness primitives live in `tests/scenarios/_harnesses.py`. They drive the pipel
 | `assert_malformed_input_rejected` | Malformed input raises the expected exception with a matching message | Loader scenarios |
 | `assert_subprocess_parity` | Same input via subprocess vs. in-process produces identical output | Subprocess-spawning steps |
 
-### Tier 4 — Distribution / Quality
+`tests/scenarios/_harnesses.py` owns the list; this table is a copy of it as reviewed on 2026-09-14.
+
+### Tier 4 — distribution / quality
 
 For multi-account or multi-year scenarios where aggregate-level assertions catch bugs that per-row checks miss.
 
@@ -253,13 +259,15 @@ For multi-account or multi-year scenarios where aggregate-level assertions catch
 | `assert_ground_truth_coverage` | ≥X% of `fct_transactions` are labeled in `synthetic.ground_truth` | Synthetic-generator scenarios |
 | `assert_category_distribution` | No single category swallows >X% of rows | Categorization scenarios |
 
-### Tier 5 — Operational (opt-in)
+`ASSERTION_REGISTRY` in `tests/scenarios/_runner/_assertion_registry.py` owns the list; this table is a copy of it as reviewed on 2026-09-14. Two of these four rows come from the spec and are not registered — see [What is not built yet](#what-is-not-built-yet).
+
+### Tier 5 — operational (opt-in)
 
 Step duration thresholds via pytest `--durations`, slow-marker gating. Memory ceilings via `pytest-memray` when wired. Currently informational — not required.
 
 ---
 
-## Adding a Custom Assertion
+## Adding a custom assertion
 
 Scenario YAML can only call functions registered in three explicit registries:
 
@@ -309,11 +317,11 @@ def test_mcp_tool_envelope_after_full_pipeline() -> None:
     # ... call the tool, parse the envelope, assert against your expectations.
 ```
 
-CLI scenarios use the same shape: invoke `subprocess.run(["uv", "run", "moneybin", ...], env=env, capture_output=True)`, parse the JSON envelope from stdout, assert `returncode == 0` and the envelope's fields. If you find yourself doing this more than twice, propose a first-class `invoke_mcp_tool` / `invoke_cli` step in the runner rather than spreading the pattern across tests.
+CLI scenarios use the same shape: invoke `subprocess.run(["uv", "run", "moneybin", ...], env=env, capture_output=True)`, parse the JSON envelope from stdout, assert `returncode == 0` and the envelope's fields. Past two occurrences of the pattern, propose a first-class `invoke_mcp_tool` / `invoke_cli` step in the runner instead of spreading it across tests.
 
 ---
 
-## Sibling Scenarios
+## Sibling scenarios
 
 For non-bug-repro work (covering a new pipeline stage, adding distribution assertions, exercising transfer detection), find a sibling scenario in the same shape and align style. Generator-driven scenarios use `tier1_backfill` to derive expected counts; fixture-driven scenarios hand-count rows. Put per-record outcomes in `expectations:`, table-level checks in `assertions:`, scored metrics in `evaluations:`. If a fixture's shape is non-obvious, drop a `README.md` alongside it (`tests/scenarios/data/fixtures/dedup-negative/README.md` is the template).
 
@@ -344,13 +352,24 @@ Save under `tests/scenarios/data/fixtures/<bug-slug>/` and reference from YAML. 
 
 ---
 
-## Running Scenarios
+## Running scenarios
 
 ```bash
 make test-scenarios                                                # All scenarios, with --durations=25
 uv run pytest tests/scenarios/ -m scenarios -v                     # Same, manual
 uv run pytest tests/scenarios/test_<name>.py -m scenarios -v       # Single scenario
 uv run pytest tests/scenarios/ -m scenarios -n0 -v                 # Disable xdist (for pdb / clean output)
+```
+
+One scenario, start to finish:
+
+```console
+$ uv run pytest tests/scenarios/test_basic_full_pipeline.py
+bringing up nodes...
+bringing up nodes...
+
+.                                                                        [100%]
+1 passed in 77.01s (0:01:17)
 ```
 
 CI runs `make test-scenarios` on every PR. A failing scenario blocks merge.
@@ -374,7 +393,7 @@ Same command runs in both places. When CI fails and local passes:
 
 ---
 
-## What Goes Wrong
+## What goes wrong
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -384,6 +403,15 @@ Same command runs in both places. When CI fails and local passes:
 | Stale generator output | Synthetic generator changed shape but expected count didn't | Re-derive via `expected_generator_txn_count(setup)` from `_tier1_backfill.py`; never paste the new number |
 | Expectation drifts after a refactor | Code change altered output | **Fix the code first.** Updating the expectation requires a written PR justification explaining why the new value is correct in itself, not "what the new code produces." |
 | Tier 1 fails on a new column | `FCT_TRANSACTIONS_SCHEMA` in `_tier1_backfill.py` is out of date | Re-enumerate from `src/moneybin/sqlmesh/models/core/fct_transactions.sql` by hand — never paste a query result |
+
+---
+
+## What is not built yet
+
+- **MCP and CLI pipeline steps.** The step registry has no `invoke_mcp_tool` or `invoke_cli`; drive either by hand inside `scenario_env`, as in [MCP and CLI scenarios](#mcp-and-cli-scenarios).
+- **Two Tier 4 primitives.** `assert_amount_distribution` and `assert_category_distribution` are named in the spec and absent from `ASSERTION_REGISTRY`; a YAML calling either raises `KeyError: unknown assertion fn` when the runner resolves it. Use `assert_distribution_within_bounds` for amounts; there is no category-distribution check.
+- **Automated fixture anonymization.** No `synthetic` subcommand anonymizes a real file; follow the manual recipe in [Fixture from real data](#fixture-from-real-data).
+- **Tier 5 enforcement.** Step durations are reported by `--durations` and fail nothing; `pytest-memray` is not wired, so there is no memory ceiling. Assert what you need in the test body.
 
 ---
 

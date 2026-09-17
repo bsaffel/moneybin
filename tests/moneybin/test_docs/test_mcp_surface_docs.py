@@ -2999,11 +2999,11 @@ def test_final_review_host_and_report_wording_is_current() -> None:
 
     assert "Declarative reports" in features
     assert "implemented" in features.partition("Declarative reports")[2].splitlines()[0]
-    assert "A capable host may optionally defer" in server_guide
-    assert "Observed host-native deferral evidence remains absent" in server_guide
+    assert "A capable host may defer" in server_guide
+    assert "No host has been measured deferring MoneyBin's schemas" in server_guide
     assert (
-        "Promotion remains blocked until both observed context-budget evidence "
-        "and observed host-native-deferral evidence exist."
+        "until both measurements exist, no tool, report slot, profile, pack, "
+        "or reconnect mode is added without the admission record"
     ) in server_guide
     assert "The current registry advertises zero output schemas" in client_guide
     assert f"registry of {STANDARD_TOOL_COUNT} intent-shaped tools" in roadmap
