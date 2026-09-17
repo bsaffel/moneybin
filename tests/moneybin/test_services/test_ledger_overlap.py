@@ -15,9 +15,9 @@ import pytest
 from prometheus_client import REGISTRY
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import IncomingTransaction
 from moneybin.services.ledger_overlap import (
     DEFAULT_POSTING_LAG_DAYS,
-    IncomingTransaction,
     LedgerOverlap,
     LedgerSpan,
     fetch_ledger_spans,

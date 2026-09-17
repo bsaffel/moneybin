@@ -2287,7 +2287,7 @@ ship today.
   (`engine.py:294-307`), so an uncertain pair is dropped instead of reviewed. A
   blank description scores `0.30 × 1.0 + 0.70 × 0.0 = 0.30` and vanishes. That
   is a matcher-posture decision reaching well beyond re-imports.
-- **`_pdf_alias`** (`import_service.py:989`) still builds `raw.pdf_<alias>`
+- **`pdf_alias`** (`extractors/pdf/fingerprint.py`) still builds `raw.pdf_<alias>`
   view names from the filename stem. A naming surface, not identity — but a
   rename does create a second view.
 - **Promoting a recurring export to a registered format** at the moment the

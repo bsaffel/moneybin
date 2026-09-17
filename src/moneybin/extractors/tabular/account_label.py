@@ -6,7 +6,7 @@ Aggregator exports embed the last 4 of the account number in the account
 ``account-identity-resolution.md`` this last4 is a **Tier-B suggestion** — it
 corroborates a candidate and makes it recognizable, never an auto-merge key.
 
-Distinct from ``import_service._to_account_number_mask``, which takes the
+Distinct from ``extractors.pdf.metadata.to_account_number_mask``, which takes the
 trailing 4 of *any* digit run: this only yields a last4 when a recognized
 last-4 *pattern* matches, so a name like ``365 Savings`` (a stray 3-digit
 token, no last4) yields ``None`` rather than a false ``365``. A bare trailing

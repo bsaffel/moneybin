@@ -928,7 +928,7 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
 
 
 # ---------------------------------------------------------------------------
-# Test 9: _to_account_number_mask covers every branch of the privacy boundary
+# Test 9: to_account_number_mask covers every branch of the privacy boundary
 # ---------------------------------------------------------------------------
 
 
@@ -971,12 +971,10 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
 def test_to_account_number_mask_covers_every_branch(
     raw: str | None, expected: str | None
 ) -> None:
-    """Exercise every branch of _to_account_number_mask (privacy boundary)."""
-    from moneybin.services.import_service import (
-        _to_account_number_mask,  # pyright: ignore[reportPrivateUsage]
-    )
+    """Exercise every branch of to_account_number_mask (privacy boundary)."""
+    from moneybin.extractors.pdf.metadata import to_account_number_mask
 
-    assert _to_account_number_mask(raw) == expected
+    assert to_account_number_mask(raw) == expected
 
 
 # ---------------------------------------------------------------------------

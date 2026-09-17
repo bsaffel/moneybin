@@ -112,7 +112,7 @@ def _parse_kv(
     # not every issuer's numbering. Harmless for --override, whose keys are field
     # names with no digit run to find. Same mask the service-layer refusals use,
     # so a key is never disclosed to two different depths.
-    from moneybin.services.import_service import (
+    from moneybin.extractors.account_identity import (
         mask_embedded_account_number,
     )
 
