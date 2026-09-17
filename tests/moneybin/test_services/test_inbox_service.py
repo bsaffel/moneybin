@@ -1612,13 +1612,11 @@ class TestPendingSidecarAccountHint:
         moved.parent.mkdir(parents=True, exist_ok=True)
         moved.write_text("Date,Amount\n2026-05-01,-10\n")
 
-        # header_row_consumed offers no command on purpose — nothing MoneyBin
-        # runs un-consumes a header row — so it asserts the opposite.
         for reason, expects_command in (
             ("unknown_layout", True),
             ("unreadable_date", True),
             ("account_confirmation", True),
-            ("header_row_consumed", False),
+            ("header_row_consumed", True),
         ):
             sidecar = svc.write_pending_sidecar(
                 _Path(moved),

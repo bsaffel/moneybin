@@ -1853,14 +1853,19 @@ class TestImportFilesConfirmFlow:
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
         )
 
-        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--format", "acme_fmt", "--output", "json"],
+        )
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "header_row_consumed"
         actions = payload["actions"]
-        assert any("without --format" in a for a in actions), actions
-        assert any("moneybin import formats delete" in a for a in actions), actions
+        assert any(f"moneybin import files {csv_file}" in a for a in actions), actions
+        assert any("moneybin import formats delete acme_fmt" in a for a in actions), (
+            actions
+        )
         assert not any("correct the saved format" in a for a in actions), actions
         assert not any("--mapping <field>=<column>" in a for a in actions), actions
         assert not any("--confirm to accept" in a for a in actions), actions

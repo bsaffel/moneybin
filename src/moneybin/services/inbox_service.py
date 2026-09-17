@@ -1069,7 +1069,9 @@ class InboxService:
             # No --accept, --mapping or --date-format recovers a consumed
             # header row; inbox sync never names a format, so only the
             # shared classifier reaches this branch.
-            actions.append(header_row_consumed_recovery())
+            actions.append(
+                header_row_consumed_recovery(str(moved_path), format_name=None)
+            )
         elif reason == "header_position_ambiguous":
             # Unlike header_row_consumed, --accept genuinely resolves this —
             # it ratifies the detected header position, nothing was consumed.

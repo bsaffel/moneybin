@@ -556,22 +556,32 @@ def classify_unconfirmable_plan(
     return "unknown_layout"
 
 
-def header_row_consumed_recovery() -> str:
+def header_row_consumed_recovery(file_path: str, *, format_name: str | None) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
     Only an explicit saved format's ``skip_rows`` reaches this reason —
     auto-detection never reads a data row as the header, and no built-in
     format sets ``skip_rows`` (see ``test_no_builtin_format_sets_skip_rows``).
     """
+    import shlex
+
+    quoted_file = shlex.quote(file_path)
+    if format_name is not None:
+        removal = f"run `moneybin import formats delete {shlex.quote(format_name)}`"
+    else:
+        removal = (
+            "run `moneybin import formats delete` with that format's name "
+            "(`moneybin import formats list` shows saved formats)"
+        )
     return (
         "This file's first row was read as column names, but it parses as a "
         "transaction — a real record was consumed as the header. No --mapping "
         "or --override correction can recover it. The saved format named "
         "with --format skips more leading rows than this file has before its "
-        "header. Re-run `moneybin import files <file>` without --format so "
-        "the header is detected fresh. No command edits a saved format's "
-        "skip_rows, so naming that format again fails the same way; to "
-        "remove it, run `moneybin import formats delete <name>`."
+        f"header. Re-run `moneybin import files {quoted_file}` without "
+        "--format so the header is detected fresh. No command edits a saved "
+        "format's skip_rows, so naming that format again fails the same "
+        f"way; to remove it, {removal}."
     )
 
 

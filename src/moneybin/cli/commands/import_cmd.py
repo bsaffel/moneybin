@@ -697,7 +697,11 @@ def import_files_command(
                         "'new' to keep distinct)."
                     )
                 elif outcome.reason == "header_row_consumed":
-                    confirm_actions.append(header_row_consumed_recovery())
+                    confirm_actions.append(
+                        header_row_consumed_recovery(
+                            file_path_str, format_name=format_name
+                        )
+                    )
                 elif outcome.reason == "header_position_ambiguous":
                     confirm_actions.append(
                         header_position_ambiguous_recovery(
@@ -2304,7 +2308,9 @@ def import_confirm_command(
                 "to keep distinct)."
             )
         elif outcome.reason == "header_row_consumed":
-            confirm_actions.append(header_row_consumed_recovery())
+            confirm_actions.append(
+                header_row_consumed_recovery(str(file_path), format_name=None)
+            )
         elif outcome.reason == "header_position_ambiguous":
             confirm_actions.append(
                 header_position_ambiguous_recovery(
@@ -2404,7 +2410,9 @@ def import_confirm_command(
             )
         elif outcome.reason == "header_row_consumed":
             logger.error("❌ A transaction row was consumed as the header.")
-            logger.info(f"💡 {header_row_consumed_recovery()}")
+            logger.info(
+                f"💡 {header_row_consumed_recovery(str(file_path), format_name=None)}"
+            )
         elif outcome.reason == "header_position_ambiguous":
             logger.error(
                 "❌ A row before the detected header looks like a transaction."

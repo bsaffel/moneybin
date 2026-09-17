@@ -1184,11 +1184,40 @@ class TestHeaderRowConsumedRecovery:
     """
 
     def test_cli_names_the_proven_recoveries(self) -> None:
-        message = header_row_consumed_recovery()
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
         assert "without --format" in message
         assert "moneybin import formats delete" in message
         assert "correct the saved format" not in message
         assert "Add a header row" not in message
+
+    def test_cli_commands_are_pasteable_with_a_space_in_either_value(self) -> None:
+        """A pasted command must run a file, not redirect stdin from `<`.
+
+        `<file>`/`<name>` placeholders are shell input redirection, so a
+        caller who knows both values gets them rendered and shlex-quoted.
+        """
+        import re
+        import shlex
+
+        file_path = "/home/me/Bank Exports/jan stmt.csv"
+        format_name = "my custom format"
+        message = header_row_consumed_recovery(file_path, format_name=format_name)
+        tokenized = [shlex.split(cmd) for cmd in re.findall(r"`([^`]+)`", message)]
+        assert ["moneybin", "import", "files", file_path] in tokenized
+        assert [
+            "moneybin",
+            "import",
+            "formats",
+            "delete",
+            format_name,
+        ] in tokenized
+
+    def test_cli_with_no_format_name_has_no_redirection_placeholder(self) -> None:
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "<" not in message
+        assert ">" not in message
 
     def test_mcp_names_the_proven_recoveries(self) -> None:
         message = header_row_consumed_recovery_mcp()
