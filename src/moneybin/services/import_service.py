@@ -77,7 +77,11 @@ from moneybin.metrics.registry import (
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
-from moneybin.repositories.import_log_repo import REVERT_TABLES, ImportLogRepo
+from moneybin.repositories.import_log_repo import (
+    REVERT_TABLES,
+    ImportHistoryPage,
+    ImportLogRepo,
+)
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -1688,6 +1692,31 @@ class ImportService:
         owner.
         """
         return self._import_log.get_import_history(limit=limit, import_id=import_id)
+
+    def get_import_history_page(
+        self,
+        *,
+        limit: int,
+        snapshot_started_at: str | None = None,
+        snapshot_import_id: str | None = None,
+        after_started_at: str | None = None,
+        after_import_id: str | None = None,
+        snapshot_total: int | None = None,
+    ) -> ImportHistoryPage:
+        """Read one keyset page of ``raw.import_log`` history.
+
+        The paged twin of :meth:`get_import_history`, so the cursored MCP
+        read reaches the same service boundary as the unpaged one rather
+        than composing ``ImportLogRepo`` itself.
+        """
+        return self._import_log.get_import_history_page(
+            limit=limit,
+            snapshot_started_at=snapshot_started_at,
+            snapshot_import_id=snapshot_import_id,
+            after_started_at=after_started_at,
+            after_import_id=after_import_id,
+            snapshot_total=snapshot_total,
+        )
 
     def raw_data_summary(self) -> list[RawTableStat]:
         """Return row counts and date ranges for every ``raw.*`` table.

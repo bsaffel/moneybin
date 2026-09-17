@@ -70,8 +70,12 @@ uv run sqlmesh format
 2. Follow naming convention: `raw_<source>_<entity>.sql`
 3. Add comments describing the table purpose
 4. Run SQLFluff to check formatting
-5. `init_schemas` (`src/moneybin/schema.py`) discovers files in `schema/`
-   automatically — no separate registration step
+5. Register the file so `init_schemas` (`src/moneybin/schema.py`) applies it.
+   A provider table under `extractors/<provider>/schema/` is picked up by that
+   directory's `raw_*.sql` glob automatically. A cross-cutting file in this
+   directory is **not** — `_all_schema_files()` builds those from the explicit,
+   order-sensitive `_NON_PROVIDER_SCHEMA_FILES` list, never a glob, so a file
+   left off that list is silently absent from every fresh database.
 
 Example template:
 
