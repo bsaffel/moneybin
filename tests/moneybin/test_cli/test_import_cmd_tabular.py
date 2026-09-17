@@ -834,9 +834,17 @@ class TestDeclaredDateFormatConfirmConverges:
         return match.group(1).replace("<account_id|new>", "new")
 
     def _converge(
-        self, csv_file: Path, db: Database, mocker: Any, *, max_rounds: int = 4
+        self,
+        csv_file: Path,
+        db: Database,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        *,
+        max_rounds: int = 4,
     ) -> None:
         """Drive `import files` → repeated `import confirm` to a terminal `ok`."""
+        import logging
+
         mocker.patch(
             "moneybin.database.get_database",
             return_value=nullcontext(db),
@@ -868,22 +876,33 @@ class TestDeclaredDateFormatConfirmConverges:
             assert tokens[:3] == ["moneybin", "import", "confirm"]
             # `import confirm` has no `--no-refresh` flag (it hardcodes
             # refresh=False internally), so the printed command runs as-is.
-            confirm_result = runner.invoke(app, tokens[2:])
+            caplog.clear()
+            with caplog.at_level(logging.INFO):
+                confirm_result = runner.invoke(app, tokens[2:])
             assert confirm_result.exit_code == 0, confirm_result.output
             # A settled `import confirm` (no more confirmation_required) takes
             # the normal `--output` (default text) success-render path, not
             # the always-JSON-under-non-tty confirmation_required branch — so
             # a printed command with no `--output json` converges to plain
-            # text, not another envelope.
+            # text, not another envelope. Confirm it is genuinely the success
+            # render (the "✅ Imported" line every successful confirm logs) —
+            # via caplog, not `result.output`: the logging handler holds its
+            # own stream reference that CliRunner's stdout/stderr capture
+            # does not redirect, unlike typer.echo's click-managed output.
             try:
                 payload = json.loads(confirm_result.output)
             except json.JSONDecodeError:
+                assert "✅ Imported" in caplog.text, caplog.text
                 return
 
         pytest.fail(f"did not converge to status=ok within {max_rounds} rounds")
 
     def test_headerless_csv_converges_via_printed_confirm_commands(
-        self, db: Database, mocker: Any, tmp_path: Path
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         csv_file = tmp_path / "headerless_yyyymmdd.csv"
         csv_file.write_text(
@@ -891,7 +910,7 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker)
+        self._converge(csv_file, db, mocker, caplog)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3, (
@@ -899,7 +918,11 @@ class TestDeclaredDateFormatConfirmConverges:
         )
 
     def test_headered_csv_converges_via_printed_confirm_commands(
-        self, db: Database, mocker: Any, tmp_path: Path
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """The headered twin: a real header row must still be detected as one."""
         csv_file = tmp_path / "headered_yyyymmdd.csv"
@@ -911,7 +934,60 @@ class TestDeclaredDateFormatConfirmConverges:
             encoding="utf-8",
         )
 
-        self._converge(csv_file, db, mocker)
+        self._converge(csv_file, db, mocker, caplog)
+
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert rows is not None and rows[0] == 3
+
+    def test_headerless_csv_under_a_spaced_directory_converges(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A directory name with a space must survive every printed hint.
+
+        Every hint MoneyBin prints has to be the command it would accept
+        back verbatim — a bare, unquoted path breaks that the moment the
+        source file lives under a directory like "Bank Exports/". This
+        covers the CLI's own `_render_confirmation_prompt`-adjacent hints
+        (`import confirm --accept`, `import preview`), not only the
+        already-quoted `_import_confirm_command` builder.
+        """
+        spaced_dir = tmp_path / "bank exports"
+        spaced_dir.mkdir()
+        csv_file = spaced_dir / "headerless_yyyymmdd.csv"
+        csv_file.write_text(
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        self._converge(csv_file, db, mocker, caplog)
+
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert rows is not None and rows[0] == 3
+
+    def test_headered_csv_under_a_spaced_directory_converges(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The headered twin of the spaced-directory convergence above."""
+        spaced_dir = tmp_path / "bank exports"
+        spaced_dir.mkdir()
+        csv_file = spaced_dir / "headered_yyyymmdd.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "20260105,42.50,Coffee\n"
+            "20260106,10.00,Tea\n"
+            "20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        self._converge(csv_file, db, mocker, caplog)
 
         rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
         assert rows is not None and rows[0] == 3

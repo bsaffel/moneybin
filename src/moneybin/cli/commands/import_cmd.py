@@ -600,6 +600,8 @@ def import_files_command(
                         files_list, data = _batch_payload(batch_result)
                         refresh_steps = batch_result.refresh_steps
     except Exception as _exc:  # dispatch on type below
+        import shlex
+
         from moneybin.services.import_confirmation import (
             ImportConfirmationRequiredError,
             TabularReadOptions,
@@ -716,17 +718,19 @@ def import_files_command(
                         "fields."
                     )
                     if outcome.confidence.tier != "low":
+                        quoted_path = shlex.quote(file_path_str)
                         read_args_str = read_options.cli_fragment()
                         confirm_actions.append(
-                            f"Run `moneybin import confirm {file_path_str} --accept"
+                            f"Run `moneybin import confirm {quoted_path} --accept"
                             f"{read_args_str}` as a subcommand."
                         )
                 # Same rule as the inbox subfolder recovery: an action is only
                 # worth printing on a channel that can run it.
                 if _can_preview(outcome):
+                    quoted_path = shlex.quote(file_path_str)
                     preview_args_str = read_options.cli_fragment(preview=True)
                     confirm_actions.append(
-                        f"Run `moneybin import preview {file_path_str}"
+                        f"Run `moneybin import preview {quoted_path}"
                         f"{preview_args_str}` to inspect the proposal."
                     )
             if output == OutputFormat.JSON or not sys.stdout.isatty():
@@ -2167,6 +2171,8 @@ def import_confirm_command(
                         })
             echo_disputed_row_fields(disputed_rows)
 
+    import shlex
+
     from moneybin.services.import_confirmation import (
         ImportConfirmationRequiredError,
         ProposedMapping,
@@ -2283,15 +2289,17 @@ def import_confirm_command(
                 "Re-run with --mapping <field>=<column> to override specific fields."
             )
             if outcome.confidence.tier != "low":
+                quoted_path = shlex.quote(str(file_path))
                 read_args_str = read_options.cli_fragment()
                 confirm_actions.append(
-                    f"Re-run `moneybin import confirm {file_path} --accept"
+                    f"Re-run `moneybin import confirm {quoted_path} --accept"
                     f"{read_args_str}` to accept the proposed mapping as-is."
                 )
         if _can_preview(outcome):
+            quoted_path = shlex.quote(str(file_path))
             preview_args_str = read_options.cli_fragment(preview=True)
             confirm_actions.append(
-                f"Run `moneybin import preview {file_path}{preview_args_str}` "
+                f"Run `moneybin import preview {quoted_path}{preview_args_str}` "
                 "to inspect the proposal."
             )
         if output == OutputFormat.JSON or not sys.stdout.isatty():
@@ -2387,10 +2395,11 @@ def import_confirm_command(
             )
             logger.error(msg)
             if _can_preview(outcome):
+                quoted_path = shlex.quote(str(file_path))
                 preview_args_str = read_options.cli_fragment(preview=True)
                 logger.info(
                     "💡 Inspect the proposal with `moneybin import preview "
-                    f"{file_path}{preview_args_str}` and re-run with a "
+                    f"{quoted_path}{preview_args_str}` and re-run with a "
                     "corrected --mapping."
                 )
         raise typer.Exit(1) from e
