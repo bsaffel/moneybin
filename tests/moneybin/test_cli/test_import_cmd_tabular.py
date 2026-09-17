@@ -6,6 +6,9 @@ Business logic is tested in the service and extractor tests.
 
 from __future__ import annotations
 
+import json
+import re
+import shlex
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -799,3 +802,116 @@ class TestPreview:
         )
         # The 💡 hint has to be the mode-denial one, not just any hint.
         assert "chmod" in result.output
+
+
+class TestDeclaredDateFormatConfirmConverges:
+    """A declared, non-built-in date format must not lose row 0 (#604).
+
+    End-to-end: run `import files --date-format %Y%m%d`, then repeatedly
+    extract MoneyBin's own printed `import confirm` retry command from the
+    JSON envelope's ``actions`` and run it verbatim — first ratifying the
+    mapping, then (a real, brand-new file has no known account) binding the
+    proposed account — proving all rows import with no row lost to header
+    misdetection, for both a headerless and a headered source file.
+    """
+
+    def _extract_confirm_command(self, actions: list[str]) -> str:
+        """Pull the `moneybin import confirm ...` command out of a printed action.
+
+        Prefers the `--accept` hint; falls back to an `--account-binding`
+        recovery once mapping is settled. `<account_id|new>` is the CLI's own
+        documented placeholder for "mint a new account" — substituted here the
+        same way a human following the hint would.
+        """
+        action = next(
+            a
+            for a in actions
+            if "moneybin import confirm" in a
+            and ("--accept" in a or "--account-binding" in a)
+        )
+        match = re.search(r"`(moneybin import confirm[^`]*)`", action)
+        assert match, action
+        return match.group(1).replace("<account_id|new>", "new")
+
+    def _converge(
+        self, csv_file: Path, db: Database, mocker: Any, *, max_rounds: int = 4
+    ) -> None:
+        """Drive `import files` → repeated `import confirm` to a terminal `ok`."""
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--date-format",
+                "%Y%m%d",
+                "--output",
+                "json",
+                "--no-refresh",
+                "--no-save-format",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+
+        for _ in range(max_rounds):
+            if payload["data"]["status"] == "ok":
+                return
+            assert payload["data"]["status"] == "confirmation_required", payload
+            printed = self._extract_confirm_command(payload["actions"])
+            assert "--date-format %Y%m%d" in printed, printed
+            tokens = shlex.split(printed)
+            assert tokens[:3] == ["moneybin", "import", "confirm"]
+            # `import confirm` has no `--no-refresh` flag (it hardcodes
+            # refresh=False internally), so the printed command runs as-is.
+            confirm_result = runner.invoke(app, tokens[2:])
+            assert confirm_result.exit_code == 0, confirm_result.output
+            # A settled `import confirm` (no more confirmation_required) takes
+            # the normal `--output` (default text) success-render path, not
+            # the always-JSON-under-non-tty confirmation_required branch — so
+            # a printed command with no `--output json` converges to plain
+            # text, not another envelope.
+            try:
+                payload = json.loads(confirm_result.output)
+            except json.JSONDecodeError:
+                return
+
+        pytest.fail(f"did not converge to status=ok within {max_rounds} rounds")
+
+    def test_headerless_csv_converges_via_printed_confirm_commands(
+        self, db: Database, mocker: Any, tmp_path: Path
+    ) -> None:
+        csv_file = tmp_path / "headerless_yyyymmdd.csv"
+        csv_file.write_text(
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        self._converge(csv_file, db, mocker)
+
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert rows is not None and rows[0] == 3, (
+            "row 0 (2026-01-05) must not be lost to header misdetection"
+        )
+
+    def test_headered_csv_converges_via_printed_confirm_commands(
+        self, db: Database, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The headered twin: a real header row must still be detected as one."""
+        csv_file = tmp_path / "headered_yyyymmdd.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "20260105,42.50,Coffee\n"
+            "20260106,10.00,Tea\n"
+            "20260107,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        self._converge(csv_file, db, mocker)
+
+        rows = db.execute("SELECT COUNT(*) FROM raw.tabular_transactions").fetchone()
+        assert rows is not None and rows[0] == 3

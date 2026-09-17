@@ -297,6 +297,93 @@ def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
     assert native_tokens[native_tokens.index("--sign") + 1] == "negative_is_expense"
 
 
+def test_read_option_args_serializes_each_set_option() -> None:
+    """``_read_option_args`` emits every set option's flag and value, in order."""
+    from moneybin.cli.commands.import_cmd import (
+        _read_option_args,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
+    )
+
+    args = _read_option_args(
+        format_name="chase_credit",
+        date_format="%Y%m%d",
+        number_format="european",
+        sheet="Transactions",
+        delimiter=";",
+        encoding="latin-1",
+    )
+
+    assert args == [
+        "--format",
+        "chase_credit",
+        "--date-format",
+        "%Y%m%d",
+        "--number-format",
+        "european",
+        "--sheet",
+        "Transactions",
+        "--delimiter",
+        ";",
+        "--encoding",
+        "latin-1",
+    ]
+
+
+def test_read_option_args_omits_unset_options() -> None:
+    """An unset option contributes neither its flag nor a placeholder value."""
+    from moneybin.cli.commands.import_cmd import (
+        _read_option_args,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
+    )
+
+    args = _read_option_args(
+        format_name=None,
+        date_format="%Y%m%d",
+        number_format=None,
+        sheet=None,
+        delimiter=None,
+        encoding=None,
+    )
+
+    assert args == ["--date-format", "%Y%m%d"]
+
+
+def test_read_option_args_fragment_is_empty_when_nothing_is_set() -> None:
+    """No trailing space is introduced when every option is unset."""
+    from moneybin.cli.commands.import_cmd import (
+        _read_option_args_fragment,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
+    )
+
+    fragment = _read_option_args_fragment(
+        format_name=None,
+        date_format=None,
+        number_format=None,
+        sheet=None,
+        delimiter=None,
+        encoding=None,
+    )
+
+    assert fragment == ""
+
+
+def test_read_option_args_fragment_leads_with_one_space_when_set() -> None:
+    """The fragment splices into a sentence with exactly one leading space."""
+    from moneybin.cli.commands.import_cmd import (
+        _read_option_args_fragment,  # type: ignore[reportPrivateUsage]  # testing CLI serializer
+    )
+
+    fragment = _read_option_args_fragment(
+        format_name=None,
+        date_format="%Y%m%d",
+        number_format=None,
+        sheet=None,
+        delimiter=None,
+        encoding=None,
+    )
+
+    assert fragment == " --date-format %Y%m%d"
+    line = f"moneybin import confirm foo.csv --accept{fragment}"
+    assert "  " not in line
+
+
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
@@ -785,6 +872,85 @@ class TestImportFilesConfirmFlow:
         assert "@0=acct_known01" in recovery
         assert "checking" not in recovery
         assert "@1=<account_id|new>" in recovery
+
+    def test_interactive_prompt_carries_read_options_on_every_retry_line(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`_render_confirmation_prompt` threads every set read option through.
+
+        The `import files --confirm`, `import files --mapping ...`, and
+        `import confirm --accept` lines it prints must all carry the exact
+        options the original call used (#619) — a copy-pasted retry must not
+        silently fall back to auto-detection.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=0.7, tier="medium", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"amount": "Amount"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="unknown_layout",
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--date-format",
+                "%Y%m%d",
+                "--sheet",
+                "Transactions",
+                "--delimiter",
+                ";",
+            ],
+        )
+
+        confirm_line = next(
+            ln
+            for ln in result.output.splitlines()
+            if "import files" in ln and "--confirm" in ln
+        )
+        mapping_line = next(
+            ln for ln in result.output.splitlines() if "--mapping description=" in ln
+        )
+        accept_line = next(
+            ln
+            for ln in result.output.splitlines()
+            if "import confirm" in ln and "--accept" in ln
+        )
+        preview_line = next(
+            ln for ln in result.output.splitlines() if "import preview" in ln
+        )
+        for line in (confirm_line, mapping_line, accept_line):
+            assert "--date-format %Y%m%d" in line, line
+            assert "--sheet Transactions" in line, line
+            # shlex quotes ';' as a shell metacharacter.
+            assert (
+                "--delimiter" in line
+                and shlex.split(line)[shlex.split(line).index("--delimiter") + 1] == ";"
+            ), line
+        # import preview has no --date-format flag; the fragment must omit it
+        # while still carrying the options preview genuinely accepts.
+        assert "--sheet Transactions" in preview_line, preview_line
+        preview_tokens = shlex.split(preview_line)
+        assert preview_tokens[preview_tokens.index("--delimiter") + 1] == ";"
+        assert "--date-format" not in preview_line, preview_line
 
     def test_repeating_one_ref_with_two_answers_is_refused(
         self, mock_db: MagicMock, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1856,6 +2022,51 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
+
+    def test_confirm_forwards_all_six_read_options_to_the_service(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Every file-reading option `import confirm` accepts reaches `import_file`.
+
+        Brandon's decision: `import confirm` carries the same six read-shaping
+        options as `import files` (#619). This proves the CLI wiring, not
+        just the printed-command serializer.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--format",
+                "chase_credit",
+                "--date-format",
+                "%Y%m%d",
+                "--number-format",
+                "european",
+                "--sheet",
+                "Transactions",
+                "--delimiter",
+                ";",
+                "--encoding",
+                "latin-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["format_name"] == "chase_credit"
+        assert call_kwargs["date_format"] == "%Y%m%d"
+        assert call_kwargs["number_format"] == "european"
+        assert call_kwargs["sheet"] == "Transactions"
+        assert call_kwargs["delimiter"] == ";"
+        assert call_kwargs["encoding"] == "latin-1"
 
     def test_confirm_accept_renders_sidecars_disputed_rows(
         self,

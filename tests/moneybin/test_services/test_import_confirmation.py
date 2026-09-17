@@ -19,6 +19,7 @@ from moneybin.services.import_confirmation import (
     Resolved,
     SignConventionProposal,
     disputed_row_fields,
+    header_position_ambiguous_recovery,
     resolve_or_confirm,
     unreadable_date_recovery,
     validate_partial_mapping,
@@ -1072,6 +1073,78 @@ class TestUnreadableDateRecovery:
         message = unreadable_date_recovery("/data/plain.csv")
         assert "--mapping transaction_date=" in message
         assert "--date-format" in message
+
+    def test_the_other_five_read_options_ride_along(self) -> None:
+        """Every option but the failed one rides along.
+
+        `--format`/`--number-format`/`--sheet`/`--delimiter`/`--encoding`
+        appear on both the preview hint and the `import files` retry — but
+        never a `--date-format`, since that is the value that just failed
+        and the retry already carries its own `<strptime>` placeholder.
+        """
+        message = unreadable_date_recovery(
+            "/data/plain.csv",
+            format_name="chase_credit",
+            number_format="european",
+            sheet="Transactions",
+            delimiter=";",
+            encoding="latin-1",
+        )
+        preview_clause, files_clause = message.split("import files", 1)
+        assert "--format chase_credit" in preview_clause
+        assert "--sheet Transactions" in preview_clause
+        assert "--delimiter ';'" in preview_clause or "--delimiter ;" in preview_clause
+        assert "--encoding latin-1" in preview_clause
+        assert "--number-format" not in preview_clause  # import preview lacks it
+        assert "--format chase_credit" in files_clause
+        assert "--number-format european" in files_clause
+        assert "--sheet Transactions" in files_clause
+        assert "--encoding latin-1" in files_clause
+        assert "--date-format <strptime>" in files_clause
+        # The failing date-format value itself must never be echoed back as a
+        # concrete override — only the placeholder.
+        assert message.count("--date-format") == 1
+
+
+class TestHeaderPositionAmbiguousRecovery:
+    """The recovery text for a row before the detected header."""
+
+    def test_both_recovery_commands_are_named(self) -> None:
+        message = header_position_ambiguous_recovery("/data/plain.csv")
+        assert "import files" in message
+        assert "import confirm" in message
+        assert "--confirm" in message
+        assert "--accept" in message
+
+    def test_set_read_options_appear_on_both_commands(self) -> None:
+        message = header_position_ambiguous_recovery(
+            "/data/plain.csv",
+            format_name="chase_credit",
+            date_format="%Y%m%d",
+            number_format="european",
+            sheet="Transactions",
+            delimiter=";",
+            encoding="latin-1",
+        )
+        files_clause, confirm_clause = message.split("import confirm", 1)
+        for clause in (files_clause, confirm_clause):
+            assert "--format chase_credit" in clause
+            assert "--date-format %Y%m%d" in clause
+            assert "--number-format european" in clause
+            assert "--sheet Transactions" in clause
+            assert "--encoding latin-1" in clause
+
+    def test_unset_options_add_nothing(self) -> None:
+        message = header_position_ambiguous_recovery("/data/plain.csv")
+        for flag in (
+            "--format",
+            "--date-format",
+            "--number-format",
+            "--sheet",
+            "--delimiter",
+            "--encoding",
+        ):
+            assert flag not in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:
