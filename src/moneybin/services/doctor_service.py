@@ -16,7 +16,10 @@ from moneybin.audits.runner import run_standalone_audits
 from moneybin.config import get_settings
 from moneybin.database import Database
 from moneybin.errors import RecoveryAction, exception_origin
-from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
+from moneybin.extractors.account_identity import (
+    UNNAMED_ACCOUNT_LABEL,
+    mask_embedded_account_number,
+)
 from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerprint
 from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
@@ -26,7 +29,6 @@ from moneybin.metrics.registry import (
 )
 from moneybin.services.account_resolution_types import is_reserved_account_name
 from moneybin.services.categorization import CategorizationService
-from moneybin.services.import_service import mask_embedded_account_number
 from moneybin.services.profile_settings_service import ProfileSettingsService
 from moneybin.sqlmesh_registry import model_presence
 from moneybin.staleness import (

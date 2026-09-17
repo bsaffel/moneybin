@@ -230,3 +230,39 @@ def _parse_decimal(raw: str | None) -> Decimal | None:
 def _normalize_currency_code(raw: str | None) -> str | None:
     """Normalize a captured three-letter currency code."""
     return raw.upper() if raw is not None else None
+
+
+def to_account_number_mask(raw: str | None) -> str | None:
+    """Reduce a captured PDF account identifier to a last-4 display mask.
+
+    Statement layouts emit account identifiers in several forms:
+
+      ``Account Number: 123456789``  → raw = "123456789"  → ``"****6789"``
+      ``Account ending in 1234``     → raw = "1234"       → ``"****1234"``
+      ``Account Number: ****1234``   → raw = "****1234"   → ``"****1234"``
+
+    The ``raw.tabular_accounts.account_number_masked`` column is contract-
+    defined as a last-4 display mask. Storing the full captured token there
+    would leak a real institution account number into a column that downstream
+    consumers treat as already masked. Apply the reduction at the import
+    boundary so the raw schema's privacy contract is preserved.
+
+    Normalisation is load-bearing for privacy and partial-evidence consistency,
+    not PDF source-native identity. The output populates the masked raw-account
+    field and candidate display; PDF identity is derived separately from the
+    document digest and usable statement evidence.
+
+    Returns the original string when fewer than 4 digits are present (e.g. an
+    institution-specific token, or a fully-masked "xxxx") so we never silently
+    drop a captured value — and never fabricate a short "last 4" that would
+    look authoritative to the institution+last4 merge signal.
+    """
+    if raw is None:
+        return None
+    stripped = raw.strip()
+    if not stripped:
+        return None
+    digits = "".join(c for c in stripped if c.isdigit())
+    if len(digits) < 4:
+        return stripped
+    return f"****{digits[-4:]}"

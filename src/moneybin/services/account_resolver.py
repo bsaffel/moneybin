@@ -21,9 +21,11 @@ from moneybin.database import Database
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
     SourceAccount,
+    mask_embedded_account_number,
     normalize_account_identifier,
 )
 from moneybin.extractors.institution_resolution import slug_for_institution_name
+from moneybin.extractors.pdf.identity import legacy_pdf_identifier_key
 from moneybin.extractors.tabular.account_matching import AccountMatch, match_account
 from moneybin.metrics.observations import MetricObservations, record_observation
 from moneybin.metrics.registry import (
@@ -39,7 +41,6 @@ from moneybin.services.account_resolution_types import (
     is_a_name,
 )
 from moneybin.services.ledger_overlap import fetch_ledger_spans, probe_ledger_overlap
-from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
 from moneybin.tables import (
     ACCOUNT_LINK_DECISIONS,
     ACCOUNT_LINKS,
@@ -901,12 +902,6 @@ class AccountResolver:
         )
         if existing is not None:
             if existing != account_id:
-                # Imported here, not at module scope: import_service imports this
-                # module, so a top-level import closes the cycle.
-                from moneybin.services.import_service import (
-                    mask_embedded_account_number,
-                )
-
                 # Masked for the reason the contradicted-binding refusal is: an
                 # account id is not always a minted surrogate, and this one
                 # reaches a log file, which outlives the session.

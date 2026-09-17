@@ -14,9 +14,9 @@ from moneybin.extractors.ofx.extractor import (
     OFXLoadError,
     ofx_source_accounts,
 )
+from moneybin.extractors.pdf.identity import derive_pdf_account_identity
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportService
-from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 from tests.import_helpers import import_answering_gate
 
 

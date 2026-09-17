@@ -148,7 +148,7 @@ def test_masking_a_hostile_account_label_terminates(
     Asserted as a wall-clock bound rather than a pattern property because that
     is the failure a user experiences — a hung import.
     """
-    from moneybin.services.import_service import mask_embedded_account_number
+    from moneybin.extractors.account_identity import mask_embedded_account_number
 
     start = time.perf_counter()
     mask_embedded_account_number(hostile)

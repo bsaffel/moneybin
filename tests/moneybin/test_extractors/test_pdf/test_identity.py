@@ -1,13 +1,13 @@
 """Tests for PDF account identity derivation."""
 
 from moneybin.database import Database
+from moneybin.extractors.pdf.identity import derive_pdf_account_identity
 from moneybin.extractors.pdf.metadata import StatementMetadata
 from moneybin.extractors.pdf.routing import RouteDecision
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.import_service import (
     _pdf_source_account,  # pyright: ignore[reportPrivateUsage]
 )
-from moneybin.services.pdf_account_identity import derive_pdf_account_identity
 
 
 def _decision(*, issuer: str) -> RouteDecision:
