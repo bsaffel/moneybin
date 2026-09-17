@@ -1,7 +1,7 @@
 """Structural guardrail: extractors must not import from services.
 
 `extractors/` sits below `services/` in MoneyBin's layering
-(surfaces -> services -> extractors/loaders/matching -> DuckDB; see
+(surfaces -> services -> extractors/repositories/matching -> DuckDB; see
 `test_adapter_layering.py` for the downward half of this convention). A
 `services` import inside `extractors/` is an upward inversion: it means a
 lifecycle-owned type leaked into a channel-specific parsing module instead of

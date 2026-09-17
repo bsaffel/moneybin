@@ -249,7 +249,10 @@ def test_import_history_json_is_an_envelope_over_the_shared_import_records(
     def _history(*_args: object, **_kwargs: object) -> list[dict[str, Any]]:
         return records
 
-    monkeypatch.setattr("moneybin.loaders.import_log.get_import_history", _history)
+    monkeypatch.setattr(
+        "moneybin.repositories.import_log_repo.ImportLogRepo.get_import_history",
+        _history,
+    )
 
     result = CliRunner().invoke(app, ["import", "history", "--output", "json"])
 

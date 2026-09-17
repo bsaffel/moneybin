@@ -40,14 +40,9 @@ sql/
 
 ## Usage
 
-SQL files are automatically loaded by loader classes:
-
-```python
-from moneybin.loaders.ofx_loader import OfxRawLoader
-
-loader = OFXLoader("data/duckdb/moneybin.duckdb")
-loader.create_raw_tables()  # Executes all OFX schema files
-```
+Schema files are applied automatically on startup via `init_schemas`
+(`src/moneybin/schema.py`) against the `Database` connection returned by
+`get_database()` — see `.claude/rules/database.md`.
 
 ## Manual Execution
 
@@ -75,7 +70,8 @@ uv run sqlmesh format
 2. Follow naming convention: `raw_<source>_<entity>.sql`
 3. Add comments describing the table purpose
 4. Run SQLFluff to check formatting
-5. Update loader class to execute the new schema file
+5. `init_schemas` (`src/moneybin/schema.py`) discovers files in `schema/`
+   automatically — no separate registration step
 
 Example template:
 

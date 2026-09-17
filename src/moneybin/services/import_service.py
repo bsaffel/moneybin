@@ -62,6 +62,7 @@ from moneybin.extractors.tabular.formats import (
 )
 from moneybin.metrics.observations import (
     MetricObservations,
+    ObservationDisposition,
     record_counter,
     record_observation,
 )
@@ -72,9 +73,11 @@ from moneybin.metrics.registry import (
     IMPORT_RECORDS_TOTAL,
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
+    TABULAR_IMPORT_BATCHES,
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
+from moneybin.repositories.import_log_repo import REVERT_TABLES, ImportLogRepo
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -1636,6 +1639,7 @@ class ImportService:
         self._audit = audit if audit is not None else AuditService(db)
         self._imports = ImportsRepo(db, audit=self._audit)
         self._pdf_formats = PdfFormatsRepo(db)
+        self._import_log = ImportLogRepo(db)
 
     def allocate_import_log(
         self,
@@ -1646,26 +1650,22 @@ class ImportService:
     ) -> str:
         """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
 
-        Thin wrapper around :func:`moneybin.loaders.import_log.begin_import`
-        that exposes the lifecycle to callers (manual entry, future API
-        connectors) that don't have a source file but still need an
-        ``import_id`` to attribute their raw rows. ``source_type`` must be
-        in the loader's allowlist (see ``REVERT_TABLES``); ``actor`` is
-        recorded as the ``account_names`` payload so audit consumers can
-        trace which surface (cli/mcp) initiated the batch. ``format_name``
-        is folded into the synthetic ``source_file`` key alongside
-        ``source_type`` and ``actor`` — callers that share ``source_type``
-        (e.g. manual cash entries and manual investment events both use
-        ``"manual"``) but write to different raw tables use distinct
-        ``format_name`` values, so this keeps their ``source_file`` keys
-        distinct too. Without it, ``revert()``'s superseded-lookup (which
-        matches purely on ``source_file``) could cross-match a batch from
-        an unrelated domain.
+        Thin wrapper around :meth:`ImportLogRepo.begin_import` that exposes
+        the lifecycle to callers (manual entry, future API connectors) that
+        don't have a source file but still need an ``import_id`` to
+        attribute their raw rows. ``source_type`` must be in the repo's
+        allowlist (see ``REVERT_TABLES``); ``actor`` is recorded as the
+        ``account_names`` payload so audit consumers can trace which surface
+        (cli/mcp) initiated the batch. ``format_name`` is folded into the
+        synthetic ``source_file`` key alongside ``source_type`` and
+        ``actor`` — callers that share ``source_type`` (e.g. manual cash
+        entries and manual investment events both use ``"manual"``) but
+        write to different raw tables use distinct ``format_name`` values,
+        so this keeps their ``source_file`` keys distinct too. Without it,
+        ``revert()``'s superseded-lookup (which matches purely on
+        ``source_file``) could cross-match a batch from an unrelated domain.
         """
-        from moneybin.loaders import import_log
-
-        return import_log.begin_import(
-            self._db,
+        return self._import_log.begin_import(
             source_file=f"<{source_type}:{format_name}:{actor}>",
             source_type=source_type,  # type: ignore[arg-type]  # runtime-validated
             source_origin=actor,
@@ -1673,6 +1673,21 @@ class ImportService:
             format_name=format_name,
             format_source="manual",
         )
+
+    def get_import_history(
+        self,
+        *,
+        limit: int = 20,
+        import_id: str | None = None,
+    ) -> list[dict[str, str | int | None]]:
+        """Read ``raw.import_log`` batch history — thin wrapper for CLI/MCP.
+
+        Backs ``moneybin import history``, the read path for one entity
+        (``ImportLogRepo``) whose write path already goes through this
+        service — the extractor is a parsing detail, not the import-batch
+        owner.
+        """
+        return self._import_log.get_import_history(limit=limit, import_id=import_id)
 
     def raw_data_summary(self) -> list[RawTableStat]:
         """Return row counts and date ranges for every ``raw.*`` table.
@@ -1823,7 +1838,6 @@ class ImportService:
             ofx_source_accounts,
             parse_ofx_content,
         )
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
         # Canonicalize the path so relative + absolute + symlink-resolved
@@ -1861,8 +1875,8 @@ class ImportService:
         # further down may *prompt*, which a file we're about to reject should
         # never trigger.
         if not force:
-            existing = import_log.find_existing_import(
-                self._db, str(canonical_path), file_sha256=digest
+            existing = self._import_log.find_existing_import(
+                str(canonical_path), file_sha256=digest
             )
             if existing:
                 existing_id, existing_status = existing
@@ -1927,8 +1941,7 @@ class ImportService:
         account_ids = [
             a.account_id for a in parsed_ofx.accounts if a.account_id is not None
         ]
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical_path),
             source_type="ofx",
             source_origin=source_origin,
@@ -1974,8 +1987,7 @@ class ImportService:
             # touches the database — would be counted as a write failure.
             write_failed = isinstance(e, OFXLoadError)
             partial_total = e.rows_loaded.total_rows if write_failed else 0
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=partial_total,
@@ -2013,8 +2025,7 @@ class ImportService:
                     created.append(minted)
             result.accounts_created = tuple(created)
         except Exception:
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=sum(rows_loaded.values()),
@@ -2036,8 +2047,7 @@ class ImportService:
         # comparability with tabular/Plaid metrics.
         transactions_imported = rows_loaded["transactions"]
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status=finalize_status,
             rows_total=total_rows,
@@ -2352,6 +2362,63 @@ class ImportService:
                 "--account-name to say which account in this file the pin refers to"
             )
         return own_key
+
+    def _finalize_tabular_batch(
+        self,
+        import_id: str,
+        *,
+        rows_total: int,
+        rows_imported: int,
+        rows_rejected: int = 0,
+        rows_skipped_trailing: int = 0,
+        rejection_details: list[dict[str, str]] | None = None,
+        detection_confidence: str | None = None,
+        number_format: str | None = None,
+        date_format: str | None = None,
+        sign_convention: str | None = None,
+        balance_validated: bool | None = None,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
+        metric_disposition: ObservationDisposition = "commit",
+    ) -> None:
+        """Finalize a tabular import batch and record the TABULAR_IMPORT_BATCHES metric.
+
+        Moved here from ``TabularExtractor.finalize_import_batch`` (MB-248):
+        deciding and recording the batch's terminal status is import-batch
+        bookkeeping, not tabular parsing, so it belongs beside the other
+        ``ImportLogRepo`` calls in this service rather than on the extractor.
+        """
+        # Zero-row imports (whether all-rejected, all-trailing-skipped, or
+        # an entirely empty file) must NOT report "complete" — that would
+        # be a green signal for an import that wrote nothing. Map any
+        # zero-imported outcome to "failed" so callers can detect it.
+        if rows_imported == 0:
+            status: Literal["complete", "partial", "failed"] = "failed"
+        elif rows_rejected == 0:
+            status = "complete"
+        else:
+            status = "partial"
+        record_counter(
+            TABULAR_IMPORT_BATCHES,
+            labels={"status": status},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition=metric_disposition,
+        )
+        self._import_log.finalize_import(
+            import_id,
+            status=status,
+            rows_total=rows_total,
+            rows_imported=rows_imported,
+            rows_rejected=rows_rejected,
+            rows_skipped_trailing=rows_skipped_trailing,
+            rejection_details=rejection_details,
+            detection_confidence=detection_confidence,
+            number_format=number_format,
+            date_format=date_format,
+            sign_convention=sign_convention,
+            balance_validated=balance_validated,
+        )
 
     def _import_tabular(
         self,
@@ -3762,9 +3829,9 @@ class ImportService:
 
         # Create import batch
         extractor = TabularExtractor(self._db)
-        import_id = extractor.create_import_batch(
+        import_id = self._import_log.begin_import(
             source_file=str(file_path),
-            source_type=source_type,
+            source_type=source_type,  # type: ignore[arg-type]  # runtime-validated by begin_import
             source_origin=source_origin,
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
@@ -3795,8 +3862,8 @@ class ImportService:
         except (
             Exception
         ) as e:  # re-raised as ValueError after recording rejection in DB
-            extractor.finalize_import_batch(
-                import_id=import_id,
+            self._finalize_tabular_batch(
+                import_id,
                 rows_total=len(df),
                 rows_imported=0,
                 rows_rejected=len(df),
@@ -3839,8 +3906,8 @@ class ImportService:
         rows_imported = extractor.load_transactions(transform_result.transactions)
         extractor.load_accounts(account_df)
 
-        extractor.finalize_import_batch(
-            import_id=import_id,
+        self._finalize_tabular_batch(
+            import_id,
             rows_total=len(df),
             rows_imported=rows_imported,
             rows_rejected=transform_result.rows_rejected,
@@ -4207,7 +4274,6 @@ class ImportService:
         )
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_forced_recipe
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import (
             PDF_BRIDGE_EGRESS_TOTAL,
             PDF_IMPORT_TOTAL,
@@ -4344,8 +4410,7 @@ class ImportService:
         )
 
         result = ImportResult(file_path=str(canonical), file_type="pdf")
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical),
             source_type="pdf",
             source_origin=resolved_alias,
@@ -4862,7 +4927,6 @@ class ImportService:
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
         from moneybin.extractors.pdf.seed_store import write_pdf_seed
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
         from moneybin.tables import PDF_SEEDS
 
@@ -5013,8 +5077,7 @@ class ImportService:
             pdf_bound = gated[0]
 
         # Committing to a write — open the import_log row now.
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical),
             source_type="pdf",
             source_origin=resolved_alias,
@@ -5075,8 +5138,7 @@ class ImportService:
                     exc_info=True,
                 )
             try:
-                import_log.finalize_import(
-                    self._db,
+                self._import_log.finalize_import(
                     import_id,
                     status="failed",
                     rows_total=0,
@@ -5096,8 +5158,7 @@ class ImportService:
             )
             raise
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=extracted,
@@ -5168,7 +5229,6 @@ class ImportService:
         """
         import polars as pl
 
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import (
             ACCOUNT_LINKS,
@@ -5215,8 +5275,8 @@ class ImportService:
             ).resolve(source_account, in_outer_txn=in_outer_txn)
         except Exception:
             try:
-                import_log.finalize_import(
-                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                self._import_log.finalize_import(
+                    import_id, status="failed", rows_total=0, rows_imported=0
                 )
             except Exception:  # failure-path finalize is best-effort
                 logger.warning(
@@ -5578,8 +5638,8 @@ class ImportService:
                         exc_info=True,
                     )
             try:
-                import_log.finalize_import(
-                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                self._import_log.finalize_import(
+                    import_id, status="failed", rows_total=0, rows_imported=0
                 )
             except Exception:  # failure-path finalize is best-effort
                 logger.warning(
@@ -5622,8 +5682,7 @@ class ImportService:
             resolved_format_name = None
             pdf_format_source = "detected"
         try:
-            import_log.update_format(
-                self._db,
+            self._import_log.update_format(
                 import_id,
                 format_name=resolved_format_name,
                 format_source=pdf_format_source,
@@ -5764,8 +5823,7 @@ class ImportService:
                     exc_info=True,
                 )
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=transactions_extracted,
@@ -6296,8 +6354,6 @@ class ImportService:
         Args:
             import_id: UUID of the import batch in ``raw.import_log``.
         """
-        # REVERT_TABLES is owned by import_log because begin_import also consults it.
-        from moneybin.loaders.import_log import REVERT_TABLES
         from moneybin.tables import IMPORT_LOG
 
         row = self._db.execute(
@@ -6407,9 +6463,8 @@ class ImportService:
             ``{'status': 'reverted', 'rows_deleted': N}`` on success, else the
             live non-revertable outcome.
         """
-        # Deferred with the rest: `matching.aliasing` reaches back into the
-        # repositories, whose base -> audit chain re-enters this package.
-        from moneybin.loaders.import_log import REVERT_TABLES
+        # Deferred: `matching.aliasing` reaches back into the repositories,
+        # whose base -> audit chain re-enters this package.
         from moneybin.matching.aliasing import (
             AliasForwardResult,
             forward_rekeyed_transaction_ids,

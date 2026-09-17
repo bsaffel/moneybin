@@ -844,8 +844,9 @@
       "import formats show"
     ],
     "service_methods": [
-      "moneybin.loaders.import_log.get_import_history",
-      "moneybin.loaders.import_log.get_import_history_page",
+      "moneybin.repositories.import_log_repo.ImportLogRepo.get_import_history",
+      "moneybin.repositories.import_log_repo.ImportLogRepo.get_import_history_page",
+      "moneybin.services.import_service.ImportService.get_import_history",
       "moneybin.services.import_service.ImportService.list_formats"
     ],
     "observable_outcomes": [

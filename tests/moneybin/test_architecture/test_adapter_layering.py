@@ -10,10 +10,9 @@ The MoneyBin layering convention (see `.claude/rules/mcp.md`,
 domain result as a response and is a different job under the same word.
 
 Adapters in `src/moneybin/mcp/tools/` and `src/moneybin/cli/commands/` must not
-reach past the service layer into `moneybin.loaders`, `moneybin.extractors`, or
-`moneybin.matching` for domain orchestration. When they do, the audit pattern
-that produced this PR recurs: business logic ends up in the wrong layer and
-fans out across adapters.
+reach past the service layer into `moneybin.extractors` or `moneybin.matching`
+for domain orchestration. When they do, the audit pattern that produced this PR
+recurs: business logic ends up in the wrong layer and fans out across adapters.
 
 This test enforces the convention by AST-parsing every adapter module and
 flagging any import from a guarded package that isn't on the allowlist below.
@@ -49,7 +48,6 @@ ADAPTER_ROOTS = (
     SRC / "cli" / "commands",
 )
 GUARDED_PACKAGES = (
-    "moneybin.loaders",
     "moneybin.extractors",
     "moneybin.matching",
 )
@@ -68,23 +66,6 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "cli/commands/transactions/matches.py",
         "moneybin.matching.persistence",
         "VALID_MATCH_TYPES",
-    ),
-    # --- Pure read helpers ----------------------------------------------
-    # import_log.get_import_history is a read-only repo helper consumed by
-    # the import_status MCP tool. No writes, no orchestration.
-    (
-        "mcp/tools/import_tools.py",
-        "moneybin.loaders",
-        "import_log",
-    ),
-    # TabularExtractor.get_import_history() is the CLI's read path for
-    # `moneybin import history` — class method but read-only (opens DB
-    # read_only=True). Functionally equivalent to a module-level read
-    # helper.
-    (
-        "cli/commands/import_cmd.py",
-        "moneybin.extractors.tabular",
-        "TabularExtractor",
     ),
     # --- Dependency injection -------------------------------------------
     # PlaidExtractor is constructed by the sync adapters and passed into
