@@ -379,11 +379,11 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
 class TabularReadOptions:
     """The caller's file-reading options, repeated on every printed retry command.
 
-    One shared value object rather than six loose kwargs threaded through
-    every recovery function and call site — the loose-kwargs shape is exactly
-    what let one site drop one option in the first place. The CLI (which may
-    import this service module) builds one instance per invocation and passes
-    it down instead of the individual fields.
+    One value object rather than six loose kwargs threaded through every
+    recovery function and call site, so a new printed command cannot carry
+    some of the caller's options and silently drop the rest. The CLI (which
+    may import this service module) builds one instance per invocation and
+    passes it down instead of the individual fields.
     """
 
     format_name: str | None = None

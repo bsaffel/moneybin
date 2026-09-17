@@ -880,7 +880,7 @@ class TestImportFilesConfirmFlow:
 
         The `import files --confirm`, `import files --mapping ...`, and
         `import confirm --accept` lines it prints must all carry the exact
-        options the original call used (#619) — a copy-pasted retry must not
+        options the original call used — a copy-pasted retry must not
         silently fall back to auto-detection.
         """
         csv_file = tmp_path / "test.csv"
@@ -2028,9 +2028,9 @@ class TestImportConfirmCommand:
     ) -> None:
         """Every file-reading option `import confirm` accepts reaches `import_file`.
 
-        Brandon's decision: `import confirm` carries the same six read-shaping
-        options as `import files` (#619). This proves the CLI wiring, not
-        just the printed-command serializer.
+        `import confirm` accepts the same six read-shaping options as
+        `import files`. This proves the CLI wiring, not just the
+        printed-command serializer.
         """
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
