@@ -375,7 +375,46 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     }
 
 
-def unreadable_date_recovery(file_path: str) -> str:
+def _cli_read_option_args(
+    *,
+    format_name: str | None = None,
+    date_format: str | None = None,
+    number_format: str | None = None,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> list[str]:
+    """Serialize the file-reading options a CLI recovery command must carry.
+
+    Local twin of ``import_cmd.py``'s ``_read_option_args`` — the service
+    layer cannot import the CLI module, so the identical six-flag logic lives
+    here for the recovery text this module prints.
+    """
+    args: list[str] = []
+    if format_name is not None:
+        args.extend(("--format", format_name))
+    if date_format is not None:
+        args.extend(("--date-format", date_format))
+    if number_format is not None:
+        args.extend(("--number-format", number_format))
+    if sheet is not None:
+        args.extend(("--sheet", sheet))
+    if delimiter is not None:
+        args.extend(("--delimiter", delimiter))
+    if encoding is not None:
+        args.extend(("--encoding", encoding))
+    return args
+
+
+def unreadable_date_recovery(
+    file_path: str,
+    *,
+    format_name: str | None = None,
+    number_format: str | None = None,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> str:
     """Name both recoveries for a date column nothing could parse.
 
     Lives here, beside the reason it answers, because four surfaces need the
@@ -388,6 +427,12 @@ def unreadable_date_recovery(file_path: str) -> str:
     whatever an override names, so a plain column correction recovers the file
     and `--date-format` aimed at the wrong column would just be refused again.
     Mirrors the MCP hint in import_tools.py; keep the two in step.
+
+    The other five read options ride along on the ``import files`` retry
+    (``format_name``/``number_format``/``sheet``/``delimiter``/``encoding``),
+    but never a caller-supplied ``date_format`` — that is the value that just
+    failed, and the printed command already carries its own ``<strptime>``
+    placeholder for it.
     """
     import shlex
 
@@ -395,15 +440,29 @@ def unreadable_date_recovery(file_path: str) -> str:
     # lands in "Bank Exports/" often enough that an unquoted path makes the
     # prescribed recovery uncopyable exactly when the user needs it.
     quoted = shlex.quote(file_path)
+    # import preview has no --number-format flag, so its args are a subset.
+    preview_args = _cli_read_option_args(
+        format_name=format_name, sheet=sheet, delimiter=delimiter, encoding=encoding
+    )
+    preview_args_str = f" {shlex.join(preview_args)}" if preview_args else ""
+    files_args = _cli_read_option_args(
+        format_name=format_name,
+        number_format=number_format,
+        sheet=sheet,
+        delimiter=delimiter,
+        encoding=encoding,
+    )
+    files_args_str = f" {shlex.join(files_args)}" if files_args else ""
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
         "while the real dates sit in an unmapped one — re-run with `--mapping "
         "transaction_date=<source_column>`, which re-runs detection against "
-        f"that column; `moneybin import preview {quoted}` names the file's "
-        "columns. If the mapped column is right and its format is simply "
-        "unrecognized, no mapping can change that: re-run `moneybin import "
-        f"files {quoted} --confirm --date-format <strptime>`."
+        f"that column; `moneybin import preview {quoted}{preview_args_str}` "
+        "names the file's columns. If the mapped column is right and its "
+        "format is simply unrecognized, no mapping can change that: re-run "
+        f"`moneybin import files {quoted} --confirm --date-format "
+        f"<strptime>{files_args_str}`."
     )
 
 
@@ -509,7 +568,16 @@ def header_row_consumed_recovery_mcp() -> str:
     )
 
 
-def header_position_ambiguous_recovery(file_path: str) -> str:
+def header_position_ambiguous_recovery(
+    file_path: str,
+    *,
+    format_name: str | None = None,
+    date_format: str | None = None,
+    number_format: str | None = None,
+    sheet: str | None = None,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
     UNLIKE `header_row_consumed_recovery`, this names a command that actually
@@ -528,11 +596,21 @@ def header_position_ambiguous_recovery(file_path: str) -> str:
     import shlex
 
     quoted = shlex.quote(file_path)
+    read_args = _cli_read_option_args(
+        format_name=format_name,
+        date_format=date_format,
+        number_format=number_format,
+        sheet=sheet,
+        delimiter=delimiter,
+        encoding=encoding,
+    )
+    read_args_str = f" {shlex.join(read_args)}" if read_args else ""
     return (
         "A row before the detected header also reads as a transaction. If "
         "it is a balance summary or similar preamble, the detected header is "
         "correct — re-run with `moneybin import files "
-        f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
+        f"{quoted} --confirm{read_args_str}` (or `import confirm {quoted} "
+        f"--accept{read_args_str}`) to "
         "proceed. If it is a real transaction, correct the source file "
         "before importing — MoneyBin will otherwise treat it as skipped "
         "preamble."
