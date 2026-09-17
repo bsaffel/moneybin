@@ -83,6 +83,64 @@ class TestFinalizeImport:
         assert row[1] == 100
         assert row[2] is not None
 
+    def test_persists_rejection_details_as_json(self, db: Database) -> None:
+        """Per-row rejection reasons round-trip through the JSON column.
+
+        ``moneybin import history`` and ``import_status`` read this column to
+        explain why rows were rejected, so a broken encode ships silently.
+        """
+        details = [
+            {"row": "7", "reason": "unparseable date"},
+            {"row": "12", "reason": "missing amount"},
+        ]
+        import_id = ImportLogRepo(db).begin_import(
+            source_file="/tmp/rejects.csv",  # noqa: S108  # test fixture path
+            source_type="csv",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        ImportLogRepo(db).finalize_import(
+            import_id,
+            status="partial",
+            rows_total=20,
+            rows_imported=18,
+            rows_rejected=2,
+            rejection_details=details,
+        )
+        row = db.execute(
+            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row[0]) == details
+
+    def test_omitted_rejection_details_stays_null(self, db: Database) -> None:
+        """The empty case writes NULL, not the string ``"null"`` or ``"[]"``.
+
+        Pairs with the round-trip above so a swapped ternary on the
+        ``json.dumps(...) if rejection_details else None`` branch fails one
+        test or the other rather than passing both.
+        """
+        import_id = ImportLogRepo(db).begin_import(
+            source_file="/tmp/clean.csv",  # noqa: S108  # test fixture path
+            source_type="csv",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        ImportLogRepo(db).finalize_import(
+            import_id,
+            status="complete",
+            rows_total=20,
+            rows_imported=20,
+            rejection_details=[],
+        )
+        row = db.execute(
+            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None
+
 
 class TestFindExistingImport:
     """find_existing_import detects prior imports of the same source_file."""
