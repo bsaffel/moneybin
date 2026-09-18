@@ -30,7 +30,7 @@ from moneybin.cli.output import (
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import build_rows, build_summary, render_rows
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -231,6 +231,7 @@ def reports_explain(
     param: list[str] | None = typer.Option(None, "--param", help=_PARAM_BIND_HELP),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # the evidence IS the output
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show a report's query, class map, lineage, freshness, and portability.
 
@@ -255,45 +256,50 @@ def reports_explain(
             explanation = explain_spec(db, report, parameters=parameters)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"{explanation.report_id}  ({explanation.tier})")
-        if explanation.description:
-            typer.echo(explanation.description)
-        render_rows(
-            ["column", "class", "origin", "upstream"],
-            [
-                (
-                    column.column,
-                    column.data_class.value,
-                    column.origin,
-                    column.upstream or "-",
-                )
-                for column in explanation.columns
-            ],
-        )
-        for label, value in (
-            ("Reads", ", ".join(explanation.lineage) or "-"),
-            ("Graduation", explanation.graduation),
-            ("Updated", explanation.updated_at or "-"),
-            ("Fingerprint", explanation.class_fingerprint or "-"),
-        ):
-            typer.echo(f"{label}: {value}")
-        for blocker in explanation.graduation_blockers:
-            typer.echo(f"  ⚠️  {blocker}")
+        policy = get_terminal_policy(no_pager=no_pager)
+        parts: list[object] = [
+            build_summary(
+                [
+                    ("Report", explanation.report_id),
+                    ("Tier", explanation.tier),
+                    ("Description", explanation.description or "-"),
+                    ("Reads", ", ".join(explanation.lineage) or "-"),
+                    ("Graduation", explanation.graduation),
+                    ("Updated", explanation.updated_at or "-"),
+                    ("Fingerprint", explanation.class_fingerprint or "-"),
+                ],
+                title="Report explanation",
+            ),
+            build_rows(
+                ["column", "class", "origin", "upstream"],
+                [
+                    (
+                        column.column,
+                        column.data_class.value,
+                        column.origin,
+                        column.upstream or "-",
+                    )
+                    for column in explanation.columns
+                ],
+                terminal=policy,
+            ),
+        ]
+        disclosures = list(explanation.graduation_blockers)
         # Echoed, not logged. The reason names the columns that moved, and a saved
         # report's aliases are user-authored. No safe record is lost by dropping
         # the log call: `_reresolved` already logs the drift where it is detected,
         # in counts, and this path reaches it through `spec_from_row`.
         if explanation.drift_reason:
-            typer.echo(f"  ⚠️  {explanation.drift_reason}")
+            disclosures.append(explanation.drift_reason)
         if explanation.sql_unavailable:
-            typer.echo(f"SQL: {explanation.sql_unavailable}")
+            disclosures.append(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:
-            typer.echo(
+            disclosures.append(
                 "Withheld from the rendered SQL (classed above the lowest tier): "
                 f"{', '.join(explanation.withheld_parameters)}"
             )
         if explanation.sql_suppressed_by:
-            typer.echo(
+            disclosures.append(
                 "No executed form — supply a value for "
                 f"{', '.join(explanation.sql_suppressed_by)} with --param"
             )
@@ -302,7 +308,13 @@ def reports_explain(
             ("Template", explanation.sql_template),
         ):
             if form is not None:
-                typer.echo(f"\n{label}:\n{form}")
+                parts.append(build_summary([(label, form)]))
+        emit_human_result(
+            compose_human_result(parts, disclosures=disclosures),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         build_envelope(
@@ -508,7 +520,17 @@ def reports_delete(
             UserReportsService(db).delete(report_id, actor="cli")
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"✅ Deleted {row['name']} ({report_id})")
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [("Report", str(row["name"])), ("Report ID", report_id)],
+                    title="Report deleted",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     render_or_json(
         build_envelope(
@@ -674,9 +696,23 @@ def reports_reclassify(
             )
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(
-            f"✅ {outcome.column} on {row['name']}: "
-            f"{outcome.from_class.value} → {outcome.to_class.value}"
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Report", str(row["name"])),
+                        ("Column", outcome.column),
+                        (
+                            "Change",
+                            f"{outcome.from_class.value} to {outcome.to_class.value}",
+                        ),
+                    ],
+                    title="Report classification updated",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
         )
 
     render_or_json(
@@ -728,16 +764,16 @@ def _render_save(
     """Render one save outcome, including R3's non-blocking notes."""
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"✅ {verb} {outcome.name} ({outcome.report_id})")
+        disclosures: list[str] = []
         if outcome.unresolved_columns:
-            typer.echo(
-                f"⚠️  Masked — no upstream class could be derived for "
+            disclosures.append(
+                f"Attention: masked because no upstream class could be derived for "
                 f"{', '.join(outcome.unresolved_columns)}. "
                 "Project the underlying column directly to resolve it."
             )
         if outcome.floored_columns:
-            typer.echo(
-                f"⚠️  No declared class for "
+            disclosures.append(
+                f"Attention: no declared class for "
                 f"{', '.join(outcome.floored_columns)}. "
                 "Each value is scanned at run time and masked only when it is "
                 "shaped like an SSN or holds a run of 8 or more digits; a "
@@ -746,11 +782,25 @@ def _render_save(
                 "column's class."
             )
         if outcome.cleared_downgrades:
-            typer.echo(
-                f"⚠️  Cleared the approved downgrade for "
+            disclosures.append(
+                f"Attention: cleared the approved downgrade for "
                 f"{', '.join(outcome.cleared_downgrades)}; the query changed. "
                 "Re-apply with `moneybin reports reclassify`."
             )
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Report", outcome.name), ("Report ID", outcome.report_id)],
+                        title=f"Report {verb.lower()}",
+                    )
+                ],
+                disclosures=disclosures,
+            ),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     # Echoed above, counted here. A saved report's output alias is user-authored
     # text — `amazon_spend` is as plausible a merchant name as a column one, and

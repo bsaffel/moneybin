@@ -1503,6 +1503,14 @@ def test_explain_binds_parameters_and_renders_the_class_map() -> None:
     assert "rn" in flat
 
 
+def test_explain_help_offers_no_pager() -> None:
+    """The finite explanation can be printed directly for capture or review."""
+    result = runner.invoke(app, ["reports", "explain", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--no-pager" in result.stdout
+
+
 def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
     """An agent must be told which ``--param`` would produce the executed form."""
     explanation = _explanation(sql=None, sql_suppressed_by=("acct",))
