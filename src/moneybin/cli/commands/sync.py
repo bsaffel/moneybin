@@ -13,7 +13,9 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.progress import operation_progress
 from moneybin.cli.utils import (
+    get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
@@ -392,13 +394,13 @@ def sync_pull(
     """Pull data from connected institutions."""
     with handle_cli_errors():
         with _build_sync_service() as service:
-            if not quiet and output == OutputFormat.TEXT:
-                typer.echo("⚙️  Syncing… (this may take up to 2 minutes)")
-            result = service.pull(
-                institution=institution,
-                force=force,
-                refresh=refresh,
-            )
+            with operation_progress(get_terminal_policy(), quiet=quiet) as report:
+                result = service.pull(
+                    institution=institution,
+                    force=force,
+                    refresh=refresh,
+                    progress=report,
+                )
 
     # Ahead of both output branches, like `moneybin refresh` and `gsheet pull`:
     # a pull runs the full refresh, whose match step can reverse a transfer the

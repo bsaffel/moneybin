@@ -265,6 +265,24 @@ def test_refresh_reports_what_the_matcher_found(
 
 
 @pytest.mark.unit
+def test_refresh_reports_actual_stage_boundaries(
+    patched_services: dict[str, MagicMock],
+) -> None:
+    events: list[str] = []
+
+    refresh(MagicMock(), progress=lambda event: events.append(event.stage))
+
+    assert events == [
+        "Refreshing spreadsheets",
+        "Matching transactions",
+        "Applying reports",
+        "Categorizing transactions",
+        "Resolving identities",
+        "Refreshing exchange rates",
+    ]
+
+
+@pytest.mark.unit
 def test_refresh_reports_no_match_stage_when_the_step_is_skipped(
     patched_services: dict[str, MagicMock],
 ) -> None:

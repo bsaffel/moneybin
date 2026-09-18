@@ -153,7 +153,13 @@ def test_sync_pull_with_institution_and_force(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--institution", "Chase", "--force"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(institution="Chase", force=True, refresh=True)
+    service.pull.assert_called_once()
+    assert service.pull.call_args.kwargs == {
+        "institution": "Chase",
+        "force": True,
+        "refresh": True,
+        "progress": service.pull.call_args.kwargs["progress"],
+    }
 
 
 @pytest.mark.unit
@@ -165,7 +171,13 @@ def test_sync_pull_no_refresh_flag(mock_build: MagicMock) -> None:
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--no-refresh"])
     assert result.exit_code == 0, result.output
-    service.pull.assert_called_once_with(institution=None, force=False, refresh=False)
+    service.pull.assert_called_once()
+    assert service.pull.call_args.kwargs == {
+        "institution": None,
+        "force": False,
+        "refresh": False,
+        "progress": service.pull.call_args.kwargs["progress"],
+    }
 
 
 @pytest.mark.unit

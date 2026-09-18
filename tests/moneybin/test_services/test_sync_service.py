@@ -926,6 +926,35 @@ class TestPullAutoRefreshes:
 
         assert result.transfers_retired == 2
 
+    def test_pull_forwards_progress_to_refresh(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
+        from moneybin.services import sync_service as mod
+
+        received: list[object] = []
+
+        def fake_refresh(_db: object, *, progress: object) -> RefreshResult:
+            received.append(progress)
+            return RefreshResult(applied=True, duration_seconds=0.05)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+        events: list[str] = []
+        service = SyncService(client=mock_client, db=db, loader=loader)
+
+        service.pull(progress=lambda event: events.append(event.stage))
+
+        assert received
+        assert events[:3] == [
+            "Syncing institutions",
+            "Loading synced data",
+            "Refreshing reports",
+        ]
+
     def test_pull_no_refresh_skips_pipeline(
         self,
         mock_client: MagicMock,
