@@ -87,8 +87,8 @@ def test_preview_reports_the_deterministic_verdict_and_row_count(
         result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exit_code == 0, result.output
-    assert "24" in caplog.text  # row count
-    assert "deterministic" in caplog.text.lower()
+    assert "24" in result.stdout  # row count
+    assert "deterministic" in result.stdout.lower()
 
 
 def test_preview_reports_a_non_deterministic_pdf_without_failing(
@@ -116,7 +116,7 @@ def test_preview_reports_a_non_deterministic_pdf_without_failing(
         result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exit_code == 0, result.output
-    assert "no_transaction_table" in caplog.text
+    assert "no_transaction_table" in result.stdout
 
 
 def test_preview_surfaces_a_pending_sign_confirmation(

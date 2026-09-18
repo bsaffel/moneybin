@@ -22,17 +22,17 @@ from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     wide_option,
 )
 from moneybin.cli.prompts import Choice, choose_required
 from moneybin.cli.render import (
+    build_rows,
     build_summary,
     column_view,
     compose_human_result,
-    render_rows,
-    render_summary,
 )
 from moneybin.cli.utils import (
     get_terminal_policy,
@@ -2245,7 +2245,8 @@ def import_confirm_command(
         # The confirm attempt itself can re-surface ConfirmationRequired —
         # e.g. an override that names an unknown source column, or a
         # low-tier proposal where the user-supplied mapping still leaves
-        # required fields missing. For --output json / non-TTY callers
+        # required fields missing. Only an explicit --output json request
+        # selects JSON here; redirected text remains human text.
         # emit the same envelope shape import_files uses so agents see
         # a structured payload instead of an unparseable stderr message.
         # Exit code stays 1: the confirm action did not succeed.
@@ -2522,6 +2523,7 @@ def import_history(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List recent imports with batch details.
 
@@ -2562,31 +2564,62 @@ def import_history(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not records:
-        if not quiet:
-            if import_id:
-                logger.warning(f"⚠️  No import found with ID: {import_id}")
-            else:
-                logger.warning("⚠️  No import history found")
+        scope = (
+            f"No import found with ID {import_id}."
+            if import_id
+            else "No import history found."
+        )
+        action = (
+            "Run 'moneybin import history --limit 20' to inspect recent imports."
+            if import_id
+            else "Run 'moneybin import files <path>' to load a financial file."
+        )
+        emit_human_result(
+            compose_human_result(
+                (build_summary((("Result", scope), ("Next", action))),),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
     view = column_view(_HISTORY_COLUMNS, records, default=_HISTORY_DEFAULT, wide=wide)
-    render_rows(
-        view.names,
-        view.rows,
-        numeric=("imported", "rejected"),
-        total_columns=view.total,
-    )
-
-    if import_id and records:
-        render_summary(
-            [
-                (key, str(value))
-                for key, value in records[0].items()
-                if value is not None
-            ],
-            title="\nDetails:",
+    parts: list[object] = [
+        build_rows(
+            view.names,
+            view.rows,
+            numeric=("imported", "rejected"),
+            total_columns=view.total,
+            terminal=policy,
         )
+    ]
+    if import_id:
+        parts.append(
+            build_summary(
+                [
+                    (key, str(value))
+                    for key, value in records[0].items()
+                    if value is not None
+                ],
+                title="Details",
+            )
+        )
+    else:
+        parts.append(
+            build_summary([
+                (
+                    "Scope",
+                    f"Latest {len(records)} import(s); total beyond --limit is unknown",
+                ),
+                ("Next", "Use 'moneybin import revert <import_id>' to undo one batch."),
+            ])
+        )
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
+    )
 
 
 @app.command("revert")
@@ -2612,12 +2645,21 @@ def import_revert(
             plan = ImportService(db).plan_revert(import_id)
 
     if plan.revertable and not yes:
+        if not get_terminal_policy().interactive:
+            with handle_cli_errors():
+                raise UserError(
+                    "Revert needs explicit confirmation in a noninteractive session; re-run with --yes.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                )
         confirmed = typer.confirm(
-            f"Revert import {import_id[:8]}...? This permanently deletes "
+            f"Revert import {import_id}? This permanently deletes "
             f"{plan.rows_to_delete} row(s) from this batch and cannot be undone."
         )
         if not confirmed:
-            logger.info("Revert cancelled")
+            _confirm_receipt(
+                "Import revert cancelled",
+                [("Import", import_id), ("Result", "No rows were deleted")],
+            )
             raise typer.Exit(0)
 
     def _verify(live: ImportRevertPlan) -> None:
@@ -2643,11 +2685,15 @@ def import_revert(
         logger.error(f"❌ {result.get('reason', 'Import was superseded')}")
         raise typer.Exit(1)
     elif status == "already_reverted":
-        logger.warning(f"⚠️  Import {import_id[:8]}... was already reverted")
+        _confirm_receipt(
+            "Import already reverted",
+            [("Import", import_id), ("Result", "No rows were deleted")],
+        )
     else:
         rows_deleted = result.get("rows_deleted", 0)
-        logger.info(
-            f"✅ Reverted import {import_id[:8]}...: {rows_deleted} rows deleted"
+        _confirm_receipt(
+            "Import reverted",
+            [("Import", import_id), ("Rows deleted", str(rows_deleted))],
         )
 
 
@@ -2708,30 +2754,36 @@ def _preview_pdf(source: Path) -> None:
             # also emits the real recovery commands.
             _render_sign_convention_prompt(proposed, str(source), channel="pdf")
         else:
-            logger.info(
-                f"Deterministic extraction escalated to the assisted reader: "
-                f"{source.name} (reason: {outcome.reason})"
-            )
-            logger.info(
-                "💡 The assisted-reader path runs through an AI agent driving the "
-                "MCP server; from the CLI, apply its result with "
-                "'moneybin import confirm <file> --bridge-response <file>.json'."
+            _confirm_receipt(
+                "PDF preview requires assisted extraction",
+                [
+                    ("File", source.name),
+                    ("Reason", outcome.reason),
+                    (
+                        "Next",
+                        "Apply an assisted-reader result with `moneybin import confirm "
+                        "<file> --bridge-response <file>.json`.",
+                    ),
+                ],
             )
         return
 
     verdict = "deterministic" if preview.deterministic else "NOT deterministic"
-    logger.info(f"PDF preview: {source.name}")
-    logger.info(f"  Extraction: {verdict} (reason: {preview.decision_reason})")
-    logger.info(f"  Rows:       {preview.row_count}")
-    logger.info(f"  Confidence: {preview.confidence:.2f}")
+    pairs = [
+        ("File", source.name),
+        ("Extraction", f"{verdict} (reason: {preview.decision_reason})"),
+        ("Parsed rows", str(preview.row_count)),
+        ("Confidence", f"{preview.confidence:.2f}"),
+    ]
     if preview.fingerprint:
         issuer = preview.fingerprint.get("issuer", "unknown")
-        logger.info(f"  Layout:     issuer={issuer}")
+        pairs.append(("Layout", f"issuer={issuer}"))
     if not preview.deterministic:
-        logger.info(
-            "💡 This statement would be stored as an unparsed seed rather than "
-            "transactions."
-        )
+        pairs.append((
+            "Next",
+            "This statement would be stored as an unparsed seed rather than transactions.",
+        ))
+    _confirm_receipt("PDF preview", pairs)
 
 
 @app.command("preview")
@@ -2882,22 +2934,26 @@ def import_preview(
             date_format=matched_format.date_format if matched_format else None,
         )
 
-        typer.echo(f"\nFile: {source.name}")
-        typer.echo(f"Type: {format_info.file_type}")
-        if format_info.delimiter:
-            typer.echo(f"Delimiter: {format_info.delimiter!r}")
-        typer.echo(f"Encoding: {format_info.encoding}")
-        typer.echo(f"Rows: {len(df):,}")
-        if read_result.rows_skipped_trailing:
-            typer.echo(f"Trailing rows skipped: {read_result.rows_skipped_trailing}")
-        typer.echo(f"Header row detected: {read_result.has_header}")
-        typer.echo(
-            f"Row reconciliation: {read_result.rows_in_file:,} in file = "
-            f"{read_result.skip_rows:,} skipped + "
-            f"{1 if read_result.has_header else 0} header + "
-            f"{len(df):,} read + "
-            f"{read_result.rows_skipped_trailing:,} trailing"
-        )
+        preview_metadata = [
+            ("File", source.name),
+            ("Type", str(format_info.file_type)),
+            (
+                "Delimiter",
+                repr(format_info.delimiter) if format_info.delimiter else "not set",
+            ),
+            ("Encoding", str(format_info.encoding)),
+            ("Parsed rows", f"{len(df):,}"),
+            ("Trailing rows skipped", str(read_result.rows_skipped_trailing)),
+            ("Header row detected", str(read_result.has_header)),
+            ("Inspection", f"Header row detected: {read_result.has_header}"),
+            (
+                "Row reconciliation",
+                f"{read_result.rows_in_file:,} in file = {read_result.skip_rows:,} skipped + "
+                f"{1 if read_result.has_header else 0} header + {len(df):,} read + "
+                f"{read_result.rows_skipped_trailing:,} trailing",
+            ),
+            ("Columns", ", ".join(df.columns)),
+        ]
         if read_result.header_row_looks_like_data:
             # A warning (diagnostic) → stderr via logger, not stdout, per
             # cli.md; the ⚠️ icon is reserved for logger.warning messages.
@@ -2923,20 +2979,18 @@ def import_preview(
             )
 
             logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
-        typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
-
         final_field_mapping: dict[str, str]
         final_effective_date_format: str | None
         if matched_format:
-            typer.echo(
-                f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
-            )
-            typer.echo(f"Sign convention: {matched_format.sign_convention}")
-            typer.echo(f"Date format: {matched_format.date_format}")
-            typer.echo(f"Number format: {matched_format.number_format}")
-            typer.echo("\nColumn mapping:")
-            for field, col in matched_format.field_mapping.items():
-                typer.echo(f"  {field} ← {col}")
+            mapping_metadata = [
+                (
+                    "Mapping",
+                    f"Matched format {matched_format.name} ({matched_format.institution_name})",
+                ),
+                ("Sign convention", str(matched_format.sign_convention)),
+                ("Date format", str(matched_format.date_format)),
+                ("Number format", str(matched_format.number_format)),
+            ]
             final_field_mapping = matched_format.field_mapping
             final_effective_date_format = matched_format.date_format
         else:
@@ -2950,32 +3004,43 @@ def import_preview(
                 t_med=bands.t_med,
                 structural_red_flag=read_result.header_row_looks_like_data,
             )
-            typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
-            for field, col in mapping_result.field_mapping.items():
-                typer.echo(f"  {field} ← {col}")
-            if mapping_result.sign_convention:
-                typer.echo(f"Sign convention: {mapping_result.sign_convention}")
+            mapping_metadata = [
+                (
+                    "Mapping",
+                    f"Detected mapping (confidence: {mapping_result.confidence})",
+                ),
+                (
+                    "Sign convention",
+                    str(mapping_result.sign_convention or "not detected"),
+                ),
+            ]
             # Say "not detected" rather than dropping the line: a missing row
             # reads as "nothing to report", when it is the one fact that blocks
             # the import. Name both fixes — a status column can claim the date
             # alias while the real dates sit unmapped, and --date-format aimed
             # at that wrong column is refused.
             if mapping_result.date_format:
-                typer.echo(f"Date format: {mapping_result.date_format}")
+                mapping_metadata.append((
+                    "Date format",
+                    str(mapping_result.date_format),
+                ))
             else:
                 # Name only what THIS command accepts: preview takes
                 # --override, not --mapping, and no --date-format at all.
                 # The other half of the recovery therefore has to name the
                 # command that does carry it.
-                typer.echo(
-                    "Date format: not detected — re-run with `--override "
-                    "transaction_date=<column>` if the wrong column matched; "
-                    "if the mapped column is right, its format is unrecognized "
-                    "and only `moneybin import files <file> --confirm "
-                    "--date-format <strptime>` can read it"
-                )
+                mapping_metadata.append((
+                    "Date format",
+                    "not detected — re-run with `--override transaction_date=<column>` "
+                    "if the wrong column matched; if the mapped column is right, "
+                    "only `moneybin import files <file> --confirm --date-format "
+                    "<strptime>` can read it",
+                ))
             if mapping_result.number_format:
-                typer.echo(f"Number format: {mapping_result.number_format}")
+                mapping_metadata.append((
+                    "Number format",
+                    str(mapping_result.number_format),
+                ))
             final_field_mapping = mapping_result.field_mapping
             final_effective_date_format = mapping_result.date_format
 
@@ -2996,11 +3061,34 @@ def import_preview(
             date_format=final_effective_date_format,
         )
 
-        # Show sample rows
+        # Raw parsed values remain direct CLI output: source fields must never
+        # transit logger handlers or durable console logs.
         sample_n = min(5, len(df))
-        typer.echo(f"\nSample ({sample_n} rows):")
-        typer.echo(df.head(sample_n))
-        typer.echo()
+        policy = get_terminal_policy()
+        emit_human_result(
+            compose_human_result((
+                build_summary(preview_metadata, title="File preview"),
+                build_summary(mapping_metadata, title="Mapping"),
+                build_summary([
+                    ("Mapping", f"{field} ← {column}")
+                    for field, column in final_field_mapping.items()
+                ]),
+                build_rows(
+                    ["field", "source column"],
+                    list(final_field_mapping.items()),
+                    terminal=policy,
+                ),
+                build_summary([
+                    ("Sample scope", f"first {sample_n} of {len(df)} parsed rows")
+                ]),
+                build_rows(
+                    list(df.columns), df.head(sample_n).iter_rows(), terminal=policy
+                ),
+            )),
+            policy=policy,
+            finite_read=False,
+            receipt=True,
+        )
 
 
 _PDF_FORMAT_COLUMNS: tuple[tuple[str, Callable[[PdfFormat], object]], ...] = (
@@ -3031,6 +3119,7 @@ def formats_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
     # _type shadows the builtin `type` — Typer CLI name remains --type (A001).
     _type: _FormatTypeFilter = typer.Option(
         _FormatTypeFilter.all,
@@ -3096,58 +3185,64 @@ def formats_list(
         )
         return
 
-    # ---- Text output -------------------------------------------------------
-
-    if show_tabular:
-        if not all_formats:
-            if not quiet:
-                logger.warning("⚠️  No tabular formats found")
-        else:
-            # Count only, like the PDF header below: the per-format split now
-            # lives in the `source` column, and spelling it "built-in" here
-            # beside a cell reading `builtin` made one value look like two.
-            typer.echo(f"\nTabular formats ({len(all_formats)})")
-            render_rows(
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = []
+    if show_tabular and all_formats:
+        tabular_rows = [
+            (
+                fmt.name,
+                fmt.institution_name,
+                fmt.sign_convention,
+                fmt.date_format,
+                "user" if fmt.name not in builtin else "builtin",
+            )
+            for fmt in sorted(all_formats.values(), key=lambda f: f.name)
+        ]
+        parts.extend((
+            build_summary([("Tabular formats", str(len(tabular_rows)))]),
+            build_rows(
                 ["name", "institution", "sign convention", "date format", "source"],
-                [
-                    (
-                        fmt.name,
-                        fmt.institution_name,
-                        fmt.sign_convention,
-                        fmt.date_format,
-                        # Same spelling as the `source` field in the JSON
-                        # branch above: one field, one value, whichever
-                        # surface a caller reads it from.
-                        "user" if fmt.name not in builtin else "builtin",
-                    )
-                    for fmt in sorted(all_formats.values(), key=lambda f: f.name)
-                ],
-            )
-
-    if show_pdf:
-        if not pdf_formats:
-            if not quiet:
-                if show_tabular:
-                    typer.echo("")
-                logger.warning("⚠️  No PDF formats found")
-        else:
-            if show_tabular:
-                typer.echo("")
-            typer.echo(f"PDF formats ({len(pdf_formats)})")
-            pdf_view = column_view(
-                _PDF_FORMAT_COLUMNS,
-                pdf_formats,
-                default=_PDF_FORMAT_DEFAULT,
-                wide=wide,
-            )
-            render_rows(
+                tabular_rows,
+                terminal=policy,
+            ),
+        ))
+    if show_pdf and pdf_formats:
+        pdf_view = column_view(
+            _PDF_FORMAT_COLUMNS, pdf_formats, default=_PDF_FORMAT_DEFAULT, wide=wide
+        )
+        parts.extend((
+            build_summary([("PDF formats", str(len(pdf_formats)))]),
+            build_rows(
                 pdf_view.names,
                 pdf_view.rows,
                 numeric=("version", "used"),
                 total_columns=pdf_view.total,
-            )
-
-    typer.echo("")
+                terminal=policy,
+            ),
+        ))
+    if not parts:
+        selected = _type.value
+        parts.append(
+            build_summary([
+                ("Result", f"No {selected} import formats found."),
+                (
+                    "Next",
+                    "Import a file to save a detected format, or use built-in formats.",
+                ),
+            ])
+        )
+    else:
+        parts.append(
+            build_summary([
+                (
+                    "Next",
+                    "Use 'moneybin import formats show <name>' to inspect one format.",
+                )
+            ])
+        )
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
+    )
 
 
 @formats_app.command("show")
@@ -3155,6 +3250,7 @@ def formats_show(
     name: str = typer.Argument(..., help="Format name to show"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # show has no info chatter; only data lines
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show details for a specific format.
 
@@ -3226,27 +3322,39 @@ def formats_show(
             )
             return
 
-        typer.echo(f"\nFormat: {fmt.name}")
-        typer.echo(f"Institution: {fmt.institution_name}")
-        typer.echo(f"File type: {fmt.file_type}")
-        if fmt.delimiter:
-            typer.echo(f"Delimiter: {fmt.delimiter!r}")
-        typer.echo(f"Encoding: {fmt.encoding}")
-        if fmt.skip_rows:
-            typer.echo(f"Skip rows: {fmt.skip_rows}")
-        if fmt.sheet:
-            typer.echo(f"Sheet: {fmt.sheet}")
-        typer.echo(f"Sign convention: {fmt.sign_convention}")
-        typer.echo(f"Date format: {fmt.date_format}")
-        typer.echo(f"Number format: {fmt.number_format}")
-        typer.echo(f"Multi-account: {fmt.multi_account}")
-        typer.echo(f"\nHeader signature: {fmt.header_signature}")
-        typer.echo("\nField mapping:")
-        for field, col in fmt.field_mapping.items():
-            typer.echo(f"  {field} ← {col}")
-        if fmt.skip_trailing_patterns:
-            typer.echo(f"\nSkip trailing patterns: {fmt.skip_trailing_patterns}")
-        typer.echo()
+        pairs = [
+            ("Format", fmt.name),
+            ("Institution", fmt.institution_name),
+            ("File type", str(fmt.file_type)),
+            ("Delimiter", repr(fmt.delimiter) if fmt.delimiter else "not set"),
+            ("Encoding", str(fmt.encoding)),
+            ("Skip rows", str(fmt.skip_rows)),
+            ("Sheet", str(fmt.sheet or "not set")),
+            ("Sign convention", str(fmt.sign_convention)),
+            ("Date format", str(fmt.date_format)),
+            ("Number format", str(fmt.number_format)),
+            ("Multi-account", str(fmt.multi_account)),
+            ("Header signature", ", ".join(fmt.header_signature)),
+            ("Skip trailing patterns", ", ".join(fmt.skip_trailing_patterns or ())),
+            (
+                "Next",
+                "Use this name with 'moneybin import files <path> --format <name>'.",
+            ),
+        ]
+        emit_human_result(
+            compose_human_result((
+                build_summary(pairs, title="Import format"),
+                build_summary([("Field mapping", f"{len(fmt.field_mapping)} fields")]),
+                build_rows(
+                    ["field", "source column"],
+                    list(fmt.field_mapping.items()),
+                    terminal=get_terminal_policy(no_pager=no_pager),
+                ),
+            )),
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
     # ---- PDF format ----
@@ -3273,25 +3381,37 @@ def formats_show(
         )
         return
 
-    typer.echo(f"\nFormat: {pdf_fmt.name}")
-    typer.echo("Type: pdf")
-    typer.echo(f"Institution: {pdf_fmt.institution_name}")
-    typer.echo(f"Document kind: {pdf_fmt.document_kind}")
-    typer.echo(f"Routing: {pdf_fmt.routing}")
-    typer.echo(f"Front-end: {pdf_fmt.front_end}")
-    if pdf_fmt.sign_convention:
-        typer.echo(f"Sign convention: {pdf_fmt.sign_convention}")
-    if pdf_fmt.date_format:
-        typer.echo(f"Date format: {pdf_fmt.date_format}")
-    typer.echo(f"Number format: {pdf_fmt.number_format}")
-    typer.echo(f"Version: {pdf_fmt.version}  Times used: {pdf_fmt.times_used}")
-    if last_used:
-        typer.echo(f"Last used: {last_used}")
-    typer.echo(f"Source: {pdf_fmt.source}")
-    typer.echo(
-        f"\nExtraction recipe:\n{json.dumps(pdf_fmt.extraction_recipe, indent=2)}"
+    recipe = json.dumps(pdf_fmt.extraction_recipe, indent=2)
+    emit_human_result(
+        compose_human_result((
+            build_summary(
+                [
+                    ("Format", pdf_fmt.name),
+                    ("Type", "pdf"),
+                    ("Institution", pdf_fmt.institution_name),
+                    ("Document kind", pdf_fmt.document_kind),
+                    ("Routing", pdf_fmt.routing),
+                    ("Front-end", pdf_fmt.front_end),
+                    ("Sign convention", str(pdf_fmt.sign_convention or "not set")),
+                    ("Date format", str(pdf_fmt.date_format or "not set")),
+                    ("Number format", pdf_fmt.number_format),
+                    ("Version", str(pdf_fmt.version)),
+                    ("Times used", str(pdf_fmt.times_used)),
+                    ("Last used", str(last_used or "never")),
+                    ("Source", pdf_fmt.source),
+                    (
+                        "Next",
+                        "Use this name with 'moneybin import files <path> --format <name>'.",
+                    ),
+                ],
+                title="Import format",
+            ),
+            build_summary([("Extraction recipe", recipe)]),
+        )),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
     )
-    typer.echo()
 
 
 @formats_app.command("delete")
@@ -3324,9 +3444,17 @@ def formats_delete(
             reviewed_plan = ImportService(db).plan_saved_format_delete(name)
 
         if not yes:
+            if not get_terminal_policy().interactive:
+                raise UserError(
+                    "Deleting a saved format needs explicit confirmation in a noninteractive session; re-run with --yes.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                )
             confirmed = typer.confirm(f"Delete format {name!r}?")
             if not confirmed:
-                logger.info("Delete cancelled")
+                _confirm_receipt(
+                    "Format deletion cancelled",
+                    [("Format", name), ("Result", "No format was deleted")],
+                )
                 raise typer.Exit(0)
 
         def verify(live_plan: object) -> None:
@@ -3343,13 +3471,14 @@ def formats_delete(
                 verify=verify,
             )
 
-    logger.info(f"✅ Deleted format {name!r}")
+    _confirm_receipt("Format deleted", [("Format", name), ("Result", "Deleted")])
 
 
 @app.command("status")
 def import_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show a summary of all imported data: row counts, date ranges, and sources.
 
@@ -3421,21 +3550,42 @@ def import_status(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not rows:
-        if not quiet:
-            typer.echo("\nNo imported data found.")
-            typer.echo("   Run 'moneybin import files <path>' to get started.")
-        return
-
-    if not quiet:
-        typer.echo("\nImported Data Summary")
-        typer.echo("=" * 60)
-
-    for row in rows:
-        date_info = ""
-        if row.date_min is not None:
-            date_info = f"  ({row.date_min} to {row.date_max})"
-        typer.echo(f"  {row.schema}.{row.table}: {row.rows:,} rows{date_info}")
-
-    if not quiet:
-        typer.echo()
+        parts = [
+            build_summary(
+                [
+                    ("Result", "No imported data found."),
+                    ("Next", "Run 'moneybin import files <path>' to import data."),
+                ],
+                title="Imported data summary",
+            )
+        ]
+    else:
+        parts = [
+            build_summary(
+                [
+                    ("Database", str(db_path)),
+                    ("Tables", str(len(rows))),
+                    ("Records", f"{sum(row.rows for row in rows):,} rows"),
+                ],
+                title="Imported data summary",
+            ),
+            build_rows(
+                ["table", "rows", "first date", "last date"],
+                [
+                    (
+                        f"{row.schema}.{row.table}",
+                        row.rows,
+                        row.date_min or "-",
+                        row.date_max or "-",
+                    )
+                    for row in rows
+                ],
+                numeric=("rows",),
+                terminal=policy,
+            ),
+        ]
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
+    )

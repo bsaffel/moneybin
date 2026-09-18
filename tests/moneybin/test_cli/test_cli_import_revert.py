@@ -17,6 +17,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.loaders import import_log
 from moneybin.services.import_service import ImportRevertPlan, ImportService
@@ -86,6 +87,23 @@ def _status(database: Database, import_id: str) -> str:
     return str(row[0])
 
 
+def _interactive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 def test_import_revert_deletes_a_seeded_batch_and_reports_the_count(
     runner: CliRunner, patched_db: Database
 ) -> None:
@@ -100,16 +118,57 @@ def test_import_revert_deletes_a_seeded_batch_and_reports_the_count(
     assert _status(patched_db, import_id) == "reverted"
 
 
-def test_import_revert_prompt_names_the_rows_it_would_destroy(
+def test_import_revert_receipt_keeps_the_full_actionable_import_id(
     runner: CliRunner, patched_db: Database
 ) -> None:
-    """Declining the prompt must leave the batch untouched."""
+    """A receipt must not replace the identifier needed for follow-up inspection."""
+    import_id = _seed_revertable_batch(patched_db, rows=1)
+
+    result = runner.invoke(app, ["import", "revert", import_id, "--yes"])
+
+    assert result.exit_code == 0, result.output
+    assert import_id in result.stdout
+    assert "Rows deleted:" in result.stdout
+
+
+def test_import_revert_requires_explicit_confirmation_when_noninteractive(
+    runner: CliRunner, patched_db: Database
+) -> None:
+    """A pipe cannot accidentally receive a destructive prompt and continue."""
     import_id = _seed_revertable_batch(patched_db, rows=2)
 
     result = runner.invoke(app, ["import", "revert", import_id], input="n\n")
 
+    assert result.exit_code == 1, result.output
+    assert "--yes" in result.output
+    assert _remaining(patched_db, import_id) == 2
+    assert _status(patched_db, import_id) == "complete"
+
+
+def test_import_revert_decline_writes_an_unpaged_full_id_receipt(
+    runner: CliRunner, patched_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interactive decline records the no-write outcome without paging it."""
+    import_id = _seed_revertable_batch(patched_db, rows=2)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.import_cmd.get_terminal_policy", _interactive_policy
+    )
+
+    def decline(_message: str) -> bool:
+        return False
+
+    monkeypatch.setattr("typer.confirm", decline)
+
+    def should_not_write(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("declined revert called the mutating service")
+
+    monkeypatch.setattr(ImportService, "revert_confirmed", should_not_write)
+
+    result = runner.invoke(app, ["import", "revert", import_id])
+
     assert result.exit_code == 0, result.output
-    assert "2 row(s)" in result.output
+    assert import_id in result.stdout
+    assert "No rows were deleted" in result.stdout
     assert _remaining(patched_db, import_id) == 2
     assert _status(patched_db, import_id) == "complete"
 

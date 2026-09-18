@@ -367,8 +367,25 @@ class TestDeleteFormat:
         )
 
         assert result.exit_code == 0
+        assert "Format deleted" in result.stdout
+        assert "my_custom_format" in result.stdout
         service.plan_saved_format_delete.assert_called_once_with("my_custom_format")
         service.delete_saved_format_confirmed.assert_called_once()
+
+    def test_delete_requires_yes_when_noninteractive(self, mocker: Any) -> None:
+        """A saved format cannot be deleted by a piped, unanswered prompt."""
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        service.plan_saved_format_delete.return_value = SavedFormatDeletePlan(
+            format_name="my_custom_format", state_sha256="reviewed-state"
+        )
+
+        result = runner.invoke(app, ["formats", "delete", "my_custom_format"])
+
+        assert result.exit_code == 1, result.output
+        service.delete_saved_format_confirmed.assert_not_called()
 
     def test_delete_rejects_a_changed_live_plan_with_canonical_error(
         self,
@@ -442,6 +459,22 @@ class TestPreview:
         result = runner.invoke(app, ["preview", str(csv_file)])
 
         assert result.exit_code == 0
+
+    def test_preview_names_the_bounded_sample_scope(self, tmp_path: Path) -> None:
+        """Parsed values render as rows with an explicit first-five sample bound."""
+        csv_file = tmp_path / "sample.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2025-01-01,-10.00,Coffee\n"
+            "2025-01-02,20.00,Refund\n"
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "Sample scope" in result.stdout
+        assert "first 2 of 2 parsed rows" in result.stdout
+        assert "Coffee" in result.stdout
         assert "Columns" in result.output
 
     def test_undetected_date_hint_only_names_flags_preview_accepts(
