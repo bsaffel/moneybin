@@ -422,7 +422,7 @@ Ninety such arms recover a routing number in one query, at LOW.
 
 This is written down rather than closed, and the reason is that it is **not specific to this rule**. The counting-aggregate collapse has it identically: `COUNT(j.account_id)` over the same joins yields the same ninety bits, with no `IS NULL` anywhere, and has done since long before MB-102. `COUNT(col)` counts non-NULLs, which is the same one bit per row in a different spelling. Closing it for the newer spelling alone would leave two behaviours for one question — the failure mode `design-principles.md` names as the largest source of rot.
 
-It is therefore tracked as MB-179, against **both** rules, and belongs to whichever change closes both. What MB-102 changed is which spellings reach it, not whether it is reachable.
+What MB-102 changed is which spellings reach it, not whether it is reachable. Both spellings are deliberate reconstruction, which "What the masking protects against" below places out of scope (MB-179, closed 2026-09-18).
 
 #### The cap is a claim about base columns
 
@@ -491,6 +491,14 @@ The snapshot cache key is the migration version integer from `SELECT MAX(version
 - `redact_records` accepts an explicit `{column_name: DataClass}` map from the lineage resolver and applies `_TRANSFORMS` to each row's values by column name.
 
 Because both functions share the same `_TRANSFORMS` table, a change to how CRITICAL columns are masked (e.g., adding a HIGH/MEDIUM transform) automatically applies to both the typed surface and `sql_query`.
+
+### What the masking protects against
+
+Decided 2026-09-18 (MB-177). `sql_query` masking stops **accidental disclosure**: a query an agent writes to answer a question never returns a CRITICAL value unmasked. A projection that returns one is a bug and is fixed (MB-178).
+
+It does **not** hold against **deliberate reconstruction**, where a query is built to infer a CRITICAL value one bit at a time. Classification reads projections only, so a `WHERE`, `HAVING`, `JOIN … ON`, or `ORDER BY` condition over a CRITICAL column, or an outer join feeding a counting aggregate (see "The cap is not absolute" above), answers yes/no questions about the value at tier LOW. Recovering a 9-digit routing number takes about 90 such conditions written for that purpose. No agent reaches that by accident, and the person running the query already owns the database. Closing it would mean masking ordinary filters such as `WHERE last_four = '5678'`, or hiding CRITICAL values from the query engine entirely. DuckDB has no built-in column masking to build that on.
+
+Report a reconstruction path as a documented limit, not as a masking bug. Reopen the question if `sql_query` ever serves a caller other than the database owner's own agent.
 
 ### Scope note (honest)
 
