@@ -1,7 +1,6 @@
 """Profile management commands for MoneyBin CLI."""
 
 import logging
-import sys
 from collections.abc import Mapping
 from typing import Annotated, cast
 
@@ -10,11 +9,14 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.config import get_current_profile, set_current_profile
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -35,6 +37,37 @@ app = typer.Typer(
     help="Manage user profiles (create, list, switch, delete, show, set)",
     no_args_is_help=True,
 )
+
+
+def _emit_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
+    """Print one unpaged mutation receipt to stdout."""
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title=title)]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
+
+
+def _emit_read(title: str, pairs: list[tuple[str, str]], *, no_pager: bool) -> None:
+    """Print one pageable profile answer, including an empty answer's scope."""
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title=title)]),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
+
+
+def _normalize_mutation_profile(name: str) -> str:
+    """Return the canonical target or end the command before any side effect."""
+    from moneybin.utils.user_config import normalize_profile_name
+
+    try:
+        return normalize_profile_name(name)
+    except ValueError as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(1) from None
 
 
 @app.command("create")
@@ -59,16 +92,14 @@ def profile_create(
     is completed in place rather than refused — an existing database is preserved
     untouched. Refuses only when a fully registered profile already exists.
     """
-    from moneybin.utils.user_config import normalize_profile_name
-
-    normalized = normalize_profile_name(name)
+    normalized = _normalize_mutation_profile(name)
     if init_inbox is None:
         init_inbox = (
             typer.confirm(
                 f"Set up the import inbox at ~/Documents/MoneyBin/{normalized}/?",
                 default=True,
             )
-            if sys.stdin.isatty()
+            if get_terminal_policy().interactive
             else False
         )
     svc = ProfileService()
@@ -81,21 +112,26 @@ def profile_create(
     try:
         profile_dir = svc.create(name, init_inbox=init_inbox)
         if adopting:
-            logger.info(f"✅ Completed setup for profile {normalized} at {profile_dir}")
+            pairs = [("Profile", normalized), ("Location", str(profile_dir))]
             if preserving_db:
-                logger.info("Existing database left untouched.")
+                pairs.append(("Database", "Existing database was preserved."))
+            _emit_receipt("Profile setup completed", pairs)
         else:
-            logger.info(f"✅ Created profile {normalized} at {profile_dir}")
+            _emit_receipt(
+                "Profile created",
+                [("Profile", normalized), ("Location", str(profile_dir))],
+            )
         if init_inbox:
-            logger.info(
-                f"Import inbox ready at ~/Documents/MoneyBin/{normalized}/inbox/"
+            _emit_receipt(
+                "Import inbox ready",
+                [("Location", f"~/Documents/MoneyBin/{normalized}/inbox/")],
             )
     except ProfileExistsError as e:
-        logger.error(f"❌ {e}")
+        logger.error(str(e))
         raise typer.Exit(1) from e
     except Exception as e:
-        logger.error(f"❌ Failed to create profile '{name}': {e}")
-        logger.info(f"💡 Run 'moneybin profile create {name}' to retry")
+        logger.error(f"Failed to create profile '{name}': {e}")
+        logger.error(f"Run 'moneybin profile create {name}' to retry")
         raise typer.Exit(1) from e
 
 
@@ -103,6 +139,7 @@ def profile_create(
 def profile_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List all profiles, marking the active one."""
     svc = ProfileService()
@@ -117,13 +154,23 @@ def profile_list(
         return
 
     if not profiles:
-        if not quiet:
-            logger.info("No profiles found")
-            logger.info("💡 Run 'moneybin profile create <name>' to create one")
+        _emit_read(
+            "Profiles",
+            [
+                ("Result", "No profiles found."),
+                ("Next", "moneybin profile create <name>"),
+            ],
+            no_pager=no_pager,
+        )
         return
-    for p in profiles:
-        marker = " (active)" if p["active"] else ""
-        logger.info(f"  {p['name']}{marker}")
+    _emit_read(
+        "Profiles",
+        [
+            ("Profile", f"{p['name']}{' (active)' if p['active'] else ''}")
+            for p in profiles
+        ],
+        no_pager=no_pager,
+    )
 
 
 @app.command("switch")
@@ -131,12 +178,13 @@ def profile_switch(
     name: Annotated[str, typer.Argument(help="Profile name to switch to")],
 ) -> None:
     """Set a different profile as the active default."""
+    normalized = _normalize_mutation_profile(name)
     svc = ProfileService()
     try:
-        svc.switch(name)
-        logger.info(f"✅ Switched to profile: {name}")
+        svc.switch(normalized)
+        _emit_receipt("Profile switched", [("Active profile", normalized)])
     except ProfileNotFoundError as e:
-        logger.error(f"❌ {e}")
+        logger.error(str(e))
         raise typer.Exit(1) from e
 
 
@@ -149,21 +197,44 @@ def profile_delete(
     ] = False,
 ) -> None:
     """Delete a profile and all its data (database, logs, config)."""
+    normalized = _normalize_mutation_profile(name)
     svc = ProfileService()
     if not yes:
-        confirm = typer.confirm(
-            f"Delete profile '{name}' and ALL its data? This cannot be undone."
-        )
+        policy = get_terminal_policy()
+        if not policy.interactive:
+            typer.echo(
+                "Deleting a profile needs explicit confirmation. "
+                "Re-run with --yes to confirm.",
+                err=True,
+            )
+            raise typer.Exit(1)
+        try:
+            confirm = typer.confirm(
+                f"Delete profile '{normalized}' and ALL its data? This cannot be undone.",
+                default=False,
+                err=True,
+            )
+        except typer.Abort:
+            typer.echo(
+                "Deleting a profile needs explicit confirmation. "
+                "Re-run with --yes to confirm.",
+                err=True,
+            )
+            raise typer.Exit(1) from None
         if not confirm:
+            _emit_receipt(
+                "Deletion cancelled",
+                [("Result", f"Profile {normalized} was not deleted.")],
+            )
             return
     try:
-        svc.delete(name)
-        logger.info(f"✅ Deleted profile: {name}")
+        svc.delete(normalized)
+        _emit_receipt("Profile deleted", [("Profile", normalized)])
     except ProfileNotFoundError as e:
-        logger.error(f"❌ {e}")
+        logger.error(str(e))
         raise typer.Exit(1) from e
     except ValueError as e:
-        logger.error(f"❌ {e}")
+        logger.error(str(e))
         raise typer.Exit(1) from e
 
 
@@ -252,6 +323,7 @@ def profile_show(
     ] = None,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # show has no info chatter; only data lines
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show resolved settings for a profile."""
     svc = ProfileService()
@@ -276,27 +348,41 @@ def profile_show(
             )
             return
         marker = " (active)" if info["active"] else ""
-        logger.info(f"Profile: {info['name']}{marker}")
-        logger.info(f"  Path:     {info['path']}")
-        logger.info(f"  Database: {info['database_path']}")
         db_status = "exists" if info["database_exists"] else "not created"
-        logger.info(f"  DB state: {db_status}")
+        details = [
+            ("Profile", f"{info['name']}{marker}"),
+            ("Path", str(info["path"])),
+            ("Database", str(info["database_path"])),
+            ("DB state", db_status),
+        ]
+        parts: list[object] = [build_summary(details, title="Profile")]
         if info.get("config"):
-            logger.info("  Config (config.yaml):")
-            for section, values in info["config"].items():  # type: ignore[union-attr]  # narrowed by .get check
-                if isinstance(values, dict):
-                    for k, v in values.items():
-                        logger.info(f"    {section}.{k}: {v}")
+            config_pairs: list[tuple[str, str]] = []
+            config = cast(Mapping[str, object], info["config"])
+            for section, values in config.items():
+                if isinstance(values, Mapping):
+                    section_values = cast(Mapping[str, object], values)
+                    for k, v in section_values.items():
+                        config_pairs.append((f"{section}.{k}", str(v)))
+            if config_pairs:
+                parts.append(build_summary(config_pairs, title="Config (config.yaml)"))
         settings: dict[str, object] = info["settings"]  # type: ignore[assignment]  # always set above
         if settings:
-            logger.info("  Settings (database):")
+            setting_pairs: list[tuple[str, str]] = []
             for k, v in settings.items():
                 if k == "display_currency_targets" and isinstance(v, tuple):
                     targets = cast(tuple[str, ...], v)
                     shown = ", ".join(targets) if targets else "(not set)"
                 else:
                     shown = "(not set)" if v is None else v
-                logger.info(f"    {k}: {shown}")
+                setting_pairs.append((k, str(shown)))
+            parts.append(build_summary(setting_pairs, title="Settings (database)"))
+        emit_human_result(
+            compose_human_result(parts),
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 @app.command("set")
@@ -333,6 +419,7 @@ def profile_set(
             profiles = svc.list()
             active = next((p["name"] for p in profiles if p["active"]), None)
             target = str(active) if active else "default"
+    target = _normalize_mutation_profile(target)
     # A managed key writes the encrypted database, so this path can now raise
     # DatabaseKeyError / DatabaseLockError alongside the config-file errors.
     with handle_cli_errors(cli_actor="profile_set"):
@@ -342,6 +429,21 @@ def profile_set(
             else:
                 svc.set(target, key, value)
         except (ProfileNotFoundError, ValueError) as e:
-            logger.error(f"❌ {e}")
+            logger.error(str(e))
             raise typer.Exit(1) from e
-        logger.info(f"✅ Set {key}={value}")
+        if key in MANAGED_SETTING_KEYS:
+            settings = _read_managed_settings(svc, svc.show(target))
+            saved = settings.get(key)
+            if key == "display_currency_targets" and isinstance(saved, tuple):
+                targets = cast(tuple[str, ...], saved)
+                effect = ", ".join(targets) if targets else "(not set)"
+            else:
+                effect = str(saved) if saved is not None else "(not set)"
+            _emit_receipt(
+                "Profile setting saved",
+                [("Profile", target), (key, effect)],
+            )
+            return
+        # Arbitrary config values may be credentials.  The service validated and
+        # persisted the value; the receipt names its effect without replaying it.
+        _emit_receipt("Profile setting saved", [("Profile", target), ("Setting", key)])
