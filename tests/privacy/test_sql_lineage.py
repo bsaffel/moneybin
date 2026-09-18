@@ -1396,6 +1396,57 @@ def test_count_filtered_on_a_column_compared_to_a_literal_still_masks(
 # `test_a_parameter_equality_probe_is_not_exempt` above already pins the
 # placeholder half of this exact boundary (`COUNT(*) FILTER (WHERE last_four
 # = $acct)`) — no separate test needed here.
+#
+# The tests above all pin the POSITION half of the new drop clause (a pure
+# column-to-column predicate). Nothing yet exercises the IDENTITY half
+# (`_resolves_to_a_classified_catalog_column`) THROUGH THIS PATH specifically:
+# position alone is not sufficient, the same way it is not for the null-test
+# drop below (`_capped_null_test`'s pivot/CTE tests) — a name that only LOOKS
+# like a catalog column must not earn the exemption just because it sits in a
+# pure-columns predicate.
+
+
+def test_a_pure_column_predicate_on_a_derived_table_alias_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """Position passes; identity declines — the CTE/derived-table half.
+
+    `d1 = d2` is positionally pure (no literal, no placeholder) and wraps a
+    `Count`, so `_only_within_pure_counting_filter_predicate` says yes. But
+    both names are aliases from a derived table, so
+    `_resolves_to_a_classified_catalog_column` says no (`_source_scope_of` is
+    non-None) — exactly mirroring
+    `test_a_null_test_on_a_derived_table_alias_is_not_exempt`, but for the
+    FILTER path instead of the null-test path. Without the identity half here,
+    this would wrongly collapse to `AGGREGATE`.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE d1 = d2) AS n FROM "
+        "(SELECT routing_number AS d1, account_id AS d2 FROM core.dim_accounts)",
+        populated_db,
+    )
+    assert out == {"n": DataClass.ROUTING_NUMBER}
+
+
+def test_a_pure_column_predicate_on_an_unpivot_value_column_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """Position passes; identity declines — the PIVOT/UNPIVOT half.
+
+    `last_four = account_id` is positionally pure and wraps a `Count`, but
+    both names are UNPIVOT-generated value columns fed by DIFFERENT source
+    columns per row, not the base `last_four` (`_reads_a_pivot` says no) —
+    the same shape as `test_a_null_test_is_not_exempt_anywhere_a_pivot_is_in_scope`,
+    for the FILTER path.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = account_id) AS c "
+        "FROM core.dim_accounts "
+        "UNPIVOT INCLUDE NULLS (last_four FOR arm IN (last_four, account_id)) "
+        "GROUP BY arm",
+        populated_db,
+    )
+    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
 
 
 # ---------------------------------------------------------------------------

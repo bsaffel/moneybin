@@ -890,13 +890,14 @@ def _only_null_tested(node: exp.Expr, stop: exp.Expr) -> bool:
 
 
 def _filter_predicate_is_pure_columns(filt: exp.Filter) -> bool:
-    """True if ``filt``'s ``FILTER (WHERE …)`` predicate names no external input.
+    """True if ``filt``'s ``FILTER (WHERE …)`` predicate contains no literal and no bound placeholder.
 
-    A predicate built entirely from catalog columns (and operators/functions
-    over them) can only report a fact ABOUT the data itself — e.g. how many
-    rows carry a self-referential match. Nothing in it is a value the caller
-    supplies, so there is nothing to iterate over separate calls to probe for
-    a specific value's presence.
+    That is the full check — this does NOT positively verify the predicate is
+    built only from columns and operators over them; `last_four =
+    CURRENT_DATE` or `last_four = some_free_function()` also pass, since
+    neither is an `exp.Literal` or a placeholder. That is fine for this gate's
+    purpose: what it must rule out is a value the CALLER supplies and can vary
+    call to call, and neither of those examples is one.
 
     The instant a literal or a bound placeholder appears, the caller DOES
     control one side of the comparison and can vary it call to call —
