@@ -32,7 +32,11 @@ from moneybin.cli.utils import (
     warn_transfers_retired,
 )
 from moneybin.errors import UserError
-from moneybin.extractors.tabular.formats import NumberFormatType, SignConventionType
+from moneybin.extractors.tabular.formats import (
+    NumberFormatType,
+    SignConventionType,
+    resolve_read_settings,
+)
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 
@@ -2888,25 +2892,35 @@ def import_preview(
                     f"⚠️  Format {format_name!r} not found in available formats"
                 )
 
+        # Every read setting a named format carries, resolved the one way
+        # ImportService resolves them — a preview that applied only some of
+        # them (auto-selecting an Excel sheet the format names, or skipping
+        # its preamble rows) would report a row count and proposal the import
+        # it previews never produces.
+        read_settings = resolve_read_settings(
+            matched_format,
+            delimiter=delimiter,
+            encoding=encoding,
+            sheet=sheet,
+            date_format=date_format,
+        )
+        declared_date_format = read_settings.date_format
+
         # Stage 1: Detect format
         format_info = detect_format(
             source,
-            delimiter_override=delimiter,
-            encoding_override=encoding,
-        )
-
-        # An explicit --date-format outranks a matched format's persisted one,
-        # the same precedence ImportService applies, so the preview reads the
-        # file exactly as the import it previews will.
-        declared_date_format = date_format or (
-            matched_format.date_format if matched_format else None
+            format_override=read_settings.format_override,
+            delimiter_override=read_settings.delimiter,
+            encoding_override=read_settings.encoding,
         )
 
         # Stage 2: Read file.
         read_result = read_file(
             source,
             format_info,
-            sheet=sheet,
+            sheet=read_settings.sheet,
+            skip_rows=read_settings.skip_rows,
+            skip_trailing_patterns=read_settings.skip_trailing_patterns,
             declared_date_format=declared_date_format,
         )
         df = read_result.df
@@ -2925,10 +2939,11 @@ def import_preview(
                     break
             # A signature match can only land here, after the read, so the
             # format it carries informs the mapping stages below but never
-            # the header decision above. An explicit --date-format still wins.
-            declared_date_format = date_format or (
-                matched_format.date_format if matched_format else None
-            )
+            # the read above — its other read settings are already spent.
+            # An explicit --date-format still wins.
+            declared_date_format = resolve_read_settings(
+                matched_format, date_format=date_format
+            ).date_format
 
         # detection_df is a throwaway copy — never imported, never shown as
         # a sample — that only exists so map_columns below can recognize a
@@ -3017,6 +3032,9 @@ def import_preview(
             final_effective_date_format = declared_date_format
         else:
             from moneybin.config import get_settings
+            from moneybin.services.import_service import (
+                declared_date_format_reads_column,
+            )
 
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
@@ -3037,8 +3055,32 @@ def import_preview(
             # the import. Name both fixes — a status column can claim the date
             # alias while the real dates sit unmapped, and --date-format aimed
             # at that wrong column is refused.
+            # A declared format the detector rejected can still be the one the
+            # import uses: detection holds it to a 90% parse rate, the loader
+            # accepts it at 50% and reports the rows it rejected. Ask the
+            # import's question, so a caller who passed --date-format is never
+            # told the format is "not detected" and advised to pass it.
+            declared_reads_column = bool(date_format) and (
+                declared_date_format_reads_column(
+                    df, mapping_result.field_mapping, date_format
+                )
+            )
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
+            elif declared_reads_column:
+                typer.echo(
+                    f"Date format: {date_format} (declared; detection did not "
+                    "confirm it, so the import will load the rows it reads and "
+                    "count the rest as rejected)"
+                )
+            elif date_format:
+                typer.echo(
+                    f"Date format: {date_format} does not read the mapped "
+                    "column — the import would refuse it rather than drop most "
+                    "rows. Check it against the column's own values, or re-run "
+                    "with `--override transaction_date=<column>` if the wrong "
+                    "column matched"
+                )
             else:
                 # Name only what THIS command accepts: preview takes
                 # --override, not --mapping.
@@ -3057,7 +3099,9 @@ def import_preview(
                     f"Number format: {number_format or mapping_result.number_format}"
                 )
             final_field_mapping = mapping_result.field_mapping
-            final_effective_date_format = mapping_result.date_format
+            final_effective_date_format = mapping_result.date_format or (
+                date_format if declared_reads_column else None
+            )
 
         if read_result.header_position_ambiguous:
             echo_disputed_rows(

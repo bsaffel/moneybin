@@ -563,6 +563,146 @@ class TestPreview:
         assert "Header row detected: False" in result.output
         assert "Rows: 3" in result.output
 
+    def test_preview_reads_the_sheet_the_named_format_selects(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """`--format` must pick the format's sheet, not the largest one.
+
+        A saved format names its sheet because the workbook holds others.
+        `ImportService` passes it to `read_file`; a preview that left it unset
+        auto-selected whichever sheet had the most rows, so the preview of an
+        import reported another sheet's columns and row count entirely.
+        `file_type` stays "auto" so the sheet is the only setting under test.
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        wb = openpyxl.Workbook()
+        ledger = wb.active
+        assert ledger is not None
+        ledger.title = "Ledger"
+        ledger.append(["Posted", "Value", "Memo"])
+        for day in range(1, 6):
+            ledger.append([f"2026-02-{day:02d}", 5.00, "Not the import's sheet"])
+        wanted = wb.create_sheet("Transactions")
+        wanted.append(["Date", "Amount", "Description"])
+        wanted.append(["2026-01-01", 42.50, "Coffee"])
+        wanted.append(["2026-01-02", 10.00, "Tea"])
+        path = tmp_path / "two_sheets.xlsx"
+        wb.save(path)
+
+        saved_format = TabularFormat(
+            name="sheet_test",
+            institution_name="Test",
+            sheet="Transactions",
+            header_signature=["Date", "Amount", "Description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(path), "--format", saved_format.name]
+        )
+
+        assert result.exit_code == 0, result.output
+        # The larger "Ledger" sheet has 5 data rows; the named one has 2.
+        assert "Rows: 2" in result.output, result.output
+        assert "Posted" not in result.output, result.output
+
+    def test_preview_skips_the_preamble_the_named_format_declares(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """`--format` must apply the format's skip_rows, as the import does.
+
+        A format with `skip_rows` exists because the export carries preamble
+        lines above its header. The import skips them; a preview that did not
+        found its header somewhere else and reported a different row count.
+
+        The preamble here is itself header-shaped, so auto-detection claims
+        row 0 and reads 4 "data" rows. A gentler preamble would let detection
+        find the real header unaided, and the test would pass with or without
+        the setting it exists to check.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        csv_file = tmp_path / "preamble.csv"
+        csv_file.write_text(
+            "Account,Period,Currency\n"
+            "Household,2026-01,USD\n"
+            "Date,Amount,Description\n"
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="preamble_test",
+            institution_name="Test",
+            skip_rows=2,
+            header_signature=["Date", "Amount", "Description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(csv_file), "--format", saved_format.name]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Rows: 2" in result.output, result.output
+        assert "Header row detected: True" in result.output, result.output
+        assert "transaction_date ← Date" in result.output, result.output
+
+    def test_preview_reports_a_declared_format_the_detector_rejects(
+        self, tmp_path: Path
+    ) -> None:
+        """Preview must answer the import's question, not the detector's.
+
+        The two bars differ on purpose: `detect_date_format` holds a
+        declaration to a 90% parse rate because it decides what detection
+        believes, while the loader accepts it at 50% and counts the rows it
+        could not read as rejected. A file of 6 readable dates in 10 therefore
+        imports under `--date-format`, while the preview of that same import
+        used to report "not detected" and advise supplying the very flag
+        already on the command line.
+        """
+        rows = "".join(
+            f"2026010{n},{n}.50,Item {n}\n" if n <= 6 else f"n/a,{n}.50,Item {n}\n"
+            for n in range(1, 11)
+        )
+        csv_file = tmp_path / "dirty_dates.csv"
+        csv_file.write_text(f"Date,Amount,Description\n{rows}", encoding="utf-8")
+
+        result = runner.invoke(
+            app, ["preview", str(csv_file), "--date-format", "%Y%m%d"]
+        )
+
+        assert result.exit_code == 0, result.output
+        line = next(
+            ln for ln in result.output.splitlines() if ln.startswith("Date format:")
+        )
+        assert "%Y%m%d" in line, line
+        assert "declared" in line, line
+        assert "not detected" not in line, line
+
     def test_preview_header_position_ambiguous_uses_shared_recovery_text(
         self, tmp_path: Path, caplog: LogCaptureFixture
     ) -> None:
@@ -692,9 +832,9 @@ class TestPreview:
     ) -> None:
         """A native-date Excel column with unaliased headers must still map right.
 
-        Regression: `import preview` has no --date-format flag, so no
-        declared time-bearing format can ever reach this command's
-        normalize-before-map step. Headers are deliberately unaliased
+        Regression: this invocation declares no format at all, so nothing
+        reaches this command's normalize-before-map step and content-based
+        discovery is on its own. Headers are deliberately unaliased
         ("Col1"/"Col2"/"Col3") so map_columns's content-based discovery is
         what has to get this right — skipping normalization here doesn't
         just fail to detect the date column, it misidentifies it as
