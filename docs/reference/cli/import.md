@@ -128,6 +128,8 @@ Usage: `moneybin import confirm [OPTIONS] FILE_PATH`
 | `--sheet` | text |  | Excel sheet name (default: auto-select largest). |
 | `--delimiter` | text |  | Explicit delimiter for text formats. |
 | `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1). |
+| `--no-row-limit` | flag |  | Override row count limit (carry over from the 'import files' call). |
+| `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--institution, -i` | text |  | Institution override, carried over from the 'import files' call that raised this confirmation. Same meaning as on 'import files': consulted for OFX/QFX/QBO only when the file's \<FI>\<ORG>, FID lookup, and filename heuristic all yield nothing. Ignored for tabular and PDF files, which resolve their institution from the matched format and filename. |
 | `--account-id` | text |  | Account ID to associate with imported transactions. Not honored for OFX/QFX/QBO, which name their own accounts and can carry several — use --account-binding there; supplying it is refused rather than ignored. |
 | `--account-name` | text |  | Account name to associate with imported transactions. |
@@ -230,6 +232,8 @@ Usage: `moneybin import preview [OPTIONS] FILE_PATH`
 | `--sheet` | text |  | Excel sheet name (default: auto-select largest) |
 | `--delimiter` | text |  | Explicit delimiter for text formats |
 | `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1) |
+| `--no-row-limit` | flag |  | Override row count limit (carry over from the 'import files' call). |
+| `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--override` | text, repeatable |  | Field→column override, repeatable (e.g. --override date=Date) |
 
 ## moneybin import status

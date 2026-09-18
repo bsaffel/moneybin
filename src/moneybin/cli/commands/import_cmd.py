@@ -624,6 +624,8 @@ def import_files_command(
             sheet=sheet,
             delimiter=delimiter,
             encoding=encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
 
         # Ahead of every dispatch below, because none of them reach the
@@ -1966,6 +1968,16 @@ def import_confirm_command(
         "--encoding",
         help="Explicit file encoding (e.g. utf-8, latin-1).",
     ),
+    no_row_limit: bool = typer.Option(
+        False,
+        "--no-row-limit",
+        help="Override row count limit (carry over from the 'import files' call).",
+    ),
+    no_size_limit: bool = typer.Option(
+        False,
+        "--no-size-limit",
+        help="Override file size limit (carry over from the 'import files' call).",
+    ),
     institution: str | None = typer.Option(
         None,
         "--institution",
@@ -2192,6 +2204,8 @@ def import_confirm_command(
         sheet=sheet,
         delimiter=delimiter,
         encoding=encoding,
+        no_row_limit=no_row_limit,
+        no_size_limit=no_size_limit,
     )
     quoted_path = shlex.quote(str(file_path))
 
@@ -2229,6 +2243,8 @@ def import_confirm_command(
                         "sheet": sheet,
                         "delimiter": delimiter,
                         "encoding": encoding,
+                        "no_row_limit": no_row_limit,
+                        "no_size_limit": no_size_limit,
                     }
                     if confirm_sign:
                         confirm_kwargs["human_sign_confirmation"] = True
@@ -2788,6 +2804,16 @@ def import_preview(
     encoding: str | None = typer.Option(
         None, "--encoding", help="Explicit file encoding (e.g. utf-8, latin-1)"
     ),
+    no_row_limit: bool = typer.Option(
+        False,
+        "--no-row-limit",
+        help="Override row count limit (carry over from the 'import files' call).",
+    ),
+    no_size_limit: bool = typer.Option(
+        False,
+        "--no-size-limit",
+        help="Override file size limit (carry over from the 'import files' call).",
+    ),
     override: list[str] = typer.Option(
         None,
         "--override",
@@ -2912,9 +2938,13 @@ def import_preview(
             format_override=read_settings.format_override,
             delimiter_override=read_settings.delimiter,
             encoding_override=read_settings.encoding,
+            no_size_limit=no_size_limit,
         )
 
-        # Stage 2: Read file.
+        # Stage 2: Read file. The limit overrides carry the same weight here as
+        # the settings above: a file large enough to need them reached its
+        # confirmation only because `import files` was given them, so a preview
+        # that dropped them would refuse the very file it was printed to explain.
         read_result = read_file(
             source,
             format_info,
@@ -2922,6 +2952,7 @@ def import_preview(
             skip_rows=read_settings.skip_rows,
             skip_trailing_patterns=read_settings.skip_trailing_patterns,
             declared_date_format=declared_date_format,
+            no_row_limit=no_row_limit,
         )
         df = read_result.df
 
@@ -3007,6 +3038,8 @@ def import_preview(
                         sheet=sheet,
                         delimiter=delimiter,
                         encoding=encoding,
+                        no_row_limit=no_row_limit,
+                        no_size_limit=no_size_limit,
                     ),
                 )
             )

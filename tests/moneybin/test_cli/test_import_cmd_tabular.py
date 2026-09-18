@@ -998,7 +998,9 @@ class TestDeclaredDateFormatConfirmConverges:
             assert str(csv_file) in tokens, tokens
             preview_result = runner.invoke(app, tokens[2:])
             assert preview_result.exit_code == 0, preview_result.output
-            assert f"Rows: {expect_rows}" in preview_result.output, (
+            # Thousands-separated, as the command prints it — an oversized
+            # file's count is the one this would otherwise silently miss.
+            assert f"Rows: {expect_rows:,}" in preview_result.output, (
                 preview_result.output
             )
             assert f"Header row detected: {expect_header}" in preview_result.output, (
@@ -1227,6 +1229,55 @@ class TestDeclaredDateFormatConfirmConverges:
         tokens = shlex.split(retry)
         assert str(csv_file) in tokens, tokens
         assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
+
+    def test_confirm_hints_carry_the_limit_override_that_allowed_the_read(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An oversized file's printed hints must carry `--no-row-limit`.
+
+        `read_file` refuses above the 50,000-row threshold, so such a file
+        reaches a confirmation only because the caller lifted the limit. A
+        printed retry that drops the flag is refused in the read itself,
+        before the confirmation it exists to resolve — and the preview hints
+        are run verbatim here, so a hint that merely names a flag the command
+        does not accept fails too.
+        """
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+        rows = "\n".join(
+            f"2026-01-{i % 28 + 1:02d},{i}.00,Item{i}" for i in range(50_001)
+        )
+        csv_file = tmp_path / "oversized.csv"
+        csv_file.write_text(f"Date,Amount,Description\n{rows}\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--mapping",
+                "transaction_date=no_such_column",
+                "--no-row-limit",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["data"]["status"] == "confirmation_required", payload
+
+        ran = self._run_printed_preview_commands(
+            payload["actions"], csv_file, expect_rows=50_001, expect_header=True
+        )
+        assert ran == 1
+        retry = self._extract_confirm_command(payload["actions"])
+        tokens = shlex.split(retry)
+        assert "--no-row-limit" in tokens, tokens
 
     def test_confirm_mapping_failure_hint_is_runnable_from_a_spaced_directory(
         self,

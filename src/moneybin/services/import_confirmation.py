@@ -381,9 +381,12 @@ class TabularReadOptions:
 
     Every command MoneyBin prints must be the command it would accept back,
     so a retry hint carries the caller's read options as one unit — it cannot
-    repeat some of them and drop the rest. Lives here, not in the CLI, because
-    the recovery text this module builds needs it and the CLI may import from
-    services while the reverse is forbidden.
+    repeat some of them and drop the rest. "All of them" includes the two
+    limit overrides: they are what let an oversized file be read at all, so
+    dropping them prints a command that cannot reach the confirmation it
+    answers. Lives here, not in the CLI, because the recovery text this module
+    builds needs it and the CLI may import from services while the reverse is
+    forbidden.
     """
 
     format_name: str | None = None
@@ -392,13 +395,23 @@ class TabularReadOptions:
     sheet: str | None = None
     delimiter: str | None = None
     encoding: str | None = None
+    no_row_limit: bool = False
+    no_size_limit: bool = False
 
     def cli_args(self) -> list[str]:
         """Serialize as CLI flag/value pairs.
 
         One serialization for every command MoneyBin prints: ``import files``,
-        ``import confirm`` and ``import preview`` accept the same six options,
+        ``import confirm`` and ``import preview`` accept the same eight options,
         so no caller has to remember which of them a given command omits.
+
+        The two limit overrides belong here rather than beside the size and row
+        thresholds they answer, because they shape whether the read happens at
+        all: a file only reaches a confirmation *because* the caller supplied
+        them, so a retry that omits them dies in ``detect_format`` or
+        ``read_file`` before reaching the confirmation it was printed to
+        resolve. They serialize as bare flags, so an unset one contributes
+        nothing.
         """
         args: list[str] = []
         if self.format_name is not None:
@@ -413,6 +426,10 @@ class TabularReadOptions:
             args.extend(("--delimiter", self.delimiter))
         if self.encoding is not None:
             args.extend(("--encoding", self.encoding))
+        if self.no_row_limit:
+            args.append("--no-row-limit")
+        if self.no_size_limit:
+            args.append("--no-size-limit")
         return args
 
     def cli_fragment(self) -> str:

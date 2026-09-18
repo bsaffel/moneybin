@@ -326,6 +326,39 @@ def test_tabular_read_options_cli_args_serializes_each_set_field() -> None:
     ]
 
 
+def test_tabular_read_options_cli_args_serializes_the_limit_overrides() -> None:
+    """The two limit overrides serialize as bare flags, after the valued ones.
+
+    They are read options like the rest: a file over the size or row threshold
+    reaches a confirmation only because the caller lifted the limit, so a retry
+    that omits the flag is refused in the read rather than reaching the
+    confirmation it was printed to resolve.
+    """
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(
+        date_format="%Y%m%d",
+        no_row_limit=True,
+        no_size_limit=True,
+    )
+
+    assert opts.cli_args() == [
+        "--date-format",
+        "%Y%m%d",
+        "--no-row-limit",
+        "--no-size-limit",
+    ]
+
+
+def test_tabular_read_options_cli_args_omits_unlifted_limits() -> None:
+    """A limit left in place contributes no flag — a bare False is not a value."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    assert TabularReadOptions(no_row_limit=True).cli_args() == ["--no-row-limit"]
+    assert TabularReadOptions(no_size_limit=True).cli_args() == ["--no-size-limit"]
+    assert TabularReadOptions().cli_args() == []
+
+
 def test_tabular_read_options_cli_args_omits_unset_fields() -> None:
     """An unset field contributes neither its flag nor a placeholder value."""
     from moneybin.services.import_confirmation import TabularReadOptions
