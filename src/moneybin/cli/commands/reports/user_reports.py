@@ -23,14 +23,15 @@ from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
     display_currency_option,
+    emit_human_result,
     no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, render_rows
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
@@ -66,6 +67,7 @@ def reports_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List every registered report — built-in, extension, and saved."""
     from moneybin.reports._framework.catalog import (
@@ -95,26 +97,45 @@ def reports_list(
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if not entries:
-            if not quiet:
-                logger.info("No reports match.")
+            policy = get_terminal_policy(no_pager=no_pager)
+            emit_human_result(
+                build_summary(
+                    [("Reports", "No reports match this scope.")],
+                    title=(
+                        "Try: moneybin reports create --help"
+                        if include_archived
+                        else "Try: moneybin reports list --include-archived"
+                    ),
+                ),
+                policy=policy,
+                finite_read=True,
+                no_pager=no_pager,
+            )
             return
-        render_rows(
-            # `name` leads: it is the handle `run`, `explain`, and `export` take,
-            # and the only one a user typed. `report_id` stays because it is what
-            # survives a rename and what breaks a cross-tier name collision.
-            ["name", "report_id", "tier", "parameters", "description"],
-            [
-                (
-                    entry.name,
-                    entry.report_id,
-                    # The tier column, not a fifth column: archived is a state of
-                    # the user tier, and only a widened listing ever shows one.
-                    f"{entry.tier} [archived]" if entry.archived else entry.tier,
-                    ", ".join(sorted(entry.parameter_classes)) or "-",
-                    entry.description,
-                )
-                for entry in entries
-            ],
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_rows(
+                # `name` leads: it is the handle `run`, `explain`, and `export` take,
+                # and the only one a user typed. `report_id` stays because it is what
+                # survives a rename and what breaks a cross-tier name collision.
+                ["name", "report_id", "tier", "parameters", "description"],
+                [
+                    (
+                        entry.name,
+                        entry.report_id,
+                        # The tier column, not a fifth column: archived is a state of
+                        # the user tier, and only a widened listing ever shows one.
+                        f"{entry.tier} [archived]" if entry.archived else entry.tier,
+                        ", ".join(sorted(entry.parameter_classes)) or "-",
+                        entry.description,
+                    )
+                    for entry in entries
+                ],
+                terminal=policy,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
     render_or_json(

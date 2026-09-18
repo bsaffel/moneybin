@@ -13,7 +13,7 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 import typer
@@ -128,6 +128,84 @@ def _save_outcome(**overrides: Any) -> SaveOutcome:
 # ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
+
+
+def test_list_help_offers_no_pager() -> None:
+    result = runner.invoke(app, ["reports", "list", "--help"])
+
+    assert result.exit_code == 0
+    assert "--no-pager" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_action"),
+    [
+        (
+            ["reports", "list", "--no-pager"],
+            "Try: moneybin reports list --include-archived",
+        ),
+        (
+            ["reports", "list", "--include-archived", "--no-pager"],
+            "Try: moneybin reports create --help",
+        ),
+        (
+            ["reports", "list", "--tier", "builtin", "--no-pager"],
+            "Try: moneybin reports list --include-archived",
+        ),
+    ],
+)
+def test_list_empty_explains_the_scope(args: list[str], expected_action: str) -> None:
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            return_value=MagicMock(reports=[]),
+        ),
+    ):
+        result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
+    assert "No reports match this scope." in result.stdout
+    assert expected_action in result.stdout
+
+
+def test_list_empty_tier_action_removes_the_tier_filter() -> None:
+    """The suggested catalog read leaves the empty tier scope behind."""
+    archived_user_report = _catalog_entry("user:archived", name="saved", archived=True)
+    catalog = MagicMock()
+    with (
+        _patch_catalog_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.reports._framework.catalog.catalog_to_payload",
+            side_effect=[
+                MagicMock(reports=[]),
+                MagicMock(reports=[archived_user_report]),
+            ],
+        ) as to_payload,
+    ):
+        empty = runner.invoke(
+            app, ["reports", "list", "--tier", "builtin", "--no-pager"]
+        )
+        suggested = runner.invoke(
+            app, ["reports", "list", "--include-archived", "--no-pager"]
+        )
+
+    assert empty.exit_code == 0, empty.output
+    assert "Try: moneybin reports list --include-archived" in empty.stdout
+    assert suggested.exit_code == 0, suggested.output
+    assert "saved" in suggested.stdout
+    assert to_payload.call_args_list == [
+        call(catalog, include_archived=False),
+        call(catalog, include_archived=True),
+    ]
 
 
 def test_list_rejects_an_unknown_tier() -> None:
