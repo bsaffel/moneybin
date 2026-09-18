@@ -1390,6 +1390,73 @@ class TestDeclaredDateFormatConfirmConverges:
         tokens = shlex.split(retry)
         assert "--no-row-limit" in tokens, tokens
 
+    def test_preview_reports_the_override_not_the_format_detection_fell_back_to(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An explicit --date-format outranks a detected one, as the import ranks them.
+
+        `detect_date_format` drops a declaration that misses its 90% bar and
+        falls through to the built-in scan, so a wrong `--date-format` over
+        cleanly ISO dates leaves `%Y-%m-%d` standing as the *detected* format.
+        `ImportService` resolves `date_format_override or
+        mapping_result.date_format` (`import_service.py:2941`) and refuses on
+        the override, so a preview reporting the detected value announced a
+        format the import never uses and said nothing about the one that stops
+        it. The import is run here too: a prediction is only worth printing if
+        it is the import's actual behaviour.
+        """
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+        csv_file = tmp_path / "iso_with_wrong_override.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2026-01-05,42.50,Coffee\n"
+            "2026-01-06,10.00,Tea\n"
+            "2026-01-07,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+
+        preview = runner.invoke(
+            app, ["preview", str(csv_file), "--date-format", "%d/%m/%Y"]
+        )
+        assert preview.exit_code == 0, preview.output
+        line = next(
+            ln for ln in preview.output.splitlines() if ln.startswith("Date format:")
+        )
+        assert "%d/%m/%Y" in line, line
+        assert "does not read the mapped column" in line, line
+        # Detection's own reading of the column is the value the caller needs.
+        assert "%Y-%m-%d" in line, line
+
+        imported = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--mapping",
+                "transaction_date=Date",
+                "--mapping",
+                "amount=Amount",
+                "--mapping",
+                "description=Description",
+                "--date-format",
+                "%d/%m/%Y",
+                "--account-id",
+                "acct-iso",
+                "--confirm",
+                "--no-save-format",
+                "--no-refresh",
+            ],
+        )
+        assert imported.exit_code == 1, imported.output
+        assert "could not read" in caplog.text, caplog.text
+
     def test_confirm_hints_carry_the_size_override_that_allowed_the_read(
         self,
         db: Database,

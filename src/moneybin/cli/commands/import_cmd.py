@@ -3075,11 +3075,18 @@ def import_preview(
                 declared_date_format=declared_date_format,
             )
             final_field_mapping = mapping_result.field_mapping
-            # Not "the declared format only when it reads the column": the
-            # import renders with whatever format it resolved and validates
-            # after, so dropping an unreadable one here showed ISO samples for
-            # an import that would have shown the caller's own format.
-            final_effective_date_format = mapping_result.date_format or date_format
+            # The caller's flag outranks the detected value, the precedence
+            # `import_service.py:2941` applies to the same pair. Order matters
+            # because detection *falls back*: a declaration that misses its 90%
+            # bar is dropped for the built-in scan, so a wrong --date-format
+            # over readable dates leaves a detected format standing here — and
+            # taking it would report a format the import never uses, while the
+            # one it does use is the one that then refuses the import.
+            # Not "the declared format only when it reads the column" either:
+            # the import renders with whatever it resolved and validates after,
+            # so dropping an unreadable one showed ISO samples for an import
+            # that would have shown the caller's own format.
+            final_effective_date_format = date_format or mapping_result.date_format
 
         # The ONLY render of df — exactly once, against the FINAL mapping,
         # whether a column got there via matched_format/--override or
@@ -3144,22 +3151,37 @@ def import_preview(
             # accepts it at 50% and reports the rows it rejected. Ask the
             # import's question, so a caller who passed --date-format is never
             # told the format is "not detected" and advised to pass it.
-            if mapping_result.date_format:
-                typer.echo(f"Date format: {mapping_result.date_format}")
-            elif effective_reads_column:
-                typer.echo(
-                    f"Date format: {date_format} (declared; detection did not "
-                    "confirm it, so the import will load the rows it reads and "
-                    "count the rest as rejected)"
-                )
+            # The flag is reported ahead of any detected value for the same
+            # reason it is resolved ahead of it above: detection falls back to
+            # the built-in scan when a declaration misses, so a detected format
+            # here is one the import will not use.
+            if date_format and effective_reads_column:
+                if mapping_result.date_format == date_format:
+                    typer.echo(f"Date format: {date_format}")
+                else:
+                    typer.echo(
+                        f"Date format: {date_format} (declared; detection did "
+                        "not confirm it, so the import will load the rows it "
+                        "reads and count the rest as rejected)"
+                    )
             elif date_format:
+                # Name what detection read instead, when it read anything: a
+                # caller who mistyped a format is one value away from the right
+                # one, and this is that value.
+                instead = (
+                    f" (detection reads it as {mapping_result.date_format})"
+                    if mapping_result.date_format
+                    else ""
+                )
                 typer.echo(
                     f"Date format: {date_format} does not read the mapped "
-                    "column — the import would refuse it rather than drop most "
-                    "rows. Check it against the column's own values, or re-run "
-                    "with `--override transaction_date=<column>` if the wrong "
-                    "column matched"
+                    f"column{instead} — the import would refuse it rather than "
+                    "drop most rows. Check it against the column's own values, "
+                    "or re-run with `--override transaction_date=<column>` if "
+                    "the wrong column matched"
                 )
+            elif mapping_result.date_format:
+                typer.echo(f"Date format: {mapping_result.date_format}")
             else:
                 # Name only what THIS command accepts: preview takes
                 # --override, not --mapping.
