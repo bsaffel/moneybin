@@ -16,18 +16,34 @@ fails CI if this file is stale.
 from __future__ import annotations
 
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.tables import REPORTS_NET_WORTH
+from moneybin.tables import REPORTS_NET_WORTH, REPORTS_NET_WORTH_ACCOUNTS
 
 # (schema, view) -> {column: DataClass}. Excludes every view already
 # covered by an @report runner's own classes= map — see
 # generate_derived_report_classes.py.
 DERIVED_REPORT_CLASSES: dict[tuple[str, str], dict[str, DataClass]] = {
     (REPORTS_NET_WORTH.schema, REPORTS_NET_WORTH.name): {
-        "balance_date": DataClass.TXN_DATE,
         "currency_code": DataClass.CURRENCY,
-        "net_worth": DataClass.BALANCE,
+        "balance_date": DataClass.TXN_DATE,
         "account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
+        "net_worth": DataClass.BALANCE,
+    },
+    (REPORTS_NET_WORTH_ACCOUNTS.schema, REPORTS_NET_WORTH_ACCOUNTS.name): {
+        "account_id": DataClass.RECORD_ID,
+        "account_name": DataClass.USER_NOTE,
+        "currency_code": DataClass.CURRENCY,
+        "home_currency_code": DataClass.CURRENCY,
+        "account_type": DataClass.TXN_TYPE,
+        "is_observed": DataClass.TXN_TYPE,
+        "observation_source": DataClass.TXN_TYPE,
+        "rate_source": DataClass.TXN_TYPE,
+        "balance_date": DataClass.TXN_DATE,
+        "rate_published_date": DataClass.TXN_DATE,
+        "days_since_observed": DataClass.TXN_DATE,
+        "reconciliation_delta": DataClass.BALANCE,
+        "account_balance": DataClass.BALANCE,
+        "account_balance_home": DataClass.BALANCE,
     },
 }

@@ -221,6 +221,9 @@ REPORTS_LARGE_TRANSACTIONS = TableRef(
 )
 REPORTS_BALANCE_DRIFT = TableRef("reports", "balance_drift", audience="interface")
 REPORTS_REALIZED_FX = TableRef("reports", "realized_fx", audience="interface")
+REPORTS_NET_WORTH_ACCOUNTS = TableRef(
+    "reports", "net_worth_accounts", audience="interface"
+)
 
 
 def _all_table_refs() -> tuple[TableRef, ...]:
