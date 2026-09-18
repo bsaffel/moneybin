@@ -79,13 +79,17 @@ class BaseRepo:
 
     #: Columns of ``table_ref`` a restore must re-validate with
     #: ``validate_category_text`` before writing them back verbatim (issue
-    #: #547). Empty by default. The six repos owning a category/subcategory
-    #: field #517 protects on the forward write path (``user_categories``,
-    #: ``user_merchants``, ``transaction_splits``, ``budgets``,
-    #: ``categorization_rules``, ``proposed_rules``) declare the applicable
-    #: column names here; the admissibility rule itself is stated in exactly
-    #: one place, ``services._validators.validate_category_text`` — this only
-    #: says which of THIS table's columns that rule applies to. See
+    #: #547). Empty by default. Every repo owning a category/subcategory-shaped
+    #: text column declares the applicable column names here — found by
+    #: sweeping every ``BaseRepo`` table's schema for such a column, not by
+    #: trusting a fixed list (a fixed count in this comment is exactly the kind
+    #: of claim that goes stale the next time a table is added, so none is
+    #: given): ``user_categories``, ``user_merchants``, ``transaction_splits``,
+    #: ``budgets``, ``categorization_rules``, ``proposed_rules``,
+    #: ``transaction_categories``, ``rule_conflicts``, and
+    #: ``categorization_decisions``. The admissibility rule itself is stated in
+    #: exactly one place, ``services._validators.validate_category_text`` —
+    #: this only says which of THIS table's columns that rule applies to. See
     #: :meth:`_require_admissible`.
     _CATEGORY_TEXT_COLUMNS: ClassVar[tuple[str, ...]] = ()
 
@@ -441,7 +445,7 @@ class BaseRepo:
         """Refuse to write ``row`` back verbatim if the write path would now reject it.
 
         Design decision (issue #547): refuse with a classified error rather than
-        rebuild the six affected tables with a DB-level ``CHECK`` — DuckDB has no
+        rebuild the affected tables with a DB-level ``CHECK`` — DuckDB has no
         ``ALTER TABLE ADD CONSTRAINT``, so a `CHECK` needs a create/copy/drop/rename
         per table (the cost #517 already declined to pay); refusing is a code-only
         change that reuses the write path's own validator, so the rule stays
@@ -456,8 +460,8 @@ class BaseRepo:
         and the entity can be recreated with a valid value through the table's
         normal write tool.
 
-        Checks only ``_CATEGORY_TEXT_COLUMNS`` — empty on every repo but the six
-        #517 protects, so this is a no-op for every other table.
+        Checks only ``_CATEGORY_TEXT_COLUMNS`` — empty by default, so this is a
+        no-op for every table that doesn't declare it.
         """
         for column in self._CATEGORY_TEXT_COLUMNS:
             value = row.get(column)

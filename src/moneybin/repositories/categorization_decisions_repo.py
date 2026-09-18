@@ -54,6 +54,15 @@ class CategorizationDecisionsRepo(BaseRepo):
     repository = "categorization_decisions"
     table_ref = CATEGORIZATION_DECISIONS
     pk_columns = ("decision_id",)
+    # The accepted category/subcategory display snapshot. undo_event below
+    # overrides the generic reverser for its own is_undo=False events (it only
+    # ever toggles reversed_at/reversed_by, never rewrites these columns), but
+    # delegates to the generic BaseRepo.undo_event — and therefore through
+    # _require_admissible — when reversing one of its own is_undo rows. Declared
+    # for the same reason as rule_conflicts (#547): found by re-sweeping every
+    # BaseRepo table for a category/subcategory text column, not by trusting a
+    # fixed list.
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, decision_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
