@@ -2617,7 +2617,7 @@ class TestImportConfirmCommand:
         mock_sys.stdout.isatty.return_value = True
 
         with caplog.at_level(logging.INFO):
-            runner.invoke(
+            result = runner.invoke(
                 app,
                 [
                     "confirm",
@@ -2628,13 +2628,17 @@ class TestImportConfirmCommand:
                 ],
             )
 
+        # stderr, not the log pipeline: the printed command repeats the
+        # caller's read options, and --sheet/--format are arbitrary user text
+        # the log allowlist does not admit.
         recovery = next(
-            line for line in caplog.text.splitlines() if "--account-binding" in line
+            line for line in result.output.splitlines() if "--account-binding" in line
         )
         assert "--bridge-response" in recovery
         assert str(response_file) in recovery
         assert "--confirm" in recovery
         assert "--accept" not in recovery
+        assert "--account-binding" not in caplog.text, caplog.text
 
     def test_bridge_response_still_refuses_the_tabular_account_flags(
         self, tmp_path: Path

@@ -2366,7 +2366,16 @@ def import_confirm_command(
             # bindings still required to finish this independent call.
             logger.error("❌ Account identity must be confirmed before import.")
             _echo_account_proposals(outcome, err=True)
-            logger.info(
+            # Every printed command in this branch goes to stderr rather than
+            # through the logger, because each one repeats the caller's read
+            # options and two of those are arbitrary user text: a --sheet is a
+            # worksheet name out of the user's own workbook, a --format is a
+            # name they authored, and either can carry an account label. The
+            # log allowlist admits neither, and SanitizedLogFormatter does not
+            # catch them — it matches digit shapes, and these are words. The
+            # diagnostic above stays logged; only the parameterized command
+            # leaves. Same reason _echo_account_proposals is already err=True.
+            typer.echo(
                 "💡 Re-run `"
                 + _account_recovery_command(
                     str(file_path),
@@ -2388,7 +2397,8 @@ def import_confirm_command(
                     bridge_response=bridge_response,
                     read_options=read_options,
                 )
-                + "`."
+                + "`.",
+                err=True,
             )
         elif outcome.reason == "header_row_consumed":
             logger.error("❌ A transaction row was consumed as the header.")
@@ -2404,17 +2414,21 @@ def import_confirm_command(
                 if isinstance(outcome.proposed, ProposedMapping)
                 else {},
             )
-            logger.info(
+            # stderr, not the logger — see the account branch above.
+            typer.echo(
                 "💡 "
                 + header_position_ambiguous_recovery(
                     str(file_path), read_options=read_options
-                )
+                ),
+                err=True,
             )
         elif outcome.reason == "unreadable_date":
             logger.error("❌ No date format could be read from the date column.")
-            logger.info(
+            # stderr, not the logger — see the account branch above.
+            typer.echo(
                 "💡 "
-                + unreadable_date_recovery(str(file_path), read_options=read_options)
+                + unreadable_date_recovery(str(file_path), read_options=read_options),
+                err=True,
             )
         else:
             msg = f"❌ Confirmation failed: {outcome.reason}" + (
@@ -2423,10 +2437,12 @@ def import_confirm_command(
             logger.error(msg)
             if _can_preview(outcome):
                 preview_args_str = read_options.cli_fragment()
-                logger.info(
+                # stderr, not the logger — see the account branch above.
+                typer.echo(
                     "💡 Inspect the proposal with `moneybin import preview "
                     f"{quoted_path}{preview_args_str}` and re-run with a "
-                    "corrected --mapping."
+                    "corrected --mapping.",
+                    err=True,
                 )
         raise typer.Exit(1) from e
 
@@ -3031,20 +3047,28 @@ def import_preview(
             # header position unblocks it. `import preview` has no --confirm
             # option of its own — use the shared helper, which names the
             # commands that actually clear this gate (`import files
-            # --confirm` / `import confirm --accept`). The recovery text
-            # stays static (safe for the log pipeline); the disputed row's
-            # own content goes through echo_disputed_rows, stderr-only, so
-            # this warning's evidence never reaches a log file. The row
-            # itself is echoed further down, once the mapping resolves —
-            # echo_disputed_rows needs a field_mapping to resolve column
-            # identity, and neither branch below has committed to one yet.
+            # --confirm` / `import confirm --accept`). The diagnostic is
+            # logged; the runnable command is echoed to stderr and never
+            # reaches a log file, because it repeats the caller's read
+            # options and two of those are arbitrary user text — a --sheet is
+            # a worksheet name out of the user's own workbook and a --format
+            # is a name they authored, either of which can carry an account
+            # label. The log allowlist admits neither, and no formatter
+            # catches them: they are not digit-shaped. The disputed row's own
+            # content is stderr-only for the same reason, through
+            # echo_disputed_rows further down, once the mapping resolves —
+            # it needs a field_mapping to resolve column identity, and
+            # neither branch below has committed to one yet.
             from moneybin.services.import_confirmation import (
                 TabularReadOptions,
                 header_position_ambiguous_recovery,
             )
 
             logger.warning(
-                "⚠️  "
+                "⚠️  A row before the detected header looks like a transaction."
+            )
+            typer.echo(
+                "💡 "
                 + header_position_ambiguous_recovery(
                     str(source),
                     read_options=TabularReadOptions(
@@ -3057,7 +3081,8 @@ def import_preview(
                         no_row_limit=no_row_limit,
                         no_size_limit=no_size_limit,
                     ),
-                )
+                ),
+                err=True,
             )
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 

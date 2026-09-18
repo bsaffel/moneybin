@@ -712,10 +712,12 @@ class TestPreview:
         --confirm to proceed" — a flag `import preview` itself does not
         register (it lives on `import files` / `import confirm`). Reusing
         the shared ``header_position_ambiguous_recovery`` helper names the
-        commands that actually clear the gate. The helper's own text stays
-        row-free (it can reach the log pipeline); the disputed row(s) go
+        commands that actually clear the gate. The recovery command goes to
+        stderr and never a log record: it repeats the caller's read options,
+        and ``--sheet``/``--format`` are arbitrary user text the log
+        allowlist does not admit. The disputed row(s) go the same way,
         through ``echo_disputed_rows`` (allowlisted via ``disputed_row_
-        fields``) on stderr only, never a log record.
+        fields``). Only the static diagnostic is logged.
         """
         import logging
 
@@ -737,7 +739,13 @@ class TestPreview:
 
         assert result.exit_code == 0
         expected = header_position_ambiguous_recovery(str(csv_file))
-        assert any(expected in r.message for r in caplog.records), caplog.text
+        assert expected in result.output, result.output
+        # ...and never a log record, for the reason in the docstring.
+        assert not any(expected in r.message for r in caplog.records), caplog.text
+        # The static diagnostic is what the log keeps.
+        assert any("looks like a transaction" in r.message for r in caplog.records), (
+            caplog.text
+        )
         # The disputed rows appear in the CLI's stderr-mixed output, already
         # allowlisted to dest=value pairs (disputed_row_fields) rather than
         # raw positional cells...
@@ -1572,8 +1580,13 @@ class TestDeclaredDateFormatConfirmConverges:
     ) -> None:
         """The TTY branch's `💡 Inspect the proposal` hint is a command too.
 
-        It is logged, not returned in the envelope, so it is only reachable
+        It goes to stderr rather than the envelope, so it is only reachable
         with a terminal attached — and it interpolates the same path.
+
+        stderr specifically, never the logger: the hint repeats the caller's
+        read options, and `--sheet`/`--format` are arbitrary user text that
+        the log allowlist does not admit. The caplog assertion below is the
+        half that fails if it is ever logged again.
         """
         import logging
 
@@ -1599,8 +1612,11 @@ class TestDeclaredDateFormatConfirmConverges:
             )
 
         assert result.exit_code == 1, result.output
-        match = re.search(r"`(moneybin import preview[^`]*)`", caplog.text)
-        assert match, caplog.text
+        match = re.search(r"`(moneybin import preview[^`]*)`", result.output)
+        assert match, result.output
+        # The command carries the caller's read options, so it must not have
+        # reached the log pipeline on its way to the terminal.
+        assert "moneybin import preview" not in caplog.text, caplog.text
         tokens = shlex.split(match.group(1))
         assert str(csv_file) in tokens, tokens
         assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
