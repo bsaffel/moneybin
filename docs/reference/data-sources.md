@@ -153,7 +153,7 @@ Each named profile below ships in `src/moneybin/data/tabular_formats/<name>.yaml
 
 ### Per-file overrides
 
-Combinable with named profiles (override only the named flag) or with smart-detected files: `--account-name`, `--account-id`, `--format`, `--override field=column` (repeatable), `--sign`, `--number-format`, `--date-format`, `--sheet`, `--encoding`, `--delimiter`.
+Combinable with named profiles (override only the named flag) or with smart-detected files: `--account-name`, `--account-id`, `--format`, `--override field=column` (repeatable), `--sign`, `--number-format`, `--date-format`, `--sheet`, `--encoding`, `--delimiter`, `--no-row-limit`, `--no-size-limit`.
 
 ## OFX / QFX / QBO
 
