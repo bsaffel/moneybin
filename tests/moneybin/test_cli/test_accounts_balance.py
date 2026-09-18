@@ -40,6 +40,39 @@ class TestAccountsBalanceHelp:
             assert cmd in result.stdout
 
 
+class TestAccountsBalanceMutationPresentation:
+    """Human receipts for balance assertion mutations."""
+
+    @pytest.mark.unit
+    def test_assert_prints_an_unpaged_receipt(self, runner: CliRunner) -> None:
+        assertion = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            notes=None,
+            created_at="2026-01-31T00:00:00Z",
+            currency_code="USD",
+        )
+        result_payload = BalanceAssertionPayload(assertion=assertion)
+        mock_service = MagicMock(spec=BalanceService)
+        mock_service.assert_balance.return_value = result_payload
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService",
+                return_value=mock_service,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                ["accounts", "balance", "assert", "acct_a", "2026-01-31", "1234.56"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Balance asserted" in result.stdout
+        assert "1234.56 USD" in result.stdout
+
+
 class TestAccountsBalanceShow:
     """Tests for `accounts balance show`."""
 
@@ -330,12 +363,41 @@ class TestAccountsBalanceAssertionDelete:
                 ],
             )
         assert result.exit_code == 0, result.stderr
+        assert "Balance assertion deleted" in result.stdout
         delete_mock = mock_service_class.return_value.delete_assertion
         delete_mock.assert_called_once()
         # Inspect args so a dropped account_id or actor kwarg can't slip through.
         call = delete_mock.call_args
         assert call.args[0] == "acct_a"
         assert call.kwargs["actor"] == "cli"
+
+    @pytest.mark.unit
+    def test_assertion_delete_reports_an_idempotent_noop(
+        self, runner: CliRunner
+    ) -> None:
+        mock_service = MagicMock(spec=BalanceService)
+        mock_service.delete_assertion.return_value = False
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService",
+                return_value=mock_service,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "accounts",
+                    "balance",
+                    "assertion-delete",
+                    "acct_a",
+                    "2026-01-31",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "No balance assertion found" in result.stdout
 
 
 class TestAccountsBalanceReconcile:

@@ -1671,6 +1671,24 @@ class TestManualEntry:
         assert {r[1] for r in manual_rows} == {result.import_id}
 
     @pytest.mark.unit
+    def test_create_manual_batch_returns_persisted_amount_and_currency(
+        self, transaction_db: Database
+    ) -> None:
+        self._seed_account(transaction_db)
+        result = TransactionService(transaction_db).create_manual_batch(
+            [self._entry(amount=Decimal("-12.567"), currency_code=None)], actor="cli"
+        )
+
+        returned = result.results[0]
+        stored = transaction_db.conn.execute(
+            "SELECT amount, currency_code FROM raw.manual_transactions WHERE source_transaction_id = ?",
+            [returned.source_transaction_id],
+        ).fetchone()
+        assert stored is not None
+        assert returned.amount == stored[0]
+        assert returned.currency_code == stored[1]
+
+    @pytest.mark.unit
     def test_create_manual_batch_finalizes_the_batch_on_the_success_path(
         self, transaction_db: Database
     ) -> None:

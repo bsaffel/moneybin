@@ -15,12 +15,20 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import UNCATEGORIZED_LABEL
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    UNCATEGORIZED_LABEL,
+    Money,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
     SplitAddPayload,
@@ -96,12 +104,10 @@ def transactions_splits_add(
             output,
             cli_actor="transactions_splits_add",
         )
-    else:
-        logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
-    if residual != Decimal("0"):
-        logger.warning(
-            f"⚠️  Splits do not balance: residual={residual} on {transaction_id}"
-        )
+        return
+    _emit_split_receipt(
+        "Split added", split.split_id, transaction_id, split.amount, residual
+    )
 
 
 @app.command("list")
@@ -109,6 +115,7 @@ def transactions_splits_list(
     transaction_id: str = typer.Argument(..., help="Transaction ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List splits on a transaction."""
     from moneybin.services.transaction_service import TransactionService
@@ -126,18 +133,43 @@ def transactions_splits_list(
             cli_actor="transactions_splits_list",
         )
         return
-    if not splits:
-        if not quiet:
-            logger.info(f"No splits on {transaction_id}")
-        return
-    for s in splits:
-        # NULL only, matching the `Placeholder` rule `transactions list` uses.
-        # The service refuses a blank category outright, so NULL is the only
-        # absence that reaches here and a falsy `or` would differ from this on
-        # no input at all — keep the explicit test rather than reintroduce a
-        # second reading of what absent means.
-        cat = UNCATEGORIZED_LABEL if s.category is None else s.category
-        typer.echo(f"  [{s.split_id}] {s.amount} {cat}")
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Transaction", transaction_id)], title="Transaction splits")
+    ]
+    if splits:
+        parts.append(
+            build_rows(
+                ["split id", "amount", "category", "subcategory", "note"],
+                [
+                    (
+                        split.split_id,
+                        split.amount,
+                        UNCATEGORIZED_LABEL
+                        if split.category is None
+                        else split.category,
+                        split.subcategory or "-",
+                        split.note or "-",
+                    )
+                    for split in splits
+                ],
+                money={"amount": Money("flow")},
+                terminal=policy,
+            )
+        )
+    else:
+        parts.append(build_summary([("Result", "No splits on this transaction.")]))
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                () if splits else ("Next: moneybin transactions splits add --help",)
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("remove")
@@ -182,12 +214,8 @@ def transactions_splits_remove(
             output,
             cli_actor="transactions_splits_remove",
         )
-    else:
-        logger.info(f"✅ Removed split {split_id}")
-    if residual != Decimal("0"):
-        logger.warning(
-            f"⚠️  Splits do not balance: residual={residual} on {transaction_id}"
-        )
+        return
+    _emit_split_receipt("Split removed", split_id, transaction_id, None, residual)
 
 
 @app.command("clear")
@@ -206,7 +234,7 @@ def transactions_splits_clear(
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            TransactionService(db).clear_splits(transaction_id, actor="cli")
+            cleared = TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -218,4 +246,49 @@ def transactions_splits_clear(
             cli_actor="transactions_splits_clear",
         )
         return
-    logger.info(f"✅ Cleared splits on {transaction_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Transaction", cleared.transaction_id),
+                    ("Splits cleared", str(cleared.cleared_count)),
+                ],
+                title="Splits cleared",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
+
+
+def _emit_split_receipt(
+    title: str,
+    split_id: str,
+    transaction_id: str,
+    amount: Decimal | None,
+    residual: Decimal,
+) -> None:
+    """Render one unpaged split-mutation receipt from service-returned state."""
+    policy = get_terminal_policy()
+    rows: list[tuple[object, ...]] = [(split_id, transaction_id, residual)]
+    columns = ["split id", "transaction", "residual"]
+    money = {"residual": Money("flow")}
+    if amount is not None:
+        columns.insert(2, "amount")
+        rows = [(split_id, transaction_id, amount, residual)]
+        money["amount"] = Money("flow")
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary([("Result", title)]),
+                build_rows(columns, rows, money=money, terminal=policy),
+            ],
+            disclosures=(
+                () if residual == Decimal("0") else ("Warning: Splits do not balance.",)
+            ),
+        ),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
+    )

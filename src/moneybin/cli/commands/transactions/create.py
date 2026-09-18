@@ -13,8 +13,20 @@ from decimal import Decimal, InvalidOperation
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, render_or_json
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    output_option,
+    render_or_json,
+)
+from moneybin.cli.render import (
+    Money,
+    MoneyWithCurrency,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
@@ -125,10 +137,26 @@ def transactions_create(
         )
         return
 
-    logger.info(
-        f"✅ Created transaction {transaction_id} (import_id={batch.import_id})"
-    )
+    receipt = [
+        ("Transaction", transaction_id),
+        ("Account", account),
+        ("Description", description),
+    ]
     if note_id:
-        logger.info(f"   note_id={note_id}")
+        receipt.append(("Note ID", note_id))
     if applied_tags:
-        logger.info(f"   tags: {', '.join(applied_tags)}")
+        receipt.append(("Tags", ", ".join(applied_tags)))
+    emit_human_result(
+        compose_human_result([
+            build_summary(receipt, title="Transaction created"),
+            build_rows(
+                ["amount"],
+                [(MoneyWithCurrency(row.amount, row.currency_code or "n/a"),)],
+                money={"amount": Money("flow")},
+                terminal=get_terminal_policy(),
+            ),
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )

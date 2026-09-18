@@ -21,7 +21,13 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import Money, MoneyWithCurrency, build_rows
+from moneybin.cli.render import (
+    Money,
+    MoneyWithCurrency,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.balances import (
@@ -161,10 +167,24 @@ def accounts_balance_assert(
                 notes=notes,
                 actor="cli",
             )
-    typer.echo(
-        f"✅ Asserted balance for {account_id} on {parsed_date}: "
-        f"{result.assertion.balance} {currency_label(result.assertion.currency_code)}",
-        err=True,
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Account", account_id),
+                    ("Date", str(parsed_date)),
+                    (
+                        "Balance",
+                        f"{result.assertion.balance} "
+                        f"{currency_label(result.assertion.currency_code)}",
+                    ),
+                ],
+                title="Balance asserted",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -226,10 +246,23 @@ def accounts_balance_assertion_delete(
     with handle_cli_errors():
         with get_database(read_only=False) as db:
             parsed_date = _date.fromisoformat(assertion_date)
-            BalanceService(db).delete_assertion(account_id, parsed_date, actor="cli")
-    typer.echo(
-        f"✅ Deleted balance assertion for {account_id} on {parsed_date}",
-        err=True,
+            deleted = BalanceService(db).delete_assertion(
+                account_id, parsed_date, actor="cli"
+            )
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Account", account_id), ("Date", str(parsed_date))],
+                title=(
+                    "Balance assertion deleted"
+                    if deleted
+                    else "No balance assertion found"
+                ),
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
