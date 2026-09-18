@@ -585,16 +585,21 @@ def header_row_consumed_recovery(
     auto-detection never reads a data row as the header, and no built-in
     format sets ``skip_rows`` (see ``test_no_builtin_format_sets_skip_rows``).
 
-    ``read_options`` is what makes the printed retry equivalent to the read it
-    replaces. Dropping ``--format`` is the whole recovery, but a format carries
-    more than the ``skip_rows`` being escaped: its sheet, delimiter and
-    encoding go with it. The sheet is the one that fails silently — unset, the
-    reader auto-selects the largest worksheet, so a workbook whose largest
-    sheet happens to carry compatible headers imports that sheet instead, with
-    no error and nothing in the output saying a different sheet was read. So
-    the caller passes the settings the failed read actually resolved, and they
-    are respelled here as explicit flags. ``format_name`` is expected to be
-    absent from them; it is the one option a retry must not repeat.
+    ``read_options`` is what makes the printed retry carry the same read
+    *options* as the read it replaces, minus ``--format`` — not an identical
+    read: ``TabularReadOptions`` has no field for a format's
+    ``skip_trailing_patterns``, so that one setting cannot survive the drop
+    and the retry may trim (or keep) trailing rows differently than the
+    failed read did. Dropping ``--format`` is the whole recovery, but a
+    format carries more than the ``skip_rows`` being escaped: its sheet,
+    delimiter and encoding go with it. The sheet is the one that fails
+    silently — unset, the reader auto-selects the largest worksheet, so a
+    workbook whose largest sheet happens to carry compatible headers imports
+    that sheet instead, with no error and nothing in the output saying a
+    different sheet was read. So the caller passes the settings the failed
+    read actually resolved, and they are respelled here as explicit flags.
+    ``format_name`` is expected to be absent from them; it is the one option
+    a retry must not repeat.
 
     ``retry_command`` names the subcommand the printed retry invokes —
     ``import files`` (the default) when this text answers a load-time
@@ -613,11 +618,15 @@ def header_row_consumed_recovery(
     retry_args = replace(read_options or TabularReadOptions(), format_name=None)
     read_args_str = retry_args.cli_fragment()
     if format_name is not None:
-        removal = f"run `moneybin import formats delete {shlex.quote(format_name)}`"
+        removal = (
+            f"run `moneybin import formats delete {shlex.quote(format_name)}` "
+            "(--yes skips the confirmation prompt)"
+        )
     else:
         removal = (
             "run `moneybin import formats delete` with that format's name "
-            "(`moneybin import formats list` shows saved formats)"
+            "(`moneybin import formats list` shows saved formats; --yes skips "
+            "the confirmation prompt)"
         )
     return (
         "This file's first row was read as column names, but it parses as a "
@@ -625,9 +634,9 @@ def header_row_consumed_recovery(
         "or --override correction can recover it. The saved format named "
         "with --format skips more leading rows than this file has before its "
         f"header. Re-run `moneybin {retry_command} {quoted_file}{read_args_str}` "
-        "— the same read without --format, so the header is detected fresh. "
-        "No command edits a saved format's skip_rows, so naming that format "
-        f"again fails the same way; to remove it, {removal}."
+        "— the same read options minus --format, so the header is detected "
+        "fresh. No command edits a saved format's skip_rows, so naming that "
+        f"format again fails the same way; to remove it, {removal}."
     )
 
 

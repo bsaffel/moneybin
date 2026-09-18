@@ -1187,10 +1187,33 @@ class TestHeaderRowConsumedRecovery:
         message = header_row_consumed_recovery(
             "/data/plain.csv", format_name="acme_format"
         )
-        assert "without --format" in message
+        # "minus --format", not "without --format": the retry cannot carry
+        # skip_trailing_patterns (TabularReadOptions has no field for it), so
+        # the message promises the same read *options* minus the format
+        # rather than claiming an identical read. See
+        # test_cli_recovery_does_not_overclaim_an_identical_read.
+        assert "minus --format" in message
         assert "moneybin import formats delete" in message
         assert "correct the saved format" not in message
         assert "Add a header row" not in message
+
+    def test_cli_recovery_does_not_overclaim_an_identical_read(self) -> None:
+        """The retry cannot repeat a format's skip_trailing_patterns.
+
+        ``TabularReadOptions`` has no field for it and the CLI has no
+        corresponding flag, so dropping ``--format`` silently falls back to
+        ``DEFAULT_TRAILING_PATTERNS`` when a format supplied its own rule —
+        the retry is not the same *read*, only the same *options* minus
+        --format. The old wording ("the same read without --format")
+        promised equivalence the retry cannot deliver; this asserts the
+        promise was narrowed to what the code actually reproduces.
+        """
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        assert "the same read options minus --format" in message
+        assert "the same read without --format" not in message
+        assert "identical read" not in message
 
     def test_cli_commands_are_pasteable_with_a_space_in_either_value(self) -> None:
         """A pasted command must run a file, not redirect stdin from `<`.
@@ -1300,6 +1323,23 @@ class TestHeaderRowConsumedRecovery:
         assert "delete_saved_format" in message
         assert "correct the saved format" not in message
         assert "Add a header row" not in message
+
+    def test_cli_names_the_yes_flag_that_skips_the_delete_confirmation(self) -> None:
+        """The printed delete command aborts non-interactively without --yes.
+
+        `moneybin import formats delete <name>` calls `typer.confirm(...)`
+        unless `--yes` is passed. A script or agent that runs the printed
+        command as-is hits `Aborted!` instead of the deletion the message
+        promises, so the flag must be discoverable at the point of use.
+        """
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        assert "--yes" in message
+
+    def test_cli_names_the_yes_flag_even_with_no_format_name(self) -> None:
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "--yes" in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:

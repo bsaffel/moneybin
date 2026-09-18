@@ -742,7 +742,9 @@ def import_files_command(
                 # Same rule as the inbox subfolder recovery: an action is only
                 # worth printing on a channel that can run it.
                 if _can_preview(outcome):
-                    preview_args_str = read_options.cli_fragment()
+                    preview_args_str = _preview_read_options(
+                        outcome, read_options
+                    ).cli_fragment()
                     confirm_actions.append(
                         f"Run `moneybin import preview {quoted_path}"
                         f"{preview_args_str}` to inspect the proposal."
@@ -1665,6 +1667,30 @@ def _can_preview(outcome: ConfirmationRequired) -> bool:
     return outcome.channel != "ofx"
 
 
+def _preview_read_options(
+    outcome: ConfirmationRequired,
+    caller_options: TabularReadOptions,
+) -> TabularReadOptions:
+    """The options the ``import preview`` hint should replay.
+
+    Gated on the reason, not on whether ``retry_read_options`` is present.
+    Those are not the same test: ``_import_tabular`` builds that field once,
+    before any raise, and attaches it at all four sites that *can* produce
+    ``header_row_consumed`` — but three of them take their reason from
+    ``classify_unconfirmable_plan``, which also returns
+    ``header_position_ambiguous``, ``unreadable_date`` and ``unknown_layout``.
+    So a truthiness check reaches outcomes this correction does not describe.
+
+    It matters because ``header_position_ambiguous``'s own recovery *keeps*
+    ``--format`` — the format is not what caused that refusal — and this hint
+    prints directly beneath it. Dropping the flag here would preview a
+    different read than the line above it names.
+    """
+    if outcome.reason == "header_row_consumed" and outcome.retry_read_options:
+        return outcome.retry_read_options
+    return caller_options
+
+
 def _sign_direction(
     outcome: ConfirmationRequired,
 ) -> tuple[str | None, str | None]:
@@ -1927,7 +1953,7 @@ def _render_confirmation_prompt(
                 f"{read_args_str}   (dedicated confirm subcommand)"
             )
     if _can_preview(outcome):
-        preview_args_str = opts.cli_fragment()
+        preview_args_str = _preview_read_options(outcome, opts).cli_fragment()
         typer.echo(
             f"     moneybin import preview {quoted_path}{preview_args_str}   "
             "(inspect proposal in detail)"
@@ -2371,7 +2397,9 @@ def import_confirm_command(
                     f"{read_args_str}` to accept the proposed mapping as-is."
                 )
         if _can_preview(outcome):
-            preview_args_str = read_options.cli_fragment()
+            preview_args_str = _preview_read_options(
+                outcome, read_options
+            ).cli_fragment()
             confirm_actions.append(
                 f"Run `moneybin import preview {quoted_path}{preview_args_str}` "
                 "to inspect the proposal."
@@ -3022,6 +3050,7 @@ def import_preview(
             encoding=encoding,
             sheet=sheet,
             date_format=date_format,
+            number_format=number_format,
         )
         declared_date_format = read_settings.date_format
 

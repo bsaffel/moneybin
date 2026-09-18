@@ -914,6 +914,65 @@ class TestPreview:
         assert "--sheet Statement" in retry_command, retry_command
         assert "--format" not in retry_command, retry_command
 
+    def test_preview_consumed_header_names_the_callers_number_format(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """An explicit --number-format must outrank the saved format's value.
+
+        `resolve_read_settings`'s contract is "an explicit flag always
+        outranks the format" — but `import preview`'s call omitted
+        `number_format` entirely, so `read_settings.number_format` always
+        came from the FORMAT and the printed retry silently named the
+        format's decimal-separator locale instead of the caller's own. The
+        saved format's ``number_format`` ("us") is deliberately different
+        from the override ("european") so the two are distinguishable.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        csv_file = tmp_path / "preamble_then_data.csv"
+        csv_file.write_text(
+            "Statement export\n2026-01-05,-4.50,Coffee\n2026-01-06,100.00,Payroll\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="skiprows_fixture_number_format",
+            institution_name="Test",
+            file_type="csv",
+            header_signature=["2026-01-05", "-4.50", "Coffee"],
+            field_mapping={
+                "transaction_date": "2026-01-05",
+                "amount": "-4.50",
+                "description": "Coffee",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+            number_format="us",
+            skip_rows=1,
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "preview",
+                str(csv_file),
+                "--format",
+                saved_format.name,
+                "--number-format",
+                "european",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        match = re.search(r"`(moneybin import preview [^`]+)`", result.output)
+        assert match is not None, result.output
+        retry_command = match.group(1)
+        assert "--number-format european" in retry_command, retry_command
+        assert "--number-format us" not in retry_command, retry_command
+
     def test_preview_disputed_row_evidence_survives_quoted_header(
         self, tmp_path: Path
     ) -> None:
