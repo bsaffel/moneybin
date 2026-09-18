@@ -37,6 +37,9 @@ FAMILY_CONSTRUCTORS: dict[str, Callable[[], BaseException]] = {
         "no database"
     ),
     "SchemaDriftError": lambda: database.SchemaDriftError("stale snapshot"),
+    "DatabaseUpgradeRequiredError": lambda: database.DatabaseUpgradeRequiredError(
+        "ladder behind"
+    ),
     "SecretNotFoundError": lambda: secrets.SecretNotFoundError("no such secret"),
     "SecretStorageUnavailableError": lambda: secrets.SecretStorageUnavailableError(
         "no keyring backend"

@@ -122,7 +122,8 @@ def _tracked_corpus() -> list[Path]:
     in sync with this registry the way it can every other claim site — the
     same reason a frozen `sql/migrations/V*.py` file is excluded from other
     guards. Its stale claims are reconciled by hand during release prep
-    (`changelog.d/README.md` step 3), not by this test.
+    (`changelog.d/README.md` step 4, "Reconcile stale claims"), not by this
+    test.
     """
     listed = subprocess.run(  # fixed argv, no user input
         ["git", "ls-files"],  # noqa: S607  # git resolved from PATH, as everywhere in CI
