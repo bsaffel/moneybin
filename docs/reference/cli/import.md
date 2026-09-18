@@ -71,7 +71,7 @@ Usage: `moneybin import files [OPTIONS] FILE_PATHS...`
 | `--confirm / --no-confirm` | flag | `false` | Accept the proposed column mapping without prompting. Use when a previous import returned confirmation_required. Single-file mode only. |
 | `--confirm-sign` | flag |  | Explicitly approve an inferred tabular sign inversion. Single-file mode only. |
 | `--sign` | one of `negative_is_expense`, `negative_is_income`, `split_debit_credit` |  | Sign convention override. Single-file mode only. |
-| `--date-format` | text |  | Date format override (strptime format string, e.g. %%Y-%%m-%%d). Single-file mode only. |
+| `--date-format` | text |  | Date format override (strptime format string, e.g. %Y-%m-%d). Single-file mode only. |
 | `--number-format` | one of `us`, `european`, `swiss_french`, `zero_decimal` |  | Number format override. Single-file mode only. |
 | `--sheet` | text |  | Excel sheet name (default: auto-select largest). Single-file mode only. |
 | `--delimiter` | text |  | Explicit delimiter for text formats. Single-file mode only. |
@@ -118,10 +118,18 @@ Usage: `moneybin import confirm [OPTIONS] FILE_PATH`
 |---|---|---|---|
 | `--accept` | flag |  | Accept the detected mapping as-is. |
 | `--mapping` | text, repeatable |  | Partial-merge override (repeatable): --mapping field=column. |
+| `--format, -f` | text |  | Use a specific named format (bypass auto-detection). |
 | `--bridge-response` | path |  | JSON file containing a PDF bridge {recipe, rows} response. |
 | `--confirm` | flag |  | Confirm a PDF bridge recipe's ledger-wide sign inversion. |
 | `--confirm-sign` | flag |  | Explicitly approve an inferred tabular sign inversion (pair with --accept). For a PDF statement use `import files <path> --confirm`; the MCP equivalent is import_confirm(preview_id=...) on a sign preview, which asks the human rather than asserting their approval. |
 | `--sign` | one of `negative_is_expense`, `negative_is_income`, `split_debit_credit` |  | Explicit tabular sign-convention override. Use negative_is_expense to keep amounts as printed. |
+| `--date-format` | text |  | Date format override (strptime format string, e.g. %Y-%m-%d). |
+| `--number-format` | one of `us`, `european`, `swiss_french`, `zero_decimal` |  | Number format override. |
+| `--sheet` | text |  | Excel sheet name (default: auto-select largest). |
+| `--delimiter` | text |  | Explicit delimiter for text formats. |
+| `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1). |
+| `--no-row-limit` | flag |  | Override row count limit (carry over from the 'import files' call). |
+| `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--institution, -i` | text |  | Institution override, carried over from the 'import files' call that raised this confirmation. Same meaning as on 'import files': consulted for OFX/QFX/QBO only when the file's \<FI>\<ORG>, FID lookup, and filename heuristic all yield nothing. Ignored for tabular and PDF files, which resolve their institution from the matched format and filename. |
 | `--account-id` | text |  | Account ID to associate with imported transactions. Not honored for OFX/QFX/QBO, which name their own accounts and can carry several — use --account-binding there; supplying it is refused rather than ignored. |
 | `--account-name` | text |  | Account name to associate with imported transactions. |
@@ -219,9 +227,13 @@ Usage: `moneybin import preview [OPTIONS] FILE_PATH`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `--format, -f` | text |  | Use a specific named format (bypass auto-detection) |
+| `--date-format` | text |  | Date format override (strptime format string, e.g. %Y-%m-%d). |
+| `--number-format` | one of `us`, `european`, `swiss_french`, `zero_decimal` |  | Number format override. |
 | `--sheet` | text |  | Excel sheet name (default: auto-select largest) |
 | `--delimiter` | text |  | Explicit delimiter for text formats |
 | `--encoding` | text |  | Explicit file encoding (e.g. utf-8, latin-1) |
+| `--no-row-limit` | flag |  | Override row count limit (carry over from the 'import files' call). |
+| `--no-size-limit` | flag |  | Override file size limit (carry over from the 'import files' call). |
 | `--override` | text, repeatable |  | Field→column override, repeatable (e.g. --override date=Date) |
 
 ## moneybin import status

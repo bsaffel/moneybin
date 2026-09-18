@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -147,6 +148,63 @@ class TabularFormat(BaseModel, frozen=True):
         if "format" in data and "file_type" not in data:
             data["file_type"] = data.pop("format")
         return cls(**data)
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveReadSettings:
+    """What a matched format contributes to a read, resolved against CLI flags.
+
+    Every command that reads a tabular file has to resolve the same seven
+    values, and each one it skips is a way for a preview to disagree with the
+    import it previews: a format naming an Excel sheet reads a different sheet
+    when `sheet` is dropped, and a format with `skip_rows` finds a different
+    header. Two hand-written copies of this resolution drifted apart exactly
+    that way, so it lives here, beside the format the values come from.
+    """
+
+    format_override: str | None
+    delimiter: str | None
+    encoding: str | None
+    sheet: str | None
+    skip_rows: int | None
+    skip_trailing_patterns: list[str] | None
+    date_format: str | None
+
+
+def resolve_read_settings(
+    matched_format: TabularFormat | None,
+    *,
+    delimiter: str | None = None,
+    encoding: str | None = None,
+    sheet: str | None = None,
+    date_format: str | None = None,
+) -> EffectiveReadSettings:
+    """Resolve a caller's read flags against a matched format's own settings.
+
+    An explicit flag always outranks the format. A `file_type` of ``"auto"``
+    and a `skip_rows` of 0 are the model's "no opinion" defaults, so both
+    resolve to ``None`` and leave detection to run.
+    """
+    return EffectiveReadSettings(
+        format_override=(
+            matched_format.file_type
+            if matched_format and matched_format.file_type != "auto"
+            else None
+        ),
+        delimiter=delimiter or (matched_format.delimiter if matched_format else None),
+        encoding=encoding or (matched_format.encoding if matched_format else None),
+        sheet=sheet or (matched_format.sheet if matched_format else None),
+        skip_rows=(
+            matched_format.skip_rows
+            if matched_format and matched_format.skip_rows
+            else None
+        ),
+        skip_trailing_patterns=(
+            matched_format.skip_trailing_patterns if matched_format else None
+        ),
+        date_format=date_format
+        or (matched_format.date_format if matched_format else None),
+    )
 
 
 @lru_cache(maxsize=1)

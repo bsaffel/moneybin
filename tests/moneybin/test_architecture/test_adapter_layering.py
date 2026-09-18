@@ -287,6 +287,19 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
         "moneybin.extractors.tabular.formats",
         "load_builtin_formats",
     ),
+    # resolve_read_settings is a pure resolution over a TabularFormat and the
+    # caller's flags — no DB, no IO, no file read. It is guarded rather than
+    # duplicated on purpose: `import preview` and ImportService must resolve the
+    # same seven read settings from the same place, and the copy that drifted is
+    # exactly the defect this closes. Routing it through the service instead
+    # would make the CLI construct a service to read a file it then reads
+    # itself, which the surrounding read-stage imports (detect_format,
+    # read_file) already declined for the same reason.
+    (
+        "cli/commands/import_cmd.py",
+        "moneybin.extractors.tabular.formats",
+        "resolve_read_settings",
+    ),
     # mask_embedded_account_number is a pure string function (regex substitution,
     # no DB/IO) — the CLI masks a caller-supplied key before logging a refusal.
     # Relocated by MB-52 slice 3 from moneybin.services.import_service, where

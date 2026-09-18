@@ -375,7 +375,76 @@ def confirmation_payload_dict(outcome: ConfirmationRequired) -> dict[str, object
     }
 
 
-def unreadable_date_recovery(file_path: str) -> str:
+@dataclass(frozen=True, slots=True)
+class TabularReadOptions:
+    """The caller's file-reading options, repeated on every printed retry command.
+
+    Every command MoneyBin prints must be the command it would accept back,
+    so a retry hint carries the caller's read options as one unit — it cannot
+    repeat some of them and drop the rest. "All of them" includes the two
+    limit overrides: they are what let an oversized file be read at all, so
+    dropping them prints a command that cannot reach the confirmation it
+    answers. Lives here, not in the CLI, because the recovery text this module
+    builds needs it and the CLI may import from services while the reverse is
+    forbidden.
+    """
+
+    format_name: str | None = None
+    date_format: str | None = None
+    number_format: NumberFormatType | None = None
+    sheet: str | None = None
+    delimiter: str | None = None
+    encoding: str | None = None
+    no_row_limit: bool = False
+    no_size_limit: bool = False
+
+    def cli_args(self) -> list[str]:
+        """Serialize as CLI flag/value pairs.
+
+        One serialization for every command MoneyBin prints: ``import files``,
+        ``import confirm`` and ``import preview`` accept the same eight options,
+        so no caller has to remember which of them a given command omits.
+
+        The two limit overrides belong here rather than beside the size and row
+        thresholds they answer, because they shape whether the read happens at
+        all: a file only reaches a confirmation *because* the caller supplied
+        them, so a retry that omits them dies in ``detect_format`` or
+        ``read_file`` before reaching the confirmation it was printed to
+        resolve. They serialize as bare flags, so an unset one contributes
+        nothing.
+        """
+        args: list[str] = []
+        if self.format_name is not None:
+            args.extend(("--format", self.format_name))
+        if self.date_format is not None:
+            args.extend(("--date-format", self.date_format))
+        if self.number_format is not None:
+            args.extend(("--number-format", self.number_format))
+        if self.sheet is not None:
+            args.extend(("--sheet", self.sheet))
+        if self.delimiter is not None:
+            args.extend(("--delimiter", self.delimiter))
+        if self.encoding is not None:
+            args.extend(("--encoding", self.encoding))
+        if self.no_row_limit:
+            args.append("--no-row-limit")
+        if self.no_size_limit:
+            args.append("--no-size-limit")
+        return args
+
+    def cli_fragment(self) -> str:
+        """``cli_args``, shlex-joined with one leading space, or ``""`` when empty."""
+        import shlex
+
+        args = self.cli_args()
+        return f" {shlex.join(args)}" if args else ""
+
+
+def unreadable_date_recovery(
+    file_path: str,
+    *,
+    read_options: TabularReadOptions | None = None,
+) -> str:
     """Name both recoveries for a date column nothing could parse.
 
     Lives here, beside the reason it answers, because four surfaces need the
@@ -388,22 +457,34 @@ def unreadable_date_recovery(file_path: str) -> str:
     whatever an override names, so a plain column correction recovers the file
     and `--date-format` aimed at the wrong column would just be refused again.
     Mirrors the MCP hint in import_tools.py; keep the two in step.
+
+    The other five read options ride along on the ``import files`` retry, but
+    never the caller-supplied ``date_format`` — that is the value that just
+    failed, and the printed command already carries its own ``<strptime>``
+    placeholder for it.
     """
     import shlex
+    from dataclasses import replace
 
+    opts = read_options or TabularReadOptions()
     # Quoted like every other suggested command in the CLI: a bank export
     # lands in "Bank Exports/" often enough that an unquoted path makes the
     # prescribed recovery uncopyable exactly when the user needs it.
     quoted = shlex.quote(file_path)
+    # Neither printed command repeats the format that just failed — the
+    # preview would re-read the file with it, and the retry carries its own
+    # <strptime> placeholder in its place.
+    read_args_str = replace(opts, date_format=None).cli_fragment()
     return (
         "No date format could be read from the mapped date column. If the "
         "wrong column is mapped — a status column can claim the date alias "
         "while the real dates sit in an unmapped one — re-run with `--mapping "
         "transaction_date=<source_column>`, which re-runs detection against "
-        f"that column; `moneybin import preview {quoted}` names the file's "
-        "columns. If the mapped column is right and its format is simply "
-        "unrecognized, no mapping can change that: re-run `moneybin import "
-        f"files {quoted} --confirm --date-format <strptime>`."
+        f"that column; `moneybin import preview {quoted}{read_args_str}` "
+        "names the file's columns. If the mapped column is right and its "
+        "format is simply unrecognized, no mapping can change that: re-run "
+        f"`moneybin import files {quoted} --confirm --date-format "
+        f"<strptime>{read_args_str}`."
     )
 
 
@@ -509,7 +590,11 @@ def header_row_consumed_recovery_mcp() -> str:
     )
 
 
-def header_position_ambiguous_recovery(file_path: str) -> str:
+def header_position_ambiguous_recovery(
+    file_path: str,
+    *,
+    read_options: TabularReadOptions | None = None,
+) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
     UNLIKE `header_row_consumed_recovery`, this names a command that actually
@@ -528,11 +613,13 @@ def header_position_ambiguous_recovery(file_path: str) -> str:
     import shlex
 
     quoted = shlex.quote(file_path)
+    read_args_str = (read_options or TabularReadOptions()).cli_fragment()
     return (
         "A row before the detected header also reads as a transaction. If "
         "it is a balance summary or similar preamble, the detected header is "
         "correct — re-run with `moneybin import files "
-        f"{quoted} --confirm` (or `import confirm {quoted} --accept`) to "
+        f"{quoted} --confirm{read_args_str}` (or `import confirm {quoted} "
+        f"--accept{read_args_str}`) to "
         "proceed. If it is a real transaction, correct the source file "
         "before importing — MoneyBin will otherwise treat it as skipped "
         "preamble."

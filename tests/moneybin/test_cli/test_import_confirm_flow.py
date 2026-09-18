@@ -297,6 +297,132 @@ def test_tabular_sign_recoveries_preserve_confirmation_inputs() -> None:
     assert native_tokens[native_tokens.index("--sign") + 1] == "negative_is_expense"
 
 
+def test_tabular_read_options_cli_args_serializes_each_set_field() -> None:
+    """``cli_args`` emits every set field's flag and value, in order."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(
+        format_name="chase_credit",
+        date_format="%Y%m%d",
+        number_format="european",
+        sheet="Transactions",
+        delimiter=";",
+        encoding="latin-1",
+    )
+
+    assert opts.cli_args() == [
+        "--format",
+        "chase_credit",
+        "--date-format",
+        "%Y%m%d",
+        "--number-format",
+        "european",
+        "--sheet",
+        "Transactions",
+        "--delimiter",
+        ";",
+        "--encoding",
+        "latin-1",
+    ]
+
+
+def test_tabular_read_options_cli_args_serializes_the_limit_overrides() -> None:
+    """The two limit overrides serialize as bare flags, after the valued ones.
+
+    They are read options like the rest: a file over the size or row threshold
+    reaches a confirmation only because the caller lifted the limit, so a retry
+    that omits the flag is refused in the read rather than reaching the
+    confirmation it was printed to resolve.
+    """
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(
+        date_format="%Y%m%d",
+        no_row_limit=True,
+        no_size_limit=True,
+    )
+
+    assert opts.cli_args() == [
+        "--date-format",
+        "%Y%m%d",
+        "--no-row-limit",
+        "--no-size-limit",
+    ]
+
+
+def test_tabular_read_options_cli_args_omits_unlifted_limits() -> None:
+    """A limit left in place contributes no flag — a bare False is not a value."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    assert TabularReadOptions(no_row_limit=True).cli_args() == ["--no-row-limit"]
+    assert TabularReadOptions(no_size_limit=True).cli_args() == ["--no-size-limit"]
+    assert TabularReadOptions().cli_args() == []
+
+
+def test_tabular_read_options_cli_args_omits_unset_fields() -> None:
+    """An unset field contributes neither its flag nor a placeholder value."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(date_format="%Y%m%d")
+
+    assert opts.cli_args() == ["--date-format", "%Y%m%d"]
+
+
+def test_tabular_read_options_serializes_one_set_for_every_command() -> None:
+    """There is no per-command subset: all three accept all six options.
+
+    `import preview` gained `--date-format`/`--number-format` so that the
+    command MoneyBin prints reads the file the same way as the import it
+    previews. One serialization, no caller deciding what to omit.
+    """
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    opts = TabularReadOptions(
+        format_name="chase_credit",
+        date_format="%Y%m%d",
+        number_format="european",
+        sheet="Transactions",
+    )
+
+    assert opts.cli_args() == [
+        "--format",
+        "chase_credit",
+        "--date-format",
+        "%Y%m%d",
+        "--number-format",
+        "european",
+        "--sheet",
+        "Transactions",
+    ]
+
+
+def test_tabular_read_options_fragment_is_empty_when_nothing_is_set() -> None:
+    """No leading space is introduced when every field is unset."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    assert TabularReadOptions().cli_fragment() == ""
+
+
+def test_tabular_read_options_fragment_leads_with_one_space_when_set() -> None:
+    """The fragment splices into a sentence with exactly one leading space."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    fragment = TabularReadOptions(date_format="%Y%m%d").cli_fragment()
+
+    assert fragment == " --date-format %Y%m%d"
+    line = f"moneybin import confirm foo.csv --accept{fragment}"
+    assert "  " not in line
+
+
+def test_tabular_read_options_fragment_quotes_a_value_with_a_space() -> None:
+    """A value containing whitespace is shell-quoted so the line stays runnable."""
+    from moneybin.services.import_confirmation import TabularReadOptions
+
+    fragment = TabularReadOptions(sheet="My Transactions").cli_fragment()
+
+    assert fragment == " --sheet 'My Transactions'"
+
+
 class TestImportFilesConfirmFlow:
     """Verify --confirm / --mapping flags on `import files`."""
 
@@ -785,6 +911,82 @@ class TestImportFilesConfirmFlow:
         assert "@0=acct_known01" in recovery
         assert "checking" not in recovery
         assert "@1=<account_id|new>" in recovery
+
+    def test_interactive_prompt_carries_read_options_on_every_retry_line(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`_render_confirmation_prompt` threads every set read option through.
+
+        The `import files --confirm`, `import files --mapping ...`, and
+        `import confirm --accept` lines it prints must all carry the exact
+        options the original call used — a copy-pasted retry must not
+        silently fall back to auto-detection.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=0.7, tier="medium", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping(
+                field_mapping={"amount": "Amount"},
+                sample_values={},
+                unmapped_columns=(),
+            ),
+            reason="unknown_layout",
+        )
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=ImportConfirmationRequiredError(outcome),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(
+            app,
+            [
+                "files",
+                str(csv_file),
+                "--date-format",
+                "%Y%m%d",
+                "--sheet",
+                "Transactions",
+                "--delimiter",
+                ";",
+            ],
+        )
+
+        confirm_line = next(
+            ln
+            for ln in result.output.splitlines()
+            if "import files" in ln and "--confirm" in ln
+        )
+        mapping_line = next(
+            ln for ln in result.output.splitlines() if "--mapping description=" in ln
+        )
+        accept_line = next(
+            ln
+            for ln in result.output.splitlines()
+            if "import confirm" in ln and "--accept" in ln
+        )
+        preview_line = next(
+            ln for ln in result.output.splitlines() if "import preview" in ln
+        )
+        # Every printed line carries the same set, the preview line included:
+        # a preview that read the file differently than the import it
+        # previews would report a different header decision and row count.
+        for line in (confirm_line, mapping_line, accept_line, preview_line):
+            assert "--date-format %Y%m%d" in line, line
+            assert "--sheet Transactions" in line, line
+            # shlex quotes ';' as a shell metacharacter.
+            assert (
+                "--delimiter" in line
+                and shlex.split(line)[shlex.split(line).index("--delimiter") + 1] == ";"
+            ), line
 
     def test_repeating_one_ref_with_two_answers_is_refused(
         self, mock_db: MagicMock, tmp_path: Path, caplog: pytest.LogCaptureFixture
@@ -1857,6 +2059,51 @@ class TestImportConfirmCommand:
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
 
+    def test_confirm_forwards_all_six_read_options_to_the_service(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Every file-reading option `import confirm` accepts reaches `import_file`.
+
+        `import confirm` accepts the same six read-shaping options as
+        `import files`. This proves the CLI wiring, not just the
+        printed-command serializer.
+        """
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--format",
+                "chase_credit",
+                "--date-format",
+                "%Y%m%d",
+                "--number-format",
+                "european",
+                "--sheet",
+                "Transactions",
+                "--delimiter",
+                ";",
+                "--encoding",
+                "latin-1",
+            ],
+        )
+
+        assert result.exit_code == 0
+        call_kwargs = mock_import_file.call_args.kwargs
+        assert call_kwargs["format_name"] == "chase_credit"
+        assert call_kwargs["date_format"] == "%Y%m%d"
+        assert call_kwargs["number_format"] == "european"
+        assert call_kwargs["sheet"] == "Transactions"
+        assert call_kwargs["delimiter"] == ";"
+        assert call_kwargs["encoding"] == "latin-1"
+
     def test_confirm_accept_renders_sidecars_disputed_rows(
         self,
         mock_db: MagicMock,
@@ -2135,6 +2382,40 @@ class TestImportConfirmCommand:
         assert "--bridge-response cannot be combined" in result.output
         assert "--sign" in result.output
 
+    @pytest.mark.parametrize("flag", ["--no-row-limit", "--no-size-limit"])
+    def test_bridge_response_rejects_the_limit_overrides(
+        self,
+        tmp_path: Path,
+        flag: str,
+    ) -> None:
+        """The limit overrides cannot be silently ignored by PDF bridge apply.
+
+        `apply_pdf_bridge_response` takes neither, so the replay never reaches
+        `detect_format` or `read_file` and both flags would be discarded in
+        silence — the same reason the six format options above are refused.
+        They were accepted as no-ops when `import confirm` first learned them.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                flag,
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--bridge-response cannot be combined" in result.output
+        assert flag in result.output
+
     def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
         """A JSON bridge recipe cannot load until the terminal user confirms it."""
         pdf_file = tmp_path / "statement.pdf"
@@ -2336,7 +2617,7 @@ class TestImportConfirmCommand:
         mock_sys.stdout.isatty.return_value = True
 
         with caplog.at_level(logging.INFO):
-            runner.invoke(
+            result = runner.invoke(
                 app,
                 [
                     "confirm",
@@ -2347,13 +2628,17 @@ class TestImportConfirmCommand:
                 ],
             )
 
+        # stderr, not the log pipeline: the printed command repeats the
+        # caller's read options, and --sheet/--format are arbitrary user text
+        # the log allowlist does not admit.
         recovery = next(
-            line for line in caplog.text.splitlines() if "--account-binding" in line
+            line for line in result.output.splitlines() if "--account-binding" in line
         )
         assert "--bridge-response" in recovery
         assert str(response_file) in recovery
         assert "--confirm" in recovery
         assert "--accept" not in recovery
+        assert "--account-binding" not in caplog.text, caplog.text
 
     def test_bridge_response_still_refuses_the_tabular_account_flags(
         self, tmp_path: Path

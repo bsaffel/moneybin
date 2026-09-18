@@ -59,6 +59,7 @@ from moneybin.extractors.tabular.account_label import (
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
+    resolve_read_settings,
 )
 from moneybin.metrics.observations import (
     MetricObservations,
@@ -692,6 +693,32 @@ class ReviewedTabularPlan:
         return TypeAdapter(cls).validate_python(value)
 
 
+def declared_date_format_reads_column(
+    df: Any,
+    field_mapping: dict[str, str],
+    date_format: str,
+) -> bool:
+    """Whether a declared date format reads the mapped date column.
+
+    The import's bar, not the detector's: `detect_date_format` holds a
+    declaration to `_MIN_PARSE_RATE` because it decides what detection
+    *believes*, while the loader accepts it at `_MIN_OVERRIDE_PARSE_RATE` and
+    reports the rows it could not read. A surface that predicts the import —
+    `import preview` — has to ask this question rather than the detector's, or
+    it reports "not detected" for a format the import will happily use.
+
+    False when no mapped date column exists to read.
+    """
+    import polars as pl
+
+    from moneybin.extractors.tabular.date_detection import format_parses
+
+    date_column = field_mapping.get("transaction_date")
+    if date_column is None or date_column not in df.columns:
+        return False
+    return format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format)
+
+
 def _validate_date_format_override(
     df: Any,
     field_mapping: dict[str, str],
@@ -714,14 +741,10 @@ def _validate_date_format_override(
     """
     if date_format_override is None:
         return
-    import polars as pl
-
-    from moneybin.extractors.tabular.date_detection import format_parses
-
     date_column = field_mapping.get("transaction_date")
     if date_column is None or date_column not in df.columns:
         return
-    if format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format_override):
+    if declared_date_format_reads_column(df, field_mapping, date_format_override):
         return
     raise UserError(
         f"Date format {date_format_override!r} could not read the "
@@ -2560,38 +2583,47 @@ class ImportService:
                 )
             matched_format = all_formats[format_name]
 
-        # Stage 1: Format detection — apply matched format's properties as defaults
-        effective_delimiter = delimiter or (
-            matched_format.delimiter if matched_format else None
+        # Stage 1: Format detection — apply matched format's properties as
+        # defaults. `import preview` resolves the same seven values from the
+        # same helper, which is what keeps a preview's read identical to the
+        # import it previews.
+        #
+        # `date_format` here is the earliest declared-format signal available
+        # before the read: an explicit --date-format, or an explicit --format's
+        # own saved date_format. The header-signature match (below, once
+        # df.columns is known) can name matched_format later than this, so it
+        # isn't available yet — a headerless file matched only by signature
+        # still relies on the built-in _DATE_FORMATS scan for THIS read.
+        # See _looks_like_data_row's docstring for why this closes #604:
+        # a caller-declared format outside _DATE_FORMATS (e.g. %Y%m%d)
+        # would otherwise never be recognized as data, so a genuinely
+        # headerless file loses its first row to the (0, True) fallback.
+        read_settings = resolve_read_settings(
+            matched_format,
+            delimiter=delimiter,
+            encoding=encoding,
+            sheet=sheet,
+            date_format=date_format_override,
         )
-        effective_encoding = encoding or (
-            matched_format.encoding if matched_format else None
-        )
-        effective_sheet = sheet or (matched_format.sheet if matched_format else None)
 
         if reviewed_plan is None:
             format_info = detect_format(
                 file_path,
                 source_bytes=source_bytes,
-                format_override=matched_format.file_type
-                if matched_format and matched_format.file_type != "auto"
-                else None,
-                delimiter_override=effective_delimiter,
-                encoding_override=effective_encoding,
+                format_override=read_settings.format_override,
+                delimiter_override=read_settings.delimiter,
+                encoding_override=read_settings.encoding,
                 no_size_limit=no_size_limit,
             )
             read_result = read_file(
                 file_path,
                 format_info,
-                sheet=effective_sheet,
-                skip_rows=matched_format.skip_rows
-                if matched_format and matched_format.skip_rows
-                else None,
-                skip_trailing_patterns=matched_format.skip_trailing_patterns
-                if matched_format
-                else None,
+                sheet=read_settings.sheet,
+                skip_rows=read_settings.skip_rows,
+                skip_trailing_patterns=read_settings.skip_trailing_patterns,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
+                declared_date_format=read_settings.date_format,
             )
         else:
             from moneybin.extractors.tabular.format_detector import FormatInfo
