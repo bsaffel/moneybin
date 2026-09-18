@@ -447,6 +447,19 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "reports.net_worth_currencies": [
+        Example(
+            question="Today's net worth by currency, in each currency's own unit and in home currency",
+            sql="""
+                SELECT currency_code, net_worth, home_currency_code, net_worth_home
+                FROM reports.net_worth_currencies
+                WHERE balance_date = (
+                    SELECT MAX(balance_date) FROM reports.net_worth_currencies
+                )
+                ORDER BY currency_code
+            """,
+        ),
+    ],
     "reports.cash_flow": [
         Example(
             question="Monthly net cash flow across all accounts, per currency",

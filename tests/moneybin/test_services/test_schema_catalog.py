@@ -135,6 +135,14 @@ _CURRENCY_FIRST_SORT_OK: dict[tuple[str, str], str] = {
         "the same argument as above. Ordering cannot recover a currency that a "
         "cap dropped when every currency costs one row."
     ),
+    (
+        "reports.net_worth_currencies",
+        "Today's net worth by currency, in each currency's own unit and in home currency",
+    ): (
+        "reports.net_worth_currencies is grained (balance_date, currency_code) "
+        "and this example pins one date, so the result is exactly one row per "
+        "currency — the same argument as reports.net_worth above."
+    ),
 }
 
 

@@ -38,6 +38,23 @@ _COLUMNS = (
 )
 
 
+_CURRENCIES_COLUMNS = (
+    "currency_code",
+    "home_currency_code",
+    "balance_date",
+    "rate_published_date",
+    "rate_source",
+    "account_count",
+    "carried_forward_count",
+    "total_assets",
+    "total_liabilities",
+    "net_worth",
+    "total_assets_home",
+    "total_liabilities_home",
+    "net_worth_home",
+)
+
+
 def _model_body(name: str) -> str:
     """Return a report model's executable SQL without its MODEL header."""
     raw = (_REPORT_MODELS / f"{name}.sql").read_text()
@@ -473,3 +490,259 @@ def test_accounts_rung_projects_the_declared_column_order(model_db: Database) ->
     cursor = model_db.execute("SELECT * FROM reports.net_worth_accounts LIMIT 0")
     columns = [column[0] for column in cursor.description]
     assert columns == list(_COLUMNS)
+
+
+def test_currencies_rung_keeps_original_totals_and_adds_home_totals(
+    model_db: Database,
+) -> None:
+    """Two EUR accounts sum in EUR, then convert to USD at the day's rate."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Euro Checking", "EUR")
+    _balance(model_db, "acct-a", "2026-01-05", "200.00", "EUR")
+    _account(model_db, "acct-b", "Euro Credit", "EUR")
+    _balance(model_db, "acct-b", "2026-01-05", "-50.00", "EUR")
+    _home(model_db, "USD")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10")
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT total_assets, total_liabilities, net_worth,
+               total_assets_home, total_liabilities_home, net_worth_home
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'EUR' AND balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (
+        Decimal("200.00"),
+        Decimal("-50.00"),
+        Decimal("150.00"),
+        Decimal("220.00"),
+        Decimal("-55.00"),
+        Decimal("165.00"),
+    )
+
+
+def test_currencies_rung_home_columns_add_up_under_rounding(
+    model_db: Database,
+) -> None:
+    """net_worth_home is the sum of the two converted components, not a re-rounded conversion of net_worth itself.
+
+    Converting the pooled ``net_worth`` (0.99) at 0.5 rounds to 0.50 — one
+    cent more than the correct 0.49 the components sum to — so this test
+    fails if ``net_worth_home`` is computed as ``ROUND(net_worth * rate, 2)``
+    instead of ``total_assets_home + total_liabilities_home``.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Euro Checking", "EUR")
+    _balance(model_db, "acct-a", "2026-01-05", "1.00", "EUR")
+    _account(model_db, "acct-b", "Euro Credit", "EUR")
+    _balance(model_db, "acct-b", "2026-01-05", "-0.01", "EUR")
+    _home(model_db, "USD")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "0.5")
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT total_assets_home, total_liabilities_home, net_worth_home
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'EUR' AND balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row is not None
+    total_assets_home, total_liabilities_home, net_worth_home = row
+    assert row == (Decimal("0.50"), Decimal("-0.01"), Decimal("0.49"))
+    assert net_worth_home == total_assets_home + total_liabilities_home
+
+
+def test_currencies_rung_unpriced_currency_keeps_its_segment(
+    model_db: Database,
+) -> None:
+    """A currency with no rate row still totals in its own unit; conversion is NULL."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Euro Checking", "EUR")
+    _balance(model_db, "acct-a", "2026-01-05", "200.00", "EUR")
+    _account(model_db, "acct-b", "Euro Credit", "EUR")
+    _balance(model_db, "acct-b", "2026-01-05", "-50.00", "EUR")
+    _home(model_db, "USD")
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT total_assets, total_liabilities, net_worth,
+               total_assets_home, total_liabilities_home, net_worth_home
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'EUR' AND balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (
+        Decimal("200.00"),
+        Decimal("-50.00"),
+        Decimal("150.00"),
+        None,
+        None,
+        None,
+    )
+
+
+def test_currencies_rung_counts_carried_forward_accounts(
+    model_db: Database,
+) -> None:
+    """One observed and one carried-forward account both count; only one is carried."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking A", "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD", observed=True)
+    _account(model_db, "acct-b", "Checking B", "USD")
+    _balance(model_db, "acct-b", "2026-01-05", "200.00", "USD", observed=False)
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT account_count, carried_forward_count
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'USD' AND balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (2, 1)
+
+
+def test_currencies_rung_date_scoped_archival(model_db: Database) -> None:
+    """An archived account's currency segment still totals up to and including archived_at."""
+    _install_net_worth_sources(model_db)
+    _account(
+        model_db,
+        "acct-a",
+        "Checking",
+        "USD",
+        archived=True,
+        archived_at="2026-01-06",
+    )
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _balance(model_db, "acct-a", "2026-01-06", "100.00", "USD")
+    _balance(model_db, "acct-a", "2026-01-07", "100.00", "USD")
+    _install_report(model_db, "net_worth_currencies")
+
+    dates = model_db.execute(
+        """
+        SELECT balance_date
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'USD'
+        ORDER BY balance_date
+        """
+    ).fetchall()
+    assert dates == [(date(2026, 1, 5),), (date(2026, 1, 6),)]
+
+
+def test_currencies_rung_pools_unknown_currency_into_one_segment(
+    model_db: Database,
+) -> None:
+    """A NULL currency_code segments on its own, never folded into a known one."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "usd", "USD Account", "USD")
+    _balance(model_db, "usd", "2026-01-05", "100.00", "USD")
+    _account(model_db, "unknown", "Mystery Account", None)
+    _balance(model_db, "unknown", "2026-01-05", "100.00", None)
+    _install_report(model_db, "net_worth_currencies")
+
+    rows = model_db.execute(
+        """
+        SELECT currency_code, net_worth
+        FROM reports.net_worth_currencies
+        WHERE balance_date = '2026-01-05'
+        ORDER BY currency_code NULLS LAST
+        """
+    ).fetchall()
+    assert rows == [("USD", Decimal("100.00")), (None, Decimal("100.00"))]
+
+
+def test_currencies_rung_null_home_currency_prices_nothing(
+    model_db: Database,
+) -> None:
+    """No app.profile_settings row means every currency is unpriced.
+
+    A USD->USD identity rate exists for the test date, so a mutation that
+    defaulted the missing home currency to 'USD' (e.g.
+    ``COALESCE(h.home_currency_code, 'USD')``) would find it and price the
+    segment — the NULL result here can only come from the missing home
+    currency itself, not from an absent rate row.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT total_assets_home, home_currency_code
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'USD' AND balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (None, None)
+
+
+def test_currencies_rung_rate_join_binds_to_the_same_balance_date(
+    model_db: Database,
+) -> None:
+    """The rate join binds on effective_date, not merely the currency pair.
+
+    Two exchange rate rows for the same pair on different days must not
+    cross-multiply each day's group into two rows: each balance_date's own
+    rate wins. A join that dropped ``effective_date`` would match both rate
+    rows against every day's group, doubling the row count for this currency
+    and (via the wider GROUP BY) fanning each day's total_assets_home out into
+    two conflicting values instead of the one correct rate.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Euro Checking", "EUR")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "EUR")
+    _balance(model_db, "acct-a", "2026-01-06", "100.00", "EUR")
+    _home(model_db, "USD")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10")
+    _rate(model_db, "EUR", "USD", "2026-01-06", "1.20")
+    _install_report(model_db, "net_worth_currencies")
+
+    rows = model_db.execute(
+        """
+        SELECT balance_date, total_assets_home
+        FROM reports.net_worth_currencies
+        WHERE currency_code = 'EUR'
+        ORDER BY balance_date
+        """
+    ).fetchall()
+    assert rows == [
+        (date(2026, 1, 5), Decimal("110.00")),
+        (date(2026, 1, 6), Decimal("120.00")),
+    ]
+
+
+def test_currencies_rung_grain_is_unique(model_db: Database) -> None:
+    """Two currencies across three days yield exactly six unique grain rows."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking A", "USD")
+    _account(model_db, "acct-b", "Checking B", "EUR")
+    for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
+        _balance(model_db, "acct-a", day, "100.00", "USD")
+        _balance(model_db, "acct-b", day, "200.00", "EUR")
+    _install_report(model_db, "net_worth_currencies")
+
+    row = model_db.execute(
+        """
+        SELECT COUNT(*), COUNT(DISTINCT (currency_code, balance_date))
+        FROM reports.net_worth_currencies
+        """
+    ).fetchone()
+    assert row == (6, 6)
+
+
+def test_currencies_rung_projects_the_declared_column_order(
+    model_db: Database,
+) -> None:
+    """The SELECT projects exactly the Interfaces column order."""
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth_currencies")
+
+    cursor = model_db.execute("SELECT * FROM reports.net_worth_currencies LIMIT 0")
+    columns = [column[0] for column in cursor.description]
+    assert columns == list(_CURRENCIES_COLUMNS)

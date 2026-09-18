@@ -286,6 +286,19 @@ def schema_catalog_db(
     database.execute(
         f"CREATE OR REPLACE VIEW reports.net_worth_accounts AS {net_worth_accounts_body}"
     )
+    net_worth_currencies_model = (
+        SQLMESH_ROOT / "models" / "reports" / "net_worth_currencies.sql"
+    ).read_text()
+    net_worth_currencies_body = re.sub(
+        r"^.*?MODEL\s*\(.*?\);\s*",
+        "",
+        net_worth_currencies_model,
+        count=1,
+        flags=re.DOTALL,
+    ).strip()
+    database.execute(
+        f"CREATE OR REPLACE VIEW reports.net_worth_currencies AS {net_worth_currencies_body}"
+    )
 
     # Inject fixture DB so any call to get_database() returns it without
     # opening a new connection (which would fail: no settings, no key).
