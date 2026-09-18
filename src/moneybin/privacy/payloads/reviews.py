@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from moneybin.privacy.payloads.accounts import (
     LinkCandidateRow,
@@ -32,6 +34,7 @@ ReviewQueueKind = Literal[
     "categorization",
     "auto_rules",
     "matches",
+    "investment_matches",
     "rule_conflicts",
     "account_links",
     "merchant_links",
@@ -261,6 +264,238 @@ class ReviewsMatchesView(BaseModel):
     kind: Annotated[Literal["matches"], DataClass.TXN_TYPE] = "matches"
     status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
     rows: list[MatchReviewRow]
+
+
+class InvestmentLegRecord(BaseModel):
+    """One verbatim ``prep.int_investment_events__legs`` row inside a Proposal.
+
+    Field-level classification, matching ``RuleConflictMatcher`` below: each
+    column takes the class its ``core.fct_investment_transactions`` /
+    ``dim_holdings`` counterpart already carries in ``taxonomy.py``, so
+    redaction masks only what actually needs it instead of destroying the
+    whole record (the prior whole-mask fix broke this payload — ``_redact``
+    applies the field's transform without recursing into the value, so a
+    ``COMPOSITE_IDENTIFIER``-annotated ``list[dict]`` collapsed to the literal
+    string ``"*****"`` at runtime, contradicting the declared type and
+    leaving an agent with no evidence to review a match against).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    source_event_key: Annotated[str, DataClass.RECORD_ID]
+    native_reference: Annotated[str, DataClass.RECORD_ID]
+    observation_version: Annotated[str, DataClass.RECORD_ID]
+    original_investment_transaction_id: Annotated[str | None, DataClass.RECORD_ID]
+    # Sometimes core.dim_accounts' canonical surrogate (Plaid path,
+    # plaid_account_routes in int_investment_events__observations.sql);
+    # sometimes, for a standalone/unlinked manual account, the raw
+    # user-authored account_id from raw.manual_investment_transactions
+    # (int_manual__investment_identity.sql's `walk` CTE terminates on it when
+    # no accepted app.account_link_decisions row exists). One column can hold
+    # either, and the declaration can't tell them apart per row, so it takes
+    # ACCOUNT_IDENTIFIER — the worst case, like app.account_links.ref_value —
+    # rather than RuleConflictMatcher.account_id's RECORD_ID, which is correct
+    # there only because that field is guaranteed already-resolved.
+    account_id: Annotated[str | None, DataClass.ACCOUNT_IDENTIFIER]
+    security_id: Annotated[str | None, DataClass.RECORD_ID]
+    source_group_reference: Annotated[str | None, DataClass.RECORD_ID]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    source_origin: Annotated[str, DataClass.TXN_TYPE]
+    account_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    security_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    type: Annotated[str, DataClass.TXN_TYPE]
+    subtype: Annotated[str | None, DataClass.TXN_TYPE]
+    event_type: Annotated[str, DataClass.TXN_TYPE]
+    leg_role: Annotated[str, DataClass.TXN_TYPE]
+    description: Annotated[str | None, DataClass.DESCRIPTION]
+    trade_date_basis: Annotated[str, DataClass.TXN_TYPE]
+    quantity: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    price: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    amount: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    fees: Annotated[Decimal | None, DataClass.TXN_AMOUNT]
+    source_currency_code: Annotated[str | None, DataClass.CURRENCY]
+    account_currency_code: Annotated[str | None, DataClass.CURRENCY]
+    currency_code: Annotated[str | None, DataClass.CURRENCY]
+    source_group_size: Annotated[int, DataClass.AGGREGATE]
+    supports_split: Annotated[bool, DataClass.TXN_TYPE]
+    supports_native_relationships: Annotated[bool, DataClass.TXN_TYPE]
+    supports_corrections: Annotated[bool, DataClass.TXN_TYPE]
+    supports_reversals: Annotated[bool, DataClass.TXN_TYPE]
+    is_unsupported_compound: Annotated[bool, DataClass.TXN_TYPE]
+    has_source_security: Annotated[bool, DataClass.TXN_TYPE]
+    has_resolved_identity: Annotated[bool, DataClass.TXN_TYPE]
+    is_paired_reinvest: Annotated[bool, DataClass.TXN_TYPE]
+    is_match_eligible: Annotated[bool, DataClass.TXN_TYPE]
+    trade_date: Annotated[date, DataClass.TXN_DATE]
+    settlement_date: Annotated[date | None, DataClass.TXN_DATE]
+    original_acquisition_date: Annotated[date | None, DataClass.TXN_DATE]
+
+
+class InvestmentEvidenceRecord(BaseModel):
+    """One pairwise comparison row from ``prep.int_investment_events__evidence``.
+
+    Carries no account identifier at all — every column is a comparison fact
+    (dates, tolerance booleans, source routing tags, and the same opaque
+    ``native_reference``/``*_generation`` ids ``InvestmentLegRecord`` carries).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    left_source_event_key: Annotated[str, DataClass.RECORD_ID]
+    right_source_event_key: Annotated[str, DataClass.RECORD_ID]
+    left_native_reference: Annotated[str, DataClass.RECORD_ID]
+    right_native_reference: Annotated[str, DataClass.RECORD_ID]
+    left_observation_version: Annotated[str, DataClass.RECORD_ID]
+    right_observation_version: Annotated[str, DataClass.RECORD_ID]
+    left_source_type: Annotated[str, DataClass.TXN_TYPE]
+    right_source_type: Annotated[str, DataClass.TXN_TYPE]
+    left_source_origin: Annotated[str, DataClass.TXN_TYPE]
+    right_source_origin: Annotated[str, DataClass.TXN_TYPE]
+    left_account_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    right_account_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    left_security_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    right_security_identity_generation: Annotated[str, DataClass.RECORD_ID]
+    event_type: Annotated[str, DataClass.TXN_TYPE]
+    leg_role: Annotated[str, DataClass.TXN_TYPE]
+    type: Annotated[str, DataClass.TXN_TYPE]
+    left_trade_date_basis: Annotated[str, DataClass.TXN_TYPE]
+    right_trade_date_basis: Annotated[str, DataClass.TXN_TYPE]
+    date_threshold_days: Annotated[int, DataClass.AGGREGATE]
+    date_distance_days: Annotated[int, DataClass.AGGREGATE]
+    structure_agrees: Annotated[bool, DataClass.TXN_TYPE]
+    has_required_economics: Annotated[bool, DataClass.TXN_TYPE]
+    quantity_within_tolerance: Annotated[bool, DataClass.TXN_TYPE]
+    amount_within_tolerance: Annotated[bool, DataClass.TXN_TYPE]
+    fees_within_tolerance: Annotated[bool, DataClass.TXN_TYPE]
+    price_within_tolerance: Annotated[bool, DataClass.TXN_TYPE]
+    date_within_tolerance: Annotated[bool, DataClass.TXN_TYPE]
+    is_exact_economic_identity: Annotated[bool, DataClass.TXN_TYPE]
+    subtype_conflict: Annotated[bool, DataClass.TXN_TYPE]
+    trade_date_conflict: Annotated[bool, DataClass.TXN_TYPE]
+    original_acquisition_date_conflict: Annotated[bool, DataClass.TXN_TYPE]
+    has_validated_native_relationship: Annotated[bool, DataClass.TXN_TYPE]
+    is_candidate: Annotated[bool, DataClass.TXN_TYPE]
+    left_trade_date: Annotated[date, DataClass.TXN_DATE]
+    right_trade_date: Annotated[date, DataClass.TXN_DATE]
+    preferred_trade_date: Annotated[date, DataClass.TXN_DATE]
+    left_original_acquisition_date: Annotated[date | None, DataClass.TXN_DATE]
+    right_original_acquisition_date: Annotated[date | None, DataClass.TXN_DATE]
+
+
+class InvestmentFieldChoiceOption(BaseModel):
+    """One offered value for a conflicting leg field (``event_choices.py``).
+
+    ``value`` holds whichever of ``event_choices._FIELDS`` conflicted for this
+    role — a date, an amount, or the ``subtype`` string — and which one is
+    named by the sibling ``field`` on the enclosing ``InvestmentFieldChoice``.
+    A per-field ``Annotated`` class can't vary by a sibling value, so this
+    takes ``TXN_AMOUNT`` (Tier.HIGH), the strictest of the three the field can
+    actually hold, rather than the loosest.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    choice_id: Annotated[str, DataClass.RECORD_ID]
+    value: Annotated[JsonValue, DataClass.TXN_AMOUNT]
+    source_type: Annotated[str, DataClass.TXN_TYPE]
+    source_origin: Annotated[str, DataClass.TXN_TYPE]
+    native_reference: Annotated[str, DataClass.RECORD_ID]
+    observation_version: Annotated[str, DataClass.RECORD_ID]
+
+
+@row_set(NO_ROW_SET)
+class InvestmentFieldChoice(BaseModel):
+    """One conflicting leg field (``event_choices.issue_choices``) and its options."""
+
+    model_config = ConfigDict(frozen=True)
+
+    conflict_id: Annotated[str, DataClass.RECORD_ID]
+    leg_role: Annotated[str, DataClass.TXN_TYPE]
+    field: Annotated[str, DataClass.TXN_TYPE]
+    choices: list[InvestmentFieldChoiceOption]
+
+
+@row_set(NO_ROW_SET)
+class InvestmentSupersededComponent(BaseModel):
+    """One prior accepted Proposal a new Proposal would replace.
+
+    Not reachable today: ``reviews_decide``/``reviews_coarse`` refuse a
+    decision on ``investment_matches`` ("review-only"; see
+    ``InvestmentMatchingService``), so no stored ``status`` ever becomes
+    ``accepted`` and no caller ever supplies ``locked_components`` with real
+    content — ``supersession`` is always ``[]`` in the shipped planner. Typed
+    now for the future accept path and for defense in depth: extra keys a
+    future caller adds beyond these five are silently dropped by Pydantic's
+    default ``extra="ignore"`` rather than published unclassified.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    status: Annotated[str, DataClass.TXN_TYPE]
+    members: Annotated[list[str], DataClass.RECORD_ID]
+    reserved_rows: Annotated[list[tuple[str, str, str]], DataClass.RECORD_ID]
+    current_successors: Annotated[list[str], DataClass.RECORD_ID]
+
+
+@row_set(NO_ROW_SET)
+class InvestmentMatchDetails(BaseModel):
+    """Complete persisted review evidence for one investment-match Proposal.
+
+    ``legs``, ``evidence``, and ``field_choices`` are fixed-shape records
+    verbatim-copied from the ``prep.int_investment_events__legs`` /
+    ``__evidence`` views and ``event_choices.issue_choices`` — not opaque JSON
+    blobs — so each is now a typed nested model with per-field
+    classification, matching ``RuleConflictMatcher``'s pattern below rather
+    than the raw ``app`` column's whole-mask (see that column's own
+    ``taxonomy.py`` entry, which stays whole-masked deliberately: it has no
+    per-field declaration available on the ``sql_query`` surface).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    members: Annotated[list[str], DataClass.RECORD_ID]
+    confidence_band: Annotated[str, DataClass.TXN_TYPE]
+    is_competing: Annotated[bool, DataClass.AGGREGATE]
+    auto_eligible: Annotated[bool, DataClass.AGGREGATE]
+    relationship_fingerprint: Annotated[str, DataClass.RECORD_ID]
+    candidate_graph_fingerprint: Annotated[str, DataClass.RECORD_ID]
+    algorithm_version: Annotated[str, DataClass.TXN_TYPE]
+    legs: list[InvestmentLegRecord]
+    evidence: list[InvestmentEvidenceRecord]
+    field_choices: list[InvestmentFieldChoice]
+    supersedes_decision_ids: Annotated[list[str], DataClass.RECORD_ID]
+    supersession: list[InvestmentSupersededComponent]
+    alternatives: Annotated[list[list[str]], DataClass.RECORD_ID] = []
+    downstream_effects: Annotated[dict[str, JsonValue], DataClass.TXN_TYPE] = {}
+
+
+class InvestmentMatchReviewRow(BaseModel):
+    """One durable investment Proposal or historical lifecycle row."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision_id: Annotated[str, DataClass.RECORD_ID]
+    kind: Annotated[Literal["investment_matches"], DataClass.TXN_TYPE] = (
+        "investment_matches"
+    )
+    status: Annotated[str, DataClass.TXN_TYPE]
+    created_at: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    summary: Annotated[str, DataClass.TXN_TYPE]
+    details: InvestmentMatchDetails
+
+
+@row_set("rows")
+class ReviewsInvestmentMatchesView(BaseModel):
+    """Persisted investment-match pending or history collection."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Annotated[Literal["investment_matches"], DataClass.TXN_TYPE] = (
+        "investment_matches"
+    )
+    status: Annotated[ReviewStatus, DataClass.TXN_TYPE]
+    rows: list[InvestmentMatchReviewRow]
 
 
 class AccountLinkPendingDetails(BaseModel):
@@ -501,6 +736,7 @@ ReviewsCoarsePayload = (
     | ReviewsCategorizationView
     | ReviewsAutoRulesView
     | ReviewsMatchesView
+    | ReviewsInvestmentMatchesView
     | ReviewsRuleConflictsView
     | ReviewsAccountLinksView
     | ReviewsMerchantLinksView

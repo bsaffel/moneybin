@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _STAGE_LABELS: dict[str, str] = {
     "gsheet": "Sheets",
     "match": "Matching",
+    "investment_match": "Investment matching",
     "transform": "Transforms",
     "categorize": "Categorization",
     "identity": "Identity",
@@ -62,6 +63,12 @@ def _stage_summary(stage: StageOutcome) -> str:
         )
     if stage.step == "transform":
         return f"  {label}: rebuilt"
+    if stage.step == "investment_match":
+        return (
+            f"  {label}: {stage.count('pending_unique')} unique, "
+            f"{stage.count('pending_competing')} competing, "
+            f"{stage.count('stale')} stale, {stage.count('suppressed')} suppressed"
+        )
     if stage.step == "categorize":
         return (
             f"  {label}: {counts['total']} categorized "
@@ -99,6 +106,7 @@ class RefreshStepChoice(StrEnum):
     """
 
     MATCH = "match"
+    INVESTMENT_MATCH = "investment_match"
     TRANSFORM = "transform"
     CATEGORIZE = "categorize"
     IDENTITY = "identity"
@@ -113,9 +121,9 @@ def refresh_command(
         "--step",
         help=(
             "Limit the cascade to one or more steps "
-            "(repeatable; choose from match, transform, categorize, identity, "
+            "(repeatable; choose from match, investment_match, transform, categorize, identity, "
             "rates). Default: full cascade. Steps always run in canonical order "
-            "(match → transform → categorize → identity → rates) regardless of "
+            "(match → investment_match → transform → categorize → identity → rates) regardless of "
             "flag order."
         ),
     ),
@@ -130,8 +138,9 @@ def refresh_command(
     only their domain in `identity_errors`. The rates step gathers the exchange
     rates this profile's own transactions, balances and holdings imply, so
     reports can convert without reaching the network; a pair the provider could
-    not answer is reported and retried next run. Only a SQLMesh apply error
-    exits non-zero.
+    not answer is reported and retried next run. Only a blocking apply
+    failure exits non-zero — the SQLMesh apply step itself, or an
+    investment-planning crash that kept apply from running at all.
     """
     from moneybin.adapters.refresh_adapters import (
         refresh_envelope,
@@ -154,6 +163,18 @@ def refresh_command(
     ):
         result = refresh(db, steps=steps)
     requested = expand_steps(steps)
+    # investment_match is a precondition for apply whenever "transform" is
+    # requested (expand_steps always adds it alongside "transform"); a
+    # blocking crash there skips apply outright and sets `result.error` the
+    # same way an apply failure does (see `refresh()`), so `blocked_transform`
+    # exists only to pick the right message below — the exit-code decisions
+    # further down read `result.error` alone, same as every embedded caller.
+    investment_stage = result.stage("investment_match")
+    blocked_transform = (
+        "transform" in requested
+        and investment_stage is not None
+        and investment_stage.error is not None
+    )
 
     # Best-effort step crashes (matcher/categorizer) don't fail the command,
     # but they are warnings (diagnostics → stderr), not informational output.
@@ -233,6 +254,11 @@ def refresh_command(
         else:
             logger.info(f"✅ Refresh complete in {duration:.2f}s")
         return
+    if blocked_transform:
+        logger.error(
+            "Refresh stopped before transform because investment planning failed"
+        )
+        raise typer.Exit(1)
     if result.error is not None:
         logger.error(f"❌ Refresh failed: {result.error}")
         raise typer.Exit(1)

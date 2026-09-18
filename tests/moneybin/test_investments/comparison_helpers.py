@@ -77,12 +77,13 @@ def seed_plaid_event(
     quantity: str | None = "1",
     amount: str = "100",
     day: int = 10,
+    security_id: str | None = "native_security",
 ) -> None:
     txn = SyncInvestmentTransaction(
         investment_transaction_id=native,
         account_id="native_account",
         provider_item_id="origin",
-        security_id="native_security",
+        security_id=security_id,
         date=date(2026, 1, day),
         name="Aggregator context",
         quantity=Decimal(quantity) if quantity else None,

@@ -972,7 +972,9 @@ def _batch_payload(
         "files": files_list,
         # Flat, and named as every other surface names them: the import ran a
         # matcher, a categorizer, an identity pass and a network rate backfill,
-        # and `transforms_error` below reports only the SQLMesh apply.
+        # and `transforms_error` below reports only a blocking failure
+        # (SQLMesh apply, or an investment_match crash that kept apply from
+        # running).
         **refresh_steps_fields(batch.refresh_steps),
     }
     if batch.transforms_error:

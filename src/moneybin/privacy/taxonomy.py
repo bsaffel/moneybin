@@ -434,6 +434,44 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_type_a": DataClass.TXN_TYPE,
         "source_type_b": DataClass.TXN_TYPE,
     },
+    ("app", "investment_match_decisions"): {
+        "proposal_id": DataClass.RECORD_ID,
+        "algorithm_version": DataClass.TXN_TYPE,
+        "relationship_fingerprint": DataClass.RECORD_ID,
+        "candidate_graph_fingerprint": DataClass.RECORD_ID,
+        "confidence_band": DataClass.TXN_TYPE,
+        "status": DataClass.TXN_TYPE,
+        "auto_eligible": DataClass.AGGREGATE,
+        "is_competing": DataClass.AGGREGATE,
+        # Serialized `Proposal` dataclass (event_planning.py) — its `legs`
+        # entries are verbatim `int_investment_events__legs` rows, each
+        # carrying `account_id`. That column is resolved per source, not
+        # through core.dim_accounts: the Plaid path routes through
+        # `plaid_account_routes` (app.account_links WHERE status='accepted'
+        # AND ref_kind='source_native'), NULL when unlinked; the manual path
+        # resolves through int_manual__investment_identity's `walk` CTE, which
+        # terminates on the raw user-authored account_id from
+        # raw.manual_investment_transactions when no accepted
+        # app.account_link_decisions row exists
+        # (int_investment_events__observations.sql). So this column can hold
+        # either a canonical surrogate or a raw source-native key depending on
+        # row and source. On THIS raw/serialized surface — reached only via
+        # sql_query, with no per-field declaration available — that is still a
+        # position the declaration can't pin down, so it stays whole-masked,
+        # same reasoning as account_link_decisions.match_signals. The typed
+        # review-payload surface (InvestmentMatchDetails in
+        # privacy/payloads/reviews.py) classifies `legs` field-by-field
+        # instead, masking only `account_id` (ACCOUNT_IDENTIFIER) and leaving
+        # the rest of each leg legible — that surface's classification does
+        # NOT transfer here, and this column's whole-mask does not transfer
+        # there either.
+        "proposal": DataClass.COMPOSITE_IDENTIFIER,
+        "actor": DataClass.TXN_TYPE,
+        "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "decided_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "accepted_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("app", "merchant_link_decisions"): {
         "decision_id": DataClass.RECORD_ID,
         "ref_kind": DataClass.TXN_TYPE,

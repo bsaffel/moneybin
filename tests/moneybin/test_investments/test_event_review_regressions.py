@@ -168,3 +168,34 @@ def test_evidence_blocks_unrelated_neighborhoods_before_pair_expansion(
         SELECT COUNT(*), COUNT(*) FILTER (WHERE is_candidate)
         FROM prep.int_investment_events__evidence
     """).fetchone() == (count, count)
+
+
+def test_a_cash_only_plaid_event_carries_a_generation_it_can_be_validated_with(
+    comparison_db: Database,
+) -> None:
+    """A dividend with no security key stays match-eligible, so it must carry both.
+
+    `routing_generations` is LEFT JOINed on the source key, so an event that has
+    none misses it. `has_resolved_identity` still admits the event — no security
+    means the security clause is vacuous and `dividend` is not one of the types
+    that demands one — and `InvestmentMatchDetails` declares both generations as
+    required `str`, so a NULL here fails validation for the whole collection
+    rather than the one row.
+    """
+    seed_plaid_event(
+        comparison_db,
+        "pdividend",
+        type_="cash",
+        subtype="dividend",
+        quantity=None,
+        security_id=None,
+    )
+    install_comparison_models(comparison_db)
+    assert comparison_db.execute("""
+        SELECT
+            account_identity_generation IS NOT NULL,
+            security_identity_generation IS NOT NULL,
+            has_resolved_identity
+        FROM prep.int_investment_events__observations
+        WHERE native_reference = 'pdividend'
+    """).fetchone() == (True, True, True)

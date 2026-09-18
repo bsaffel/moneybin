@@ -718,6 +718,18 @@ SECURITY_RESOLUTION_OUTCOMES_TOTAL = Counter(
     labelnames=("rung",),
 )
 
+INVESTMENT_MATCH_PROPOSALS_TOTAL = Counter(
+    "moneybin_investment_match_proposals_total",
+    "Committed investment planner dispositions",
+    ["band", "outcome"],
+)
+
+INVESTMENT_MATCH_DURATION_SECONDS = Histogram(
+    "moneybin_investment_match_duration_seconds",
+    "Investment matching operation duration",
+    ["operation"],
+)
+
 
 # ── MCP server ────────────────────────────────────────────────────────────────
 
@@ -1069,6 +1081,7 @@ CLI_STUB_INVOKED_TOTAL = Counter(
 # directions — a histogram with no unit, and a unit whose histogram is gone,
 # each fail their own test.
 HISTOGRAM_UNITS: dict[str, str] = {
+    "moneybin_investment_match_duration_seconds": "s",
     # Durations. The name already ends in `_seconds`; this is what prints, and
     # `s` is what a reader scanning a column of them wants.
     "moneybin_import_duration_seconds": "s",
@@ -1129,6 +1142,8 @@ HISTOGRAM_UNITS: dict[str, str] = {
 # `app.metrics` kept from a version that has since renamed the metric keep
 # their value, the way an undeclared histogram keeps its sum.
 METRIC_DOMAINS: dict[str, str] = {
+    "moneybin_investment_match_proposals": "Investment matching",
+    "moneybin_investment_match_duration_seconds": "Investment matching",
     # Import pipeline
     "moneybin_import_records": "Import pipeline",
     "moneybin_import_duration_seconds": "Import pipeline",

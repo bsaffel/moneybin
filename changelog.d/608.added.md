@@ -1,0 +1,1 @@
+Plan whole investment-event matches for review with `investments matches run`, inspect durable evidence with `pending` and `history`, and discover proposals through `reviews(kind="investment_matches")`. Planning leaves source observations and the Golden ledger unchanged.

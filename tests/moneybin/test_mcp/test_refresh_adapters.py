@@ -442,6 +442,150 @@ def test_apply_failure_suppresses_step_recovery_actions() -> None:
 
 
 @pytest.mark.unit
+async def test_an_investment_match_error_is_offered_its_own_retry() -> None:
+    """The fifth channel `RefreshStepOutcome` carries, beside match/categorize/rates.
+
+    A non-blocking crash (transform not requested, or already applied cleanly
+    before the crash was even possible) is an ordinary best-effort failure —
+    it earns the same targeted retry a crashed match or categorize step does.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            stages=(
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            )
+        ),
+        apply_failed=False,
+    )
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions] == [
+        ["investment_match"],
+        None,
+    ]
+
+
+@pytest.mark.unit
+async def test_a_blocking_investment_match_crash_is_not_withheld_by_apply_failed() -> (
+    None
+):
+    """Unlike every other step, investment_match earns a retry even when apply_failed.
+
+    Per the orchestration module docstring, a blocking investment_match crash
+    is *why* apply never ran — not a symptom beside an unrelated broken
+    warehouse — so retrying is the actual fix rather than a doomed repeat.
+    `expand_steps` always folds investment_match back in alongside transform,
+    so the retry targets `transform` to re-run both.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            stages=(
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            )
+        ),
+        apply_failed=True,
+    )
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions] == [
+        ["transform"],
+        None,
+    ]
+    assert actions[-1].tool == "system_status"
+
+
+@pytest.mark.unit
+async def test_a_match_crash_beside_a_blocked_planner_keeps_its_own_retry() -> None:
+    """The transform retry re-runs the planner and the apply, never the cash matcher.
+
+    `refresh` records a match crash on its stage and keeps going into investment
+    planning, so both errors reach one result. Offering only the transform retry
+    there leaves an agent that ran every action with matching still incomplete —
+    and `match` leads, because CANONICAL_STEPS runs it before the planner.
+    """
+    actions = refresh_step_actions(
+        RefreshStepOutcome(
+            stages=(
+                _match_stage(error="matcher blew up"),
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            )
+        ),
+        apply_failed=True,
+    )
+    await assert_recovery_actions_executable(actions)
+    assert [action.arguments.get("steps") for action in actions] == [
+        ["match"],
+        ["transform"],
+        None,
+    ]
+
+
+@pytest.mark.unit
+async def test_a_blocked_investment_match_earns_a_transform_retry_through_the_envelope() -> (
+    None
+):
+    """End-to-end: the real shape `refresh()` returns for a blocking crash.
+
+    No `transform` stage is present at all in this shape — the early return in
+    `orchestration.refresh.refresh()` fires before apply is ever attempted —
+    so the retry must come from the investment_match branch, not a transform
+    stage error.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            error="ledger boom",
+            stages=(
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+    actions = env.recovery_actions or []
+    await assert_recovery_actions_executable(actions)
+    tools = [(ra.tool, ra.arguments) for ra in actions]
+    assert ("refresh_run", {"steps": ["transform"]}) in tools
+    assert ("system_status", {"sections": ["doctor"], "detail": "full"}) in tools
+
+
+@pytest.mark.unit
+def test_apply_failed_hint_names_the_true_blocker_for_investment_match() -> None:
+    """The apply-failed hint must not misdiagnose an investment_match block.
+
+    The P1 pass left `REFRESH_APPLY_FAILED_HINT` reading "SQLMesh apply
+    failed" unconditionally, which is wrong when the actual crash blocked
+    apply from ever starting. The remedy (retry refresh_run) stays identical
+    either way; only the diagnosis clause should change.
+    """
+    env = refresh_envelope(
+        RefreshResult(
+            applied=False,
+            duration_seconds=None,
+            error="ledger boom",
+            stages=(
+                StageOutcome(step="investment_match", ran=True, error="ledger boom"),
+            ),
+        ),
+        requested=expand_steps(None),
+    )
+    hint = next(a for a in env.actions if "transform plan" in a)
+    assert hint.startswith(
+        "Investment matching failed and blocked the SQLMesh apply from running"
+    )
+    assert "SQLMesh apply failed" not in hint
+
+
+@pytest.mark.unit
+def test_apply_failed_hint_still_names_sqlmesh_for_a_genuine_apply_crash() -> None:
+    """Negative twin: an ordinary apply crash keeps the original diagnosis."""
+    env = refresh_envelope(
+        RefreshResult(applied=False, duration_seconds=1.1, error="model boom"),
+        requested=expand_steps(None),
+    )
+    hint = next(a for a in env.actions if "transform plan" in a)
+    assert hint.startswith("SQLMesh apply failed —")
+
+
+@pytest.mark.unit
 def test_recovery_actions_are_idempotent() -> None:
     env = refresh_envelope(
         RefreshResult(
@@ -769,7 +913,7 @@ def test_a_refresh_counts_as_one_outcome_however_many_stages_ran() -> None:
         requested=expand_steps(None),
     )
 
-    assert len(stages) == 6
+    assert len(stages) == 7
     assert env.to_dict()["summary"]["returned_count"] == 1
 
 
