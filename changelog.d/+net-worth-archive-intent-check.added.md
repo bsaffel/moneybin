@@ -1,0 +1,1 @@
+`moneybin system doctor` now warns about accounts left out of net worth by the retired archive cascade rather than by your choice; `accounts set --include` or `--exclude` records the choice and clears the warning.
