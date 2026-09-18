@@ -232,6 +232,14 @@ def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
     assert problems == []
 
 
+#: `core:net_worth` is the one report whose money is already blended into a
+#: single home-currency total — the per-currency segmentation happened one
+#: rung down (`core:net_worth_currencies`), so there is no `currency_code` to
+#: segment by here. It names its own currency as `home_currency_code`
+#: instead, asserted below rather than by this generic guard.
+_HOME_BLENDED_REPORTS = frozenset({"core:net_worth"})
+
+
 def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in() -> (
     None
 ):
@@ -246,11 +254,29 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
     unsegmented = [
         report.report_id
         for report in get_report_catalog().list()
-        if monetary.intersection(report.classes.values())
+        if report.report_id not in _HOME_BLENDED_REPORTS
+        and monetary.intersection(report.classes.values())
         and report.classes.get("currency_code") is not DataClass.CURRENCY
     ]
 
     assert unsegmented == []
+
+
+def test_net_worth_declares_home_currency_code_as_its_own_currency() -> None:
+    """The one blended-total report names `home_currency_code`, not `currency_code`.
+
+    It is not a gap in the guard above — it is the grain: every account and
+    currency already collapsed into one home-currency position, so there is no
+    per-row currency left to segment by.
+    """
+    report = next(
+        item
+        for item in get_report_catalog().list()
+        if item.report_id == "core:net_worth"
+    )
+
+    assert report.classes.get("home_currency_code") is DataClass.CURRENCY
+    assert "currency_code" not in report.classes
 
 
 def test_realized_fx_declares_every_currency_in_its_mixed_unit_rows() -> None:
@@ -294,6 +320,7 @@ def test_only_reports_whose_rows_price_exactly_declare_an_fx_date() -> None:
         "core:networth",
         "core:net_worth_currencies",
         "core:net_worth_accounts",
+        "core:net_worth",
     }
 
 

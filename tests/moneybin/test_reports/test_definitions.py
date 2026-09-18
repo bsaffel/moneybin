@@ -44,15 +44,30 @@ _CORE_REPORT_IDS = {
     "realized_fx": "core:realized_fx",
     "net_worth_currencies": "core:net_worth_currencies",
     "net_worth_accounts": "core:net_worth_accounts",
+    "net_worth": "core:net_worth",
 }
 #: Position reports whose comparison-window/denominator shape is balance_drift's
 #: own (asserted vs. computed as of one date) rather than a flow's.
 _POSITION_COMPARISON_REPORTS = frozenset({"balance_drift"})
-#: Position reports with no comparison baseline at all — net worth is a plain
-#: sum, not a comparison against a prior period.
+#: Position reports with no comparison baseline at all — net worth's own two
+#: rungs are a plain sum, not a comparison against a prior period.
 _POSITION_PLAIN_REPORTS = frozenset({"net_worth_currencies", "net_worth_accounts"})
+#: The day-grain rung: a position report like the two above, but the one that
+#: *does* carry a comparison — change_abs/change_pct against the immediately
+#: preceding bucket — so it needs its own branch below rather than either of
+#: theirs. Also the one report priced in `home_currency_code`, not
+#: `currency_code`, because every account and currency has already collapsed
+#: into one home-currency total by the time this rung reads them.
+_HOME_TOTAL_REPORTS = frozenset({"net_worth"})
+#: The net-worth ladder's own rungs declare the underlying core.* tables they
+#: read too, beside the view itself — reports-net-worth-sql-surface.md
+#: Requirement 10's deeper lineage disclosure. Shared by all three rungs.
+_DEEP_LINEAGE_REPORTS = _POSITION_PLAIN_REPORTS | _HOME_TOTAL_REPORTS
 _FLOW_REPORTS = (
-    frozenset(_CORE_REPORT_IDS) - _POSITION_COMPARISON_REPORTS - _POSITION_PLAIN_REPORTS
+    frozenset(_CORE_REPORT_IDS)
+    - _POSITION_COMPARISON_REPORTS
+    - _POSITION_PLAIN_REPORTS
+    - _HOME_TOTAL_REPORTS
 )
 #: The one promise every report's `fx_basis` makes, however it converts. What
 #: each report does with a display currency differs — three price their rows,
@@ -188,10 +203,7 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert semantics.exclusions
         # Decorated reports are graph-backed; only a dynamic report has no view.
         assert spec.view is not None
-        if name in _POSITION_PLAIN_REPORTS:
-            # The net-worth ladder's own rung declares the underlying core.*
-            # tables it reads too, beside the view itself — reports-net-worth-
-            # sql-surface.md Requirement 10's deeper lineage disclosure.
+        if name in _DEEP_LINEAGE_REPORTS:
             assert semantics.provenance[0] == spec.view.full_name
             assert semantics.provenance == (
                 spec.view.full_name,
@@ -213,6 +225,10 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
             assert semantics.currency is None
             assert semantics.fx_date is None
             assert "mixed-unit" in semantics.fx_basis
+        elif name in _HOME_TOTAL_REPORTS:
+            # Already blended into one home-currency total — there is no
+            # per-row currency_code left to be the authority.
+            assert semantics.currency == "home_currency_code"
         else:
             # Rows are segmented, so the per-row column is the authority for
             # which currency an amount is in — not one envelope-level field.
@@ -223,13 +239,22 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
             assert semantics.kind == "flow"
             assert "inclusive" in semantics.time_basis
         elif name in _POSITION_PLAIN_REPORTS:
-            # Net worth is a plain sum, not a comparison against a prior
-            # period, so it declares neither a comparison window nor a ratio
-            # denominator.
+            # Net worth's currency/account rungs are a plain sum, not a
+            # comparison against a prior period, so neither a comparison
+            # window nor a ratio denominator is declared.
             assert semantics.kind == "position"
             assert semantics.comparison_window is None
             assert semantics.denominator is None
             assert "one row per" in semantics.time_basis
+        elif name in _HOME_TOTAL_REPORTS:
+            # The day-grain rung's change_abs/change_pct compare consecutive
+            # buckets, so — unlike its two sibling rungs above — it declares
+            # both a comparison window and a denominator.
+            assert semantics.kind == "position"
+            assert semantics.comparison_window
+            assert semantics.denominator
+            assert "one row per" in semantics.time_basis
+            assert "bucket" in semantics.time_basis
         else:
             assert semantics.kind == "position"
             assert semantics.comparison_window

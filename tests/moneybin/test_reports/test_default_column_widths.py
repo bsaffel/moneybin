@@ -120,6 +120,12 @@ _MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 106}
 #: if one appears without one, so this cannot go quietly stale.
 _COLUMN_BEARING_PARAMETERS: Mapping[str, Mapping[str, Sequence[object]]] = {
     "core:spending_trend": {"compare": SPENDING_COMPARES},
+    # `None` is its own vocabulary member, not an absence: unlike `compare`
+    # (always a real value; the runner's own default stands in for "unset"),
+    # `interval` genuinely changes shape between "omitted" and "given" — the
+    # narrow 3-column set has no change columns at all, so it must be measured
+    # in its own right rather than folded into one of the three interval values.
+    "core:net_worth": {"interval": (None, "daily", "weekly", "monthly")},
 }
 
 

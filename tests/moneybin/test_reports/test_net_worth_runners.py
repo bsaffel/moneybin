@@ -12,13 +12,15 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
+import typer
+from typer.testing import CliRunner
 
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.reports._framework.catalog import get_report_catalog
-from moneybin.reports._framework.contract import ReportQuery, bound_value
+from moneybin.reports._framework.contract import ReportQuery, ReportSpec, bound_value
 from moneybin.reports.definitions._shared import resolve_date_range
-from moneybin.tables import REPORTS_NET_WORTH_ACCOUNTS
+from moneybin.tables import REPORTS_NET_WORTH, REPORTS_NET_WORTH_ACCOUNTS
 
 # These sibling test modules deliberately name their fixture builders private
 # (leading underscore) as an internal-to-the-file convention, not to fence
@@ -120,6 +122,22 @@ def test_resolve_date_range_neither_bound_defaults_to_the_latest_day() -> None:
         " AND balance_date = (SELECT MAX(balance_date) FROM reports.net_worth_accounts)"
     )
     assert rng.params == []
+
+
+def test_resolve_date_range_default_latest_false_leaves_the_whole_history_open() -> (
+    None
+):
+    """core:net_worth passes this when interval is given (see its docstring)."""
+    rng = resolve_date_range(
+        None,
+        None,
+        report_id="core:net_worth",
+        view=REPORTS_NET_WORTH,
+        default_latest=False,
+    )
+    assert rng.where_sql == ""
+    assert rng.params == []
+    assert rng.period is None
 
 
 # ---------------------------------------------------------------------------
@@ -312,3 +330,214 @@ def test_accounts_runner_envelope_omits_home_currency_when_every_home_basis_valu
     assert all(row["account_balance_home"] is None for row in result.records)
     envelope = result.to_envelope()
     assert envelope.summary.home_currency is None
+
+
+# ---------------------------------------------------------------------------
+# core:net_worth — the day-grain rung
+# ---------------------------------------------------------------------------
+
+
+def test_net_worth_runner_latest_day_by_default(model_db: Database) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _home(model_db, "USD")
+    for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
+        _balance(model_db, "acct-a", day, "100.00", "USD")
+        _rate(model_db, "USD", "USD", day, "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    rows = _run(model_db, net_worth(model_db))
+    assert [row["balance_date"] for row in rows] == [date(2026, 1, 7)]
+
+
+def test_net_worth_runner_monthly_takes_each_months_last_day_and_computes_change(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _home(model_db, "USD")
+    balances = {
+        "2026-01-05": "100.00",
+        "2026-01-06": "110.00",
+        "2026-01-07": "120.00",
+        "2026-02-03": "200.00",
+        "2026-02-04": "220.00",
+        "2026-03-01": "300.00",
+        "2026-03-02": "310.00",
+        "2026-03-03": "330.00",
+    }
+    for day, balance in balances.items():
+        _balance(model_db, "acct-a", day, balance, "USD")
+        _rate(model_db, "USD", "USD", day, "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    rows = _run(model_db, net_worth(model_db, interval="monthly"))
+
+    assert [row["balance_date"] for row in rows] == [
+        date(2026, 1, 7),
+        date(2026, 2, 4),
+        date(2026, 3, 3),
+    ]
+    assert rows[0]["change_abs"] is None
+    assert rows[0]["change_pct"] is None
+    net_worth_0, net_worth_1, net_worth_2 = (
+        rows[0]["net_worth"],
+        rows[1]["net_worth"],
+        rows[2]["net_worth"],
+    )
+    change_abs_1, change_abs_2 = rows[1]["change_abs"], rows[2]["change_abs"]
+    change_pct_1 = rows[1]["change_pct"]
+    assert isinstance(net_worth_0, Decimal)
+    assert isinstance(net_worth_1, Decimal)
+    assert isinstance(net_worth_2, Decimal)
+    assert isinstance(change_abs_1, Decimal)
+    assert isinstance(change_abs_2, Decimal)
+    assert isinstance(change_pct_1, float)
+    assert change_abs_1 == net_worth_1 - net_worth_0
+    assert change_pct_1 == pytest.approx(  # pyright: ignore[reportUnknownMemberType]  # pytest.approx stub incomplete
+        float(change_abs_1) / float(net_worth_0)
+    )
+    assert change_abs_2 == net_worth_2 - net_worth_1
+
+
+def test_net_worth_runner_change_pct_is_null_when_prior_is_zero(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _account(model_db, "acct-b", "Credit", "USD")
+    _home(model_db, "USD")
+    # Month 1: an equal asset and liability net to exactly zero.
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _balance(model_db, "acct-b", "2026-01-05", "-100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    # Month 2: the liability clears; net worth becomes 100.
+    _balance(model_db, "acct-a", "2026-02-05", "100.00", "USD")
+    _balance(model_db, "acct-b", "2026-02-05", "0.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-02-05", "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    rows = _run(model_db, net_worth(model_db, interval="monthly"))
+
+    assert rows[0]["net_worth"] == Decimal("0.00")
+    assert rows[1]["net_worth"] == Decimal("100.00")
+    assert rows[1]["change_abs"] == Decimal("100.00")
+    assert rows[1]["change_pct"] is None
+
+
+def test_net_worth_runner_rejects_an_inverted_range(model_db: Database) -> None:
+    """On a profile that has data.
+
+    The raise precedes any query, so it never produces a row either way.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _home(model_db, "USD")
+
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    with pytest.raises(UserError) as excinfo:
+        net_worth(model_db, from_date="2026-03-01", to_date="2026-01-01")
+    assert excinfo.value.code == "report_parameter_invalid_range"
+
+
+def test_net_worth_runner_interval_is_a_cli_choice() -> None:
+    # Local import: `cli_register` pulls in `moneybin.cli.output`, which
+    # (via `moneybin.cli.__init__`) circularly re-imports `cli_register`
+    # itself when nothing has primed the package first — a module-level
+    # import here would break collection of this file in isolation.
+    from moneybin.reports._framework.cli_register import register_report_cli
+
+    spec = get_report_catalog().resolve("core:net_worth")
+    assert isinstance(spec, ReportSpec)  # core:net_worth is @report-backed
+    app = typer.Typer()
+    register_report_cli(spec, app)
+    app.command("noop")(lambda: None)
+
+    result = CliRunner().invoke(app, ["net-worth", "--interval", "yearly"])
+
+    assert result.exit_code == 2, result.output
+
+
+def test_net_worth_runner_converted_read_keeps_its_identity(
+    model_db: Database,
+) -> None:
+    """Converting into a third currency keeps net_worth == assets + liabilities.
+
+    Every money column here is home-basis and converts independently, so
+    without `on_converted` restating `net_worth` the two sides would drift by
+    a rounding cent — the same defect `_restate_networth_total` exists to fix
+    on the retired service-backed report.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-usd", "Checking", "USD")
+    _account(model_db, "acct-eur", "Euro Checking", "EUR")
+    _home(model_db, "USD")
+    for day, usd_balance, eur_balance in (
+        ("2026-01-05", "100.00", "50.00"),
+        ("2026-01-06", "120.00", "-20.00"),
+    ):
+        _balance(model_db, "acct-usd", day, usd_balance, "USD")
+        _balance(model_db, "acct-eur", day, eur_balance, "EUR")
+        _rate(model_db, "USD", "USD", day, "1.0", source="identity")
+        _rate(model_db, "EUR", "USD", day, "1.10")
+    _install_report(model_db, "net_worth")
+    _seed_cached_rate(model_db, "USD", "GBP", date(2026, 1, 5), Decimal("0.80"))
+    _seed_cached_rate(model_db, "USD", "GBP", date(2026, 1, 6), Decimal("0.82"))
+
+    catalog = get_report_catalog()
+    result = catalog.execute(
+        model_db,
+        report_id="core:net_worth",
+        parameters={"from_date": "2026-01-05", "to_date": "2026-01-06"},
+        limit=100,
+        display_currency="GBP",
+        home_currency="USD",
+    )
+
+    assert result.applied_rates
+    assert len(result.records) == 2
+    for row in result.records:
+        assert row["total_assets"] is not None  # every day priced
+        assert row["net_worth"] == row["total_assets"] + row["total_liabilities"]
+    envelope = result.to_envelope()
+    assert envelope.summary.home_currency == "USD"
+
+
+def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> None:
+    """Requirement: execution-order guard (column-ordering.md -> Enforcement).
+
+    `change_abs`/`change_pct` are absent from the unbucketed projection
+    (legal — the cash_flow precedent), so only the bucketed read is checked
+    against the full declared tuple.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    _home(model_db, "USD")
+    _install_report(model_db, "net_worth")
+
+    catalog = get_report_catalog()
+    spec = catalog.resolve("core:net_worth")
+    declared = [column.name for column in spec.columns]
+
+    plain = catalog.execute(
+        model_db, report_id="core:net_worth", parameters={}, limit=100
+    )
+    assert plain.columns == declared[:9]
+
+    bucketed = catalog.execute(
+        model_db,
+        report_id="core:net_worth",
+        parameters={"interval": "daily"},
+        limit=100,
+    )
+    assert bucketed.columns == declared

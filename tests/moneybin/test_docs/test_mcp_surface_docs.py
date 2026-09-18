@@ -3036,11 +3036,11 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
         table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
     }
     assert len(report_views) == 10
-    assert len(report_routes) == 11
+    assert len(report_routes) == 12
 
     words = (
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
-        "nine", "ten", "eleven",
+        "nine", "ten", "eleven", "twelve",
     )  # fmt: skip
     current_surface_summary = (
         f"{words[len(report_views)]} "

@@ -189,6 +189,7 @@ def resolve_date_range(
     *,
     report_id: str,
     view: TableRef,
+    default_latest: bool = True,
 ) -> DateRange:
     """Validate an optional ``balance_date`` range and build its SQL fragment.
 
@@ -198,7 +199,11 @@ def resolve_date_range(
     bound never collapses to a single day: ``from_date`` alone leaves the upper
     end open, and ``to_date`` alone leaves the lower end open. Neither bound
     given defaults to the latest available day, mirroring the retired
-    ``NetworthService.current()``.
+    ``NetworthService.current()`` — unless ``default_latest=False``, which
+    leaves the whole history open instead. ``core:net_worth`` passes ``False``
+    when ``interval`` is given: bucketing (weekly/monthly rollups, and the
+    change columns their ``LAG`` needs) wants every available day, not the
+    single latest one, when the caller named no range.
 
     Validation raises before any SQL is built, so an inverted or malformed
     range never reaches the database.
@@ -247,6 +252,8 @@ def resolve_date_range(
             params=[Binding(to_bound, DataClass.TXN_DATE)],
             period=f"through {to_bound}",
         )
+    if not default_latest:
+        return DateRange(where_sql="", params=[], period=None)
     latest_day_sql = (
         f" AND balance_date = (SELECT MAX(balance_date) FROM {view.full_name})"  # noqa: S608  # TableRef interpolation, not a user value
     )

@@ -423,6 +423,7 @@ EXAMPLES: dict[str, list[Example]] = {
             sql="""
                 SELECT
                     STRFTIME(balance_date, '%Y-%m') AS month,
+                    LAST(home_currency_code ORDER BY balance_date) AS home_currency_code,
                     LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH

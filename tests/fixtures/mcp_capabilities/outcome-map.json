@@ -76,6 +76,7 @@
       "reports realized-fx",
       "reports net-worth-currencies",
       "reports net-worth-accounts",
+      "reports net-worth",
       "reports run"
     ],
     "service_methods": [
