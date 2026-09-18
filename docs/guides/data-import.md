@@ -356,11 +356,13 @@ moneybin import preview ~/Downloads/transactions.csv
 moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 ```
 
-**Per-file overrides are single-file mode only.** `--account-name`, `--format`, `--override` / `--mapping`, `--confirm-sign`, `--sign`, `--date-format`, `--number-format`, `--sheet`, `--delimiter`, `--encoding`, `--institution`, `--account-id` and `--account-binding` are all read only when exactly one path is supplied. `--confirm` is the exception: the batch path forwards it. Passing several paths with any of the others set prints this warning first, except for `--confirm-sign` and `--account-binding`, which the warning does not cover and which are dropped silently:
+**Per-file overrides are single-file mode only.** `--account-name`, `--format`, `--override` / `--mapping`, `--sign`, `--date-format`, `--number-format`, `--sheet`, `--delimiter`, `--encoding`, `--institution` and `--account-id` are all read only when exactly one path is supplied; passing several paths with any of these set prints this warning first:
 
 ```console
 ⚠️  Per-file flags only apply in single-file mode and will be ignored. Use one file per command for per-file overrides.
 ```
+
+`--confirm`, `--confirm-sign`, and `--account-binding` are not covered by that warning: each answers a specific file's confirmation gate, so multiple files make the answer ambiguous, and the batch path rejects the combination outright with a `BadParameter` usage error (exit code 2) instead of forwarding or dropping it. Re-run per file, or import without these flags to surface `confirmation_required` envelopes and ratify them with `moneybin import confirm <file>`.
 
 Every option, with its type and default: [`moneybin import files` reference](../reference/cli/import.md#moneybin-import-files).
 
