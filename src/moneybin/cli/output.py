@@ -161,8 +161,18 @@ def echo_applied_rates(
     answer, not the answer, and redirecting to a file or a downstream parser
     must not append prose to the data stream.
     """
-    if not applied_rates:
+    note = applied_rates_note(applied_rates, target_currency)
+    if note is None:
         return
+    render_note(note)
+
+
+def applied_rates_note(
+    applied_rates: Sequence[ResolvedRate], target_currency: str | None
+) -> str | None:
+    """Describe applied conversion rates for a composed human result."""
+    if not applied_rates:
+        return None
     if len(applied_rates) == 1:
         rate = applied_rates[0]
         priced_on = (
@@ -172,14 +182,13 @@ def echo_applied_rates(
             # Requirement 10 wants that visible rather than smoothed over.
             else f"{rate.rate_date}, for {rate.requested_date}"
         )
-        render_note(
-            f"💱 Converted from {rate.from_currency} at {rate.rate} "
+        return (
+            f"Converted from {rate.from_currency} at {rate.rate} "
             f"({priced_on}, {rate.source})"
         )
-        return
     sources = sorted({rate.from_currency for rate in applied_rates})
-    render_note(
-        f"💱 Converted from {', '.join(sources)} using "
+    return (
+        f"Converted from {', '.join(sources)} using "
         f"{len(applied_rates)} stored rates; run "
         f"'moneybin fx rate <from> {currency_label(target_currency)} <date>' "
         "for one of them, or --output json for all"

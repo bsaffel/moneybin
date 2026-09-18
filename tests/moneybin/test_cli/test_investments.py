@@ -7,12 +7,16 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Protocol
 from unittest.mock import MagicMock
 
 import pytest
 from typer.testing import CliRunner
 
+from moneybin.cli import pager
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -70,6 +74,51 @@ def _patch_db(monkeypatch: pytest.MonkeyPatch, database: Database) -> None:
         "moneybin.cli.commands.investments.securities",
     ):
         monkeypatch.setattr(f"{module}.get_database", _noop_cm)
+
+
+def _one_line_pager_policy() -> TerminalPolicy:
+    """Force the command-owned pager boundary without a real terminal."""
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def _pager_policy(**_kwargs: object) -> TerminalPolicy:
+    """Match command policy lookup's keyword shape with a deterministic TTY."""
+    return _one_line_pager_policy()
+
+
+class _PageText(Protocol):
+    def __call__(self, text: str, *, color: bool, wide: bool) -> bool: ...
+
+
+def _capture_page(captured: list[str]) -> _PageText:
+    """Return a typed pager stand-in that accepts a complete rendered answer."""
+
+    def _page(text: str, *, color: bool, wide: bool) -> bool:
+        del color, wide
+        captured.append(text)
+        return True
+
+    return _page
+
+
+def _empty_warning_result(*_args: object, **_kwargs: object) -> SimpleNamespace:
+    """Model a service read whose empty answer still needs a disclosure."""
+    return SimpleNamespace(
+        rows=[], warnings=["investment_source_overlap: test disclosure"]
+    )
 
 
 @pytest.fixture()
@@ -527,6 +576,62 @@ class TestInvestmentsList:
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
+        ("args", "expected_label", "expected_action"),
+        [
+            (
+                ["investments", "list"],
+                "No ledger events",
+                "Try: moneybin sync status",
+            ),
+            (
+                ["investments", "list", "--type", "sell"],
+                "No ledger events",
+                "Try: moneybin investments list",
+            ),
+            (
+                ["investments", "holdings"],
+                "No positions",
+                "Try: moneybin accounts list",
+            ),
+            (
+                ["investments", "holdings", "--account", "acct_brokerage"],
+                "No positions",
+                "Try: moneybin investments holdings",
+            ),
+            (
+                ["investments", "gains", "--term", "short"],
+                "No gains",
+                "Try: moneybin investments holdings",
+            ),
+            (
+                ["investments", "lots", "list"],
+                "No lots",
+                "Try: moneybin investments lots list --all",
+            ),
+            (
+                ["investments", "lots", "list", "--all"],
+                "No lots",
+                "Try: moneybin investments holdings",
+            ),
+        ],
+    )
+    def test_empty_or_filtered_reads_offer_a_scope_changing_action(
+        self,
+        runner: CliRunner,
+        db: Database,
+        args: list[str],
+        expected_label: str,
+        expected_action: str,
+    ) -> None:
+        """Every finite investment read offers a next command that changes scope."""
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        assert expected_label in result.stdout
+        assert expected_action in result.stdout
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
         "args",
         [
             ["investments", "list"],
@@ -882,11 +987,10 @@ class TestHoldingsAndGains:
         assert result.exit_code == 0, result.output
         assert "market_value=2,190.00 USD" in result.output
         assert "(converted from USD=1,200.00 EUR=900.00)" in result.output
-        # Requirement 10: the originals say what was converted, the rate says
-        # what converted it. Asserted on the split streams because Click 8.2+
-        # interleaves both into `result.output`, so `in result.output` cannot
-        # tell a diagnostic on stderr from one polluting the data on stdout.
-        assert "💱 Converted from EUR at 1.10" in result.stderr
+        # The conversion disclosure is part of the complete finite answer, so
+        # it travels with the table into the pager rather than escaping to a
+        # separate stderr line after the reader quits it.
+        assert "Converted from EUR at 1.10" in result.stdout
         assert "💱" not in result.stdout
 
     @pytest.mark.unit
@@ -974,9 +1078,39 @@ class TestHoldingsAndGains:
         quiet = runner.invoke(app, ["investments", "gains", "-q"])
 
         assert quiet.exit_code == 0, quiet.output
-        assert "incomplete cost basis" in quiet.stderr
-        # The disclosure is a diagnostic, so it stays off the data stream.
-        assert "incomplete cost basis" not in quiet.stdout
+        assert "incomplete cost basis" in quiet.stdout
+
+    @pytest.mark.unit
+    def test_gains_pages_its_quiet_basis_disclosure_with_the_rows(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pager input, rather than stderr after quit, contains the qualification."""
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_realized_gains
+                (realized_gain_id, account_id, security_id, disposal_txn_id,
+                 lot_id, quantity, acquisition_date, disposal_date, proceeds,
+                 cost_basis, gain_loss, term, cost_basis_method,
+                 basis_incomplete, currency_code)
+            VALUES ('gain_paged', 'acct_brokerage', 'sec_1', 'sell_1', 'lot_a',
+                    5, '2024-01-01', '2024-06-12', 950.00, 0.00, 950.00,
+                    'long', 'fifo', true, 'USD')
+            """  # test fixture insert, static SQL
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.investments.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+        monkeypatch.setattr(pager, "page_text", _capture_page(paged))
+
+        result = runner.invoke(app, ["investments", "gains", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert len(paged) == 1
+        assert "gain" in paged[0]
+        assert "incomplete cost basis" in " ".join(paged[0].split())
+        assert "incomplete cost basis" not in result.stderr
 
     @pytest.mark.unit
     def test_gains_wide_names_which_rows_have_an_incomplete_basis(
@@ -1250,7 +1384,7 @@ class TestLotsList:
         result = runner.invoke(app, ["investments", "lots", "list", "--wide"])
         assert result.exit_code == 0, result.output
         assert "basis_incomplete" in result.stdout
-        assert "incomplete" in result.stderr
+        assert "incomplete" in result.stdout
 
     @pytest.mark.unit
     def test_lots_list_default_view_marks_an_incomplete_basis_under_quiet(
@@ -1313,10 +1447,71 @@ class TestLotsList:
         result = runner.invoke(app, ["investments", "lots", "list", "-q"])
 
         assert result.exit_code == 0, result.output
-        assert "investment_source_overlap" in result.stderr
+        assert "investment_source_overlap" in result.stdout
         # The basis-incomplete warning stays suppressed — it has the per-row
         # marker to fall back on, which is why `-q` may drop it.
         assert "incomplete cost basis" not in result.stderr
+
+    @pytest.mark.unit
+    def test_lots_pages_its_quiet_overlap_disclosure_with_the_rows(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A page contains the source-overlap warning before the reader exits it."""
+        _seed_two_source_ledger(db)
+        db.conn.execute(
+            """
+            INSERT INTO core.fct_investment_lots
+                (lot_id, account_id, security_id, acquisition_date,
+                 acquisition_type, original_quantity, remaining_quantity,
+                 cost_basis_total, cost_basis_remaining, cost_basis_method,
+                 currency_code, is_open, basis_incomplete)
+            VALUES ('lot_paged', 'acct_brokerage', 'sec_1', '2024-01-15',
+                    'buy', 10, 10, 1500.00, 1500.00, 'fifo', 'USD', true, false)
+            """  # test fixture insert, static SQL
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.investments.lots.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+        monkeypatch.setattr(pager, "page_text", _capture_page(paged))
+
+        result = runner.invoke(app, ["investments", "lots", "list", "-q"])
+
+        assert result.exit_code == 0, result.output
+        assert len(paged) == 1
+        assert "basis" in paged[0]
+        assert "Revert the redundant import batch" in " ".join(paged[0].split())
+        assert "Revert the redundant import batch" not in result.stderr
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("args", "service_method", "expected"),
+        [
+            (["investments", "gains", "-q"], "gains", "Realized gains"),
+            (["investments", "lots", "list", "-q"], "lots", "Tax lots"),
+        ],
+    )
+    def test_empty_warning_results_keep_the_disclosure_under_quiet(
+        self,
+        runner: CliRunner,
+        db: Database,
+        monkeypatch: pytest.MonkeyPatch,
+        args: list[str],
+        service_method: str,
+        expected: str,
+    ) -> None:
+        """Quiet can hide chatter, but never a source-overlap qualification."""
+        monkeypatch.setattr(
+            f"moneybin.cli.commands.investments.{'lots.' if service_method == 'lots' else ''}InvestmentService.{service_method}",
+            _empty_warning_result,
+        )
+
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 0, result.output
+        assert expected in result.stdout
+        assert "investment_source_overlap" in result.stdout
 
     @pytest.mark.unit
     def test_lots_list_reaches_the_currency_through_wide(
@@ -1698,6 +1893,49 @@ class TestSecuritiesListAndSet:
             assert header in result.stdout
         assert "AAPL" in result.stdout
         assert "Apple Inc." in result.stdout
+
+    @pytest.mark.unit
+    def test_list_empty_names_the_catalog_scope(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """No catalog rows is a result, rather than a silent successful command."""
+        result = runner.invoke(app, ["investments", "securities", "list"])
+
+        assert result.exit_code == 0, result.output
+        assert "Securities" in result.stdout
+        assert "No securities found in the catalog." in result.stdout
+
+    @pytest.mark.unit
+    def test_list_offers_no_pager_for_a_finite_human_result(
+        self, runner: CliRunner, db: Database
+    ) -> None:
+        """A long catalog can use the common terminal paging policy."""
+        result = runner.invoke(app, ["investments", "securities", "list", "--help"])
+
+        assert result.exit_code == 0, result.output
+        assert "--no-pager" in result.stdout
+
+    @pytest.mark.unit
+    def test_list_pages_normally_and_no_pager_prints_the_same_answer(
+        self, runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The leaf forwards both the normal pager and the explicit bypass."""
+        _add_security(runner, name="Apple Inc.", type_="equity", ticker="AAPL")
+        monkeypatch.setattr(
+            "moneybin.cli.commands.investments.securities.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+        monkeypatch.setattr(pager, "page_text", _capture_page(paged))
+
+        normal = runner.invoke(app, ["investments", "securities", "list"])
+        bypass = runner.invoke(app, ["investments", "securities", "list", "--no-pager"])
+
+        assert normal.exit_code == 0, normal.output
+        assert bypass.exit_code == 0, bypass.output
+        assert len(paged) == 1
+        paged_answer = paged[0].removesuffix("\n\nq return to shell\n").strip()
+        assert bypass.stdout.strip() == paged_answer
 
     @pytest.mark.unit
     def test_set_method_preserves_other_fields(
