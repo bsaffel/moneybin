@@ -412,11 +412,22 @@ def accounts_set(
                 actor="cli",
                 **diff,  # type: ignore[arg-type]  # dynamic settings_update kwargs
             )
-    for w in warnings:
-        typer.echo(f"⚠️  {w.get('message', w)}", err=True)
-    typer.echo(
-        f"✅ Updated settings for {account_id}: fields={sorted(diff.keys())}",
-        err=True,
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [
+                        ("Account ID", account_id),
+                        ("Updated fields", ", ".join(sorted(diff))),
+                    ],
+                    title="Account settings updated",
+                )
+            ],
+            disclosures=[str(w.get("message", w)) for w in warnings],
+        ),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 

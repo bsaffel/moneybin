@@ -16,11 +16,17 @@ from typing import TYPE_CHECKING
 import typer
 
 from moneybin import error_codes
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_rows
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import (
+    get_terminal_policy,
     handle_cli_errors,
-    warn_transfers_retired,
 )
 from moneybin.database import get_database
 from moneybin.errors import UserError
@@ -57,7 +63,8 @@ logger = logging.getLogger(__name__)
 @app.command("pending")
 def links_pending(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # the queue itself is always shown
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List pending account-link decisions, grouped by provisional account.
 
@@ -84,37 +91,63 @@ def links_pending(
         )
         return
 
-    if not groups:
-        if not quiet:
-            logger.info("No pending account-link decisions")
-        return
-
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Pending decisions", str(n_pending))], title="Account links")
+    ]
     for group in groups:
-        typer.echo(
-            f"\n── {group.provisional_display_name or UNNAMED_ACCOUNT_LABEL} "
-            f"[{group.provisional_account_id}] "
-            f"— {group.transactions:,} transactions move "
-            f"— {len(group.candidates)} candidate(s) ──"
-        )
-        # Never truncated. A resolved display name ends in the masked last
-        # four, so clipping it to the column width would cut off the digits
-        # that tell two candidates at one institution apart — the exact
-        # confusion this ordering exists to remove. `render_rows` folds a wide
-        # value rather than eliding it, so a long name pushes the row ragged
-        # instead of losing characters.
-        render_rows(
-            ["candidate", "signal", "ledger overlap", "decision id", "candidate id"],
-            [
+        parts.extend([
+            build_summary([
                 (
-                    c.candidate_display_name or "-",
-                    c.signal,
-                    _overlap_cell(c.overlap),
-                    c.decision_id[:12],
-                    c.candidate_account_id[:12],
-                )
-                for c in group.candidates
-            ],
-        )
+                    f"Provisional Account [{group.provisional_account_id}]",
+                    group.provisional_display_name or UNNAMED_ACCOUNT_LABEL,
+                ),
+                ("Transactions affected", f"{group.transactions:,} transactions move"),
+                ("Candidates", str(len(group.candidates))),
+            ]),
+            # Never truncated. A resolved display name ends in the masked last
+            # four, so clipping it to the column width would cut off the digits
+            # that tell two candidates at one institution apart — the exact
+            # confusion this ordering exists to remove. `render_rows` folds a wide
+            # value rather than eliding it, so a long name pushes the row ragged
+            # instead of losing characters.
+            build_rows(
+                [
+                    "candidate",
+                    "signal",
+                    "ledger overlap",
+                    "decision id",
+                    "candidate id",
+                ],
+                [
+                    (
+                        c.candidate_display_name or "-",
+                        c.signal,
+                        _overlap_cell(c.overlap),
+                        c.decision_id[:12],
+                        c.candidate_account_id[:12],
+                    )
+                    for c in group.candidates
+                ],
+                terminal=policy,
+            ),
+        ])
+    disclosures = (
+        [
+            "Next: decide with moneybin accounts links set <decision-id> "
+            "--into <candidate-account-id>."
+        ]
+        if groups
+        else [
+            "No pending account-link decisions. Next: run moneybin accounts links run."
+        ]
+    )
+    emit_human_result(
+        compose_human_result(parts, disclosures=disclosures),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 def _overlap_cell(overlap: LedgerOverlap) -> str:
@@ -155,6 +188,7 @@ def links_set(
         "-y",
         help="Skip the merge confirmation prompt (--into only; --standalone never asks)",
     ),
+    quiet: bool = quiet_option,  # receipts and consequential warnings remain visible
 ) -> None:
     """Accept (merge) or standalone-reject a pending account-link decision.
 
@@ -198,8 +232,21 @@ def links_set(
         if target_account_id
         else "standalone (rejected)"
     )
-    logger.info(f"✅ Decision {decision_id[:12]}... → {action}")
-    _report_rematch(rematch)
+    rematch_notes = _report_rematch(rematch)
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [("Decision", decision_id), ("Result", action)],
+                    title="Account-link decision saved",
+                )
+            ],
+            disclosures=rematch_notes,
+        ),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
     if rematch is not None and rematch.error is not None:
         # `refresh_command` exits 1 on this identical RefreshResult.error, and
         # cli.md reads 1 as "operation ran and failed". The merge did commit,
@@ -209,14 +256,15 @@ def links_set(
         raise typer.Exit(1)
 
 
-def _report_rematch(rematch: RefreshResult | None) -> None:
+def _report_rematch(rematch: RefreshResult | None) -> list[str]:
     """Say what the post-merge match pass did — it may have merged rows unasked.
 
     ``None`` means no pass ran (a standalone reject repoints nothing), and
     printing nothing is then the honest output.
     """
     if rematch is None:
-        return
+        return []
+    notices: list[str] = []
     # Deferred, and below the guard: matching_service pulls duckdb and the match
     # engine, this module is on the CLI cold-start path (.claude/rules/cli.md),
     # and the reject path reaches here needing none of it.
@@ -235,8 +283,8 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         # absent stage lands here for the same reason: this caller always asks
         # for the match step, so a missing entry is no more evidence of a clean
         # pass than a declined one is.
-        logger.warning(
-            "⚠️  Re-match after the merge could not run — its matching views "
+        notices.append(
+            "Attention: re-match after the merge could not run — its matching views "
             "were missing or stale, so the newly co-resident rows were never "
             "examined; re-run 'moneybin refresh'"
         )
@@ -262,8 +310,8 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
             if landed
             else "before it had committed anything"
         )
-        logger.warning(
-            f"⚠️  Re-match after the merge stopped partway {committed}; its "
+        notices.append(
+            f"Attention: re-match after the merge stopped partway {committed}; its "
             "remaining counts are incomplete — re-run 'moneybin refresh', then "
             "check 'moneybin review --type matches' and "
             "'moneybin system audit list'"
@@ -276,26 +324,29 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         # duplicates" over a merge that just queued transfers for review.
         transfers = match.count("pending_transfers")
         if not merged and not pending and not transfers:
-            logger.info("Re-matched after the merge: no new duplicates found")
+            notices.append("Re-matched after the merge: no new duplicates found.")
         else:
-            logger.info(
-                f"👀 Re-matched after the merge: {merged} auto-merged, "
+            notices.append(
+                f"Re-matched after the merge: {merged} auto-merged, "
                 f"{pending} new proposal(s) to review, "
                 f"{transfers} possible transfer(s)"
             )
             if pending:
-                logger.info(f"  💡 {PENDING_MATCHES_HINT}")
+                notices.append(PENDING_MATCHES_HINT)
             if transfers:
-                logger.info(
-                    "  💡 Review possible transfers with "
-                    "'moneybin review --type matches'"
+                notices.append(
+                    "Review possible transfers with 'moneybin review --type matches'"
                 )
     # Independent of every branch above: this is a decision the *user* made being
     # undone, so it must be stated whether or not the pass was otherwise clean,
     # and it must name the way back.
-    warn_transfers_retired(
-        rematch.transfers_retired, cause=RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED
-    )
+    if rematch.transfers_retired:
+        notices.append(
+            f"Attention: retired {rematch.transfers_retired} previously accepted "
+            f"transfer(s) — {RETIRED_SIDES_OR_ACCOUNTS_COLLAPSED}; inspect with "
+            "'moneybin system audit list' and restore with 'moneybin system audit "
+            "undo <operation-id>' if that was wrong"
+        )
     if rematch.error is not None:
         # The counts above are true — match decisions were written — but the
         # SQLMesh apply that follows them is what rebuilds core.dim_accounts,
@@ -303,11 +354,12 @@ def _report_rematch(rematch: RefreshResult | None) -> None:
         # dimension still lists both, which reads as a merge that never
         # happened. Reporting the counts and stopping would describe a
         # collapse the user cannot find anywhere.
-        logger.warning(
-            "⚠️  The rebuild after the merge failed, so the merge is not "
+        notices.append(
+            "Attention: the rebuild after the merge failed, so the merge is not "
             "reflected in your accounts or totals yet; re-run "
             "'moneybin refresh'"
         )
+    return notices
 
 
 def _plan_merge(
@@ -537,7 +589,8 @@ def _confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge |
 def links_history(
     limit: int = typer.Option(50, "--limit", "-n", min=0, help="Max records to show"),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # history rows are always shown
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show recent account-link decisions (all statuses), newest first."""
     with handle_cli_errors():
@@ -554,11 +607,6 @@ def links_history(
             output,
             cli_actor="accounts_links_history",
         )
-        return
-
-    if not rows:
-        if not quiet:
-            logger.info("No account-link decisions found")
         return
 
     def _merged(d: LinkHistoryRow) -> str:
@@ -582,12 +630,28 @@ def links_history(
     # rather than to a guessed width, which is what the hand-built version
     # could not do: a column sized for one name left every named row ragged and
     # aligned only the rows that had fallen back to ids.
-    render_rows(
-        ["merged", "status", "decided by", "signal", "decision id"],
-        [
-            (_merged(d), d.status, d.decided_by, d.signal, d.decision_id[:12])
-            for d in payload.decisions
-        ],
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Maximum records", str(limit))], title="Account-link history")
+    ]
+    if rows:
+        parts.append(
+            build_rows(
+                ["merged", "status", "decided by", "signal", "decision id"],
+                [
+                    (_merged(d), d.status, d.decided_by, d.signal, d.decision_id[:12])
+                    for d in payload.decisions
+                ],
+                terminal=policy,
+            )
+        )
+    else:
+        parts.append(build_summary([("Result", "No account-link decisions found.")]))
+    emit_human_result(
+        compose_human_result(parts),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
     )
 
 
@@ -644,10 +708,17 @@ def links_run(
         )
         return
 
-    if decision_id is not None:
-        typer.echo(f"✅ Proposed the pair as decision {decision_id}.")
-    elif new_proposals == 0:
-        typer.echo("No new account-link proposals written.")
-    else:
-        typer.echo(f"✅ Wrote {new_proposals} new pending account-link proposal(s).")
-    typer.echo("Run `accounts links pending` to review.")
+    result = (
+        f"Proposed pair as decision {decision_id}."
+        if decision_id is not None
+        else f"Wrote {new_proposals} new pending account-link proposal(s)."
+    )
+    emit_human_result(
+        compose_human_result(
+            [build_summary([("Result", result)], title="Account-link proposals saved")],
+            disclosures=["Next: review with moneybin accounts links pending."],
+        ),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
