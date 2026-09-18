@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-14 -->
+<!-- Last reviewed: 2026-09-17 -->
 # Data Pipeline
 
 Every transaction you see in `core.fct_transactions` traces back to a specific source row in `raw.*`. The pipeline that gets it there is a layered medallion: Python loaders write raw, SQLMesh transforms raw into staging views and canonical tables, services maintain user state in a parallel `app.*` schema, and curated `reports.*` views shape the result for display. Each section below takes one layer and gives its writer, its models as they are spelled in the repo, and the surface a consumer reads it from.
@@ -70,7 +70,7 @@ Configurable via the `matching.source_priority` setting; the live list is seeded
 
 ### `raw.*` — what loaders produce
 
-Owned by Python: every loader writes to a source-specific `raw` table via `Database.ingest_dataframe()` and records a row in `app.import_log` for re-import detection and revert. Data is preserved as it arrived, including columns SQLMesh won't end up reading. Re-importing the same file is a no-op against the import log.
+Owned by Python: every loader writes to a source-specific `raw` table via `Database.ingest_dataframe()` and records a row in `app.import_log` for re-import detection and revert. Data is preserved as it arrived, including columns SQLMesh won't end up reading. Re-importing the same OFX file is refused at the import log; a tabular or PDF repeat opens a new batch, and the raw table's primary key is what rejects the duplicate rows.
 
 | Table | Source | Written by |
 |---|---|---|

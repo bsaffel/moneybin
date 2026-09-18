@@ -1,11 +1,11 @@
-<!-- Last reviewed: 2026-07-24 -->
+<!-- Last reviewed: 2026-09-17 -->
 # Synthetic Data
 
-MoneyBin ships a synthetic-data generator so you can try the full pipeline — reports, categorization, the MCP surface — without uploading a single real statement. This guide covers what the generator produces, how to drive it from the CLI or from Python, and how it stays isolated from any real data you have.
+MoneyBin ships a synthetic-data generator that builds a multi-year transaction history from a declared persona. It reads no real statement: every input is a persona YAML file shipped in the repo. This guide covers what the generator produces, how to drive it from the CLI, and how it stays isolated from any real data on the same machine.
 
 ## What it generates
 
-The generator drives one of three named personas through a multi-year transaction history, then writes the rows into the same raw tables that real CSV and OFX imports populate. Downstream staging, core, and reports models work identically against synthetic and real data — the goal is to exercise the full pipeline end-to-end.
+The generator drives one of four named personas — `basic`, `family`, `freelancer`, `international` — through a multi-year transaction history, then writes the rows into the same raw tables that real CSV and OFX imports populate. Downstream staging, core, and reports models work identically against synthetic and real data — the goal is to exercise the full pipeline end-to-end.
 
 Per persona you get:
 
@@ -15,19 +15,16 @@ Per persona you get:
 - **Realistic merchant strings.** Each catalog ships a weighted list of real-world merchant names so descriptions look like what a categorizer would actually see.
 - **Income.** Biweekly direct deposits (`basic`, `family`), dual-income households (`family`), irregular freelance invoices plus a monthly retainer (`freelancer`), or one local monthly stream per country (`international`).
 - **Recurring transactions.** Rent or mortgage, utilities, insurance premiums, subscription services, and (for `freelancer`) quarterly IRS estimated payments — fired on declared days of month.
-- **Transfers.** Inter-account movements: checking → savings, credit-card statement payments, and (for `freelancer`) business → personal owner draws. Both legs of every transfer share a `transfer_pair_id` in ground truth. `international` has none — a transfer between two currencies needs a conversion the generator does not perform, so each of its accounts is funded in its own currency instead.
+- **Transfers.** Inter-account movements: checking → savings, credit-card statement payments, and (for `freelancer`) business → personal owner draws. Both legs of every transfer share a `transfer_pair_id` in ground truth. `international` declares two monthly USD/EUR transfers whose received amount is written in the YAML (`src/moneybin/synthetic/data/personas/international.yaml`), so each leg carries its own currency's magnitude and no rate is inferred.
 - **Seasonal modifiers.** November/December grocery and shopping spikes; summer kids-activities bumps for `family`.
 
 ### Date range and volume
 
-Each persona declares its own default, ending at the calendar year before the current year (e.g., generating in 2026 covers 2023-01-01 through 2025-12-31 for a 3-year persona). Override with `--years`. Volume scales with persona complexity:
+Each persona declares its own default, ending at the calendar year before the current year. Generating in 2026 covers 2023-01-01 through 2025-12-31 for a 3-year persona; `international` declares 2 years (`src/moneybin/synthetic/data/personas/international.yaml:11`), the other three declare 3. Override with `--years`.
 
-- `basic` — ~300 transactions per year (one checking + one credit card, modest spending). 3 years.
-- `family` — ~950-1,000 per year across four accounts. 3 years.
-- `freelancer` — irregular but heavy business activity across three accounts. 3 years.
-- `international` — ~690 per year across five accounts, one per currency. 2 years.
+Volume scales with persona complexity. `basic` generates 995 transactions over its three years and `family` generates 2,886 over the same span — both at `--seed 42`, both shown in the transcripts under Quick start. `freelancer` and `international` fall between those two. The generator prints its own total on every run (`Generated N transactions for persona ...`), so read the count off the build rather than pinning one from this page.
 
-Exact counts are deterministic given a seed — see Seed stability below.
+Counts are deterministic given a seed and a MoneyBin version — see Seed stability below.
 
 ## Profile isolation
 
@@ -42,39 +39,112 @@ Each persona generates into its **own profile**, which means its own encrypted D
 | `freelancer` | `charlie` |
 | `international` | `eve` |
 
+Each mapping is declared twice and the two agree: in the CLI's persona table (`src/moneybin/cli/commands/synthetic.py:16-21`) and in the persona's own YAML (`profile: bob` at `src/moneybin/synthetic/data/personas/family.yaml:2`).
+
 If `alice`/`bob`/`charlie`/`eve` collide with profiles you already use, pass `--profile <name>` to route the generator into a different name. Your real profile is never touched.
 
 To completely remove synthetic data when you're done:
 
-```bash
-moneybin profile delete alice    # or bob, charlie, eve, whatever you used
+```console
+$ moneybin profile delete alice --yes
+✅ Deleted profile: alice
 ```
 
-`profile delete` removes the DuckDB file, the encryption key in the keychain, the backups directory, and the config entry — leaving no synthetic data on disk.
+`profile delete` removes the DuckDB file, the encryption key in the keychain, the backups directory, and the config entry — leaving no synthetic data on disk. Without `--yes`/`-y` it confirms first.
 
 If you want to reseed the *same* profile with a different seed or year count without nuking it, use `synthetic reset` (described below) instead.
 
 ## Quick start
 
-```bash
-# 1. Generate. Writes raw rows, then runs SQLMesh to build core + reports.
-moneybin synthetic generate --persona family --seed 42
+Create the target profile first. `synthetic generate` does not create it: against a
+missing profile the command exits 1 without writing anything (see Limitations).
 
-# 2. Look at what the reports surface produces against fresh data.
-moneybin --profile bob reports networth
+```console
+$ moneybin profile create bob --no-init-inbox
+✅ Created profile bob at <MONEYBIN_HOME>/profiles/bob
+```
+
+Then generate. The command writes raw rows, then runs SQLMesh to build core and reports.
+
+```console
+$ moneybin synthetic generate --persona family --seed 42
+⚙️  Generating 'family' persona into profile 'bob' (seed=42)
+Generated 2886 transactions for persona 'family' (seed=42, 2023-01-01 to 2025-12-31)
+Wrote synthetic data: {'ofx_accounts': 2, 'ofx_balances': 2, 'tabular_accounts': 2, 'ofx_transactions': 1381, 'tabular_transactions': 1505, 'ground_truth': 2886}
+⚙️  Running transforms to materialize pipeline...
+Transforms completed in 7.41s
+```
+
+Two things are trimmed from that transcript: the SQLMesh plan and snapshot logging
+between those lines, and the closing `✅` line, which reads that profile `bob` is
+ready at `seed=42` and to pass `--profile=bob` to any later command. The run emitted
+3,685 lines in total against those six user-facing ones; both figures are counted
+from the captured run. Every line the command prints, the `✅` included, goes to
+stderr — redirect stderr, not stdout, to keep it.
+
+`basic` is the smaller build, and the same two steps produce it:
+
+```console
+$ moneybin synthetic generate --persona basic --seed 42
+⚙️  Generating 'basic' persona into profile 'alice' (seed=42)
+Generated 995 transactions for persona 'basic' (seed=42, 2023-01-01 to 2025-12-31)
+Wrote synthetic data: {'ofx_accounts': 1, 'ofx_balances': 1, 'tabular_accounts': 1, 'ofx_transactions': 540, 'tabular_transactions': 455, 'ground_truth': 995}
+⚙️  Running transforms to materialize pipeline...
+Transforms completed in 13.35s
+```
+
+Same two trims, with `alice` in place of `bob` on the closing line. Both builds finished in under 20 seconds wall-clock on a laptop,
+transforms included. The transform stage dominates, and its cost does not track the
+row count: in these two runs the 2,886-row `family` build transformed in 7.41s and
+the 995-row `basic` build in 13.35s.
+
+Read the reports against the fresh data:
+
+```console
+$ moneybin --profile bob reports networth
+Using profile: bob
+USD as of 2025-12-31
+Net worth:   420,080.77
+Assets:      420,080.77
+Liabilities: 0.00
+Accounts:    4
+```
+
+The per-account balance table and three trailing hint lines are trimmed. `reports
+networth` shows balance composition across all generated accounts; `reports cash-flow`
+rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
+`reports recurring-subscriptions` lists the detected recurring stream (rent, utilities,
+subscriptions, statement payments). These are the same commands that run against real
+data — the only difference is the data underneath.
+
+```bash
 moneybin --profile bob reports cash-flow --from-month 2024-01 --to-month 2024-12 --by category
 moneybin --profile bob reports recurring-subscriptions
 moneybin --profile bob reports spending-trend
-
-# 3. Verify provenance — every row is flagged synthetic.
-moneybin --profile bob db query \
-  "SELECT DISTINCT source_origin FROM raw.tabular_transactions"
-# -> synthetic_family
-
-moneybin --profile bob db query "SELECT COUNT(*) FROM synthetic.ground_truth"
 ```
 
-`reports networth` shows balance composition across all generated accounts; `reports cash-flow` rolls up monthly inflow, outflow, and net, grouped by account, category, or both; `reports recurring-subscriptions` lists the detected recurring stream (rent, utilities, subscriptions, statement payments). These are the same commands that run against real data — the only difference is the data underneath.
+Every generated row carries its provenance. `db query` writes its table to stdout:
+
+```console
+$ moneybin --profile bob db query "SELECT DISTINCT source_origin FROM raw.tabular_transactions"
++------------------+
+|  source_origin   |
++------------------+
+| synthetic_family |
++------------------+
+```
+
+```console
+$ moneybin --profile bob db query "SELECT COUNT(*) AS ground_truth_rows FROM synthetic.ground_truth"
++-------------------+
+| ground_truth_rows |
++-------------------+
+| 2886              |
++-------------------+
+```
+
+The ground-truth row count matches the `Generated 2886 transactions` line from the
+build: one ground-truth row per generated transaction.
 
 To start over with a different seed or year count:
 
@@ -86,12 +156,12 @@ moneybin synthetic reset --persona family --seed 7 --years 5 --yes
 
 | If you... | Pick | Why |
 |---|---|---|
-| Are a single-income renter, few accounts, no kids, want a fast smoke test | `basic` | ~300 txns/year, 2 accounts (checking + credit card) |
-| Have a mortgage, kids, dual income, multiple cards | `family` | ~1,000 txns/year, 4 accounts, summer + holiday seasonality |
+| Are a single-income renter, few accounts, no kids, want a fast smoke test | `basic` | 995 transactions over 3 years, 2 accounts (checking + credit card) |
+| Have a mortgage, kids, dual income, multiple cards | `family` | 2,886 transactions over 3 years, 4 accounts, summer + holiday seasonality |
 | Are self-employed with irregular income and business expenses | `freelancer` | Quarterly estimated tax payments, owner draws, business-vs-personal account split |
 | Hold accounts in more than one currency | `international` | Five banks in five countries, one currency each (EUR, GBP, CAD, AED, USD); net worth reports per currency instead of one total |
 
-If you're evaluating MoneyBin and your real finances would be closest to `family`, `family` is what you should generate — it also exercises the most of the reports surface: 4 accounts, 11 recurring streams, and 3 monthly transfers, versus 2 accounts and 5 recurring streams for `basic`.
+If your real finances are closest to `family`, generate `family` — it also covers more of the reports surface than the other three: 4 accounts, 11 recurring streams, and 3 transfers, versus 2 accounts, 5 recurring streams, and 1 transfer for `basic`. Those counts are the entries declared in `src/moneybin/synthetic/data/personas/family.yaml` and `basic.yaml`.
 
 ## Categorizing synthetic data
 
@@ -131,7 +201,7 @@ The MCP surface works against a synthetic profile with no special configuration:
 moneybin --profile bob mcp install --client claude-desktop
 ```
 
-Point Claude Desktop (or Claude Code, Codex, VS Code, Gemini CLI — see `moneybin mcp install --help` for the supported clients) at the synthetic profile, and every MCP tool returns the same shape it would against real data. This is the safest way to let an agent explore MoneyBin's tool surface.
+Point Claude Desktop (or Claude Code, Codex, VS Code, Gemini CLI — see `moneybin mcp install --help` for the supported clients) at the synthetic profile, and every MCP tool returns the same shape it would against real data. A synthetic profile holds no real data, so an agent pointed at one cannot read any.
 
 ## CLI commands
 
@@ -143,15 +213,11 @@ The synthetic surface lives under `moneybin synthetic`.
 moneybin synthetic generate --persona <name> [--profile <name>] [--years <N>] [--seed <int>] [--skip-transform]
 ```
 
-| Flag | Required | Default | Notes |
-|---|---|---|---|
-| `--persona` | yes | — | One of `basic`, `family`, `freelancer`, `international` |
-| `--profile` | no | derived from persona (`alice`, `bob`, `charlie`, `eve`) | Target MoneyBin profile to write into |
-| `--years` | no | persona default (3, or 2 for `international`) | Number of complete years to generate |
-| `--seed` | no | random `1..9999` | Integer seed for deterministic output |
-| `--skip-transform` | no | `False` | Skip running SQLMesh after the raw write |
+Every flag, its type, and its bounds: [`moneybin synthetic generate`](../reference/cli/synthetic.md#moneybin-synthetic-generate), generated from the command tree. Behaviour `--help` does not carry:
 
-`generate` refuses to write into a profile that already has imported data — it exits with code 1 and points you at `synthetic reset`. The profile is created if it does not exist.
+- **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1 and reports a missing encryption key rather than a missing profile.
+- **It refuses to write into a profile that already holds imported data.** Exits 1 and points you at `synthetic reset`.
+- **Omitting `--seed` picks a value in `1..9999` and logs it.** The value is not persisted anywhere else — see Limitations.
 
 After raw rows are written, the command runs SQLMesh to materialize the staging, core, and reports models against the new data. Pass `--skip-transform` to keep just the raw write — useful when you want to inspect the loader output before transformation.
 
@@ -196,15 +262,22 @@ Unless `--skip-transform` is set, SQLMesh then builds `prep.*`, `core.*`, and `r
 
 ### `synthetic.ground_truth` schema
 
+The generator executes this DDL on demand, from `src/moneybin/sql/schema/synthetic_ground_truth.sql`:
+
 ```sql
-CREATE TABLE synthetic.ground_truth (
-    source_transaction_id VARCHAR NOT NULL PRIMARY KEY,  -- joins to raw.*; reaches core.fct_transactions via prep.int_transactions__matched
-    account_id            VARCHAR NOT NULL,              -- synthetic source-system account ID
-    expected_category     VARCHAR,                       -- NULL for transfers
-    transfer_pair_id      VARCHAR,                       -- non-NULL for both legs of a transfer
-    persona               VARCHAR NOT NULL,              -- which persona generated this row
-    seed                  INTEGER NOT NULL,              -- seed used (for reproducibility)
-    generated_at          TIMESTAMP NOT NULL
+-- Create synthetic schema on demand (not during normal init)
+CREATE SCHEMA IF NOT EXISTS synthetic;
+
+/* Known-correct labels for scoring categorization and transfer detection accuracy against synthetic data */
+CREATE TABLE IF NOT EXISTS synthetic.ground_truth (
+    source_transaction_id VARCHAR NOT NULL, -- Joins to raw/core transaction identity; primary key
+    account_id VARCHAR NOT NULL, -- Synthetic source-system account ID; joins to raw account tables
+    expected_category VARCHAR, -- Ground-truth category label; NULL for transfers
+    transfer_pair_id VARCHAR, -- Non-NULL for transfer pairs; both sides share the same ID
+    persona VARCHAR NOT NULL, -- Which persona generated this row
+    seed INTEGER NOT NULL, -- Seed used for reproducibility
+    generated_at TIMESTAMP NOT NULL, -- When this ground truth was produced
+    PRIMARY KEY (source_transaction_id)
 );
 ```
 
@@ -212,51 +285,24 @@ CREATE TABLE synthetic.ground_truth (
 
 ## Persona reference
 
-| Persona | Default profile | Accounts | Annual txn volume | Income shape | Notable behaviors |
+| Persona | Default profile | Accounts | Default years | Income shape | Notable behaviors |
 |---|---|---|---|---|---|
-| `basic` | `alice` | 1 checking, 1 credit card | ~300 | Single biweekly salary, 3% annual raise | Holiday shopping bump; weekend dining bias; statement-balance card payoff |
-| `family` | `bob` | 1 checking, 1 savings, 2 credit cards | ~950-1,000 | Dual biweekly salaries | Mortgage, 3 subscriptions, 2 card payments, automatic savings transfer; summer kids-activities bump; holiday grocery + shopping spike |
-| `freelancer` | `charlie` | 2 checking (personal + business), 1 credit card | ~hundreds, irregular | Irregular client invoices + monthly retainer | Quarterly IRS estimated tax (Jan/Apr/Jun/Sep); business-vs-personal account split; monthly owner draw |
-| `international` | `eve` | 5 checking, one each at a Dutch, British, Canadian, Emirati, and US bank | ~690 | One local monthly stream per account, in that account's currency | Five currencies (EUR, GBP, CAD, AED, USD) with no conversion and no transfers; local merchants and cities per country; AED sits outside the FX provider's published set, so its rate is unavailable by construction |
+| `basic` | `alice` | 1 checking, 1 credit card | 3 | Single biweekly salary, 3% annual raise | Holiday shopping bump; weekend dining bias; statement-balance card payoff |
+| `family` | `bob` | 1 checking, 1 savings, 2 credit cards | 3 | Dual biweekly salaries | Mortgage, 3 subscriptions, 2 card payments, automatic savings transfer; summer kids-activities bump; holiday grocery + shopping spike |
+| `freelancer` | `charlie` | 2 checking (personal + business), 1 credit card | 3 | Irregular client invoices + monthly retainer | Quarterly IRS estimated tax (Jan/Apr/Jun/Sep); business-vs-personal account split; monthly owner draw |
+| `international` | `eve` | 5 checking, one each at a Dutch, British, Canadian, Emirati, and US bank | 2 | One local monthly stream per account, in that account's currency | Five currencies (EUR, GBP, CAD, AED, USD); two monthly USD/EUR transfers with declared received amounts, no inferred rate; local merchants and cities per country; AED sits outside the FX provider's published set, so its rate is unavailable by construction |
+
+Account counts, types, and `years_default` come from the persona YAML files below. Transaction volume is seed-dependent and printed by the build; see Date range and volume.
 
 Persona definitions are YAML files under `src/moneybin/synthetic/data/personas/`. Merchant catalogs live in `src/moneybin/synthetic/data/merchants/`. To add a new persona or expand a catalog, drop a YAML file and follow the existing schema — see `CONTRIBUTING.md`.
 
 ## Programmatic invocation (Python)
 
-For pytest fixtures and CI scoring jobs, drive the generator from Python rather than shelling out:
-
-```python
-from moneybin.synthetic.engine import GeneratorEngine
-from moneybin.synthetic.writer import SyntheticWriter
-from moneybin.database import get_database
-
-# Run the engine. No DB access yet — pure data structures.
-result = GeneratorEngine(persona_name="basic", seed=42, years=2).generate()
-
-# Persist to the active profile's DB.
-with get_database() as db:
-    counts = SyntheticWriter(db).write(result)
-```
-
-For isolated test profiles, point `MONEYBIN_HOME` at a `tmp_path` before the engine touches the DB:
-
-```python
-import os
-import pytest
-from moneybin.synthetic.engine import GeneratorEngine
-from moneybin.synthetic.writer import SyntheticWriter
-from moneybin.database import get_database
-
-
-@pytest.fixture
-def synthetic_profile(tmp_path, monkeypatch):
-    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
-    result = GeneratorEngine("basic", seed=42, years=1).generate()
-    with get_database() as db:
-        SyntheticWriter(db).write(result)
-    yield tmp_path
-    # tmp_path is removed by pytest; nothing to tear down manually.
-```
+The contributor surface is `moneybin.synthetic`: `GeneratorEngine` (`engine.py`) produces
+the data as plain structures with no database access, and `SyntheticWriter` (`writer.py`)
+persists a result to the active profile. The package layout and the month-by-month
+generation pipeline are documented in
+[`testing-synthetic-data.md`](../specs/testing-synthetic-data.md).
 
 For full scenario assertions against ground truth (Tier 1 invariants, structural checks, categorization scoring), use the YAML-driven scenario runner — see [`scenario-authoring.md`](scenario-authoring.md). It composes on top of the same `GeneratorEngine` + `SyntheticWriter` primitives and handles the `tmp_path` profile plumbing for you.
 
@@ -278,6 +324,8 @@ Practical implications for CI and regression tests:
 - **Not a realistic distribution of any specific user's spending.** Volumes, merchant mixes, and income shapes are parametric — deliberate, declared, deterministic. They are not learned from real data and should not be treated as representative of a real household.
 - **No Plaid pull semantics.** The generator writes directly to raw tables. It does not exercise the Plaid sync cursor, incremental-pull skip logic, or auth refresh flows — those paths are covered by mocks elsewhere.
 - **No investment accounts yet.** Only checking, savings, and credit-card account types are generated. Brokerage, retirement, and crypto accounts are planned.
-- **No cross-currency transfers, and no conversion.** Accounts carry their own `currency_code` (see the `international` persona), but the generator moves one magnitude to both sides of a transfer without converting it. A transfer between accounts in different currencies is refused at persona load rather than written unconverted; fund each currency from its own income instead. Reports sub-total per currency — nothing is converted to a single display currency yet.
+- **No inferred conversion.** Accounts carry their own `currency_code` (see the `international` persona). A same-currency transfer moves one magnitude to both sides. A cross-currency transfer must declare `received_amount` in the persona YAML; the generator writes the two declared magnitudes and looks up no rate, and a cross-currency transfer without `received_amount` is refused at persona load (`src/moneybin/synthetic/models.py`). Without a home currency set, reports sub-total per currency — see [Multi-currency](multi-currency.md).
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
 - **Random `--seed` is logged but not persisted.** If you omit `--seed`, the generator picks a value in `1..9999` and logs it. Save it from the log if you need to reproduce that exact run; otherwise prefer passing an explicit seed.
+- **`generate` does not create the target profile.** Run `moneybin profile create <name>` first. Against a missing profile the command exits 1 and reports a missing encryption key, which names the symptom rather than the cause.
+- **All output goes to stderr, mixed with SQLMesh logging.** A build emits thousands of plan and snapshot lines around its six user-facing ones, and the `✅` completion line is on stderr with them. To keep the result, redirect stderr; `db query` is the exception and writes its table to stdout.
