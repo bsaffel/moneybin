@@ -2071,11 +2071,20 @@ def import_confirm_command(
             or sheet
             or delimiter
             or encoding
+            # The two limit overrides join the refusal on the same ground as
+            # the six above: apply_pdf_bridge_response takes neither, so the
+            # replay never reaches detect_format or read_file and the flags
+            # would be discarded in silence. Refusing them cannot strand a
+            # caller the way refusing --account-binding once did — there is no
+            # gate on this path they could answer.
+            or no_row_limit
+            or no_size_limit
         ):
             raise typer.BadParameter(
                 "--bridge-response cannot be combined with --accept, --mapping, "
                 "--confirm-sign, --sign, --format, --date-format, "
-                "--number-format, --sheet, --delimiter, or --encoding.",
+                "--number-format, --sheet, --delimiter, --encoding, "
+                "--no-row-limit, or --no-size-limit.",
                 param_hint="'--bridge-response'",
             )
         # --account-binding is deliberately absent from this refusal: the bridge

@@ -2382,6 +2382,40 @@ class TestImportConfirmCommand:
         assert "--bridge-response cannot be combined" in result.output
         assert "--sign" in result.output
 
+    @pytest.mark.parametrize("flag", ["--no-row-limit", "--no-size-limit"])
+    def test_bridge_response_rejects_the_limit_overrides(
+        self,
+        tmp_path: Path,
+        flag: str,
+    ) -> None:
+        """The limit overrides cannot be silently ignored by PDF bridge apply.
+
+        `apply_pdf_bridge_response` takes neither, so the replay never reaches
+        `detect_format` or `read_file` and both flags would be discarded in
+        silence — the same reason the six format options above are refused.
+        They were accepted as no-ops when `import confirm` first learned them.
+        """
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                flag,
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "--bridge-response cannot be combined" in result.output
+        assert flag in result.output
+
     def test_bridge_response_requires_explicit_confirm(self, tmp_path: Path) -> None:
         """A JSON bridge recipe cannot load until the terminal user confirms it."""
         pdf_file = tmp_path / "statement.pdf"
