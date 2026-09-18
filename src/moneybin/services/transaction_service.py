@@ -1194,7 +1194,7 @@ class TransactionService:
         Validates every entry up front (account exists, amount is non-zero
         ``Decimal``, transaction_date is parseable, description non-empty);
         raises ``ValueError`` with the offending index on the first failure
-        before opening any transaction. Allocates one ``raw.import_log`` row
+        before opening any transaction. Allocates one ``app.import_log`` row
         for the batch via ``ImportService.allocate_import_log`` and inserts
         every row under that ``import_id`` inside a single DuckDB transaction
         alongside one ``manual.create`` audit event.
@@ -1301,7 +1301,7 @@ class TransactionService:
             self._db.commit()
         except Exception:
             # Any failure between allocate_import_log() and the commit leaves
-            # an orphaned ``importing``-status row in raw.import_log that
+            # an orphaned ``importing``-status row in app.import_log that
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()

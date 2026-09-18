@@ -1,7 +1,7 @@
 /* Audit log of every tabular file import. Each import batch gets a UUID that is
    stamped on every raw row it produces, enabling import history, reverting, and
    diagnostics. */
-CREATE TABLE IF NOT EXISTS raw.import_log (
+CREATE TABLE IF NOT EXISTS app.import_log (
     import_id VARCHAR PRIMARY KEY,              -- UUID generated at the start of each import batch
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file
     source_type VARCHAR NOT NULL,               -- File format: csv, tsv, excel, parquet, feather, pipe, pdf

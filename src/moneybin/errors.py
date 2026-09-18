@@ -277,6 +277,7 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         DatabaseKeyError,
         DatabaseLockError,
         DatabaseNotInitializedError,
+        DatabaseUpgradeRequiredError,
         SchemaDriftError,
         database_key_error_hint,
     )
@@ -307,6 +308,16 @@ def classify_user_error(exc: BaseException) -> UserError | None:
         return UserError(
             message,
             code=error_codes.INFRA_DATABASE_NOT_INITIALIZED,
+        )
+    if isinstance(exc, DatabaseUpgradeRequiredError):
+        # The exception's own message already names the specific remedy
+        # (clear no_auto_upgrade, retry, or fix permissions) because the
+        # three causes need different advice; the hint below is the one
+        # thing all three share.
+        return UserError(
+            str(exc),
+            code=error_codes.INFRA_DATABASE_UPGRADE_REQUIRED,
+            hint="💡 Run 'moneybin db migrate apply' to upgrade the database directly",
         )
     if isinstance(exc, DatabaseLockError):
         return UserError(

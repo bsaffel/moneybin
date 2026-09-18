@@ -17,7 +17,7 @@ Schema is stable but not yet frozen — see [`docs/architecture.md`](../architec
 | `seeds` | Reference data shipped with MoneyBin — six registries: categories, provider-category map, account types, exchange MICs, institutions, price sources. | CSV-backed tables | **Refused** | SQLMesh |
 | `reports` | Curated presentation views, one per CLI/MCP report. | Views | Yes | **Blocked** |
 
-"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 34 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
+"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 33 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
 
 Mutations use service-backed MCP or CLI write paths for `app.*` and loader-only `raw.*`. The general MCP SQL surface is read-only.
 
@@ -763,7 +763,7 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
 | `app.category_source_map` | One row per `(source_type, source_category_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
 | `app.budgets` | One row per `budget_id` | Monthly spending targets by category over a `start_month`–`end_month` window. |
-| `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `raw.import_log.import_id`. |
+| `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `app.import_log.import_id`. |
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |
 | `app.match_decisions` | One row per `match_id` | Matcher + user-review decisions. `match_type` ∈ `{dedup, transfer}`. Source for `core.bridge_transfers`. |
 | `app.tabular_formats` | One row per format `name` | Saved column mappings for tabular imports (Chase, Citi, Tiller, Mint, YNAB built-ins + auto-detected). |

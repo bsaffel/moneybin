@@ -309,7 +309,7 @@ class ImportResult:
     with `sign=` — the card-marker detector is bypassed for that format, so the
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created."""
+    """UUID of the app.import_log row this import created."""
     accounts_created: tuple[CreatedAccount, ...] = ()
     """Canonical accounts this import minted; empty when every account was adopted.
 
@@ -1675,7 +1675,7 @@ class ImportService:
         format_name: str,
         actor: str,
     ) -> str:
-        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+        """Allocate a fresh ``app.import_log`` row and return its ``import_id``.
 
         Thin wrapper around :meth:`ImportLogRepo.begin_import` that exposes
         the lifecycle to callers (manual entry, future API connectors) that
@@ -1707,7 +1707,7 @@ class ImportService:
         limit: int = 20,
         import_id: str | None = None,
     ) -> list[dict[str, str | int | None]]:
-        """Read ``raw.import_log`` batch history — thin wrapper for CLI/MCP.
+        """Read ``app.import_log`` batch history — thin wrapper for CLI/MCP.
 
         Backs ``moneybin import history``, the read path for one entity
         (``ImportLogRepo``) whose write path already goes through this
@@ -1726,7 +1726,7 @@ class ImportService:
         after_import_id: str | None = None,
         snapshot_total: int | None = None,
     ) -> ImportHistoryPage:
-        """Read one keyset page of ``raw.import_log`` history.
+        """Read one keyset page of ``app.import_log`` history.
 
         The paged twin of :meth:`get_import_history`, so the cursored MCP
         read reaches the same service boundary as the unpaged one rather
@@ -2005,7 +2005,7 @@ class ImportService:
         # Extract and write all four raw.ofx_* tables through the encrypted
         # ingest path (OFXExtractor.load(), matching PlaidExtractor's
         # extract+write shape). Wrapped so a failure anywhere inside marks the
-        # batch 'failed' instead of leaving raw.import_log.status='importing'
+        # batch 'failed' instead of leaving app.import_log.status='importing'
         # and blocking re-imports.
         try:
             load_result = OFXExtractor(db=self._db).load(
@@ -3434,7 +3434,7 @@ class ImportService:
         # Validate at runtime: typing.cast has no runtime effect, so an
         # invalid value like ``--sign=backwards`` would silently propagate
         # into the transform pipeline and surface deep inside SQLMesh,
-        # leaving a dangling raw.import_log row in ``importing`` state.
+        # leaving a dangling app.import_log row in ``importing`` state.
         # Guard explicitly via get_args so the failure is a clean UserError
         # at the import boundary.
         from typing import get_args
@@ -4191,7 +4191,7 @@ class ImportService:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
         Four outcomes — same machinery as ``_import_pdf`` but no side effects
-        on raw tables and no ``raw.import_log`` row:
+        on raw tables and no ``app.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
           returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
@@ -4303,7 +4303,7 @@ class ImportService:
           recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
           Invariant 10) unless ``save_format=False``, then load the re-executed
           rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
-          reversible ``raw.import_log`` row (Req 17).
+          reversible ``app.import_log`` row (Req 17).
         - **Verify expectation vs actual.** If the agent's row count differs
           from the re-executed count, ``rows_diverged=True`` is surfaced (and
           logged) — the saved recipe does not reproduce the agent's own
@@ -5725,7 +5725,7 @@ class ImportService:
         # can never drift on the naming scheme — see that helper.
         first_contact_format_name = pdf_format_name(fp)
 
-        # Backfill format columns on raw.import_log now that routing has
+        # Backfill format columns on app.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
         # know it post-routing, so without this update every PDF import_log
         # entry would carry NULL format_name/format_source and users could
@@ -6413,7 +6413,7 @@ class ImportService:
         binding instead of slipping past it.
 
         Args:
-            import_id: UUID of the import batch in ``raw.import_log``.
+            import_id: UUID of the import batch in ``app.import_log``.
         """
         from moneybin.tables import IMPORT_LOG
 
@@ -6554,15 +6554,7 @@ class ImportService:
                         f"DELETE FROM {table.full_name} WHERE import_id = ?",
                         [import_id],
                     )
-                self._db.execute(
-                    f"""
-                    UPDATE {IMPORT_LOG.full_name} SET
-                        status = 'reverted',
-                        reverted_at = CURRENT_TIMESTAMP
-                    WHERE import_id = ?
-                    """,
-                    [import_id],
-                )
+                self._import_log.mark_reverted(import_id)
                 # After the deletes: the re-key it causes is what the pass reads.
                 forwarding = forward_rekeyed_transaction_ids(
                     self._db, actor=actor, in_outer_txn=True

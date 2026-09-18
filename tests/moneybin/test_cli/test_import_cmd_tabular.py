@@ -224,7 +224,7 @@ class TestImportSignShapeValidation:
         assert result.exit_code == 1
         assert "single amount column" in caplog.text
         assert "--sign negative_is_expense" in caplog.text
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     def test_import_confirm_rejects_single_sign_for_split_mapping(
@@ -269,7 +269,7 @@ class TestImportSignShapeValidation:
         assert result.exit_code == 1
         assert "debit/credit pair" in caplog.text
         assert "--sign split_debit_credit" in caplog.text
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
 

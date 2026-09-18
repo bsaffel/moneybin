@@ -23,7 +23,7 @@ def _make_investments_db(tmp_path: Path) -> Database:
     """Build a Database with real raw/app schema + stubbed core.* investment tables.
 
     ``Database(...)`` runs the real ``init_schemas()`` (raw.manual_investment_transactions,
-    app.securities, app.lot_selections, raw.import_log, app.audit_log all come
+    app.securities, app.lot_selections, app.import_log, app.audit_log all come
     from that for free); ``core.*`` is SQLMesh-managed in production, so
     ``create_core_tables``/``create_core_dim_stub_views`` stub it for the
     read-path commands. Mirrors ``make_curation_db`` in

@@ -904,7 +904,7 @@ class InvestmentService:
         boundary (Guard 2). A ``reinvest`` writes the acquisition + income row
         pair sharing a minted ``event_group_id`` and returns both ids. All rows
         for one event land in a single DuckDB transaction under one
-        ``raw.import_log`` batch, mirroring the manual-cash-transaction path.
+        ``app.import_log`` batch, mirroring the manual-cash-transaction path.
 
         A ``currency_code`` of ``None`` is stored as NULL, not fabricated:
         ``core.fct_investment_transactions`` inherits the account's own currency
@@ -974,7 +974,7 @@ class InvestmentService:
           continues. Each event's ``account``/``security`` is resolved exactly
           once here (not again at write time).
         - **Pass 2 (write, one transaction).** Every surviving event's rows are
-          inserted under ONE ``raw.import_log`` batch in ONE DuckDB transaction
+          inserted under ONE ``app.import_log`` batch in ONE DuckDB transaction
           with ONE audit event. A failure part-way rolls the whole batch back,
           so the tool's "nothing written / safe to retry" contract holds even
           against an infra error mid-write.
@@ -1323,7 +1323,7 @@ class InvestmentService:
         """Insert one event's rows + one audit event under a single import batch.
 
         Mirrors ``TransactionService.create_manual_batch``: allocate one
-        ``raw.import_log`` row, insert every row in one transaction, emit one
+        ``app.import_log`` row, insert every row in one transaction, emit one
         ``investment.record`` audit event, and mark the batch failed on rollback
         so a crashed write leaves no orphaned ``importing`` batch. The
         multi-event analogue is :meth:`_write_batch`.
@@ -1392,7 +1392,7 @@ class InvestmentService:
         """Insert many events' rows atomically under one import batch.
 
         The multi-event analogue of :meth:`_write_rows`: every group's rows
-        (``(account_id, rows)``) are inserted under ONE ``raw.import_log`` batch
+        (``(account_id, rows)``) are inserted under ONE ``app.import_log`` batch
         in ONE transaction with ONE ``investment.record`` audit event. A failure
         part-way rolls the whole batch back and marks the import failed, so a
         retry can't double-insert events that would otherwise have committed

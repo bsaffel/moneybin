@@ -2,10 +2,12 @@
 
 `INTERNAL_CRITICAL` is the only thing standing between an undeclared
 `raw`/`prep` column and the value-shape scan, and how many columns it holds is
-stated in prose across the docs, the CHANGELOG, the design system, two MCP
-strings, and the CLI help. Every one of those is a privacy claim a reader acts
-on. None was mechanically bound to the registry, so the next declaration added
-would have falsified all of them at once and silently.
+stated in prose across the docs, the design system, two MCP strings, and the
+CLI help. Every one of those is a privacy claim a reader acts on. None was
+mechanically bound to the registry, so the next declaration added would have
+falsified all of them at once and silently. The CHANGELOG stated it too, once
+— excluded from `_tracked_corpus()` below since #587, when its `[Unreleased]`
+prose stopped being something an ordinary PR may edit at all.
 
 Two things are derived here rather than written down, because writing either one
 down reintroduces the failure:
@@ -73,7 +75,6 @@ _MODIFIER_BUDGET = 3
 #: Files carrying the claim, and how many each carries. Set equality, both
 #: directions — see the module docstring.
 _CLAIM_SITES = {
-    "CHANGELOG.md": 1,
     "design-system/ai-surface.md": 1,
     "docs/features.md": 2,
     "docs/guides/database-security.md": 1,
@@ -114,6 +115,15 @@ def _tracked_corpus() -> list[Path]:
     This makes the guard depend on running inside a git checkout — `check=True`
     raises anywhere else. That is not a gap: the wheel ships no tests, so every
     context that can run this file is a checkout.
+
+    Excludes `CHANGELOG.md`: `.github/workflows/changelog.yml` (added by #587)
+    fails any PR that diffs it outside a `release-preparation`-labeled PR, so
+    an ordinary feature PR cannot mechanically keep its `[Unreleased]` prose
+    in sync with this registry the way it can every other claim site — the
+    same reason a frozen `sql/migrations/V*.py` file is excluded from other
+    guards. Its stale claims are reconciled by hand during release prep
+    (`changelog.d/README.md` step 4, "Reconcile stale claims"), not by this
+    test.
     """
     listed = subprocess.run(  # fixed argv, no user input
         ["git", "ls-files"],  # noqa: S607  # git resolved from PATH, as everywhere in CI
@@ -125,7 +135,8 @@ def _tracked_corpus() -> list[Path]:
     return [
         ROOT / name
         for name in listed
-        if name.endswith(".md") or (name.startswith("src/") and name.endswith(".py"))
+        if name != "CHANGELOG.md"
+        and (name.endswith(".md") or (name.startswith("src/") and name.endswith(".py")))
     ]
 
 

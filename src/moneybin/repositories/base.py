@@ -76,6 +76,20 @@ class BaseRepo:
     #: Abstract repository bases opt out of concrete-table metadata validation.
     abstract: ClassVar[bool] = False
 
+    #: The one grandfathered non-``app`` table a ``BaseRepo`` subclass owns
+    #: (MB-255). ``ManualInvestmentTransactionsRepo`` predates this guard and
+    #: owns ``raw.manual_investment_transactions`` — a deliberate exception,
+    #: not a gap: MB-255 moved ``import_log`` (the only other ``raw`` table a
+    #: repo owned) to ``app``, so this is now the sole survivor. Naming it
+    #: here rather than leaving the class docstring's "owns protected
+    #: `app.*` tables" wording unchecked is exactly the fix MB-255 made —
+    #: an unchecked docstring contract is how MB-248's false prerequisite got
+    #: written. A second exception is a decision to take deliberately, not
+    #: one to add quietly by extending this set.
+    _NON_APP_TABLE_EXCEPTIONS: ClassVar[frozenset[str]] = frozenset({
+        "ManualInvestmentTransactionsRepo"
+    })
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         """Fail at class-definition time if a repo omits required metadata.
 
@@ -83,6 +97,10 @@ class BaseRepo:
         owned table), and ``pk_columns`` (its primary key). Without this, a
         missing attr only surfaces as an ``AttributeError`` deep in a runtime
         path — fail fast at import instead.
+
+        Also enforces that ``table_ref`` names an ``app.*`` table, per the
+        named exception above — the concrete guard behind this class's
+        "protected `app.*` mutation" contract.
         """
         super().__init_subclass__(**kwargs)
         if cls.__dict__.get("abstract", False):
@@ -96,6 +114,17 @@ class BaseRepo:
                 raise TypeError(
                     f"{cls.__name__} must set a class-level `{attr}` — {why}."
                 )
+        table_ref = cls.table_ref
+        if (
+            table_ref.schema != "app"
+            and cls.__name__ not in BaseRepo._NON_APP_TABLE_EXCEPTIONS
+        ):
+            raise TypeError(
+                f"{cls.__name__}.table_ref names {table_ref.full_name!r}, not an "
+                "app.* table. BaseRepo owns protected app.* mutation (Invariant "
+                "10); add it to BaseRepo._NON_APP_TABLE_EXCEPTIONS only as a "
+                "deliberate, documented decision."
+            )
 
     def __init__(self, db: Database, *, audit: AuditService | None = None) -> None:
         """Bind to an open Database; lazily build an ``AuditService`` if absent."""

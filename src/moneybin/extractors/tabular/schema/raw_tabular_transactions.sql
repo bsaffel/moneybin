@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS raw.tabular_transactions (
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe, pdf
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
-    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in raw.import_log; enables import reverting and history
+    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table

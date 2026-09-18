@@ -97,7 +97,7 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
     assert remaining is not None
     assert remaining[0] == 0
     status_row = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status_row is not None
     assert status_row[0] == "reverted"
@@ -169,7 +169,7 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
     assert remaining is not None
     assert remaining[0] == 0
     status_row = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status_row is not None
     assert status_row[0] == "reverted"
@@ -197,7 +197,7 @@ def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
     # removes flakiness from timestamp-resolution ties, without faking the
     # outcome under test (revert() still runs its real query).
     db.execute(
-        "UPDATE raw.import_log SET started_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "UPDATE app.import_log SET started_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
         "WHERE import_id = ?",
         [stuck_investment_import_id],
     )
@@ -261,7 +261,7 @@ def test_plan_revert_reports_counts_without_deleting_anything(db: Database) -> N
     assert remaining is not None
     assert remaining[0] == 1
     status = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status is not None
     assert status[0] == "complete"

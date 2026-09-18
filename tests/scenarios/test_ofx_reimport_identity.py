@@ -10,7 +10,7 @@ fixture that only moves one way would leave the other regression uncaught:
   read as already-imported and was refused.
 
 Both run through the real ``ImportService.import_file``, so this covers the
-digest actually reaching ``raw.import_log`` and being compared on the next
+digest actually reaching ``app.import_log`` and being compared on the next
 import, which the unit tests around ``find_existing_import`` cannot show.
 """
 
@@ -61,7 +61,7 @@ def test_reimport_identity_follows_content_not_path(tmp_path: Path) -> None:
 
         # Two distinct documents landed, and the redundant download did not.
         digests = db.execute(
-            "SELECT COUNT(DISTINCT file_sha256) FROM raw.import_log "
+            "SELECT COUNT(DISTINCT file_sha256) FROM app.import_log "
             "WHERE status = 'complete'"
         ).fetchone()
         assert digests is not None and digests[0] == 2, digests
