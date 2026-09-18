@@ -22,7 +22,7 @@ MCP Tools / CLI  →  Privacy Middleware  →  Service Layer  →  DuckDB
   and response filtering (see Design Philosophy 2 on what is *not* enforced).
 - **Service layer** — business logic, parameterized SQL, returns typed Python objects (dataclasses or Pydantic models).
 
-**Enforcement:** `tests/moneybin/test_architecture/test_adapter_layering.py` fails CI when adapters in `src/moneybin/mcp/tools/` or `src/moneybin/cli/commands/` import write-callable symbols from `moneybin.loaders`, `moneybin.extractors`, or `moneybin.matching`. Pure constants, pure read helpers, DI targets, and type/format descriptors are allowlisted explicitly. If you hit the guardrail, the cleanest fix is a new service method; only add an allowlist entry for a genuine exception with a `# why` comment.
+**Enforcement:** `tests/moneybin/test_architecture/test_adapter_layering.py` fails CI when adapters in `src/moneybin/mcp/tools/` or `src/moneybin/cli/commands/` import write-callable symbols from `moneybin.extractors` or `moneybin.matching`. Pure constants, pure read helpers, DI targets, and type/format descriptors are allowlisted explicitly. If you hit the guardrail, the cleanest fix is a new service method; only add an allowlist entry for a genuine exception with a `# why` comment.
 
 ## Design Philosophy
 

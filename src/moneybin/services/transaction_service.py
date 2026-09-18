@@ -44,6 +44,7 @@ from moneybin.protocol.write_contracts import (
     TagRename,
     TagsSet,
 )
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.repositories.transaction_notes_repo import TransactionNotesRepo
 from moneybin.repositories.transaction_splits_repo import TransactionSplitsRepo
 from moneybin.repositories.transaction_tags_repo import TransactionTagsRepo
@@ -436,6 +437,7 @@ class TransactionService:
         self._notes_repo = TransactionNotesRepo(db, audit=self._audit)
         self._tags_repo = TransactionTagsRepo(db, audit=self._audit)
         self._splits_repo = TransactionSplitsRepo(db, audit=self._audit)
+        self._import_log = ImportLogRepo(db)
 
     def apply_annotations(
         self,
@@ -1216,9 +1218,11 @@ class TransactionService:
         for idx, raw in enumerate(entries):
             prepared.append(self._validate_manual_entry(raw, idx))
 
-        # Defer the ImportService import — allocate_import_log lives there and
-        # services have a soft no-cycle convention; ImportService imports from
-        # loaders only, so the local import keeps both directions clean.
+        # Deferred: allocate_import_log lives on ImportService, and importing
+        # it at module load here is unnecessary for every transaction-service
+        # caller that never touches manual entry. (Verified no import cycle:
+        # import_service.py's own module-level import closure never reaches
+        # this module.)
         from moneybin.services.import_service import ImportService
 
         import_id = ImportService(self._db).allocate_import_log(
@@ -1226,8 +1230,6 @@ class TransactionService:
             format_name=_MANUAL_FORMAT_NAME,
             actor=actor,
         )
-
-        from moneybin.loaders import import_log
 
         results: list[ManualEntryRawResult] = []
         self._db.begin()
@@ -1303,8 +1305,7 @@ class TransactionService:
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=0,
@@ -1318,8 +1319,7 @@ class TransactionService:
         # genuinely crashed write.
         # Finalized here, before categorization: the raw rows are committed and
         # a later categorization failure explicitly leaves them in place.
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=len(results),

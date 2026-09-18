@@ -406,12 +406,11 @@ async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> No
 def _seed_revertable_import(*, rows: int = 2) -> str:
     """Create one complete tabular import holding ``rows`` revertable raw rows."""
     from moneybin.database import get_database
-    from moneybin.loaders import import_log
+    from moneybin.repositories.import_log_repo import ImportLogRepo
 
     source_file = "/tmp/revert_gate.csv"  # noqa: S108  # test fixture path
     with get_database(read_only=False) as db:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file=source_file,
             source_type="csv",
             source_origin="tiller",
@@ -438,8 +437,8 @@ def _seed_revertable_import(*, rows: int = 2) -> str:
                     import_id,
                 ],
             )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=rows, rows_imported=rows
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=rows, rows_imported=rows
         )
     return import_id
 
@@ -2077,7 +2076,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     channel: str,
     proposal_state: str,
 ) -> None:
-    from moneybin.loaders import import_log
+    from moneybin.repositories.import_log_repo import ImportLogRepo
     from moneybin.services.import_service import ImportResult, ImportService
 
     source = tmp_path / ("statement.csv" if channel == "tabular" else "statement.pdf")
@@ -2117,8 +2116,9 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
         calls += 1
         if calls == 1:
             raise _coarse_sign_error(proposal_channel)
-        import_id = import_log.begin_import(
-            service._db,  # pyright: ignore[reportPrivateUsage]
+        import_id = ImportLogRepo(
+            service._db  # pyright: ignore[reportPrivateUsage]
+        ).begin_import(
             source_file=str(source),
             source_type="pdf",
             source_origin="rollback_probe",
@@ -3074,7 +3074,7 @@ async def test_import_confirm_tabular_transform_failures_observed_after_rollback
         fail_transform,
     )
     monkeypatch.setattr(
-        "moneybin.extractors.tabular.extractor.TABULAR_IMPORT_BATCHES",
+        "moneybin.services.import_service.TABULAR_IMPORT_BATCHES",
         batch_failure,
     )
     monkeypatch.setattr(
@@ -4295,7 +4295,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
         raise AssertionError("data access must follow cursor validation")
 
     monkeypatch.setattr(
-        "moneybin.loaders.import_log.get_import_history_page",
+        "moneybin.repositories.import_log_repo.ImportLogRepo.get_import_history_page",
         fail_if_accessed,
     )
 

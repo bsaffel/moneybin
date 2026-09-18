@@ -15,7 +15,7 @@ from moneybin.extractors.ofx.extractor import (
     ofx_source_accounts,
 )
 from moneybin.extractors.pdf.identity import derive_pdf_account_identity
-from moneybin.loaders import import_log
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.services.import_service import ImportService
 from tests.import_helpers import import_answering_gate
 
@@ -75,7 +75,7 @@ class TestImportOFXBatchLifecycle:
 
         assert result.transactions > 0
 
-        history = import_log.get_import_history(db, limit=5)
+        history = ImportLogRepo(db).get_import_history(limit=5)
         ofx_imports = [h for h in history if h["source_type"] == "ofx"]
         assert len(ofx_imports) >= 1
         latest = ofx_imports[0]
@@ -169,7 +169,7 @@ class TestImportOFXBatchLifecycle:
         service = ImportService(db)
         import_answering_gate(service, fixture, refresh=False)
 
-        history = import_log.get_import_history(db, limit=5)
+        history = ImportLogRepo(db).get_import_history(limit=5)
         latest = [h for h in history if h["source_type"] == "ofx"][0]
         import_id = latest["import_id"]
         assert isinstance(import_id, str)
@@ -235,7 +235,7 @@ class TestImportOFXBatchLifecycle:
         service.import_file(fixture, refresh=False, force=True)
 
         canonical = str(fixture.resolve())
-        history = import_log.get_import_history(db, limit=10)
+        history = ImportLogRepo(db).get_import_history(limit=10)
         ofx_for_file = [
             h
             for h in history
@@ -326,14 +326,14 @@ class TestImportOFXRevertPreservesSameInstitutionSibling:
         # but different <ACCTID> (1111 vs 4242) -- same institution, two
         # distinct accounts/statements.
         import_answering_gate(service, first, refresh=False)
-        history = import_log.get_import_history(db, limit=5)
+        history = ImportLogRepo(db).get_import_history(limit=5)
         first_import_id = [h for h in history if h["source_type"] == "ofx"][0][
             "import_id"
         ]
         assert isinstance(first_import_id, str)
 
         import_answering_gate(service, second, refresh=False)
-        history = import_log.get_import_history(db, limit=5)
+        history = ImportLogRepo(db).get_import_history(limit=5)
         ofx_imports = [h for h in history if h["source_type"] == "ofx"]
         assert len(ofx_imports) == 2
         second_import_id = next(

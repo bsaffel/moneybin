@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.loaders import import_log
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.sql.migrations.V046__add_file_sha256_to_import_log import migrate
 from tests.moneybin.migration_helpers import run_migration
 
@@ -49,7 +49,7 @@ def test_v046_leaves_existing_batches_matchable_by_path(db: Database) -> None:
     assert db.execute(
         "SELECT file_sha256 FROM raw.import_log WHERE import_id = 'legacy-01'"
     ).fetchone() == (None,)
-    assert import_log.find_existing_import(db, "/tmp/legacy.ofx") == (  # noqa: S108  # test fixture path
+    assert ImportLogRepo(db).find_existing_import("/tmp/legacy.ofx") == (  # noqa: S108  # test fixture path
         "legacy-01",
         "complete",
     )

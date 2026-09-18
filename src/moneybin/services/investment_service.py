@@ -64,6 +64,7 @@ from moneybin.metrics.registry import (
     PRICE_STALENESS_DAYS,
     SECURITY_RESOLUTION_OUTCOMES_TOTAL,
 )
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -514,6 +515,7 @@ class InvestmentService:
         self._audit = audit if audit is not None else AuditService(db)
         self._securities_repo = SecuritiesRepo(db, audit=self._audit)
         self._lot_selections_repo = LotSelectionsRepo(db, audit=self._audit)
+        self._import_log = ImportLogRepo(db)
 
     # ------------------------------------------------------------------
     # Security resolution (Req 3)
@@ -1334,8 +1336,6 @@ class InvestmentService:
             actor=actor,
         )
 
-        from moneybin.loaders import import_log
-
         written: list[str] = []
         self._db.begin()
         try:
@@ -1355,8 +1355,7 @@ class InvestmentService:
             self._db.commit()
         except BaseException:
             self._db.rollback()
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=0,
@@ -1368,8 +1367,7 @@ class InvestmentService:
         # forever with a NULL completed_at and NULL row counts, which
         # `moneybin import history` / `import_status` cannot tell apart from a
         # genuinely crashed write.
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=len(written),
@@ -1410,8 +1408,6 @@ class InvestmentService:
             actor=actor,
         )
 
-        from moneybin.loaders import import_log
-
         written: list[str] = []
         self._db.begin()
         try:
@@ -1432,8 +1428,7 @@ class InvestmentService:
             self._db.commit()
         except BaseException:
             self._db.rollback()
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=0,
@@ -1442,8 +1437,7 @@ class InvestmentService:
             raise
 
         # Close the batch this path opened — see :meth:`_write_rows`.
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=len(written),
