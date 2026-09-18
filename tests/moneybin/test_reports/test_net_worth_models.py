@@ -55,6 +55,19 @@ _CURRENCIES_COLUMNS = (
 )
 
 
+_DAY_COLUMNS = (
+    "home_currency_code",
+    "balance_date",
+    "account_count",
+    "carried_forward_count",
+    "currency_count",
+    "unpriced_currency_count",
+    "total_assets",
+    "total_liabilities",
+    "net_worth",
+)
+
+
 def _model_body(name: str) -> str:
     """Return a report model's executable SQL without its MODEL header."""
     raw = (_REPORT_MODELS / f"{name}.sql").read_text()
@@ -746,3 +759,200 @@ def test_currencies_rung_projects_the_declared_column_order(
     cursor = model_db.execute("SELECT * FROM reports.net_worth_currencies LIMIT 0")
     columns = [column[0] for column in cursor.description]
     assert columns == list(_CURRENCIES_COLUMNS)
+
+
+def test_day_rung_sums_currencies_in_home(model_db: Database) -> None:
+    """USD 100.00 plus EUR 100.00 at 1.10 totals 210.00 in the home currency."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-usd", "Checking", "USD")
+    _balance(model_db, "acct-usd", "2026-01-05", "100.00", "USD")
+    _account(model_db, "acct-eur", "Euro Checking", "EUR")
+    _balance(model_db, "acct-eur", "2026-01-05", "100.00", "EUR")
+    _home(model_db, "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10")
+    _install_report(model_db, "net_worth")
+
+    row = model_db.execute(
+        """
+        SELECT net_worth, currency_count, unpriced_currency_count
+        FROM reports.net_worth
+        WHERE balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (Decimal("210.00"), 2, 0)
+
+
+def test_day_rung_fails_closed_on_one_unpriced_currency(model_db: Database) -> None:
+    """A single unpriced currency NULLs every measure, not just its own segment."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-usd", "Checking", "USD")
+    _balance(model_db, "acct-usd", "2026-01-05", "100.00", "USD")
+    _account(model_db, "acct-jpy", "Yen Checking", "JPY")
+    _balance(model_db, "acct-jpy", "2026-01-05", "1000", "JPY")
+    _home(model_db, "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    row = model_db.execute(
+        """
+        SELECT net_worth, total_assets, total_liabilities,
+               unpriced_currency_count, currency_count
+        FROM reports.net_worth
+        WHERE balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (None, None, None, 1, 2)
+    # The priced USD subset (100.00) must never leak through as if it were
+    # the whole total.
+    assert row is not None and row[1] != Decimal("100.00")
+
+
+def test_day_rung_unknown_currency_counts_as_unpriced(model_db: Database) -> None:
+    """A NULL currency_code account counts as one unpriced currency."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Mystery", None)
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", None)
+    _home(model_db, "USD")
+    _install_report(model_db, "net_worth")
+
+    row = model_db.execute(
+        """
+        SELECT net_worth, unpriced_currency_count, currency_count
+        FROM reports.net_worth
+        WHERE balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (None, 1, 1)
+
+
+def test_day_rung_single_currency_profile_is_never_null(model_db: Database) -> None:
+    """A USD-only profile with an identity rate on every date never nulls out.
+
+    Requirement 11: a single-currency profile is priced by construction, since
+    every balance's currency is the home currency and an identity rate row
+    exists for it on every date.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _home(model_db, "USD")
+    for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
+        _balance(model_db, "acct-a", day, "100.00", "USD")
+        _rate(model_db, "USD", "USD", day, "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    rows = model_db.execute(
+        "SELECT balance_date, net_worth FROM reports.net_worth ORDER BY balance_date"
+    ).fetchall()
+    assert len(rows) == 3
+    assert all(net_worth is not None for _, net_worth in rows)
+
+
+def test_day_rung_date_scoped_archival(model_db: Database) -> None:
+    """An archived account still contributes rows up to and including archived_at."""
+    _install_net_worth_sources(model_db)
+    _account(
+        model_db,
+        "acct-a",
+        "Checking",
+        "USD",
+        archived=True,
+        archived_at="2026-01-06",
+    )
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _balance(model_db, "acct-a", "2026-01-06", "100.00", "USD")
+    _balance(model_db, "acct-a", "2026-01-07", "100.00", "USD")
+    _install_report(model_db, "net_worth")
+
+    dates = model_db.execute(
+        "SELECT balance_date FROM reports.net_worth ORDER BY balance_date"
+    ).fetchall()
+    assert dates == [(date(2026, 1, 5),), (date(2026, 1, 6),)]
+
+
+def test_day_rung_grain_is_unique(model_db: Database) -> None:
+    """Two currencies across three days still yield exactly three day rows."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking A", "USD")
+    _account(model_db, "acct-b", "Checking B", "EUR")
+    for day in ("2026-01-05", "2026-01-06", "2026-01-07"):
+        _balance(model_db, "acct-a", day, "100.00", "USD")
+        _balance(model_db, "acct-b", day, "200.00", "EUR")
+    _install_report(model_db, "net_worth")
+
+    row = model_db.execute(
+        """
+        SELECT COUNT(*), COUNT(DISTINCT balance_date)
+        FROM reports.net_worth
+        """
+    ).fetchone()
+    assert row == (3, 3)
+
+
+def test_day_rung_rate_join_binds_to_the_same_balance_date(
+    model_db: Database,
+) -> None:
+    """The rate join binds on effective_date, not merely the currency pair.
+
+    Two exchange rate rows for the same pair on different days must not
+    cross-multiply a single day's balance into two per-currency groups: each
+    balance_date's own rate wins. A join that dropped ``effective_date`` would
+    match both rate rows against every balance_date for this pair, splitting
+    each date's single EUR segment into two conflicting rows and doubling
+    both currency_count and total_assets for each date.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-eur", "Euro Checking", "EUR")
+    _balance(model_db, "acct-eur", "2026-01-05", "100.00", "EUR")
+    _balance(model_db, "acct-eur", "2026-01-06", "100.00", "EUR")
+    _home(model_db, "USD")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10")
+    _rate(model_db, "EUR", "USD", "2026-01-06", "1.20")
+    _install_report(model_db, "net_worth")
+
+    rows = model_db.execute(
+        """
+        SELECT balance_date, net_worth, currency_count
+        FROM reports.net_worth
+        ORDER BY balance_date
+        """
+    ).fetchall()
+    assert rows == [
+        (date(2026, 1, 5), Decimal("110.00"), 1),
+        (date(2026, 1, 6), Decimal("120.00"), 1),
+    ]
+
+
+def test_day_rung_null_home_currency_prices_nothing(model_db: Database) -> None:
+    """No app.profile_settings row means every date is unpriced.
+
+    A USD->USD identity rate exists for the test date, so a mutation that
+    defaulted the missing home currency to 'USD' (e.g.
+    ``COALESCE(h.home_currency_code, 'USD')``) would find it and price the
+    day — the NULL result here can only come from the missing home currency
+    itself, not from an absent rate row.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    row = model_db.execute(
+        """
+        SELECT net_worth, home_currency_code, unpriced_currency_count
+        FROM reports.net_worth
+        WHERE balance_date = '2026-01-05'
+        """
+    ).fetchone()
+    assert row == (None, None, 1)
+
+
+def test_day_rung_projects_the_declared_column_order(model_db: Database) -> None:
+    """The SELECT projects exactly the Interfaces column order."""
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth")
+
+    cursor = model_db.execute("SELECT * FROM reports.net_worth LIMIT 0")
+    columns = [column[0] for column in cursor.description]
+    assert columns == list(_DAY_COLUMNS)

@@ -1,8 +1,8 @@
 """Net worth service.
 
-Cross-account daily aggregation reads from reports.net_worth (which already
-filters by include_in_net_worth and archived). History supports daily/weekly/
-monthly intervals with period-over-period change.
+Cross-account daily aggregation reads from reports.net_worth_currencies (which
+already filters by include_in_net_worth and archived). History supports
+daily/weekly/monthly intervals with period-over-period change.
 """
 
 from __future__ import annotations
@@ -18,7 +18,11 @@ from moneybin.privacy.payloads.networth import (
     NetWorthHistoryPoint,
     NetWorthSnapshotPayload,
 )
-from moneybin.tables import DIM_ACCOUNTS, FCT_BALANCES_DAILY, REPORTS_NET_WORTH
+from moneybin.tables import (
+    DIM_ACCOUNTS,
+    FCT_BALANCES_DAILY,
+    REPORTS_NET_WORTH_CURRENCIES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -46,19 +50,19 @@ class NetworthService:
         if as_of_date is not None:
             as_of_clause = "WHERE balance_date <= ?"
             params.append(as_of_date)
-        # reports.net_worth is one row per (balance_date, currency_code). Resolve
-        # the latest date first, then take every currency reporting on it — a
-        # bare LIMIT 1 would return one arbitrary currency's total as if it were
-        # the whole position.
+        # reports.net_worth_currencies is one row per (balance_date, currency_code).
+        # Resolve the latest date first, then take every currency reporting on
+        # it — a bare LIMIT 1 would return one arbitrary currency's total as if
+        # it were the whole position.
         sql = f"""
             WITH latest AS (
                 SELECT MAX(balance_date) AS balance_date
-                FROM {REPORTS_NET_WORTH.full_name}
+                FROM {REPORTS_NET_WORTH_CURRENCIES.full_name}
                 {as_of_clause}
             )
             SELECT n.balance_date, n.currency_code, n.net_worth,
                    n.total_assets, n.total_liabilities, n.account_count
-            FROM {REPORTS_NET_WORTH.full_name} AS n
+            FROM {REPORTS_NET_WORTH_CURRENCIES.full_name} AS n
             INNER JOIN latest AS l ON n.balance_date = l.balance_date
             ORDER BY n.currency_code
         """  # parameterized via params
@@ -161,7 +165,7 @@ class NetworthService:
                     {bucket_expr} AS period,
                     currency_code,
                     LAST(net_worth ORDER BY balance_date) AS end_net_worth
-                FROM {REPORTS_NET_WORTH.full_name}
+                FROM {REPORTS_NET_WORTH_CURRENCIES.full_name}
                 WHERE balance_date BETWEEN ? AND ?
                 GROUP BY 1, 2
             ),

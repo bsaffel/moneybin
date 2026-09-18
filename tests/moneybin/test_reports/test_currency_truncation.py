@@ -96,10 +96,10 @@ _CURRENCY_SORT_OK: dict[tuple[str, str], str] = {
         "n.currency_code",
     ): (
         "The query pins one balance_date (the MAX from the `latest` CTE), and "
-        "reports.net_worth is grained (balance_date, currency_code), so the "
-        "result is exactly one row per currency. Any prefix of k rows holds k "
-        "currencies whatever the sort key is — there is no ordering that "
-        "survives truncation better."
+        "reports.net_worth_currencies is grained (balance_date, currency_code), "
+        "so the result is exactly one row per currency. Any prefix of k rows "
+        "holds k currencies whatever the sort key is — there is no ordering "
+        "that survives truncation better."
     ),
 }
 

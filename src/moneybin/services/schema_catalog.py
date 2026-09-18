@@ -410,26 +410,24 @@ EXAMPLES: dict[str, list[Example]] = {
     ],
     "reports.net_worth": [
         Example(
-            question="Net worth today, one row per currency",
+            question="Net worth today, in the profile's home currency",
             sql="""
-                SELECT currency_code, balance_date, account_count,
+                SELECT home_currency_code, balance_date, account_count,
                        total_assets, total_liabilities, net_worth
                 FROM reports.net_worth
                 WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)
-                ORDER BY currency_code
             """,
         ),
         Example(
-            question="Net worth trend over the last 12 months (monthly, per currency)",
+            question="Net worth trend over the last 12 months (monthly)",
             sql="""
                 SELECT
-                    currency_code,
                     STRFTIME(balance_date, '%Y-%m') AS month,
                     LAST(net_worth ORDER BY balance_date) AS end_of_month_net_worth
                 FROM reports.net_worth
                 WHERE balance_date >= CURRENT_DATE - INTERVAL 12 MONTH
-                GROUP BY month, currency_code
-                ORDER BY month, currency_code
+                GROUP BY month
+                ORDER BY month
             """,
         ),
     ],

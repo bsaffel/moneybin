@@ -1011,15 +1011,20 @@ def test_networth_service_report_is_tabular_redacted_and_truncated(
     assert result.total_count == 2
     envelope = result.to_envelope().to_dict()
     assert envelope["summary"]["display_currency"] == "USD"
-    # Net worth is downstream of the transactions fact and reads it through a
-    # materialized model, so the framework's own reads run: the pending count,
-    # the model's rebuild stamp, and the decided-since count. `without_a_profile`
-    # answers each with no row. The report's rows still never come from SQL here.
+    # Net worth is downstream of the transactions fact and reads it through two
+    # materialized models — core.fct_balances_daily directly, and
+    # core.fct_exchange_rates_daily via the rate join's balances_domain — so the
+    # framework's own reads run: the pending count, both models' rebuild stamps,
+    # and the decided-since count. `without_a_profile` answers each with no row.
+    # The report's rows still never come from SQL here.
     pending_read, freshness_read, settled_read = db.execute.call_args_list
     assert MATCH_DECISIONS.full_name in pending_read.args[0]
     assert pending_read.args[1] == ["dedup"]
     assert MODEL_FRESHNESS.full_name in freshness_read.args[0]
-    assert freshness_read.args[1] == ["core.fct_balances_daily"]
+    assert freshness_read.args[1] == [
+        "core.fct_balances_daily",
+        "core.fct_exchange_rates_daily",
+    ]
     assert MATCH_DECISIONS.full_name in settled_read.args[0]
     assert settled_read.args[1] == ["dedup"]
 
@@ -2018,13 +2023,23 @@ def test_rejecting_a_duplicate_proposal_never_marks_a_total_provisional(
 def test_a_rebuilt_materialization_clears_the_provisional_marking(
     saved_db: Database,
 ) -> None:
-    """Once the FULL model is rebuilt past the decision, the number is final."""
+    """Once the FULL model is rebuilt past the decision, the number is final.
+
+    ``reports.net_worth`` reads two FULL models — ``core.fct_balances_daily``
+    directly and ``core.fct_exchange_rates_daily`` via the rate join's
+    ``balances_domain`` — and ``_last_rebuilt_at`` treats a missing stamp on
+    either one as "nothing can be assumed rebuilt" (fail-closed), so both
+    need a post-decision rebuild stamp for the caveat to actually clear.
+    """
     seed_pending_dedup_pair(saved_db)
     MatchingService(saved_db).set_status(
         "match00000001", status="accepted", decided_by="user", actor="test"
     )
     record_model_execution(
         saved_db, "core.fct_balances_daily", _naive_utc(timedelta(hours=1))
+    )
+    record_model_execution(
+        saved_db, "core.fct_exchange_rates_daily", _naive_utc(timedelta(hours=1))
     )
 
     result = ReportCatalog((

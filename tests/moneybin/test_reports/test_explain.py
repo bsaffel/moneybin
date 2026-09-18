@@ -628,8 +628,9 @@ def test_a_service_backed_report_names_why_it_has_no_sql(
 ) -> None:
     """R9's bound, stated plainly: no query exists anywhere in that path.
 
-    A chip that renders "derived by NetworthService from reports.net_worth"
-    tells the truth; one that fabricates a plausible SELECT does not.
+    A chip that renders "derived by NetworthService from
+    reports.net_worth_currencies" tells the truth; one that fabricates a
+    plausible SELECT does not.
     """
     explanation = explain_report(saved_db, handle="core:networth", parameters={})
 
@@ -638,11 +639,12 @@ def test_a_service_backed_report_names_why_it_has_no_sql(
     assert explanation.sql_unavailable is not None
     assert "service" in explanation.sql_unavailable
     # The declared read set, which is what stands in for a query here. Three
-    # entries, not one: `reports-dynamic.md` R6 says `("reports.net_worth",)`,
-    # which is the *history* report's provenance — a spec drift, fixed in the
-    # doc pass rather than by weakening this assertion.
+    # entries, not one: `reports-dynamic.md` R6 says
+    # `("reports.net_worth_currencies",)`, which is the *history* report's
+    # provenance — a spec drift, fixed in the doc pass rather than by
+    # weakening this assertion.
     assert explanation.lineage == (
-        "reports.net_worth",
+        "reports.net_worth_currencies",
         "core.fct_balances_daily",
         "core.dim_accounts",
     )

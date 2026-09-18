@@ -562,7 +562,7 @@ def _seed_nonzero_networth(path: Path) -> None:
         )
         db.execute(
             """
-            CREATE OR REPLACE VIEW reports.net_worth AS
+            CREATE OR REPLACE VIEW reports.net_worth_currencies AS
             SELECT
                 d.balance_date,
                 d.currency_code,

@@ -16,17 +16,18 @@ from moneybin.services.networth_service import NetworthService
 
 
 def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None:
-    """Manually CREATE TABLE + INSERT rows into reports.net_worth.
+    """Manually CREATE TABLE + INSERT rows into reports.net_worth_currencies.
 
     Bypasses SQLMesh for unit-test speed. The SQLMesh model is actually a VIEW
-    over fct_balances_daily JOIN dim_accounts; we substitute a TABLE with the
-    same shape. Schema must match `src/moneybin/sqlmesh/models/reports/net_worth.sql`'s
+    over fct_balances_daily JOIN dim_accounts; we substitute a TABLE holding
+    the subset of columns `NetworthService` actually reads. Column names must
+    match `src/moneybin/sqlmesh/models/reports/net_worth_currencies.sql`'s
     SELECT projection.
     """
     db.execute("CREATE SCHEMA IF NOT EXISTS reports")
     db.execute(
         """
-        CREATE TABLE IF NOT EXISTS reports.net_worth (
+        CREATE TABLE IF NOT EXISTS reports.net_worth_currencies (
             currency_code VARCHAR,
             balance_date DATE,
             account_count INTEGER,
@@ -39,7 +40,7 @@ def _seed_reports_net_worth(db: Database, rows: list[dict[str, object]]) -> None
     for r in rows:
         db.execute(
             """
-            INSERT INTO reports.net_worth
+            INSERT INTO reports.net_worth_currencies
             (currency_code, balance_date, account_count,
              total_assets, total_liabilities, net_worth)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -357,9 +358,9 @@ class TestHistory:
 class TestMultiCurrency:
     """multi-currency.md Requirements 5 and 7 — segment, never silently blend.
 
-    ``reports.net_worth`` emits one row per (balance_date, currency_code), so a
-    service that keeps its single-row assumption would return one currency's
-    total labelled as the whole position.
+    ``reports.net_worth_currencies`` emits one row per (balance_date,
+    currency_code), so a service that keeps its single-row assumption would
+    return one currency's total labelled as the whole position.
     """
 
     @pytest.mark.unit

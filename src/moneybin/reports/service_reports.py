@@ -138,7 +138,7 @@ _SNAPSHOT_SEMANTICS = ReportSemantics(
     comparison_window=None,
     exclusions=("archived accounts", "accounts excluded from net worth"),
     provenance=(
-        "reports.net_worth",
+        "reports.net_worth_currencies",
         "core.fct_balances_daily",
         "core.dim_accounts",
     ),
@@ -204,7 +204,7 @@ _HISTORY_SEMANTICS = ReportSemantics(
         "empty period buckets",
         "percentage change when prior net worth is zero or absent",
     ),
-    provenance=("reports.net_worth",),
+    provenance=("reports.net_worth_currencies",),
 )
 
 _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
