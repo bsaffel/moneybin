@@ -333,6 +333,72 @@ def test_record_increments_trigger_count_on_same_pattern_and_category(
     assert sorted(rows[0][1]) == ["t1", "t2"]
 
 
+def test_record_categorization_does_not_double_count_a_rekeyed_transaction(
+    real_db: Database,
+) -> None:
+    """A dedup merge re-keying a transaction must not double-count it (issue #552).
+
+    Categorizes the same real-world transaction under its pre-merge id, then
+    simulates a dedup merge (the pre-merge id leaves ``core.fct_transactions``,
+    the post-merge id takes its place, and the alias map records the
+    forwarding — the same shape ``forward_rekeyed_transaction_ids`` leaves
+    behind), then categorizes again under the post-merge id. ``trigger_count``
+    must increment once, not twice, for one physical transaction.
+    """
+    _seed_transaction(real_db, "old_id", description="STARBUCKS")
+    svc = AutoRuleService(real_db)
+    proposed_rule_id = svc.record_categorization("old_id", "Food & Drink")
+    assert proposed_rule_id is not None
+
+    real_db.execute("DELETE FROM core.fct_transactions WHERE transaction_id = 'old_id'")
+    _seed_transaction(real_db, "new_id", description="STARBUCKS")
+    real_db.execute(
+        "INSERT INTO app.transaction_id_aliases "
+        "(old_transaction_id, new_transaction_id, created_at) "
+        "VALUES ('old_id', 'new_id', CURRENT_TIMESTAMP)"
+    )
+
+    svc.record_categorization("new_id", "Food & Drink")
+
+    row = real_db.execute(
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # building test input string, not executing SQL
+        "WHERE proposed_rule_id = ?",
+        [proposed_rule_id],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == ["old_id"]
+
+
+def test_record_categorization_replay_of_the_same_live_id_does_not_double_count(
+    real_db: Database,
+) -> None:
+    """Recording the same live id twice (MCP retry, re-import) must not double-count.
+
+    The fix for issue #552 resolves ``sample_txn_ids`` through the alias chain
+    before the already-counted check, which also changed the comparison for
+    this ordinary (no re-key) replay path. Nothing else in this module pins
+    that path, so a future change to ``resolve_curation_transaction_ids`` or to
+    the ``.values()`` membership check could silently reintroduce
+    double-counting here with the rest of the suite staying green.
+    """
+    _seed_transaction(real_db, "t1", description="STARBUCKS")
+    svc = AutoRuleService(real_db)
+    proposed_rule_id = svc.record_categorization("t1", "Food & Drink")
+    assert proposed_rule_id is not None
+
+    svc.record_categorization("t1", "Food & Drink")
+
+    row = real_db.execute(
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # building test input string, not executing SQL
+        "WHERE proposed_rule_id = ?",
+        [proposed_rule_id],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == ["t1"]
+
+
 def test_record_supersedes_when_same_pattern_different_category(
     real_db: Database,
 ) -> None:
