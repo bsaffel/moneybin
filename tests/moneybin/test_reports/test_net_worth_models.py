@@ -803,9 +803,6 @@ def test_day_rung_fails_closed_on_one_unpriced_currency(model_db: Database) -> N
         """
     ).fetchone()
     assert row == (None, None, None, 1, 2)
-    # The priced USD subset (100.00) must never leak through as if it were
-    # the whole total.
-    assert row is not None and row[1] != Decimal("100.00")
 
 
 def test_day_rung_unknown_currency_counts_as_unpriced(model_db: Database) -> None:
@@ -956,3 +953,28 @@ def test_day_rung_projects_the_declared_column_order(model_db: Database) -> None
     cursor = model_db.execute("SELECT * FROM reports.net_worth LIMIT 0")
     columns = [column[0] for column in cursor.description]
     assert columns == list(_DAY_COLUMNS)
+
+
+def test_day_rung_measures_are_decimal_18_2_not_widened(model_db: Database) -> None:
+    """The three measures stay DECIMAL(18, 2); the four counts stay INTEGER.
+
+    SUM() over per_currency's DECIMAL(18, 2) columns widens to DECIMAL(38, 2)
+    unless the final SELECT casts it back down; DESCRIBE catches that
+    directly rather than inferring it from a passing value comparison.
+    """
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth")
+
+    types_by_column = {
+        row[0]: row[1]
+        for row in model_db.execute(
+            "DESCRIBE SELECT * FROM reports.net_worth"
+        ).fetchall()
+    }
+    assert types_by_column["account_count"] == "INTEGER"
+    assert types_by_column["carried_forward_count"] == "INTEGER"
+    assert types_by_column["currency_count"] == "INTEGER"
+    assert types_by_column["unpriced_currency_count"] == "INTEGER"
+    assert types_by_column["total_assets"] == "DECIMAL(18,2)"
+    assert types_by_column["total_liabilities"] == "DECIMAL(18,2)"
+    assert types_by_column["net_worth"] == "DECIMAL(18,2)"

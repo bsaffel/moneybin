@@ -363,9 +363,9 @@ def test_demo_net_worth_covers_every_account(
     assert any(segment.net_worth != Decimal("0") for segment in result.per_currency)
 
     with get_database(read_only=True) as db:
-        # reports.net_worth is one row per (date, currency), so the count has to
-        # be summed across currencies — a bare LIMIT 1 would compare one
-        # currency's account count against the whole profile's and fail.
+        # reports.net_worth is one row per date, already totalled across every
+        # currency — SUM() here is over that single matching row, not a
+        # cross-currency rollup; a bare LIMIT 1 would answer the same question.
         row = db.execute(
             "SELECT SUM(account_count) FROM reports.net_worth "
             "WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)"

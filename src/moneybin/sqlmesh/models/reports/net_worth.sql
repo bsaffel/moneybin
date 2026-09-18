@@ -76,10 +76,10 @@ SELECT
   carried_forward_count::INT AS carried_forward_count, /* How many of them are carried forward rather than observed */
   currency_count::INT AS currency_count, /* Distinct currencies held on this date; the unknown-currency segment counts as one */
   unpriced_currency_count::INT AS unpriced_currency_count, /* How many of them had no rate on this date; 0 means the total below is complete */
-  CASE WHEN unpriced_currency_count = 0 THEN total_assets_home END AS total_assets, /* Sum of positive balances converted to home_currency_code; NULL when unpriced_currency_count > 0 */
-  CASE WHEN unpriced_currency_count = 0 THEN total_liabilities_home END AS total_liabilities, /* Sum of negative balances converted to home_currency_code, kept negative; NULL when unpriced_currency_count > 0 */
+  CASE WHEN unpriced_currency_count = 0 THEN total_assets_home END::DECIMAL(18, 2) AS total_assets, /* Sum of positive balances converted to home_currency_code; NULL when unpriced_currency_count > 0 */
+  CASE WHEN unpriced_currency_count = 0 THEN total_liabilities_home END::DECIMAL(18, 2) AS total_liabilities, /* Sum of negative balances converted to home_currency_code, kept negative; NULL when unpriced_currency_count > 0 */
   CASE
     WHEN unpriced_currency_count = 0
     THEN total_assets_home + total_liabilities_home
-  END AS net_worth /* Headline: total_assets + total_liabilities in home_currency_code; NULL when unpriced_currency_count > 0 */
+  END::DECIMAL(18, 2) AS net_worth /* Headline: total_assets + total_liabilities in home_currency_code; NULL when unpriced_currency_count > 0 */
 FROM per_day

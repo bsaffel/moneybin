@@ -639,10 +639,14 @@ def test_a_service_backed_report_names_why_it_has_no_sql(
     assert explanation.sql_unavailable is not None
     assert "service" in explanation.sql_unavailable
     # The declared read set, which is what stands in for a query here. Three
-    # entries, not one: `reports-dynamic.md` R6 says
-    # `("reports.net_worth_currencies",)`, which is the *history* report's
-    # provenance — a spec drift, fixed in the doc pass rather than by
-    # weakening this assertion.
+    # entries, not one: `reports-dynamic.md` R6 says `("reports.net_worth",)`,
+    # which is the *history* report's provenance — pre-existing spec drift,
+    # unrelated to this assertion's own report. It is now drift in a second
+    # sense too: the day rung (`reports.net_worth`) stopped being what either
+    # service report reads once Task 4 moved both onto
+    # `reports.net_worth_currencies`, so R6's quoted tuple no longer names a
+    # table `core:networth_history`'s query touches at all. Fixed in the doc
+    # pass rather than by weakening this assertion.
     assert explanation.lineage == (
         "reports.net_worth_currencies",
         "core.fct_balances_daily",
