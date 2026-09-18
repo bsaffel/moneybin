@@ -6,9 +6,11 @@
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 from datetime import date
 from decimal import Decimal
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -1779,3 +1781,41 @@ class TestNullCurrencyCode:
         assert acct.currency_code is None, (
             f"NULL rendered as {acct.currency_code!r} instead of None"
         )
+
+
+def _settings_audit_contexts(
+    db: Database, account_id: str
+) -> list[dict[str, Any] | None]:
+    rows = db.execute(
+        """
+        SELECT context_json FROM app.audit_log
+        WHERE target_table = 'account_settings' AND target_id = ?
+          AND action = 'account_settings.set'
+        ORDER BY occurred_at, rowid
+        """,
+        [account_id],
+    ).fetchall()
+    return [json.loads(r[0]) if r[0] is not None else None for r in rows]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("include", [True, False])
+def test_settings_update_marks_an_explicit_include_decision(
+    account_db: Database, include: bool
+) -> None:
+    AccountService(account_db).settings_update(
+        "ACC001", include_in_net_worth=include, actor="cli"
+    )
+    assert _settings_audit_contexts(account_db, "ACC001") == [
+        {"confirms_include_in_net_worth": True}
+    ]
+
+
+@pytest.mark.unit
+def test_settings_update_leaves_no_marker_when_flag_untouched(
+    account_db: Database,
+) -> None:
+    service = AccountService(account_db)
+    service.settings_update("ACC001", display_name="Renamed", actor="cli")
+    service.settings_update("ACC001", archived=True, actor="cli")
+    assert _settings_audit_contexts(account_db, "ACC001") == [None, None]
