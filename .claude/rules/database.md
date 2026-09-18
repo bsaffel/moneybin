@@ -30,15 +30,24 @@ with get_database(read_only=False) as db:
 is available. `get_database()` retries automatically with exponential backoff.
 
 Write opens additionally acquire a per-profile process file lock around
-the DuckDB ATTACH; reads do not. The lock identifies the holder via
-metadata at `<db_path>.write.lock` and emits a classified
-`DatabaseLockError` envelope on timeout (default 10 s). See
+the DuckDB ATTACH; reads do not, with one exception — see below. The lock
+identifies the holder via metadata at `<db_path>.write.lock` and emits a
+classified `DatabaseLockError` envelope on timeout (default 10 s). See
 [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
 § "PR B hardening pass".
 
 **`DatabaseNotInitializedError`** is raised by `get_database(read_only=True)`
 when the database file does not exist. Both exceptions are caught by
 `handle_cli_errors()` and classified as user-facing errors.
+
+**A read-only open whose migration ladder is behind the running code
+escalates**: it briefly opens write-mode (through the same file lock) to
+apply the ladder, then re-attaches read-only — a read is never served from a
+stale or empty schema. If the upgrade can't run (`no_auto_upgrade` set, an
+unwritable file, or a lock timeout), the open raises the classified
+`DatabaseUpgradeRequiredError` instead of proceeding. See
+[`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md)
+§ "Read-only migration escalation".
 
 See [`database-writer-coordination.md`](../../docs/specs/database-writer-coordination.md) and [ADR-010](../../docs/decisions/010-writer-coordination.md).
 

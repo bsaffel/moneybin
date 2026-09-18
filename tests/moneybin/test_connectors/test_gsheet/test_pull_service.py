@@ -108,7 +108,7 @@ def test_pull_unexpected_api_error_marks_failed(in_memory_db: Database) -> None:
     assert result.status == "failed"
     # import_log row must be terminal, not stuck in 'importing'.
     row = in_memory_db.execute(
-        "SELECT status FROM raw.import_log WHERE source_origin = ? "
+        "SELECT status FROM app.import_log WHERE source_origin = ? "
         "ORDER BY started_at DESC LIMIT 1",
         [cid],
     ).fetchone()
@@ -256,13 +256,13 @@ def test_pull_closes_import_log_and_updates_status_on_transform_failure(
 
     # import_log row was closed.
     leaked = in_memory_db.execute(
-        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'importing'"
+        "SELECT COUNT(*) FROM app.import_log WHERE status = 'importing'"
     ).fetchone()
     assert leaked is not None
     assert leaked[0] == 0, "import_log row should be marked failed, not left importing"
 
     failed = in_memory_db.execute(
-        "SELECT COUNT(*) FROM raw.import_log WHERE status = 'failed'"
+        "SELECT COUNT(*) FROM app.import_log WHERE status = 'failed'"
     ).fetchone()
     assert failed is not None
     assert failed[0] >= 1

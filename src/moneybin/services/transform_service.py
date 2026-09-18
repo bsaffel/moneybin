@@ -662,7 +662,7 @@ class TransformService:
                 f"WHERE status IN ('complete', 'partial')"  # TableRef constant
             ).fetchone()
         except duckdb.CatalogException:
-            # CatalogException when raw.import_log not yet created (pre-first-import)
+            # CatalogException when app.import_log not yet created (pre-first-import)
             return None
         return row[0] if row and row[0] is not None else None
 
@@ -701,13 +701,20 @@ class TransformService:
         return row[0] if row and row[0] is not None else None
 
     def _present_raw_landing_tables(self) -> tuple[frozenset[str], bool]:
-        """Declared landing tables this catalog actually has, plus import_log."""
+        """Declared raw landing tables this catalog actually has, plus import_log.
+
+        import_log lives in ``app``, not ``raw`` (MB-255), so the presence
+        check spans both schemas in one query rather than two round trips.
+        """
         rows = self._db.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_catalog = current_database() AND table_schema = 'raw'"
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            "WHERE table_catalog = current_database() AND table_schema IN ('raw', 'app')"
         ).fetchall()
-        names = {str(row[0]) for row in rows}
-        return frozenset(names & set(_RAW_LANDING_COLUMNS)), "import_log" in names
+        raw_names = {str(name) for schema, name in rows if schema == "raw"}
+        has_import_log = any(
+            schema == "app" and name == "import_log" for schema, name in rows
+        )
+        return frozenset(raw_names & set(_RAW_LANDING_COLUMNS)), has_import_log
 
     def _oldest_model_execution_at(self) -> datetime | None:
         """When the least-recently-rebuilt SQLMesh model was last backfilled.

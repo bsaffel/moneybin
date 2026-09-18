@@ -19,7 +19,7 @@ Reference for engineers wiring automation against the import path and for migran
 | Plaid sync | `plaid` | `raw.plaid_transactions`, `raw.plaid_accounts`, `raw.plaid_balances`; investments: `raw.plaid_securities`, `raw.plaid_investment_transactions`, `raw.plaid_investment_holdings`, `raw.plaid_investment_holding_lots`, `raw.plaid_investment_holdings_snapshots` |
 | Manual entry | `manual` | `raw.manual_transactions`; investments: `raw.manual_investment_transactions` |
 
-Tabular `source_type` is one of five file-format values — there is no single "tabular" family tag in core. Filter with `source_type IN ('csv','tsv','excel','parquet','feather')` when you want every tabular row regardless of file type. PDF transaction-shaped rows share `raw.tabular_transactions` with the five file formats above, tagged `source_type='pdf'` — include it explicitly when a query means "every row that went through the tabular pipeline." Every batch — regardless of source — registers an `import_id` in `raw.import_log` and stamps it on every row it produced. That id is the unit of `moneybin import revert`.
+Tabular `source_type` is one of five file-format values — there is no single "tabular" family tag in core. Filter with `source_type IN ('csv','tsv','excel','parquet','feather')` when you want every tabular row regardless of file type. PDF transaction-shaped rows share `raw.tabular_transactions` with the five file formats above, tagged `source_type='pdf'` — include it explicitly when a query means "every row that went through the tabular pipeline." Every batch — regardless of source — registers an `import_id` in `app.import_log` and stamps it on every row it produced. That id is the unit of `moneybin import revert`.
 
 `source_origin` is a finer-grained tag scoped beneath `source_type`: institution slug for OFX (`wells_fargo`, `chase`), Plaid item id for Plaid, format name for tabular (`tiller`, `chase_credit`), and the literal `'user'` for manual entries.
 
@@ -196,7 +196,7 @@ Generic PDF ingestion, not a per-institution parser — one extractor drives eve
 
 **Sign convention.** A bank statement is `negative_is_expense`, like OFX. A credit-card statement is natively `negative_is_income` (charges post positive, payments negative) — the inverse of every other source. MoneyBin requires explicit human ratification before a `negative_is_income` recipe writes anything: MCP elicitation when the client supports it, otherwise `moneybin import files <file> --confirm` for a deterministically derived recipe. (`moneybin import confirm <file> --bridge-response <response>.json --confirm` is the separate agent-bridge path — it ratifies a recipe the driving agent proposed and needs that response file, which a deterministic derivation never produces.) The confirmation carries the evidence (a printed-vs-recorded sample) and is never applied silently — a wrong inversion corrupts every row, and a saved recipe would replay the error forever. `--sign` is a durable override but only ratifies; an agent actor can never set it (rejected at the bridge boundary).
 
-**Reversibility.** Every PDF import gets an `import_id` in `raw.import_log`, identical to tabular and OFX — `moneybin import revert` undoes it. The two PDF outcomes identify rows differently. A transaction-shaped row hashes its **content** — statement period, date, raw amount or debit/credit, description, and account — and deliberately excludes page and row position, so re-running a recipe that reorders rows does not change transaction IDs; two genuinely identical rows survive because a collision appends an occurrence index. A seed row is position-aware instead, hashing `alias|<doc_key>|p<page>r<row_index>|content`, which preserves duplicate cells within a page. Either way, re-importing the same statement adds no transaction rows, though it does open a second batch in the import log: only the OFX channel is refused there.
+**Reversibility.** Every PDF import gets an `import_id` in `app.import_log`, identical to tabular and OFX — `moneybin import revert` undoes it. The two PDF outcomes identify rows differently. A transaction-shaped row hashes its **content** — statement period, date, raw amount or debit/credit, description, and account — and deliberately excludes page and row position, so re-running a recipe that reorders rows does not change transaction IDs; two genuinely identical rows survive because a collision appends an occurrence index. A seed row is position-aware instead, hashing `alias|<doc_key>|p<page>r<row_index>|content`, which preserves duplicate cells within a page. Either way, re-importing the same statement adds no transaction rows, though it does open a second batch in the import log: only the OFX channel is refused there.
 
 **Out of scope today.** Brokerage positions/holdings PDFs route to seed — no core investments table reads `raw.pdf_seeds`. W-2, 1099, and other tax-form PDFs are not extracted; no tax-form parser exists. Scanned/image-only PDFs (no text layer) are declined outright.
 
@@ -330,7 +330,7 @@ Re-importing the same content produces no duplicates because every raw table ded
 | Plaid | `transaction_id` | Source-provided. Loader upserts in place; Plaid's `removed_transactions` list triggers deletes. | Cursor-driven — incremental by default; `--force` resets and re-fetches. |
 | Manual | `source_transaction_id` (`manual_<uuid4>[:12]`) | New ID per `transactions create` call. | A second create call with identical fields creates a new row — there is no content-hash collapse for manual entries. |
 
-There is no file-content SHA-256 short-circuit before extraction — re-running an unchanged file re-parses and upserts; row counts in `raw.import_log` reflect the upsert, not new inserts.
+There is no file-content SHA-256 short-circuit before extraction — re-running an unchanged file re-parses and upserts; row counts in `app.import_log` reflect the upsert, not new inserts.
 
 ## Failure modes
 
@@ -372,7 +372,7 @@ Per-source error surfaces. CLI exits 1 with the exception class name visible in 
 source_transaction_id = 'manual_' || <12-hex UUID4>
 source_type           = 'manual'
 source_origin         = 'user'
-import_id             = <new raw.import_log row>
+import_id             = <new app.import_log row>
 account_id            = <resolved from dim_accounts>
 transaction_date, amount, description, merchant_name, memo,
 payment_channel, transaction_type, check_number,
@@ -383,7 +383,7 @@ created_by            = 'cli' | 'mcp'
 
 `created_by` is hardcoded per surface: `'cli'` for `moneybin transactions create`, `'mcp'` for the `transactions_create` MCP tool. No other values are written today; the column is `VARCHAR NOT NULL` to leave room for multi-user identity later.
 
-In `core.fct_transactions` the row appears with `source_type = 'manual'` and is treated identically to any imported row — same dedup, same matching pipeline, same MCP / CLI access. One CLI call = one batch = one `raw.import_log` row. Bulk manual entry: build a CSV and run it through `moneybin import files` instead.
+In `core.fct_transactions` the row appears with `source_type = 'manual'` and is treated identically to any imported row — same dedup, same matching pipeline, same MCP / CLI access. One CLI call = one batch = one `app.import_log` row. Bulk manual entry: build a CSV and run it through `moneybin import files` instead.
 
 ## Inbox: watched folder
 

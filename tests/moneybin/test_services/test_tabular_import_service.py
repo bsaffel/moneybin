@@ -3085,7 +3085,7 @@ class TestTabularConfirmationFlow:
 
         assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign negative_is_expense" in exc.value.message
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     @pytest.mark.parametrize("sign", ["negative_is_expense", "negative_is_income"])
@@ -3131,7 +3131,7 @@ class TestTabularConfirmationFlow:
 
         assert exc.value.code == "import_invalid_sign_convention"
         assert "--sign split_debit_credit" in exc.value.message
-        log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert log_rows is not None and log_rows[0] == 0
 
     @pytest.mark.parametrize(
@@ -3206,7 +3206,7 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 1
         log_row = db.execute(
-            "SELECT status, rows_imported, rows_rejected FROM raw.import_log "
+            "SELECT status, rows_imported, rows_rejected FROM app.import_log "
             "WHERE import_id = ?",
             [result.import_id],
         ).fetchone()

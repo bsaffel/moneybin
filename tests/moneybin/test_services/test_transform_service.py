@@ -21,11 +21,11 @@ from moneybin.services.transform_service import (
 )
 from tests.moneybin.db_helpers import record_sqlmesh_apply
 
-# raw.import_log columns required by NOT NULL constraints. The table is
+# app.import_log columns required by NOT NULL constraints. The table is
 # auto-created by Database() schema init; tests only need to provide
 # import_id, status, completed_at — the rest are dummy values.
 _INSERT_IMPORT = (
-    "INSERT INTO raw.import_log "
+    "INSERT INTO app.import_log "
     "(import_id, source_file, source_type, source_origin, account_names, "
     "status, completed_at) "
     "VALUES (?, '/tmp/f.csv', 'csv', 'test', '[]'::JSON, ?, ?)"
@@ -51,7 +51,7 @@ _INSERT_RAW_PRICE = (
 
 def _ts(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
     # Naive timestamp; mirrors the raw landing columns and
-    # raw.import_log.completed_at (all TIMESTAMP).
+    # app.import_log.completed_at (all TIMESTAMP).
     return datetime(year, month, day, hour, minute)
 
 
@@ -274,7 +274,7 @@ def test_freshness_scans_landings_when_import_log_itself_is_absent(
     declare_only_models("core.dim_accounts")
     record_sqlmesh_apply(freshness_db, _ts(2026, 5, 10, 12, 0))
     freshness_db.execute(_INSERT_RAW_PRICE, [_ts(2026, 5, 13, 18, 24)])
-    freshness_db.execute("DROP TABLE raw.import_log")
+    freshness_db.execute("DROP TABLE app.import_log")
 
     assert TransformService(freshness_db).freshness().pending is True
 

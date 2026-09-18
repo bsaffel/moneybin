@@ -22,7 +22,7 @@ def _seed_pending_import(import_id: str = "IMP_PENDING_001") -> None:
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 format_name, account_names, status, rows_total, rows_imported,
                 completed_at

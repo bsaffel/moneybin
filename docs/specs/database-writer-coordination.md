@@ -3,6 +3,22 @@
 ## Status
 implemented
 
+> **Read-only migration escalation (2026-09-18, MB-255 review).** The
+> "Read-mode opens never call this" line under "Lock primitive contract"
+> below is no longer absolute. A read-only open never reached
+> `init_schemas()`/`MigrationRunner` at all, so it could read a schema the
+> running code had already moved past — and a write open with
+> `no_auto_upgrade` set could create a just-relocated table empty while real
+> rows stayed stranded under its old name, since `init_schemas()` runs
+> unconditionally before that check. Fix: a read-only open whose ladder is
+> behind briefly escalates to a write open — through this exact `write_lock`
+> primitive, not a second coordination mechanism — to bring it current
+> before re-attaching read-only, and a write open refuses instead of
+> proceeding silently when it can't. See `get_database()`'s
+> `_upgrade_then_reopen_read_only` / `_read_only_ladder_is_behind` /
+> `_open_write_locked` in `database.py`. The common case (ladder already
+> current) is unaffected: no lock touched, same ~14 ms path.
+
 > **Current MCP mapping.** Tools that touch DuckDB acquire their own
 > `get_database(read_only=...)` connection. Connection mode follows the actual
 > database operation; MCP annotations separately describe observable behavior.
@@ -640,8 +656,11 @@ def write_lock(
 ) -> Generator[None, None, None]: ...
 ```
 
-- **Read-mode opens never call this.** The file lock is exclusively a
-  write-write coordination primitive.
+- **Read-mode opens never call this for their own ATTACH** — the file lock
+  is a write-write coordination primitive there. One narrow exception: a
+  read-only open whose migration ladder is behind briefly escalates to a
+  write open through this exact primitive before re-attaching read-only.
+  See the "Read-only migration escalation" note at the top of this spec.
 - **Reentrant within a thread.** Re-entry from the same `(pid, thread_id)`
   returns immediately without re-acquiring the OS lock; depth is tracked.
   A *different* thread in the same process opens its own descriptor and

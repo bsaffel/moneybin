@@ -389,7 +389,7 @@ Access: write, not idempotent. Sensitivity: up to `critical`.
 
 ### import_revert
 
-Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips raw.import_log to 'reverted': permanent — no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.
+Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips app.import_log to 'reverted': permanent — no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.
 
 Access: write, destructive, not idempotent. Sensitivity: at least `low`.
 
@@ -617,7 +617,7 @@ explicit priority, ``cancel`` leaves live state alone.
 
 ### sql_query
 
-Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 34 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
+Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****\<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes — a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 

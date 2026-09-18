@@ -29,7 +29,7 @@ assertions:
   - name: import_log_single_batch
     fn: assert_row_count_exact
     args:
-      table: raw.import_log
+      table: app.import_log
       expected: 1
   - name: dim_accounts_two_rows
     fn: assert_row_count_exact

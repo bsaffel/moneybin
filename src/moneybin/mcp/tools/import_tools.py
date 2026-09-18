@@ -1394,7 +1394,7 @@ async def import_revert(
 ) -> ResponseEnvelope[ImportRevertPayload]:
     """Undo an import batch by deleting all rows it produced.
 
-    Looks up source_type from raw.import_log and deletes rows tagged with
+    Looks up source_type from app.import_log and deletes rows tagged with
     import_id from the matching raw tables (raw.tabular_* or raw.ofx_*).
     Updates the import_log row's status to 'reverted'.
 
@@ -2729,7 +2729,7 @@ def register_import_workflow_tools(mcp: FastMCP) -> None:
             "Revert one completed import or delete one user-saved format. Both "
             "branches require exact payload-bound confirmation. Import reversion "
             "deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips "
-            "raw.import_log to 'reverted': permanent — no revert, and no "
+            "app.import_log to 'reverted': permanent — no revert, and no "
             "system_audit_undo counterpart. Saved-format deletion writes "
             "app.tabular_formats and is recoverable with system_audit_undo.",
         ),

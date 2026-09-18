@@ -109,14 +109,14 @@ def test_human_import_gates_on_weak_account_candidate(
     ]
     assert "wf_existing01" in cand_ids
     # Gate raised before transform/load: nothing landed, and no batch opened.
-    # The `raw.import_log` half matters as much as the rows: an import that
+    # The `app.import_log` half matters as much as the rows: an import that
     # never started must not appear in history as a failure. Its OFX and PDF
     # siblings assert the same pair, so tabular — the channel that had the
     # confirm first — is not the one left without the guard.
     for table, expected in (
         ("raw.tabular_transactions", 0),
         ("app.account_links", 0),
-        ("raw.import_log", 0),
+        ("app.import_log", 0),
     ):
         n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
         assert n is not None and n[0] == expected, table
@@ -269,7 +269,7 @@ def test_agent_import_gates_on_weak_account_candidate(
     for table, expected in (
         ("raw.tabular_transactions", 0),
         ("app.account_links", 0),
-        ("raw.import_log", 0),
+        ("app.import_log", 0),
     ):
         n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
         assert n is not None and n[0] == expected, table
@@ -1207,7 +1207,7 @@ def test_ofx_import_gates_before_raw_ingest(
     time anything was written. Only the tabular path stopped and asked.
 
     The gate must raise before ``begin_import``, so a gated OFX import leaves no
-    ``raw.import_log`` row either: an import that never started should not appear
+    ``app.import_log`` row either: an import that never started should not appear
     in history as a failure.
     """
     _seed_twin(db, _OFX_TWIN)
@@ -1224,7 +1224,7 @@ def test_ofx_import_gates_before_raw_ingest(
         ("raw.ofx_transactions", 0),
         ("raw.ofx_accounts", 0),
         ("app.account_links", 0),
-        ("raw.import_log", 0),
+        ("app.import_log", 0),
     ):
         n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
         assert n is not None and n[0] == expected, table
@@ -1352,7 +1352,7 @@ def test_an_ofx_binding_that_contradicts_a_remembered_link_loads_nothing(
     # that exist, and no second batch was ever opened.
     for table, expected in (
         ("raw.ofx_transactions", 2),
-        ("raw.import_log", 1),
+        ("app.import_log", 1),
     ):
         n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
         assert n is not None and n[0] == expected, table
@@ -1688,7 +1688,7 @@ def test_a_source_key_spelled_like_another_accounts_ref_is_refused(
             account_bindings={"@1": "new"},
         )
     # Refused before begin_import, like every other binding rejection.
-    for table in ("raw.ofx_transactions", "app.account_links", "raw.import_log"):
+    for table in ("raw.ofx_transactions", "app.account_links", "app.import_log"):
         n = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()  # noqa: S608  # fixed table list, not user input
         assert n is not None and n[0] == 0, table
 

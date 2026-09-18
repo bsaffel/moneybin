@@ -827,7 +827,7 @@ def _manual_investment_import_rows(db: Database) -> list[Any]:
     return db.conn.execute(
         """
         SELECT status, rows_total, rows_imported, completed_at
-          FROM raw.import_log
+          FROM app.import_log
          WHERE format_name = 'manual_investment_entry'
         """  # test read, static SQL
     ).fetchall()
