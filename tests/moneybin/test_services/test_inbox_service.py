@@ -1688,6 +1688,46 @@ class TestPendingSidecarAccountHint:
         # --accept is the one option that helps in neither case.
         assert not any("--accept" in a for a in actions), actions
 
+    def test_header_row_consumed_sidecar_warns_the_recovery_does_not_archive(
+        self, tmp_path: Path
+    ) -> None:
+        """The sidecar's only recovery runs `import files`/`formats delete`.
+
+        Neither routes through `import confirm`, so neither calls
+        `archive_confirmed_file` — the file and this sidecar would stay in
+        pending/ and the next inbox sync would reprocess a finished item and
+        duplicate every transaction it just loaded. Mirrors the same warning
+        already present on the `unreadable_date` branch's `--date-format`
+        half, just below this one in the source.
+        """
+        from pathlib import Path as _Path
+
+        db = MagicMock(spec=Database)
+        svc = InboxService(db=db, settings=_make_settings(tmp_path))
+        svc.ensure_layout()
+        moved = svc.pending_dir / "2026-05" / "consumed.csv"
+        moved.parent.mkdir(parents=True, exist_ok=True)
+        moved.write_text("2026-05-01,-10,Coffee\n2026-05-02,20,Payroll\n")
+
+        sidecar = svc.write_pending_sidecar(
+            _Path(moved),
+            channel="tabular",
+            tier="medium",
+            score=0.75,
+            reason="header_row_consumed",
+            proposed_mapping={"transaction_date": "Date", "amount": "Amount"},
+            samples={},
+            flagged=[],
+            missing_required=[],
+            unmapped_columns=[],
+        )
+
+        import yaml
+
+        actions = yaml.safe_load(sidecar.read_text())["actions"]
+        assert any("does not archive" in a for a in actions), actions
+        assert any("pending/" in a for a in actions), actions
+
     def test_header_position_ambiguous_sidecar_recommends_archiving_command(
         self, tmp_path: Path
     ) -> None:

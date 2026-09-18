@@ -4074,6 +4074,16 @@ class ImportService:
             and rows_imported > 0
         ):
             try:
+                # skip_rows and skip_trailing_patterns are deliberately NOT
+                # persisted here (both take their model default, 0/None): a
+                # saved format describes the column layout, not the header's
+                # position, so every read re-detects that position fresh —
+                # which adapts when a future export of this layout grows one
+                # more preamble line, where a pinned position would instead
+                # consume a transaction as the header. resolve_read_settings
+                # already reads a format's skip_rows of 0 as "no opinion" and
+                # lets detection run, so this is the behavior either way — do
+                # not "fix" this omission without deciding to change that.
                 detected_fmt = TabularFormat(
                     name=source_origin,
                     # Institution is best-effort metadata; the per-account label

@@ -156,13 +156,13 @@ class ConfirmationRequired:
     `account_proposals`.
 
     `reason='header_row_consumed'` narrows `unknown_layout` to the one cause
-    no caller input can answer: the first row was read as column names but
-    parses as a transaction, so a real record is already gone. It exists
-    because `resolve_or_confirm` honours an `Override` at every tier by
-    design — the caller's column correction outranks a low score — and that
-    is right for a mapping problem and wrong for this one, which no column
-    correction touches. Surfaces route it to the saved format whose skip_rows
-    caused it, never to a column retry.
+    no caller input can answer: the row read as column names parses as a
+    transaction, so a real record is already gone. It exists because
+    `resolve_or_confirm` honours an `Override` at every tier by design — the
+    caller's column correction outranks a low score — and that is right for a
+    mapping problem and wrong for this one, which no column correction
+    touches. Surfaces route it to re-detecting the layout against this file,
+    never to a column retry.
 
     `reason='header_position_ambiguous'` is `header_row_consumed`'s
     dismissible sibling: auto-detection picked a header-like row that has a
@@ -581,9 +581,23 @@ def header_row_consumed_recovery(
 ) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
-    Only an explicit saved format's ``skip_rows`` reaches this reason —
-    auto-detection never reads a data row as the header, and no built-in
-    format sets ``skip_rows`` (see ``test_no_builtin_format_sets_skip_rows``).
+    The guard this answers (``header_row_looks_like_data`` in ``readers.py``)
+    is computed only when the caller passed an explicit ``skip_rows`` — auto-
+    detection has its own safety net and never selects a data-looking row as
+    the header. The only source of an explicit, non-zero ``skip_rows`` is a
+    saved format's own field, and nothing in the product currently writes
+    one: the single production ``TabularFormat(...)`` construction
+    (``import_service.py``'s auto-save) omits the field, so it takes the
+    model default of 0; ``resolve_read_settings`` treats a matched format's
+    ``skip_rows`` of 0 as "no opinion" and lets detection run regardless;
+    there is no ``formats create``/``edit`` surface that could set one; and
+    every built-in YAML omits the key (see
+    ``test_no_builtin_format_sets_skip_rows``). So this text is unreachable
+    today — the guard is defense-in-depth for a future surface that lets a
+    caller pin a header position — and that is why it names the condition
+    the guard actually tests (the layout being applied puts the header on a
+    row this file uses for data) rather than a numeric cause — a
+    ``skip_rows`` too large for this file — it has no way to know.
 
     ``read_options`` is what makes the printed retry carry the same read
     *options* as the read it replaces, minus ``--format`` — not an identical
@@ -634,21 +648,30 @@ def header_row_consumed_recovery(
             "run `moneybin import formats delete "
             f"{shlex.quote(format_name)} --yes` (drop --yes to be asked first)"
         )
-    else:
-        removal = (
-            "run `moneybin import formats delete` with that format's name and "
-            "--yes (`moneybin import formats list` shows saved formats; drop "
-            "--yes to be asked first)"
+        return (
+            "A real transaction was consumed as this file's header row: the "
+            "row read as column names parses as a date and an amount. No "
+            "--mapping or --override correction recovers it. This file does "
+            f"not match the layout saved as {format_name} — that format puts "
+            "the header on a row this file uses for data. Re-run `moneybin "
+            f"{retry_command} {quoted_file}{read_args_str}` — the same read "
+            "options minus --format, so the layout is detected fresh from "
+            f"this file. If {format_name} no longer describes this export, "
+            f"remove it: {removal}."
         )
+    removal = (
+        "`moneybin import formats list` shows saved formats; remove the "
+        "stale one with `moneybin import formats delete` and its name, "
+        "plus `--yes` (drop --yes to be asked first)"
+    )
     return (
-        "This file's first row was read as column names, but it parses as a "
-        "transaction — a real record was consumed as the header. No --mapping "
-        "or --override correction can recover it. The saved format named "
-        "with --format skips more leading rows than this file has before its "
-        f"header. Re-run `moneybin {retry_command} {quoted_file}{read_args_str}` "
-        "— the same read options minus --format, so the header is detected "
-        "fresh. No command edits a saved format's skip_rows, so naming that "
-        f"format again fails the same way; to remove it, {removal}."
+        "A real transaction was consumed as this file's header row: the row "
+        "read as column names parses as a date and an amount. No --mapping "
+        "or --override correction recovers it. The header position applied "
+        "to this read lands on a row this file uses for data. Re-run "
+        f"`moneybin {retry_command} {quoted_file}{read_args_str}` — the same "
+        "read options minus --format, so the layout is detected fresh from "
+        f"this file. If a saved format supplied that layout, {removal}."
     )
 
 
@@ -656,18 +679,21 @@ def header_row_consumed_recovery_mcp() -> str:
     """The only honest recovery when a transaction was read as the header.
 
     Unreachable today: no tabular MCP tool names a format, and a persisted
-    preview never carries an explicit ``skip_rows``. Mirrors the CLI recovery
-    for the shared classifier. Shared by the preview- and confirm-side action
-    builders — one text per state, which stopped the two from drifting.
+    preview never carries an explicit ``skip_rows`` — the guard this answers
+    is defense-in-depth for a future surface that lets a caller pin a header
+    position (see ``header_row_consumed_recovery``'s docstring for the full
+    reachability story). Mirrors the CLI recovery for the shared classifier.
+    Shared by the preview- and confirm-side action builders — one text per
+    state, which stopped the two from drifting.
     """
     return (
-        "This file's first row was read as column names, but it parses as a "
-        "transaction — a real record was consumed as the header. No column "
-        "correction can recover it. A saved format's skip_rows skips more "
-        "leading rows than this file has before its header. Import the file "
-        "again without naming that format so the header is detected fresh, "
-        "or remove the format with import_revert(operation="
-        "'delete_saved_format', format_name=<name>)."
+        "A real transaction was consumed as this file's header row: the row "
+        "read as column names parses as a date and an amount. No column "
+        "correction recovers it. The file does not match the layout being "
+        "applied — it puts the header on a row this file uses for data. "
+        "Import the file again without naming a saved format so the layout "
+        "is detected fresh, or remove that format with import_revert("
+        "operation='delete_saved_format', format_name=<name>)."
     )
 
 

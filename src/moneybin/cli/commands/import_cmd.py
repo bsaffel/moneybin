@@ -3142,11 +3142,13 @@ def import_preview(
             # Reuses header_row_consumed_recovery — the one shared text for
             # "a real row was consumed as the header" — instead of hand-
             # writing a fourth copy that names "a corrected --format" as the
-            # fix; no command edits a saved format's skip_rows, so that advice
-            # named nothing that exists (see _can_preview's docstring on this
-            # exact drift). retry_command="import preview" because preview has
-            # nothing to load — re-previewing without --format is preview's
-            # equivalent of import_files_command's "re-run without --format".
+            # fix; no surface creates or edits a format's header position, so
+            # a corrected --format would name nothing that exists (see
+            # header_row_consumed_recovery's docstring for the full
+            # reachability story). retry_command="import preview" because
+            # preview has nothing to load — re-previewing without --format is
+            # preview's equivalent of import_files_command's "re-run without
+            # --format".
             from moneybin.services.import_confirmation import (
                 TabularReadOptions,
                 header_row_consumed_recovery,

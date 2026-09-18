@@ -64,7 +64,13 @@ class TabularFormat(BaseModel, frozen=True):
     """Character encoding for text formats."""
 
     skip_rows: int = 0
-    """Non-data rows to skip before the header row."""
+    """Non-data rows to skip before the header row.
+
+    ``0`` means "detect" — ``resolve_read_settings`` treats it as no opinion
+    and lets header detection run. No writer currently sets a non-zero value;
+    see the comment beside the auto-save's ``TabularFormat(...)`` in
+    ``import_service.py`` for why that is deliberate.
+    """
 
     sheet: str | None = None
     """Excel sheet name; None = auto-select largest."""

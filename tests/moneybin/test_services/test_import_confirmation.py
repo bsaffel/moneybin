@@ -1365,6 +1365,36 @@ class TestHeaderRowConsumedRecovery:
         assert "--yes" in message
         assert "moneybin import formats list" in message
 
+    def test_no_message_claims_a_skip_rows_numeric_cause(self) -> None:
+        """The product cannot know a ``skip_rows`` value is too large.
+
+        No caller ever sets a saved format's ``skip_rows`` to a non-zero
+        value (see ``header_row_consumed_recovery``'s docstring), so a
+        numeric-cause claim would assert something MoneyBin cannot know. All
+        three surfaces name the condition the guard actually tests instead.
+        """
+        named = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        unnamed = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        mcp = header_row_consumed_recovery_mcp()
+        for message in (named, unnamed, mcp):
+            assert "skips more leading rows" not in message
+            assert "no command edits" not in message.lower()
+
+    def test_the_no_name_branch_does_not_assert_a_named_format_is_at_fault(
+        self,
+    ) -> None:
+        """Inbox sync never names a format, so this branch must not imply one.
+
+        Unlike the named branch — which says the file "does not match the
+        layout saved as <name>" — this one has no name to blame and must not
+        borrow that framing.
+        """
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "does not match the layout saved as" not in message
+        assert "no longer describes this export" not in message
+
 
 def test_import_confirmation_required_error_carries_outcome() -> None:
     c = Confidence(score=0.5, tier="low", flagged=(), missing_required=("amount",))
