@@ -76,7 +76,13 @@ def patched_services() -> Iterator[dict[str, MagicMock]]:
     matcher_run = MagicMock(return_value=_match_double())
     transform_apply = MagicMock(return_value=_make_apply_result(applied=True))
     categorize_pending = MagicMock(
-        return_value={"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
+        return_value={
+            "total": 0,
+            "rule": 0,
+            "merchant": 0,
+            "plaid": 0,
+            "source_category_map": 0,
+        }
     )
     auto_stats = MagicMock(return_value=MagicMock(pending_proposals=0))
     identity = MagicMock(
@@ -962,7 +968,13 @@ def test_refresh_steps_canonical_order_enforced(
 
     def _categorize_side(*a: Any, **kw: Any) -> dict[str, int]:
         call_log.append("categorize")
-        return {"total": 0, "rule": 0, "merchant": 0, "plaid": 0}
+        return {
+            "total": 0,
+            "rule": 0,
+            "merchant": 0,
+            "plaid": 0,
+            "source_category_map": 0,
+        }
 
     patched_services["gsheet_pull"].side_effect = _gsheet_side
     patched_services["matcher_run"].side_effect = _match_side
@@ -1366,6 +1378,7 @@ def test_refresh_reports_what_the_categorizer_did(
         "merchant": 250,
         "rule": 120,
         "plaid": 30,
+        "source_category_map": 0,
     }
 
     result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])
@@ -1378,6 +1391,7 @@ def test_refresh_reports_what_the_categorizer_did(
         "merchant": 250,
         "rule": 120,
         "plaid": 30,
+        "source_category_map": 0,
     }
 
 
@@ -1395,6 +1409,7 @@ def test_refresh_records_a_categorize_that_ran_and_found_nothing(
         "merchant": 0,
         "rule": 0,
         "plaid": 0,
+        "source_category_map": 0,
     }
 
     result = refresh(db=MagicMock(spec=Database), steps=["transform", "categorize"])

@@ -17,10 +17,16 @@ def _insert_seed_row(
     code_level: str,
     category_id: str,
 ) -> None:
+    # source_subcategory_code is explicit '' (not omitted): the app-table
+    # override below relies on app.category_source_map's schema DEFAULT ''
+    # to match this seed row's key exactly, and NULL != '' would let the
+    # anti-join's extended (source_type, source_category_code,
+    # source_subcategory_code) correlation fail to suppress this seed row.
     db.execute(
         "INSERT INTO seeds.category_source_map "
-        "(source_type, source_category_code, code_level, category_id, "
-        "source_taxonomy_version) VALUES ('plaid', ?, ?, ?, 'plaid_pfc_v2')",
+        "(source_type, source_category_code, source_subcategory_code, "
+        "code_level, category_id, source_taxonomy_version) "
+        "VALUES ('plaid', ?, '', ?, ?, 'plaid_pfc_v2')",
         [source_category_code, code_level, category_id],
     )
 

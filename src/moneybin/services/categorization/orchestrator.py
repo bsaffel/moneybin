@@ -19,9 +19,15 @@ Flow inventory:
 - :meth:`improve_ai_categories` — opt-in upgrade pass: re-run the same
   bridge lookup against ``categorized_by='ai'`` rows so a confident
   provider-native match replaces an earlier AI guess.
+- :meth:`apply_source_category_map` — sweep still-uncategorized imported
+  (tabular/manual) rows against the same category-source bridge, keyed by
+  each row's own ``source_origin`` instead of a provider code; no
+  confidence gate (a curated mapping is a deterministic assertion, not an
+  ML classifier's guess).
 - :meth:`categorize_pending` — combined snowball: scan uncategorized once,
-  run rules pass, then merchants pass (rule wins on overlap), then plaid
-  pass last to fill the long tail.
+  run rules pass, then merchants pass (rule wins on overlap), then the two
+  provider_native passes (plaid, source category map) last to fill the long
+  tail.
 
 The dense entry point is :meth:`_categorize_items_inner`. It pulls from
 several layers: taxonomy validation, batch transaction read, cached
@@ -66,6 +72,7 @@ from moneybin.services.categorization._shared import (
     did_you_mean,
     plaid_bridge_match_predicate,
     plaid_confidence_to_numeric,
+    source_category_bridge_match_predicate,
 )
 from moneybin.services.categorization.applier import MatchApplier
 from moneybin.services.categorization.matcher import (
@@ -76,7 +83,9 @@ from moneybin.services.categorization.matcher import (
 from moneybin.tables import (
     BRIDGE_CATEGORY_SOURCE_MAP,
     CATEGORIES,
+    INT_TRANSACTIONS_MATCHED,
     INT_TRANSACTIONS_MERGED,
+    SEED_SOURCE_PRIORITY,
     TRANSACTION_CATEGORIES,
 )
 
@@ -1108,23 +1117,143 @@ class CategorizationOrchestrator:
             )
         return count
 
-    def categorize_pending(self, *, include_plaid: bool = True) -> dict[str, int]:
+    def apply_source_category_map(self) -> int:
+        """Assign categories from imported source text via the category-source bridge.
+
+        Reverse-looks-up each still-uncategorized imported row's OWN
+        ``category``/``subcategory`` text against
+        core.bridge_category_source_map, keyed by that row's ``source_origin``
+        (docs/specs/category-source-map.md's "Multi-aggregator and free-text
+        boundary" — extended here: a single exporter's own category list is a
+        closed vocabulary from that exporter's perspective, even though the
+        generic ``source_type`` discriminator (``tabular``/``manual``) is not).
+        No confidence gate: unlike Plaid's ML-classifier confidence, a curated
+        mapping row is a deterministic assertion — the same footing as a rule
+        or merchant — so every match writes at ``confidence=1.0``. Writes
+        ``categorized_by='provider_native'`` (priority 6) — below every
+        deliberate signal, above ``ai``. Runs alongside
+        :meth:`apply_plaid_categories` late in :meth:`categorize_pending`, so
+        it only touches the long tail neither rule nor merchant matching
+        covered.
+
+        Degrades to a no-op when ``prep.int_transactions__matched`` isn't
+        materialized yet, mirroring :meth:`apply_plaid_categories`'s
+        ``duckdb.CatalogException``/``duckdb.BinderException`` guard.
+
+        Returns:
+            Number of transactions categorized.
+        """
+        rows = self._source_category_bridge_candidates()
+        categorizations: list[dict[str, object]] = [
+            {
+                "transaction_id": transaction_id,
+                "category": category,
+                "subcategory": subcategory,
+                "categorized_by": "provider_native",
+                "merchant_id": None,
+                "rule_id": None,
+                "confidence": 1.0,
+                "source_type": source_type,
+            }
+            for transaction_id, category, subcategory, source_type in rows
+        ]
+        written_ids = self._applier.write_categorizations(categorizations)
+        # Label per row's own source_type (tabular/manual/...), not a single
+        # fixed value like Plaid's 'plaid' — this leg's candidates can mix
+        # sources. Filtered to written_ids: a row can lose the write-time
+        # precedence guard (a higher-priority write landed between the read
+        # above and this write), and only a landed write should count.
+        for transaction_id, _category, _subcategory, source_type in rows:
+            if transaction_id in written_ids:
+                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+                    source_type=source_type, trigger="sweep"
+                ).inc()
+
+        count = len(written_ids)
+        if count:
+            _engine_counts_logger.info(
+                f"Source category map categorized {count} transactions"
+            )
+        return count
+
+    def _source_category_bridge_candidates(
+        self,
+    ) -> list[tuple[str, str, str | None, str]]:
+        """Bridge reverse-lookup rows: (transaction_id, category, subcategory, source_type).
+
+        Reads ``prep.int_transactions__matched`` — the row-grain, pre-merge
+        layer — rather than ``prep.int_transactions__merged`` (the layer
+        :meth:`_plaid_bridge_candidates` reads): the merged layer resolves
+        ONE winning ``category``/``subcategory`` per gold ``transaction_id``
+        via source-priority ``ARG_MIN`` but drops which member contributed
+        that value, so ``source_origin`` — the bridge's own key for this
+        leg — is unavailable there. ``int_transactions__matched`` already
+        carries the gold ``transaction_id`` alongside each source row's own
+        ``(source_origin, category, subcategory)``, so no merge-model surgery
+        is needed to get the row-grain pairing this bridge key requires.
+
+        A merge group can still have more than one member with its own
+        category text (e.g. two tabular imports of the same real-world
+        transaction from different exporters); ``QUALIFY`` picks exactly one
+        candidate per ``transaction_id``, preferring the higher-priority
+        source (``app.seed_source_priority``, the same table
+        ``prep.int_transactions__merged`` itself uses) and falling back to a
+        deterministic tiebreak so the choice never depends on scan order.
+
+        Degrades to an empty list when ``prep.int_transactions__matched``
+        isn't materialized yet — see :meth:`apply_source_category_map`.
+        """
+        try:
+            return self._db.execute(
+                f"""
+                SELECT m.transaction_id, dc.category, dc.subcategory, m.source_type
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    ON {
+                    source_category_bridge_match_predicate(
+                        "m.source_origin", "m.category", "m.subcategory"
+                    )
+                }
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+                LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                    ON tc.transaction_id = m.transaction_id
+                LEFT JOIN {SEED_SOURCE_PRIORITY.full_name} AS sp
+                    ON sp.source_type = m.source_type
+                WHERE m.category IS NOT NULL
+                    AND m.source_origin IS NOT NULL
+                    AND tc.transaction_id IS NULL
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY m.transaction_id
+                    ORDER BY COALESCE(sp.priority, 2147483647), m.source_transaction_id
+                ) = 1
+                """  # TableRef constants + code-constant bridge predicate; no user input
+            ).fetchall()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            return []
+
+    def categorize_pending(
+        self, *, include_provider_native: bool = True
+    ) -> dict[str, int]:
         """Categorize all pending transactions.
 
         "Pending" is uncategorized OR claimed only by ``provider_native`` (Plaid
-        PFC) — see :meth:`CategorizationMatcher.fetch_uncategorized_rows`.
+        PFC, or an imported category-source-map match) — see
+        :meth:`CategorizationMatcher.fetch_uncategorized_rows`.
 
-        Runs rules, then merchants, then plaid against pending transactions.
-        Rules run first in priority order so explicit user-defined rules (which can
-        filter by amount, account, and pattern) take precedence over generic merchant
-        mappings. Merchant mappings apply only to transactions not matched by any rule.
-        Because the scan includes ``provider_native`` rows, a rule or merchant
-        authored after the Plaid import overrides the Plaid categorization here —
-        the write-time precedence guard permits rule/merchant (2) over
-        provider_native (6), so the ladder holds across runs. Plaid runs last:
-        :meth:`apply_plaid_categories` re-reads still-uncategorized
-        rows itself, so rule and merchant writes are already committed and excluded
-        by the time it runs — it only fills the long tail neither pass covered.
+        Runs rules, then merchants, then the two provider_native passes
+        (Plaid, then the imported category-source map) against pending
+        transactions. Rules run first in priority order so explicit
+        user-defined rules (which can filter by amount, account, and pattern)
+        take precedence over generic merchant mappings. Merchant mappings
+        apply only to transactions not matched by any rule. Because the scan
+        includes ``provider_native`` rows, a rule or merchant authored after
+        the provider-native categorization overrides it here — the
+        write-time precedence guard permits rule/merchant (2) over
+        provider_native (6), so the ladder holds across runs. The two
+        provider_native passes run last: each re-reads still-uncategorized
+        rows itself, so rule and merchant writes are already committed and
+        excluded by the time either runs — they only fill the long tail
+        neither pass covered.
 
         Idempotent: a second run on the same state writes nothing.
 
@@ -1134,32 +1263,34 @@ class CategorizationOrchestrator:
         merchant pass so it doesn't overwrite the rule writes at the same
         priority. An empty scan short-circuits ONLY the rules/merchant passes
         (there is nothing for either to match against) — it does NOT skip
-        :meth:`apply_plaid_categories`. That pass matches on the Plaid PFC
-        category code, not on description/memo text or a resolved merchant,
-        so a transaction excluded from :meth:`CategorizationMatcher.
+        the provider_native passes. Those match on a provider code or an
+        imported category string, not on description/memo text or a resolved
+        merchant, so a transaction excluded from :meth:`CategorizationMatcher.
         fetch_uncategorized_rows` (blank description, blank memo, no
-        merchant_entity_id) can still be categorizable by plaid. Running
-        plaid unconditionally is cheap even when there is truly nothing
-        pending: its own ``WHERE tc.transaction_id IS NULL`` query simply
-        returns no rows. :meth:`apply_plaid_categories` needs no skip set
-        either — its own query excludes any transaction already categorized,
-        and the write-time precedence guard (`provider_native` priority 6)
+        merchant_entity_id) can still be categorizable by either. Running
+        them unconditionally is cheap even when there is truly nothing
+        pending: each pass's own ``WHERE tc.transaction_id IS NULL`` query
+        simply returns no rows. Neither needs a skip set either — each
+        pass's own query excludes any transaction already categorized, and
+        the write-time precedence guard (`provider_native` priority 6)
         rejects overwriting any higher-authority row even on overlap.
 
         Args:
-            include_plaid: Run the plaid pass too. Defaults to True for every
-                automatic-invocation caller (the post-commit snowball, the
-                reapply flows, ``refresh_run``). ``CategorizationService.
-                categorize_run``'s explicit ``methods=["rules", "merchants"]``
-                shared-scan fast path passes ``False`` — that surface's
-                ``methods`` parameter is the caller's explicit engine
-                selection (Literal["rules", "merchants"] — plaid isn't a
-                selectable value), so silently adding a third engine's writes
-                would both violate the caller's request and go unreported in
-                its per-method breakdown.
+            include_provider_native: Run the two provider_native passes too.
+                Defaults to True for every automatic-invocation caller (the
+                post-commit snowball, the reapply flows, ``refresh_run``).
+                ``CategorizationService.categorize_run``'s explicit
+                ``methods=["rules", "merchants"]`` shared-scan fast path
+                passes ``False`` — that surface's ``methods`` parameter is
+                the caller's explicit engine selection
+                (Literal["rules", "merchants"] — neither provider_native pass
+                is a selectable value), so silently adding a third/fourth
+                engine's writes would both violate the caller's request and
+                go unreported in its per-method breakdown.
 
         Returns:
-            Dict with counts: {'merchant': N, 'rule': N, 'plaid': N, 'total': N}.
+            Dict with counts: {'merchant': N, 'rule': N, 'plaid': N,
+            'source_category_map': N, 'total': N}.
         """
         rows = self._matcher.fetch_uncategorized_rows()
         if rows:
@@ -1172,18 +1303,23 @@ class CategorizationOrchestrator:
             merchant_count = 0
             rule_count = 0
 
-        plaid_count = self.apply_plaid_categories() if include_plaid else 0
-        total = merchant_count + rule_count + plaid_count
+        plaid_count = self.apply_plaid_categories() if include_provider_native else 0
+        source_category_map_count = (
+            self.apply_source_category_map() if include_provider_native else 0
+        )
+        total = merchant_count + rule_count + plaid_count + source_category_map_count
 
         if total:
             logger.info(
                 f"Categorized {total} pending transactions "
-                f"({merchant_count} merchant, {rule_count} rule, {plaid_count} plaid)"
+                f"({merchant_count} merchant, {rule_count} rule, "
+                f"{plaid_count} plaid, {source_category_map_count} source_category_map)"
             )
 
         return {
             "merchant": merchant_count,
             "rule": rule_count,
             "plaid": plaid_count,
+            "source_category_map": source_category_map_count,
             "total": total,
         }
