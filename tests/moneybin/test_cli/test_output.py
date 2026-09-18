@@ -9,13 +9,176 @@ from typing import Annotated, Any
 import pytest
 
 from moneybin import error_codes
-from moneybin.cli.output import OutputFormat, emit_json_error, render_or_json
+from moneybin.cli import pager
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    emit_json_error,
+    render_or_json,
+)
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.errors import UserError
 from moneybin.privacy.payloads.gsheet import GsheetPullPayload, GsheetPullRow
 from moneybin.privacy.payloads.sync import SyncPullInstitutionRow, SyncPullPayload
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+
+
+def _tty_policy(*, height: int = 20, page: bool = True) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=page,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=height,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def _unexpected_page(text: str, *, color: bool, wide: bool) -> bool:
+    raise AssertionError("paged")
+
+
+def test_human_result_pages_only_after_its_rendered_height_exceeds_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Wrapped text plus the reserved pager hint decides the threshold."""
+    calls: list[str] = []
+
+    def _record_page(text: str, *, color: bool, wide: bool) -> bool:
+        calls.append(text)
+        return True
+
+    monkeypatch.setattr(pager, "page_text", _record_page)
+
+    emit_human_result(
+        "heading\n" + "long name wraps here\n" * 19,
+        policy=_tty_policy(),
+        finite_read=True,
+    )
+
+    assert len(calls) == 1
+    assert "q return to shell" in calls[0]
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    ("policy", "finite_read", "live_follow", "receipt"),
+    [
+        (_tty_policy(page=False), True, False, False),
+        (_tty_policy(), False, False, False),
+        (_tty_policy(), True, True, False),
+        (_tty_policy(), True, False, True),
+    ],
+)
+def test_human_result_does_not_page_in_ineligible_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    policy: TerminalPolicy,
+    finite_read: bool,
+    live_follow: bool,
+    receipt: bool,
+) -> None:
+    """Paging must remain exclusive to interactive finite reads."""
+    monkeypatch.setattr(pager, "page_text", _unexpected_page)
+
+    emit_human_result(
+        "result\n" * 30,
+        policy=policy,
+        finite_read=finite_read,
+        live_follow=live_follow,
+        receipt=receipt,
+    )
+
+    assert "result" in capsys.readouterr().out
+
+
+def test_human_result_never_pages_json_or_emits_ansi(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A contradictory policy cannot leak human paging into JSON output."""
+    from rich.text import Text
+
+    policy = _tty_policy()
+    policy = TerminalPolicy(
+        output="json",
+        interactive=policy.interactive,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=policy.width,
+        height=policy.height,
+        symbols=policy.symbols,
+        minus="-",
+    )
+    monkeypatch.setattr(pager, "page_text", _unexpected_page)
+
+    emit_human_result(Text("answer", style="red"), policy=policy, finite_read=True)
+
+    assert capsys.readouterr().out == "answer\n"
+
+
+def test_human_result_honors_explicit_no_pager(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The leaf flag remains a visible final gate after policy resolution."""
+    monkeypatch.setattr(pager, "page_text", _unexpected_page)
+
+    emit_human_result(
+        "result\n" * 30, policy=_tty_policy(), finite_read=True, no_pager=True
+    )
+
+    assert "result" in capsys.readouterr().out
+
+
+def test_human_result_strips_controls_from_colored_external_text_before_paging(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A data field cannot add its own terminal style beside Rich's semantic one."""
+    from rich.text import Text
+
+    paged: list[str] = []
+
+    def _record_page(text: str, *, color: bool, wide: bool) -> bool:
+        paged.append(text)
+        return True
+
+    policy = _tty_policy(height=1)
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=True,
+        style=True,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=20,
+        height=1,
+        symbols=policy.symbols,
+        minus="-",
+    )
+    monkeypatch.setattr(pager, "page_text", _record_page)
+
+    emit_human_result(
+        Text("safe \x1b[35minjected\x1b[0m", style="red"),
+        policy=policy,
+        finite_read=True,
+    )
+
+    assert "\x1b[35m" not in paged[0]
+    assert "\x1b[31m" in paged[0]
+    assert "safe injected" in paged[0]
 
 
 def _make_envelope(

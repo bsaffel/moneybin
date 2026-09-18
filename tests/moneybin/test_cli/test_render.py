@@ -1389,10 +1389,11 @@ def test_only_presentation_helpers_import_rich() -> None:
     `render_rows`, and cannot write a style literal beside the palette. One
     guard covers both requirements because both failures need the same import.
     """
+    presentation_helpers = {"render.py", "terminal.py", "progress.py"}
     offenders = [
         str(module.relative_to(CLI_ROOT))
         for module in _cli_modules()
-        if "rich" in _imported_roots(module)
+        if module.name not in presentation_helpers and "rich" in _imported_roots(module)
     ]
     assert offenders == [], (
         "these modules import Rich directly instead of calling "

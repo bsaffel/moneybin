@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -36,7 +38,7 @@ import click
 import typer
 from pydantic import BaseModel
 
-from moneybin.cli.render import render_note
+from moneybin.cli.render import render_human_text, render_note
 from moneybin.errors import UserError
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
@@ -53,10 +55,53 @@ from moneybin.protocol.row_set import NO_ROW_SET, row_set, row_set_field
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.exports.models import ExportReceipt
     from moneybin.services.currency_service import ResolvedRate
 
 logger = logging.getLogger(__name__)
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def emit_human_result(
+    result: Any,
+    *,
+    policy: TerminalPolicy,
+    finite_read: bool,
+    no_pager: bool = False,
+    wide: bool = False,
+    live_follow: bool = False,
+    receipt: bool = False,
+) -> None:
+    """Render one complete human answer, paging eligible long finite reads.
+
+    The input is already the bounded command result.  This boundary renders it
+    once at the selected terminal width; deciding to page never asks a command
+    or service for another row.
+    """
+    text = render_human_text(result, terminal=policy)
+    visible = _ANSI_ESCAPE.sub("", text)
+    visible_lines = sum(
+        max(1, (len(line) + policy.width - 1) // policy.width)
+        for line in visible.splitlines()
+    )
+    eligible = (
+        policy.output == "text"
+        and policy.page
+        and finite_read
+        and not no_pager
+        and not live_follow
+        and not receipt
+    )
+    if eligible and visible_lines + 1 > policy.height:
+        from moneybin.cli.pager import page_text
+
+        answer = f"{text.rstrip()}\n\nq return to shell\n"
+        if page_text(answer, color=policy.color, wide=wide):
+            return
+    sys.stdout.write(text)
+
 
 # DEPRECATED: direct-human-output — migrate this text path through the shared
 # terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.

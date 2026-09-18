@@ -22,6 +22,7 @@ hygiene — importing this module must stay cheap enough for `--help`.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -45,9 +46,11 @@ __all__ = [
     "Placeholder",
     "Style",
     "color_enabled",
+    "build_rows",
     "column_view",
     "count_wide_request",
     "format_money",
+    "render_human_text",
     "render_note",
     "render_rows",
     "render_summary",
@@ -59,6 +62,11 @@ MINUS = "\N{MINUS SIGN}"
 The design system's ``Amount`` component signs money with this glyph; matching
 it keeps a CLI amount and a web amount the same string.
 """
+
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)"
+)
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 
 
 class Style(StrEnum):
@@ -187,6 +195,38 @@ def color_enabled(stream: object, env: Mapping[str, str]) -> bool:
     return bool(isatty and isatty())
 
 
+def render_human_text(result: RenderableType, *, terminal: TerminalPolicy) -> str:
+    """Render one answer once at the selected width for output or paging."""
+    from rich.console import Console
+    from rich.segment import Segment, Segments
+
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    )
+    renderable = result.table if isinstance(result, _RowsAnswer) else result
+    lines = console.render_lines(renderable, pad=False, new_lines=True)
+    safe_segments = (
+        Segment(
+            _TERMINAL_CONTROL.sub("", _TERMINAL_ESCAPE.sub("", segment.text)),
+            segment.style,
+            segment.control,
+        )
+        for line in lines
+        for segment in line
+    )
+    with console.capture() as capture:
+        console.print(Segments(safe_segments), end="")
+    text = capture.get()
+    return (
+        text if not isinstance(result, _RowsAnswer) else text + result.disclosure + "\n"
+    )
+
+
 #: Stands in for the columns a width fit dropped, in the position it dropped
 #: them. DuckDB's box renderer and pandas both mark the gap this way rather
 #: than silently splicing the ends together, which would read as a projection
@@ -220,6 +260,20 @@ class Placeholder:
 
     column: str
     value: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RowsAnswer:
+    """A table and its one-line disclosure, rendered as one answer."""
+
+    table: RenderableType
+    disclosure: str
+
+    def __rich_console__(self, console: object, options: object):
+        from rich.segment import Segment
+
+        yield self.table
+        yield Segment(self.disclosure + "\n")
 
 
 def _cell_width(cell: RenderableType) -> int:
@@ -386,7 +440,7 @@ def column_view[T](
     )
 
 
-def render_rows(
+def build_rows(
     columns: Sequence[str],
     rows: Iterable[Sequence[object]],
     *,
@@ -398,8 +452,8 @@ def render_rows(
     placeholder: Placeholder | None = None,
     fit: bool = False,
     terminal: TerminalPolicy | None = None,
-) -> None:
-    """Render ``rows`` as a table to stdout (requirement 2).
+) -> RenderableType:
+    """Build ``rows`` as a table renderable (requirement 2).
 
     ``money`` declares the columns holding amounts, keyed by header name.
     Declared columns are formatted by :func:`format_money`, right-aligned
@@ -456,7 +510,9 @@ def render_rows(
     repeated rows; collapsing them here would make the output look right while
     the total stayed wrong, removing the symptom that finds the defect.
     """
-    from rich.console import Console  # defer heavy import
+    from rich.console import (
+        Console,  # defer heavy import
+    )
     from rich.table import Table  # defer heavy import
     from rich.text import Text  # defer heavy import
 
@@ -586,7 +642,6 @@ def render_rows(
     # Rich holds every cell now, so let a buffered measurement copy go before
     # rendering allocates its own.
     del cells_source
-    console.print(table)
     # Counted from what was actually printed, so a caller's declared narrowing
     # and the renderer's own width fit are disclosed by one line rather than
     # two — and a fit the caller never asked about still cannot happen silently.
@@ -612,7 +667,53 @@ def render_rows(
         # parameter): both are load-bearing. `moneybin reports spending-trend >
         # report.txt` has to capture the disclosure with the table it describes,
         # or the file records a truncated result that reads as a whole one.
-        typer.echo(" · ".join(clauses))
+        return _RowsAnswer(table, " · ".join(clauses))
+    return table
+
+
+def render_rows(
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]],
+    *,
+    money: Mapping[str, Money] | None = None,
+    numeric: Sequence[str] | None = None,
+    total_columns: int | None = None,
+    total_rows: int | None = None,
+    has_more: bool = False,
+    placeholder: Placeholder | None = None,
+    fit: bool = False,
+    terminal: TerminalPolicy | None = None,
+) -> None:
+    """Render ``rows`` as a table to stdout using :func:`build_rows`."""
+    from rich.console import Console
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+    console = Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+    )
+    result = build_rows(
+        columns,
+        rows,
+        money=money,
+        numeric=numeric,
+        total_columns=total_columns,
+        total_rows=total_rows,
+        has_more=has_more,
+        placeholder=placeholder,
+        fit=fit,
+        terminal=terminal,
+    )
+    if isinstance(result, _RowsAnswer):
+        console.print(result.table)
+        typer.echo(result.disclosure)
+        return
+    console.print(result)
 
 
 def render_summary(

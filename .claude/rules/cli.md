@@ -238,7 +238,7 @@ static stage labels while disabling animation; quiet suppresses those labels.
 `NO_COLOR` disables every style, including bold. `render.Style` names semantic
 roles (hierarchy, context, action, and states) with terminal palette names; no
 colour literal belongs at a call site. Rich may appear only in the centralized
-presentation helpers (`render.py` and `terminal.py`), never in a command-local
+presentation helpers (`render.py`, `terminal.py`, and `progress.py`), never in a command-local
 renderer. The sign glyph is always present, so the encoding survives a pipe.
 
 `TerminalPolicy.symbols` provides `✓`, `!`, `×`, and `›` with `OK`, `!`, `X`,
