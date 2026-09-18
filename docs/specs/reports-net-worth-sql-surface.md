@@ -1456,19 +1456,14 @@ Four properties define it:
   `fct_security_prices`. A user override is *not* in that set — it must apply
   the moment it is written, which is why it is not materialized here.
 
-**Known deferral: not on the provider-rate refresh path.**
-`CurrencyService._store()` restates only `core.bridge_currency_conversions` and
-its downstream dependents when `moneybin fx rate` caches a newly fetched quote.
-This table is not restated, so a pair/date fetched after the last `sqlmesh run`
-stays stale — or entirely absent — here (and in
-`core.fct_exchange_rates_effective`, which reads it) until the next full run.
-This mirrors the shipped precedent of `PriceService.pull` never restating
-`core.fct_security_prices`, also `kind FULL`, and is deliberately out of scope
-for the PR that introduced this model: nothing reads it yet. It **must** be
-resolved — either wire this model into the provider-rate refresh path, or
-accept the staleness explicitly — before the net-worth ladder rungs below
-(`reports/net_worth_accounts.sql`, `reports/net_worth_currencies.sql`; see
-§Implementation Plan) start reading it.
+**On the provider-rate refresh path.** `CurrencyService._store()` restates
+this model in the same `TransformService.restate_models` call as
+`core.bridge_currency_conversions` whenever `moneybin fx rate` caches a newly
+fetched quote (`committed_change="exchange rate"`). A pair/date fetched by that
+path reaches this model — and `core.fct_exchange_rates_effective`, which reads
+it — immediately, with no separate `sqlmesh run`. A user override still applies
+only at read time in `core.fct_exchange_rates_effective` and triggers no
+restatement here.
 
 The identity arm reads `core.dim_accounts` and `core.fct_balances_daily` for its
 date domain, which couples this model to the balance spine. That is accepted:
