@@ -889,6 +889,31 @@ def _only_null_tested(node: exp.Expr, stop: exp.Expr) -> bool:
     return False
 
 
+def _filter_predicate_is_pure_columns(filt: exp.Filter) -> bool:
+    """True if ``filt``'s ``FILTER (WHERE …)`` predicate names no external input.
+
+    A predicate built entirely from catalog columns (and operators/functions
+    over them) can only report a fact ABOUT the data itself — e.g. how many
+    rows carry a self-referential match. Nothing in it is a value the caller
+    supplies, so there is nothing to iterate over separate calls to probe for
+    a specific value's presence.
+
+    The instant a literal or a bound placeholder appears, the caller DOES
+    control one side of the comparison and can vary it call to call —
+    `COUNT(*) FILTER (WHERE last_four = $acct)` and `... = '1234'` are both
+    an existence oracle a caller can walk across the whole value space, the
+    exact reconstruction #562 fenced FILTER predicates against (see
+    ``_only_null_tested``'s docstring). This gate is what lets
+    ``_only_within_pure_counting_filter_predicate`` stop suppressing a pure
+    column-to-column predicate (#440) without reopening that fence for a
+    literal or bound one.
+    """
+    predicate = filt.args.get("expression")
+    if predicate is None:
+        return False
+    return next(predicate.find_all(exp.Literal, *PLACEHOLDER_NODES), None) is None
+
+
 def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
     """True if ``node`` sits inside a counting aggregate at or below ``stop``.
 
@@ -903,6 +928,60 @@ def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
             return True
         if parent is stop:
             break
+        parent = parent.parent
+    return False
+
+
+def _only_within_pure_counting_filter_predicate(node: exp.Expr, stop: exp.Expr) -> bool:
+    """True if ``node`` reaches ``stop`` only through a pure-columns ``Count`` FILTER predicate.
+
+    ``FILTER (WHERE …)``'s predicate is a syntactic SIBLING of the aggregate it
+    modifies — sqlglot parses ``COUNT(*) FILTER (WHERE c = x)`` as
+    ``Filter(this=Count(...), expression=Where(...))`` — so a column in the
+    predicate is never a descendant of the ``Count`` and ``_within_counting_agg``'s
+    ancestor walk never finds it. That made
+    `COUNT(*) FILTER (WHERE ref_value = account_id)` mask the row count itself
+    instead of returning it (#440), the same way a bare NULL test used to
+    (MB-102) before ``_only_null_tested`` gave it a position-only exemption.
+    This is that exemption's sibling for the Filter/Count shape, mirroring its
+    split: this function answers POSITION only, and the caller pairs it with
+    an IDENTITY check (``_resolves_to_a_classified_catalog_column`` — the same
+    one the null-test path uses) before dropping the occurrence, exactly as
+    ``_only_null_tested`` is paired with ``_capped_null_test``. Skipping that
+    pairing reopened the pivot/derived-table leak the null-test path already
+    closed: an UNPIVOT-generated column named after a catalog column, or one
+    read through a CTE, is not "capped" just because of where it sits.
+
+    Two conditions gate the exemption:
+
+      * ``Filter.this`` is itself a counting agg. Scope stays
+        ``_COUNTING_AGGS`` (``Count``-only) deliberately: a FILTER predicate
+        never reaches the output for ANY aggregate, so `SUM(x) FILTER (WHERE
+        critical)` is arguably the same shape, but widening this to every
+        `Filter` would ALSO stop masking that case, which `_COUNTING_AGGS`
+        was deliberately scoped to keep masking (see its module comment).
+        That broader change is a decision to make explicitly, not a side
+        effect of fixing #440 — do not widen this without taking it.
+      * The predicate is pure columns (``_filter_predicate_is_pure_columns``).
+        A predicate comparing two catalog columns can only report a fact
+        about the data; one comparing a column to a literal or a bound
+        placeholder lets the CALLER choose the comparand and vary it call to
+        call — the reconstruction oracle #562 already fenced off for this
+        exact clause. Dropping this half would silently re-open that fence.
+    """
+    child = node
+    parent = node.parent
+    while parent is not None:
+        if (
+            isinstance(parent, exp.Filter)
+            and parent.args.get("expression") is child
+            and isinstance(parent.args.get("this"), _COUNTING_AGGS)
+            and _filter_predicate_is_pure_columns(parent)
+        ):
+            return True
+        if parent is stop:
+            return False
+        child = parent
         parent = parent.parent
     return False
 
@@ -1215,6 +1294,45 @@ def _reads_a_pivot(col: exp.Column, col_scope: Scope | None) -> bool:
     return root.find(exp.Pivot) is not None
 
 
+def _resolves_to_a_classified_catalog_column(
+    col: exp.Column,
+    inner: exp.Expr,
+    scope: Scope | None,
+    subscopes: dict[int, Scope],
+    alias_map: dict[str, tuple[str, str]],
+    ctx: _ResolveCtx,
+) -> bool:
+    """True if ``col``'s occurrence names a real catalog column with a known class.
+
+    The IDENTITY half shared by every position-only exemption in this module
+    (``_only_null_tested`` for a NULL test, ``_only_within_pure_counting_filter_predicate``
+    for a pure-columns ``Count`` FILTER predicate, #440): a name that merely
+    *looks* like a catalog column is not safe to drop just because of where it
+    sits. Extracted from ``_capped_null_test`` — which keeps its own name and
+    docstring for the null-test caller, since the reconstruction it worked out
+    is worth reading in that context — but the check itself has nothing to do
+    with nullity, only with whether THIS occurrence's name can be trusted:
+
+      * it resolves inside a CTE or derived-table scope (``_source_scope_of``),
+        where the projection behind the name may be any expression;
+      * its scope draws from a ``PIVOT`` / ``UNPIVOT`` source
+        (``_reads_a_pivot``), whose output columns DuckDB computes at execution
+        time — a generated column may ANSWER to a catalog name while holding
+        the author's expression;
+      * ``_column_key`` cannot name it at all — an unresolvable reference must
+        keep reaching ``_conservative_floor``, not be quietly dropped;
+      * the key resolves but carries no class, which is a coverage gap and the
+        floor's business, not a licence to exempt.
+    """
+    col_scope = _scope_of_column(col, inner, scope, subscopes)
+    if _source_scope_of(col, col_scope) is not None:
+        return False
+    if _reads_a_pivot(col, col_scope):
+        return False
+    key = _column_key(col, alias_map, ctx.snapshot, ctx.shadowed)
+    return key is not None and _class_of_key(key) is not None
+
+
 def _capped_null_test(
     col: exp.Column,
     inner: exp.Expr,
@@ -1267,13 +1385,9 @@ def _capped_null_test(
     predicate's answer — see :func:`_only_null_tested` for the worked example
     and for why it is not closed here.
     """
-    col_scope = _scope_of_column(col, inner, scope, subscopes)
-    if _source_scope_of(col, col_scope) is not None:
-        return False
-    if _reads_a_pivot(col, col_scope):
-        return False
-    key = _column_key(col, alias_map, ctx.snapshot, ctx.shadowed)
-    return key is not None and _class_of_key(key) is not None
+    return _resolves_to_a_classified_catalog_column(
+        col, inner, scope, subscopes, alias_map, ctx
+    )
 
 
 def _resolve_projection(
@@ -1371,12 +1485,28 @@ def _resolve_projection(
     # position alone is not enough — an alias over `NULLIF(...)` is a nullity
     # test in spelling only, and dropping it reopened the reconstruction this
     # whole rule exists to prevent.
+    #
+    # The second clause is #440's fix, built the same way: a column reaching
+    # `inner` only through a pure-columns `Count` FILTER predicate is dropped
+    # here too, by the same POSITION-then-IDENTITY pairing (position:
+    # `_only_within_pure_counting_filter_predicate`; identity:
+    # `_resolves_to_a_classified_catalog_column`, the check `_capped_null_test`
+    # itself delegates to). Skipping the identity half here would reopen the
+    # exact pivot/derived-table leak the null-test pairing above already closed
+    # — an UNPIVOT-generated column named after a catalog column is not "pure"
+    # just because it sits inside the FILTER predicate.
     cols = [
         c
         for c in inner.find_all(exp.Column)
         if not (
             _only_null_tested(c, inner)
             and _capped_null_test(c, inner, scope, subscopes, alias_map, ctx)
+        )
+        and not (
+            _only_within_pure_counting_filter_predicate(c, inner)
+            and _resolves_to_a_classified_catalog_column(
+                c, inner, scope, subscopes, alias_map, ctx
+            )
         )
     ]
 

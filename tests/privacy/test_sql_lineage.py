@@ -1313,6 +1313,92 @@ def test_a_parameter_in_a_case_result_still_surfaces(
 
 
 # ---------------------------------------------------------------------------
+# A FILTER predicate comparing two catalog columns, with no literal or bound
+# value anywhere in it (#440)
+#
+# `Filter(this=Count(...), expression=Where(...))` puts the predicate as a
+# SIBLING of the aggregate, not a descendant, so a plain ancestor walk from a
+# predicate column never reaches the `Count` and the column classified as a
+# live projected value instead of collapsing with the count. Scoped to
+# COUNTING aggregates only (SUM/MAX/etc. still mask, below) and to a predicate
+# with no literal and no placeholder — see `_filter_predicate_is_pure_columns`
+# for why a caller-supplied comparand must keep masking.
+# ---------------------------------------------------------------------------
+
+
+def test_count_star_filtered_on_a_pure_column_predicate_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """The reported shape: `COUNT(*) FILTER (WHERE <critical> = <critical>)`.
+
+    Both sides are catalog columns the caller does not control — the count
+    reports a fact about the data (how many self-referential mappings exist),
+    not any specific value, so it must not mask.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE ref_value = account_id) AS self_maps "
+        "FROM app.account_links",
+        populated_db,
+    )
+    assert out == {"self_maps": DataClass.AGGREGATE}
+
+
+def test_count_distinct_filtered_on_a_pure_column_predicate_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """`COUNT(DISTINCT x) FILTER (WHERE ...)`, the issue's second named idiom."""
+    out = _classes(
+        "SELECT COUNT(DISTINCT account_id) FILTER (WHERE last_four = routing_number) "
+        "AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_sum_filtered_on_a_critical_column_still_masks(
+    populated_db: Database,
+) -> None:
+    """The narrow-fix boundary: only `_COUNTING_AGGS` (Count) is exempted.
+
+    `SUM` preserves the source class of whatever it sums; its `FILTER`
+    predicate is exempted from nothing here, so a critical predicate column
+    still contributes its class. Guards against widening the exemption to
+    every aggregate (shape (b) in #440's design discussion) as a side effect
+    of an unrelated change.
+    """
+    out = _classes(
+        "SELECT SUM(credit_limit) FILTER (WHERE last_four = account_id) AS x "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"x": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_count_filtered_on_a_column_compared_to_a_literal_still_masks(
+    populated_db: Database,
+) -> None:
+    """A literal comparand is exactly as caller-controlled as a placeholder.
+
+    Without this guard a caller could vary the literal call to call — or
+    stack one `COUNT(*) FILTER (WHERE last_four = '<guess>')` column per
+    guess in a single query — to probe for a specific value's presence, the
+    same existence oracle #562 fenced off for a bound parameter. Only a
+    predicate built from catalog columns alone (no literal, no placeholder)
+    is exempt.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = '1234') AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+# `test_a_parameter_equality_probe_is_not_exempt` above already pins the
+# placeholder half of this exact boundary (`COUNT(*) FILTER (WHERE last_four
+# = $acct)`) — no separate test needed here.
+
+
+# ---------------------------------------------------------------------------
 # A branch can map a predicate's answer back to the value
 #
 # These are the counterexamples that bound the rule above. A `CASE`/`IF` branch
