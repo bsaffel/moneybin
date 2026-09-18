@@ -20,7 +20,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from moneybin.db_lock._types import OperationType
 from moneybin.metrics.registry import DB_WRITE_LOCK_TIMEOUT_TOTAL
@@ -51,6 +51,88 @@ def lock_path_for(db_path: Path) -> Path:
     """
     resolved = db_path.resolve()
     return resolved.parent / (resolved.name + _LOCK_SUFFIX)
+
+
+# Re-reads of the metadata file to ride out write_lock's brief in-place rewrite
+# (ftruncate-then-write) window before treating it as absent.
+_METADATA_READ_ATTEMPTS = 3
+
+
+def _writer_is_live(lock_path: Path) -> bool:
+    """Return True iff a process currently holds the write lock.
+
+    The ``.write.lock`` metadata file is never unlinked — unlinking races
+    with the next opener, and ``fcntl`` auto-releases on crash — so the file
+    persists after a clean release carrying the *last* holder's pid, which may
+    still be a live process that is no longer writing. The mere existence of
+    the file (or a live pid in it) therefore does NOT mean a writer is active.
+
+    The only authoritative test is to try the lock ourselves, non-blocking. A
+    shared (``LOCK_SH``) probe is used rather than exclusive so two concurrent
+    probes don't block each other and misreport a peer prober as a writer;
+    ``LOCK_SH`` still conflicts with a writer's ``LOCK_EX``.
+
+    Conversely, this probe's brief ``LOCK_SH`` hold can make a writer's
+    concurrent ``LOCK_EX`` attempt fail once and take a single backoff retry
+    (~50 ms). That is harmless and expected — a spurious retry here is the probe
+    doing its job, not a symptom of deeper contention.
+    """
+    try:
+        fd = os.open(lock_path, os.O_RDONLY)
+    except OSError:
+        return False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True  # a writer holds LOCK_EX
+        # Acquired — nobody holds an exclusive lock; release immediately.
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(fd)
+
+
+def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
+    """Read + parse the writer metadata, tolerating the brief rewrite window.
+
+    write_lock rewrites the metadata in place — ``ftruncate(0)`` then
+    ``write(payload)`` — so a reader can momentarily observe an empty or partial
+    file and fail to parse it. That window is only a couple of syscalls wide, so
+    retry a few times before giving up; without the retry a live writer would be
+    reported with no metadata exactly while it is acquiring the lock. Returns the
+    normalized writer dict, or None if the file is absent or genuinely
+    unparseable after the retries.
+    """
+    for _ in range(_METADATA_READ_ATTEMPTS):
+        try:
+            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
+            return {
+                "pid": int(metadata["pid"]),
+                # Already a sanitized friendly name — write_lock runs it through
+                # describe_process before storing it, so pass it through as-is.
+                "command": str(metadata["command"]),
+                "started_at": str(metadata["started_at"]),
+                "operation_type": str(metadata["operation_type"]),
+            }
+        except (OSError, ValueError, KeyError, TypeError):
+            # Empty/partial file (mid-rewrite), corrupted JSON, or non-dict JSON
+            # (null/list/scalar makes metadata["pid"] raise TypeError).
+            continue
+    return None
+
+
+def live_writer(db_path: Path) -> dict[str, Any] | None:
+    """Return the current write-lock holder's metadata, or None if unheld.
+
+    Keys: ``pid``, ``command``, ``started_at``, ``operation_type``. Also None
+    when a writer holds the lock but its metadata stays unreadable — the payload
+    is best-effort observability, not a correctness contract.
+    """
+    lock_path = lock_path_for(db_path)
+    if not _writer_is_live(lock_path):
+        return None
+    return _read_writer_metadata(lock_path)
 
 
 @dataclass

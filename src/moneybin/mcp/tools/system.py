@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl  # POSIX-only: project targets macOS/Linux
 import inspect
-import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
@@ -18,7 +15,7 @@ from pydantic import Field
 
 from moneybin import error_codes
 from moneybin.build_info import get_build_info
-from moneybin.db_lock import lock_path_for
+from moneybin.db_lock import live_writer
 from moneybin.errors import (
     UserError,
     classify_user_error,
@@ -86,9 +83,6 @@ _AUDIT_KEY_DIRECTIONS: tuple[SortDirection, ...] = ("desc", "desc")
 
 _HEALTHY_STATUSES = frozenset({"healthy"})
 _DISCONNECTED_STATUSES = frozenset({"disconnected"})
-# Re-reads of the write-lock metadata file to ride out write_lock's brief
-# in-place rewrite (ftruncate-then-write) window before treating it as absent.
-_METADATA_READ_ATTEMPTS = 3
 
 
 def _gsheet_block(db: Any) -> dict[str, Any]:
@@ -159,75 +153,6 @@ def _gsheet_action_hints(needs_attention: list[dict[str, Any]]) -> list[str]:
     return hints
 
 
-def _writer_is_live(lock_path: Path) -> bool:
-    """Return True iff a process currently holds the write lock.
-
-    The ``.write.lock`` metadata file is never unlinked — unlinking races
-    with the next opener, and ``fcntl`` auto-releases on crash — so the file
-    persists after a clean release carrying the *last* holder's pid, which may
-    still be a live process that is no longer writing. The mere existence of
-    the file (or a live pid in it) therefore does NOT mean a writer is active.
-
-    The only authoritative test is to try the lock ourselves, non-blocking. A
-    shared (``LOCK_SH``) probe is used rather than exclusive so two concurrent
-    ``system_status`` / ``db ps`` probes don't block each other and misreport a
-    peer prober as a writer; ``LOCK_SH`` still conflicts with a writer's
-    ``LOCK_EX``.
-
-    Conversely, this probe's brief ``LOCK_SH`` hold can make a writer's
-    concurrent ``LOCK_EX`` attempt fail once and take a single backoff retry
-    (~50 ms). That is harmless and expected — a spurious retry here is the probe
-    doing its job, not a symptom of deeper contention.
-    """
-    try:
-        fd = os.open(lock_path, os.O_RDONLY)
-    except OSError:
-        return False
-    try:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return True  # a writer holds LOCK_EX
-        # Acquired — nobody holds an exclusive lock; release immediately.
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        return False
-    finally:
-        os.close(fd)
-
-
-def _read_writer_metadata(lock_path: Path) -> dict[str, Any] | None:
-    """Read + parse the writer metadata, tolerating the brief rewrite window.
-
-    write_lock rewrites the metadata in place — ``ftruncate(0)`` then
-    ``write(payload)`` — so a diagnostic reader can momentarily observe an empty
-    or partial file and fail to parse it. That window is only a couple of
-    syscalls wide, so retry a few times before giving up; without the retry a
-    live writer would be reported with no metadata exactly while it is acquiring
-    the lock — the contention the DatabaseLockError recovery action sends the
-    agent here to diagnose. Returns the normalized writer dict, or None if the
-    file is absent or genuinely unparseable after the retries.
-    """
-    for _ in range(_METADATA_READ_ATTEMPTS):
-        try:
-            metadata = json.loads(lock_path.read_text(encoding="utf-8"))
-            return {
-                "pid": int(metadata["pid"]),
-                # The writer command is already a sanitized friendly name —
-                # write_lock runs it through describe_process before storing it,
-                # so the on-disk lock file never holds a raw argv. Pass it
-                # through as-is (re-sanitizing would mangle the friendly name).
-                "command": str(metadata["command"]),
-                "started_at": str(metadata["started_at"]),
-                "operation_type": str(metadata["operation_type"]),
-            }
-        except (OSError, ValueError, KeyError, TypeError):
-            # Empty/partial file (mid-rewrite), corrupted JSON, or non-dict JSON
-            # (null/list/scalar makes metadata["pid"] raise TypeError). Retry —
-            # the next read likely catches the completed write.
-            continue
-    return None
-
-
 def _database_connections_info(db_path: Path) -> SystemStatusDatabaseConnectionsInfo:
     """Build the typed database_connections payload from the lock + lsof view."""
     block = _database_connections_block(db_path)
@@ -242,7 +167,7 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
 
     Returns the empty-shape ``{"writers": [], "readers": []}`` when neither
     source reports anything. A writer is reported only when a process actually
-    holds the file lock (``_writer_is_live``) — the persisted metadata file
+    holds the file lock (``live_writer``) — the persisted metadata file
     alone is not enough, since it outlives the holder. Tolerates a corrupted
     lock file by treating it as no-writer-info — the lock-file payload is
     best-effort observability, not a correctness contract. The writer's pid is
@@ -250,25 +175,13 @@ def _database_connections_block(db_path: Path) -> dict[str, Any]:
     """
     writers: list[dict[str, Any]] = []
     writer_pid: int | None = None
-    # Resolve once for the lsof reader scan; lock_path_for resolves db_path
-    # itself for the lock file. Both resolve the same db_path, so the writer
-    # probe and the reader scan stay on one inode even for a symlinked or
-    # relative path — and neither re-resolves an already-resolved path.
+    # live_writer resolves db_path itself for the lock file; resolving here
+    # too keeps the lsof reader scan on the same inode for a symlinked path.
     resolved = db_path.resolve()
-    lock_path = lock_path_for(db_path)
-    # No separate exists() check: _writer_is_live opens the lock file and
-    # returns False if it is absent, so an exists() guard would be a redundant,
-    # TOCTOU-prone stat.
-    writer_is_live = _writer_is_live(lock_path)
-    if writer_is_live:
-        metadata = _read_writer_metadata(lock_path)
-        if metadata is not None:
-            writer_pid = metadata["pid"]
-            writers.append(metadata)
-        # If a live writer's metadata is still unreadable after the retries in
-        # _read_writer_metadata (genuinely corrupt, not just mid-rewrite), fall
-        # back to no writer entry — the lock-file payload is best-effort
-        # observability, not a correctness contract.
+    metadata = live_writer(db_path)
+    if metadata is not None:
+        writer_pid = metadata["pid"]
+        writers.append(metadata)
 
     # A writer can time out and release the advisory lock while a DuckDB reader
     # still blocks the next write, so recovery diagnostics must enumerate
