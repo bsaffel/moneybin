@@ -72,9 +72,7 @@ def _drain_needs_attention(result: InboxSyncResult) -> bool:
 
 def _copyable_recovery() -> object:
     """Direct readers to the complete recovery command below the receipt."""
-    from rich.text import Text
-
-    return Text("Recovery: Copy the complete command below.")
+    return build_summary([("Recovery", "Copy the complete command below.")])
 
 
 def _recovery_command(path: object, arguments: str) -> str | None:
