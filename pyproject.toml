@@ -86,6 +86,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     # Modern CLI framework
     "typer>=0.24.1",
+    # Inline, searchable choice input. Imported only for interactive prompts.
+    "prompt_toolkit>=3.0.52",
     # Observability: metrics registry
     "prometheus_client>=0.22.0",
     # Security: transitive dependency version overrides to address CVEs.

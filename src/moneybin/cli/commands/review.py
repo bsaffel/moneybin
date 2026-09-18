@@ -28,8 +28,8 @@ from .transactions.review import review_impl
 
 
 def review_command(
-    type_: str = typer.Option(
-        "all",
+    type_: str | None = typer.Option(
+        None,
         "--type",
         help="all | matches | categorize | account-links | merchant-links | security-links",
     ),

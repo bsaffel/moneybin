@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.prompts import Choice
 from moneybin.services.matching_service import PENDING_MATCHES_HINT
 
 runner = CliRunner()
@@ -72,6 +73,57 @@ def test_interactive_is_the_only_stubbed_path() -> None:
     result = runner.invoke(app, ["review", "--interactive"])
     assert result.exit_code == 0
     assert "not yet implemented" in result.output.lower()
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.cli.commands.transactions.review.get_terminal_policy")
+@patch("moneybin.cli.commands.transactions.review.choose_required")
+def test_missing_decision_queue_requires_an_explicit_choice(
+    choose: MagicMock,
+    _policy: MagicMock,
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+) -> None:
+    """A decision never silently changes the first review queue."""
+    choose.return_value = "matches"
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--confirm", "tx_pending0001"])
+
+    assert result.exit_code == 0, result.output
+    assert choose.call_args.kwargs["flag"] == "--type"
+    assert choose.call_args.kwargs["choices"] == (Choice("matches", "Matches"),)
+    mock_service.return_value.set_status.assert_called_once_with(
+        "tx_pending0001", status="accepted", actor="cli"
+    )
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+@patch("moneybin.cli.commands.transactions.review.choose_required")
+def test_explicit_decision_queue_bypasses_the_prompt(
+    choose: MagicMock, mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="accepted", transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app, ["review", "--type", "matches", "--confirm", "tx_pending0001"]
+    )
+
+    assert result.exit_code == 0, result.output
+    choose.assert_not_called()
+    mock_service.return_value.set_status.assert_called_once()
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")

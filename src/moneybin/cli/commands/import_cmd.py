@@ -25,8 +25,10 @@ from moneybin.cli.output import (
     quiet_option,
     wide_option,
 )
+from moneybin.cli.prompts import Choice, choose_required
 from moneybin.cli.render import column_view, render_rows, render_summary
 from moneybin.cli.utils import (
+    get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
     )
     from moneybin.services.import_service import (
         BatchImportResult,
+        BridgeApplyResult,
         CreatedAccount,
         ImportResult,
     )
@@ -1250,6 +1253,41 @@ def _echo_account_proposals(outcome: ConfirmationRequired, *, err: bool) -> None
             )
 
 
+def _choose_account_bindings(
+    outcome: ConfirmationRequired,
+    bindings: dict[str, str] | None,
+    *,
+    policy: Any,
+) -> dict[str, str] | None:
+    """Ask only for existing candidates returned by an account confirmation.
+
+    A proposal with no candidates has no existing target to select.  Its
+    deliberate ``new`` decision remains an explicit ``--account-binding``
+    value, rather than a prompt default that could widen an import.
+    """
+    selected = dict(bindings or {})
+    added = False
+    for proposal in outcome.account_proposals:
+        candidates = proposal["candidates"]
+        if not candidates:
+            continue
+        choices = tuple(
+            Choice(
+                str(candidate["account_id"]),
+                f"{candidate['display_name']} · {candidate['account_id']}",
+            )
+            for candidate in candidates
+        )
+        selected[proposal["proposal_ref"]] = choose_required(
+            None,
+            choices=choices,
+            flag="--account-binding",
+            policy=policy,
+        )
+        added = True
+    return selected if added else None
+
+
 def _tabular_recovery_args(
     *,
     mapping: dict[str, str] | None,
@@ -2083,7 +2121,9 @@ def import_confirm_command(
         unreadable_date_recovery,
     )
 
-    try:
+    def run_confirmation(
+        bindings: dict[str, str] | None,
+    ) -> tuple[ImportResult | None, BridgeApplyResult | None]:
         with handle_cli_errors(cli_actor="import_confirm_command"):
             with get_database(read_only=False) as db:
                 service = ImportService(db)
@@ -2093,10 +2133,10 @@ def import_confirm_command(
                         bridge_response_data,
                         save_format=save_format,
                         account_id=account_id,
-                        account_bindings=parsed_bindings,
+                        account_bindings=bindings,
                         confirm=True,
                     )
-                    result = None
+                    return None, bridge_result
                 else:
                     confirm_kwargs: dict[str, Any] = {
                         "file_path": file_path,
@@ -2105,7 +2145,7 @@ def import_confirm_command(
                         "institution": institution,
                         "account_id": account_id,
                         "account_name": account_name,
-                        "account_bindings": parsed_bindings,
+                        "account_bindings": bindings,
                         "account_metadata": parsed_metadata,
                         "save_format": save_format,
                         "sign": sign,
@@ -2114,8 +2154,27 @@ def import_confirm_command(
                     }
                     if confirm_sign:
                         confirm_kwargs["human_sign_confirmation"] = True
-                    result = service.import_file(**confirm_kwargs)
-                    bridge_result = None
+                    return service.import_file(**confirm_kwargs), None
+
+    try:
+        try:
+            result, bridge_result = run_confirmation(parsed_bindings)
+        except ImportConfirmationRequiredError as initial_error:
+            policy = get_terminal_policy()
+            if (
+                initial_error.outcome.reason != "account_confirmation"
+                or not policy.interactive
+            ):
+                raise
+            selected_bindings = _choose_account_bindings(
+                initial_error.outcome, parsed_bindings, policy=policy
+            )
+            if selected_bindings is None:
+                raise
+            # One explicit answer gets one retry through the same service API.
+            # If the target has gone stale or another confirmation remains, its
+            # exception reaches the normal recovery renderer below; do not loop.
+            result, bridge_result = run_confirmation(selected_bindings)
     except ImportConfirmationRequiredError as e:
         # The confirm attempt itself can re-surface ConfirmationRequired —
         # e.g. an override that names an unknown source column, or a

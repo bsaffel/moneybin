@@ -26,6 +26,8 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.prompts import Choice, choose_required
+from moneybin.cli.utils import get_terminal_policy
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
@@ -44,7 +46,7 @@ _VALID_TYPES = {
 
 
 def review_impl(
-    type_: str,
+    type_: str | None,
     status: bool,
     interactive: bool,
     confirm_id: str | None,
@@ -59,6 +61,20 @@ def review_impl(
     Extracted so both the top-level leaf and the deprecated alias can call it
     without duplicating logic.
     """
+    # Counts have a meaningful all-queues view; a mutation does not.  Ask the
+    # human to name its only supported queue instead of treating the first
+    # available queue as an implicit target.
+    decides = bool(confirm_id or reject_id or confirm_all)
+    if type_ is None:
+        if decides:
+            type_ = choose_required(
+                None,
+                choices=(Choice("matches", "Matches"),),
+                flag="--type",
+                policy=get_terminal_policy(),
+            )
+        else:
+            type_ = "all"
     if type_ not in _VALID_TYPES:
         raise typer.BadParameter(
             f"--type must be one of {sorted(_VALID_TYPES)}, got {type_!r}"
@@ -67,7 +83,6 @@ def review_impl(
     # Three mutually exclusive modes. Silently letting one win would either drop
     # a requested mutation or perform an unrequested one, so say so instead —
     # the same call the two guards in `_review_matches_noninteractive` make.
-    decides = bool(confirm_id or reject_id or confirm_all)
     if sum((status, interactive, decides)) > 1:
         logger.error(
             "❌ --status, --interactive, and --confirm/--reject/--confirm-all "
@@ -104,8 +119,8 @@ def review_impl(
 
 
 def transactions_review(
-    type_: str = typer.Option(
-        "all",
+    type_: str | None = typer.Option(
+        None,
         "--type",
         help="all | matches | categorize | account-links | merchant-links | security-links",
     ),

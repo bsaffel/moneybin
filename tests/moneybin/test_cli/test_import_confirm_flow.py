@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
@@ -1856,6 +1857,181 @@ class TestImportConfirmCommand:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
+
+    def test_confirm_interactively_binds_an_existing_account_candidate(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Prompted and flagged bindings reach the same import service input."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            _make_import_result(),
+        ]
+        choose = mocker.patch("moneybin.cli.commands.import_cmd.choose_required")
+        choose.return_value = "cand87654321"
+        mocker.patch("moneybin.cli.commands.import_cmd.get_terminal_policy")
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 0, result.output
+        assert choose.call_args.kwargs["flag"] == "--account-binding"
+        assert mock_import_file.call_args_list[1].kwargs["account_bindings"] == {
+            "@0": "cand87654321"
+        }
+
+    def test_confirm_prompted_and_explicit_binding_share_service_arguments(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The prompt only supplies the same binding an explicit flag supplies."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        explicit = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "@0=cand87654321",
+            ],
+        )
+        assert explicit.exit_code == 0, explicit.output
+        explicit_arguments: dict[str, Any] = dict(mock_import_file.call_args.kwargs)
+
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.reset_mock()
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            return_value="cand87654321",
+        )
+        mocker.patch("moneybin.cli.commands.import_cmd.get_terminal_policy")
+
+        prompted = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert prompted.exit_code == 0, prompted.output
+        assert mock_import_file.call_args_list[1].kwargs == explicit_arguments
+
+    def test_confirm_json_account_gate_never_prompts(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = ImportConfirmationRequiredError(outcome)
+        choose = mocker.patch("moneybin.cli.commands.import_cmd.choose_required")
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        choose.assert_not_called()
+
+    def test_confirm_renders_recovery_after_one_stale_candidate_retry(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            ImportConfirmationRequiredError(outcome),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            return_value="cand87654321",
+        )
+        mocker.patch("moneybin.cli.commands.import_cmd.get_terminal_policy")
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 0
+        assert mock_import_file.call_count == 2
+        assert "Re-run" in result.output
+
+    def test_confirm_cancellation_does_not_retry_the_service(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = ImportConfirmationRequiredError(outcome)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=typer.Abort,
+        )
+        mocker.patch("moneybin.cli.commands.import_cmd.get_terminal_policy")
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code != 0
+        assert mock_import_file.call_count == 1
 
     def test_confirm_accept_renders_sidecars_disputed_rows(
         self,
