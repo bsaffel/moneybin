@@ -12,13 +12,14 @@ into the raw.tabular_transactions schema shape:
 
 import hashlib
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
 import polars as pl
 
+from moneybin.extractors.account_identity import IncomingTransaction
 from moneybin.extractors.tabular.date_detection import parse_amount_str
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
@@ -452,6 +453,53 @@ def _extract_amounts(
                 parsed.append(val)
 
     return parsed, rejections
+
+
+def incoming_tabular_transactions(
+    *,
+    df: pl.DataFrame,
+    field_mapping: dict[str, str],
+    date_format: str,
+    sign_convention: SignConventionType,
+    number_format: NumberFormatType,
+    account_ids: str | list[str],
+) -> dict[str, tuple[IncomingTransaction, ...]]:
+    """Normalize mapped rows for pre-load candidate evidence, by native key.
+
+    Runs on the raw mapped frame from Stage 3, before ``transform_dataframe``
+    (Stage 4) — the account-identity gate sits between the two, so this reuses
+    the same date/amount extraction rather than waiting for the canonical
+    frame. Grouped by ``account_ids`` (one key, or one per row for a
+    multi-account file) so a multi-account file's overlap probe compares each
+    candidate against only that account's own rows, never a sibling
+    account's sharing the file.
+    """
+    n = len(df)
+    date_strs = _col_as_strings(df, field_mapping.get("transaction_date"), n)
+    parsed_dates, _ = _parse_dates(date_strs, date_format)
+    parsed_amounts, _ = _extract_amounts(
+        df=df,
+        field_mapping=field_mapping,
+        sign_convention=sign_convention,
+        number_format=number_format,
+    )
+    currency_strs = _col_as_strings(df, field_mapping.get("currency"), n)
+    keys = account_ids if isinstance(account_ids, list) else [account_ids] * n
+
+    grouped: dict[str, list[IncomingTransaction]] = defaultdict(list)
+    for idx, key in enumerate(keys):
+        tx_date = parsed_dates[idx]
+        amount = parsed_amounts[idx]
+        if tx_date is None or amount is None:
+            continue
+        grouped[key].append(
+            IncomingTransaction(
+                transaction_date=tx_date,
+                amount=amount,
+                currency_code=currency_strs[idx].strip() or None,
+            )
+        )
+    return {key: tuple(txns) for key, txns in grouped.items()}
 
 
 def _combine_original_debit_credit(

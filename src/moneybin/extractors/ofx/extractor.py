@@ -13,7 +13,7 @@ import json
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
@@ -27,6 +27,7 @@ from moneybin.database import Database
 from moneybin.extractors._types import ExtractionResult, FilePath, ProviderSource
 from moneybin.extractors.account_identity import (
     AccountNameFacts,
+    IncomingTransaction,
     SourceAccount,
     account_category,
     derived_last_four,
@@ -413,6 +414,44 @@ def ofx_source_accounts(parsed_ofx: Any, source_origin: str) -> list[SourceAccou
             )
         )
     return accounts
+
+
+def incoming_ofx_transactions(
+    parsed_ofx: Any,
+) -> dict[str, tuple[IncomingTransaction, ...]]:
+    """Normalize parsed OFX rows for pre-load candidate evidence, by ACCTID.
+
+    Grouped by ``<ACCTID>`` — the same key ``ofx_source_accounts`` derives
+    ``source_account_key`` from — so a multi-account file's overlap probe
+    compares each candidate against only that account's own rows, never
+    another account's sharing the same statement file.
+    """
+    grouped: dict[str, list[IncomingTransaction]] = defaultdict(list)
+    for account in parsed_ofx.accounts:
+        acctid: str | None = account.account_id
+        statement = account.statement
+        if not acctid or not statement:
+            continue
+        currency = account.curdef if hasattr(account, "curdef") else None
+        for transaction in statement.transactions:
+            raw_date = transaction.date
+            if isinstance(raw_date, datetime):
+                tx_date = raw_date.date()
+            elif isinstance(raw_date, date):
+                tx_date = raw_date
+            else:
+                continue
+            amount = coerce_to_decimal(transaction.amount)
+            if amount is None:
+                continue
+            grouped[acctid].append(
+                IncomingTransaction(
+                    transaction_date=tx_date,
+                    amount=amount,
+                    currency_code=currency,
+                )
+            )
+    return {key: tuple(txns) for key, txns in grouped.items()}
 
 
 @dataclass(frozen=True, slots=True)

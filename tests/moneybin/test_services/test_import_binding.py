@@ -849,6 +849,187 @@ def test_account_gate_counts_a_proposed_confirmation_on_every_channel(
     assert after == (before or 0.0) + 1
 
 
+# --- ledger-overlap evidence on the account gate (#437) --------------------
+# Before this fix, only the PDF gate (test_import_pdf_transactions.py ::
+# test_partial_pdf_confirmation_reports_ledger_overlap) measured ledger
+# overlap for its candidates; tabular and OFX candidates carried a rung name
+# and nothing else. The three tests below pin all three channels to the same
+# shape: tabular and ofx here (parametrized, since PDF's fixture/patch
+# machinery lives in its own module and would only be duplicated by folding
+# it into this one), plus the scoping and unmeasured-vs-measured-zero cases
+# that are specific to a multi-account-capable channel.
+@pytest.mark.parametrize(
+    ("fixture", "channel", "import_kwargs", "existing_rows", "expected"),
+    [
+        (
+            _STANDARD_CSV,
+            "tabular",
+            {"account_name": "WF Checking"},
+            [("2026-01-05", "-52.30"), ("2026-01-06", "2500.00")],
+            {
+                "overlap_matched": 2,
+                "overlap_comparable": 4,
+                "overlap_window_start": "2026-01-05",
+                "overlap_window_end": "2026-01-09",
+            },
+        ),
+        (
+            _MINIMAL_OFX,
+            "ofx",
+            {},
+            [("2026-01-15", "-12.50"), ("2026-01-20", "1500.00")],
+            {
+                "overlap_matched": 2,
+                "overlap_comparable": 2,
+                "overlap_window_start": "2026-01-15",
+                "overlap_window_end": "2026-01-20",
+            },
+        ),
+    ],
+)
+def test_tabular_and_ofx_gates_surface_ledger_overlap_evidence(
+    db: Database,
+    fixture: Path,
+    channel: str,
+    import_kwargs: dict[str, Any],
+    existing_rows: list[tuple[str, str]],
+    expected: dict[str, object],
+) -> None:
+    """A CSV or OFX candidate carries the same overlap evidence the PDF gate does.
+
+    ``_gate_account_proposals`` only attached overlap when a caller passed
+    ``incoming_transactions`` — tabular and ofx never did. Mirrors
+    ``test_partial_pdf_confirmation_reports_ledger_overlap``'s shape: seed a
+    twin, seed two of its rows into ``core.fct_transactions``, and check the
+    gate's surfaced candidate carries the measured ratio, not silence.
+    """
+    (_seed_ofx_twin if channel == "ofx" else _seed_tabular_twin)(db)
+    for index, (transaction_date, amount) in enumerate(existing_rows):
+        db.execute(
+            "INSERT INTO core.fct_transactions "  # test fixture
+            "(transaction_id, account_id, transaction_date, amount, currency_code) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [f"existing-{index}", "acct_twin01", transaction_date, amount, None],
+        )
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(
+            fixture, refresh=False, confirm=True, actor_kind="human", **import_kwargs
+        )
+
+    [proposal] = exc.value.outcome.account_proposals
+    [candidate] = [
+        c for c in proposal["candidates"] if c["account_id"] == "acct_twin01"
+    ]
+    for key, value in expected.items():
+        assert candidate.get(key) == value, key
+
+
+def test_multi_account_ofx_scopes_overlap_to_its_own_account(
+    db: Database, tmp_path: Path
+) -> None:
+    """One account's ledger evidence never leaks into a sibling account's candidate.
+
+    CHECKING1 and SAVINGS1 share one file. ``acct_first01`` (CHECKING1's twin)
+    is seeded with a transaction that matches SAVINGS1's row (2026-01-15,
+    100.00), not CHECKING1's own (2026-01-10, -50.00) — so a probe fed the
+    whole file's rows, rather than only CHECKING1's, would report a false
+    overlap. Scoped correctly, CHECKING1's own row falls 5 days outside
+    acct_first01's +/-3-day window around 2026-01-15, so comparable is 0.
+    """
+    ofx = _multi_account_ofx(tmp_path)
+    _seed_both_multi_bank_twins(db)
+    db.execute(
+        "INSERT INTO core.fct_transactions "  # test fixture
+        "(transaction_id, account_id, transaction_date, amount, currency_code) "
+        "VALUES (?, ?, ?, ?, ?)",
+        ["existing-interest", "acct_first01", "2026-01-15", "100.00", None],
+    )
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(
+            ofx, refresh=False, confirm=True, actor_kind="human"
+        )
+
+    [checking_proposal] = [
+        p
+        for p in exc.value.outcome.account_proposals
+        if p["source_account_key"] == _FIRST_ACCTID
+    ]
+    [candidate] = [
+        c for c in checking_proposal["candidates"] if c["account_id"] == "acct_first01"
+    ]
+    assert candidate.get("overlap_comparable") == 0
+    assert candidate.get("overlap_matched") == 0
+
+
+_ZERO_TXN_OFX = """OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+SECURITY:NONE
+ENCODING:USASCII
+CHARSET:1252
+COMPRESSION:NONE
+OLDFILEUID:NONE
+NEWFILEUID:NONE
+
+<OFX>
+<SIGNONMSGSRSV1>
+<SONRS>
+<STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>
+<DTSERVER>20260115120000</DTSERVER>
+<LANGUAGE>ENG</LANGUAGE>
+<FI><ORG>SAMPLE BANK</ORG><FID>9999</FID></FI>
+</SONRS>
+</SIGNONMSGSRSV1>
+<BANKMSGSRSV1>
+<STMTTRNRS>
+<TRNUID>0</TRNUID>
+<STATUS><CODE>0</CODE><SEVERITY>INFO</SEVERITY></STATUS>
+<STMTRS>
+<CURDEF>USD</CURDEF>
+<BANKACCTFROM><BANKID>123456789</BANKID><ACCTID>1111</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>
+<BANKTRANLIST>
+<DTSTART>20260101</DTSTART><DTEND>20260131</DTEND>
+</BANKTRANLIST>
+<LEDGERBAL><BALAMT>1487.50</BALAMT><DTASOF>20260131120000</DTASOF></LEDGERBAL>
+</STMTRS>
+</STMTTRNRS>
+</BANKMSGSRSV1>
+</OFX>
+"""
+
+
+def test_gate_leaves_overlap_unmeasured_when_the_file_has_no_transactions(
+    db: Database, tmp_path: Path
+) -> None:
+    """No incoming rows means no evidence: absent keys, never a measured zero.
+
+    A candidate whose ledger comparison never ran must not read as "measured,
+    no overlap" (``overlap_comparable=0`` present) — that would argue against
+    a merge the evidence never actually spoke to. This statement has an
+    account identity and a weak twin but zero transactions in the period (a
+    dormant account's routine statement is a real shape), so overlap must
+    stay entirely absent, the same as ``test_the_gate_surfaces_ledger_evidence_
+    without_a_constant_confidence_score`` shows for a candidate with no
+    ``incoming_transactions`` passed at all.
+    """
+    _seed_ofx_twin(db)
+    ofx = tmp_path / "zero-txn.ofx"
+    ofx.write_text(_ZERO_TXN_OFX, encoding="utf-8")
+
+    with pytest.raises(ImportConfirmationRequiredError) as exc:
+        ImportService(db).import_file(
+            ofx, refresh=False, confirm=True, actor_kind="human"
+        )
+
+    [proposal] = exc.value.outcome.account_proposals
+    [candidate] = proposal["candidates"]
+    assert "overlap_matched" not in candidate
+    assert "overlap_comparable" not in candidate
+    assert "signal" in candidate
+
+
 def test_bare_single_account_surfaces_account_confirmation(
     db: Database,
 ) -> None:
