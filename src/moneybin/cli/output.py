@@ -58,6 +58,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# DEPRECATED: direct-human-output — migrate this text path through the shared
+# terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
+
 CLI_MAX_ROWS = 1_000_000
 """Rows a CLI report run may return.
 
@@ -153,6 +156,14 @@ def _set_output_flag(value: OutputFormat) -> OutputFormat:
     return set_output_flag(value)
 
 
+def _set_quiet_flag(value: bool) -> bool:
+    from moneybin.cli.utils import (
+        set_quiet_flag,  # deferred: module-scope import would cycle
+    )
+
+    return set_quiet_flag(value)
+
+
 output_option: OutputFormat = typer.Option(
     OutputFormat.TEXT,
     "-o",
@@ -167,6 +178,7 @@ quiet_option: bool = typer.Option(
     "-q",
     "--quiet",
     help="Suppress informational output (status lines, progress, ✅).",
+    callback=_set_quiet_flag,
 )
 
 wide_option: bool = typer.Option(

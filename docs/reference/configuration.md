@@ -127,6 +127,16 @@ Holdings valuation configuration (`investments-price-feeds.md`).
 | `MONEYBIN_INVESTMENTS__PRICE_STALENESS_DEFAULT_DAYS` | int (≥ 1) | `4` | Age in days beyond which a security's last close is reported stale, for security types `moneybin.staleness.SECURITY_TYPE_STALENESS_DAYS` does not name (`cash`, `other`). Defaults to the exchange-traded value because it absorbs an ordinary weekend; a tighter global default would fire on most days and train the reader to ignore the warning. |
 | `MONEYBIN_INVESTMENTS__PRICE_DISAGREEMENT_TOLERANCE_PCT` | float (> 0) | `2.0` | Percent difference between two provider closes for the same security, date, and quote currency beyond which `investment_price_disagreement` reports them. Sized to the failure it actually catches — a feed key bound to the wrong security, which yields order-of-magnitude differences — rather than to the precision two feeds agree to. Legitimate differences exist and must not fire: a broker's crypto valuation is struck at its own snapshot time while CoinGecko's is a 00:00 UTC close, so a volatile day separates them by more than a percent with both correct. |
 
+## cli
+
+Persistent preferences for human terminal presentation.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `MONEYBIN_CLI__AUTO_PAGER` | bool | `true` | Page eligible interactive text results automatically. |
+| `MONEYBIN_CLI__REDUCED_MOTION` | bool | `false` | Replace animated progress with static stage labels. |
+| `MONEYBIN_CLI__ASCII` | bool | `false` | Use portable ASCII symbols and minus signs in terminal text. |
+
 ## categorization
 
 Auto-rule proposal and lifecycle configuration.

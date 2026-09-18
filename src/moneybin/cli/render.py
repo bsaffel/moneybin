@@ -35,6 +35,7 @@ import typer
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.reports._framework.contract import MoneyKind, Polarity
 
 __all__ = [
@@ -83,6 +84,9 @@ class Style(StrEnum):
     POSITIVE = "green"
     NEGATIVE = "red"
     WARNING = "yellow"
+    HIERARCHY = "bold"
+    CONTEXT = "dim"
+    ACTION = "cyan"
     NEUTRAL = ""
 
 
@@ -134,7 +138,7 @@ class Money:
         return Style.NEUTRAL
 
 
-def format_money(value: object, kind: MoneyKind) -> str:
+def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
     """Stringify one amount — the only place text output does so (req 11).
 
     Thousands separators always, two decimal places always. A missing amount
@@ -163,7 +167,7 @@ def format_money(value: object, kind: MoneyKind) -> str:
         return "-"
     digits = f"{abs(amount):,.2f}"
     if amount < 0:
-        return f"{MINUS}{digits}"
+        return f"{minus}{digits}"
     # `flow` and `delta` state their direction; a zero has none to state, so it
     # goes unsigned rather than claiming income with a `+`.
     if kind in ("flow", "delta") and amount > 0:
@@ -393,6 +397,7 @@ def render_rows(
     has_more: bool = False,
     placeholder: Placeholder | None = None,
     fit: bool = False,
+    terminal: TerminalPolicy | None = None,
 ) -> None:
     """Render ``rows`` as a table to stdout (requirement 2).
 
@@ -453,6 +458,12 @@ def render_rows(
     """
     from rich.console import Console  # defer heavy import
     from rich.table import Table  # defer heavy import
+    from rich.text import Text  # defer heavy import
+
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
 
     declared = money or {}
     # Formatting and atomicity are separate declarations. A per-unit price is
@@ -468,7 +479,8 @@ def render_rows(
     console = Console(
         markup=False,
         highlight=False,
-        no_color=not color_enabled(sys.stdout, os.environ),
+        no_color=not terminal.style,
+        width=terminal.width,
     )
     absent_at: int | None = None
     absent_as = ""
@@ -487,7 +499,15 @@ def render_rows(
         absent_at = columns.index(placeholder.column)
         absent_as = placeholder.value
     cells_source: Iterable[tuple[list[RenderableType], bool]] = (
-        _cells(columns, row, declared, absent_at, absent_as) for row in rows
+        _cells(
+            columns,
+            row,
+            declared,
+            absent_at,
+            absent_as,
+            minus=terminal.minus,
+        )
+        for row in rows
     )
     kept = tuple(range(len(columns)))
     if fit and columns:
@@ -520,7 +540,7 @@ def render_rows(
         is_money = name in declared
         is_number = name in unwrappable
         table.add_column(
-            name,
+            Text(name),
             justify="right" if is_money else "left",
             # Text folds; a number does not. Folding only saves a value that
             # has a space to break on, and the text values most likely to
@@ -548,7 +568,7 @@ def render_rows(
             no_wrap=is_number,
         )
         if at == gap:
-            table.add_column(ELISION, justify="center", overflow="fold")
+            table.add_column(Text(ELISION), justify="center", overflow="fold")
     # Counted off the kept columns, not the caller's whole projection: the
     # disclosure is about what this table shows, and a placeholder in a column
     # the fit dropped is not on screen to be misread.
@@ -641,6 +661,8 @@ def _cells(
     declared: Mapping[str, Money],
     absent_at: int | None = None,
     absent_as: str = "",
+    *,
+    minus: str = MINUS,
 ) -> tuple[list[RenderableType], bool]:
     """Render one record's cells, and report whether the declared value was absent.
 
@@ -675,13 +697,13 @@ def _cells(
                 # agree means normalizing blanks in staging, which is a change
                 # to what the queue contains rather than to how it renders.
                 absent = True
-                cells.append(absent_as)
+                cells.append(Text(absent_as))
             else:
-                cells.append("" if value is None else str(value))
+                cells.append(Text("" if value is None else str(value)))
             continue
         cells.append(
             Text(
-                format_money(value, column_money.kind),
+                format_money(value, column_money.kind, minus=minus),
                 style=str(column_money.style_for(value)),
             )
         )

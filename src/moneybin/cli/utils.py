@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -21,11 +22,15 @@ from moneybin.services.mutation_context import operation
 from moneybin.utils.user_config import ensure_default_profile, get_default_profile
 
 if TYPE_CHECKING:
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.database import Database
     from moneybin.matching.engine import MatchResult
     from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
+
+# DEPRECATED: direct-human-output — migrate this text path through the shared
+# terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
 
 # Profile-resolution provenance: kept in the log file, kept off the console.
 # Named so `_CONSOLE_SUPPRESSED_PREFIXES` can target it without silencing the
@@ -381,6 +386,7 @@ class _CLIFlags:
     profile: str | None = None
     verbose: bool = False
     output: OutputFormat = OutputFormat.TEXT
+    quiet: bool = False
 
 
 _flags = _CLIFlags()
@@ -390,6 +396,8 @@ def stash_cli_flags(profile: str | None, verbose: bool) -> None:
     """Record top-level CLI flags for the lazy profile resolver."""
     _flags.profile = profile
     _flags.verbose = verbose
+    _flags.output = OutputFormat.TEXT
+    _flags.quiet = False
 
 
 def get_verbose_flag() -> bool:
@@ -401,6 +409,34 @@ def set_output_flag(value: OutputFormat) -> OutputFormat:
     """Record the active output format; called by the output_option callback."""
     _flags.output = value
     return value
+
+
+def set_quiet_flag(value: bool) -> bool:
+    """Record quiet mode for shared presentation helpers."""
+    _flags.quiet = value
+    return value
+
+
+def get_terminal_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    """Resolve terminal presentation without triggering profile setup or a DB open."""
+    from moneybin.cli.terminal import resolve_terminal_policy
+    from moneybin.config import CLISettings, get_current_profile, get_settings
+
+    try:
+        get_current_profile(auto_resolve=False)
+    except RuntimeError:
+        settings = CLISettings()
+    else:
+        settings = get_settings().cli
+    return resolve_terminal_policy(
+        stdin=sys.stdin,
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        output="json" if _flags.output == OutputFormat.JSON else "text",
+        quiet=_flags.quiet,
+        no_pager=no_pager,
+        settings=settings,
+    )
 
 
 def resolve_profile() -> None:

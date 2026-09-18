@@ -1317,8 +1317,9 @@ def test_quiet_does_not_suppress_result_rows(
 
 
 def _cli_modules() -> list[Path]:
-    """Every CLI module the guards apply to — the renderer itself is exempt."""
-    return sorted(p for p in CLI_ROOT.rglob("*.py") if p != RENDERER)
+    """Every CLI module except the centralized presentation helpers."""
+    presentation_helpers = {RENDERER, CLI_ROOT / "terminal.py"}
+    return sorted(p for p in CLI_ROOT.rglob("*.py") if p not in presentation_helpers)
 
 
 def _imported_roots(module: Path) -> set[str]:
@@ -1381,8 +1382,8 @@ def _styling_calls(module: Path) -> list[str]:
     ]
 
 
-def test_only_the_render_module_imports_rich() -> None:
-    """Requirements 1 and 36: Rich is the render layer's private dependency.
+def test_only_presentation_helpers_import_rich() -> None:
+    """Requirements 1 and 36: Rich stays out of command-local renderers.
 
     A command that cannot import Rich cannot build a second table idiom beside
     `render_rows`, and cannot write a style literal beside the palette. One
@@ -1395,7 +1396,7 @@ def test_only_the_render_module_imports_rich() -> None:
     ]
     assert offenders == [], (
         "these modules import Rich directly instead of calling "
-        f"moneybin.cli.render: {offenders}"
+        f"moneybin.cli presentation helpers: {offenders}"
     )
 
 
@@ -1447,6 +1448,9 @@ def test_the_palette_names_a_meaning_for_every_colour() -> None:
         "POSITIVE",
         "NEGATIVE",
         "WARNING",
+        "HIERARCHY",
+        "CONTEXT",
+        "ACTION",
         "NEUTRAL",
     }
 

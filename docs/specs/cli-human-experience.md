@@ -2,7 +2,7 @@
 
 ## Status
 
-draft
+in-progress
 
 ## Goal and scope
 
@@ -15,8 +15,8 @@ This design covers human presentation, temporary paging, progress, guided input,
 and outcome reporting. It preserves the taxonomy in [MoneyBin CLI](moneybin-cli.md)
 and builds on [CLI Output Coherence](cli-output-coherence.md). Existing financial
 formatting, redaction, result-framing, and audit requirements remain binding.
-The draft records approved interaction choices and a proposed implementation
-boundary; it does not claim the behavior is shipped.
+This spec records the approved interaction choices and implementation boundary.
+Implementation is in progress; the behavior is not yet fully shipped.
 
 ## Approach and tradeoffs
 

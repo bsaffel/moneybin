@@ -231,13 +231,27 @@ it would let a redirected file record a truncated table that reads as whole.
 Pass `total_columns=` to `render_rows` to get that line; leave it out and
 nothing is framed.
 
-**Colour** is defined once, semantically, as `render.Style` — no colour literal
-belongs at a call site — and is emitted only when stdout is a TTY and `NO_COLOR`
-is unset. The sign glyph is always present, so the encoding survives a pipe.
+**Terminal policy** belongs to `moneybin.cli.terminal`. It resolves actual
+stdin/stdout/stderr capabilities and the supplied `CLISettings` without loading
+a profile or database. JSON disables human presentation; reduced motion keeps
+static stage labels while disabling animation; quiet suppresses those labels.
+`NO_COLOR` disables every style, including bold. `render.Style` names semantic
+roles (hierarchy, context, action, and states) with terminal palette names; no
+colour literal belongs at a call site. Rich may appear only in the centralized
+presentation helpers (`render.py` and `terminal.py`), never in a command-local
+renderer. The sign glyph is always present, so the encoding survives a pipe.
+
+`TerminalPolicy.symbols` provides `✓`, `!`, `×`, and `›` with `OK`, `!`, `X`,
+and `>` ASCII fallbacks. Use its `minus` when a terminal-facing formatter needs
+the portable hyphen-minus; preserve the number and sign meaning. Commands with
+legacy direct human output carry the searchable
+`DEPRECATED: direct-human-output` marker until they migrate through the shared
+presentation boundary.
 
 Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
-structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
-it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
+structurally: Rich may be imported only by centralized presentation helpers,
+no `typer.echo` outside them carries an alignment format spec, and nothing calls
+`typer.secho`/`typer.style`.
 
 **No module is exempt** — every CLI module is held to these three guards
 unconditionally. The `_AWAITING_RENDER_ROWS` set that once carried eight
