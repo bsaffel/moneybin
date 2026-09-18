@@ -139,6 +139,10 @@ REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 UNDO_ALREADY_UNDONE = "undo_already_undone"
 UNDO_CASCADE_BLOCKED = "undo_cascade_blocked"
 UNDO_OPERATION_NOT_FOUND = "undo_operation_not_found"
+# The captured before-image would restore a value the current write path
+# refuses (e.g. a pre-#517 whitespace-only category). BaseRepo._require_admissible
+# raises this instead of writing the row back verbatim (issue #547).
+UNDO_VALUE_INADMISSIBLE = "undo_value_inadmissible"
 
 
 # ---------------------------------------------------------------------------

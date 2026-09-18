@@ -31,6 +31,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
+from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditEvent, AuditService
 from moneybin.tables import TableRef
 
@@ -75,6 +76,18 @@ class BaseRepo:
 
     #: Abstract repository bases opt out of concrete-table metadata validation.
     abstract: ClassVar[bool] = False
+
+    #: Columns of ``table_ref`` a restore must re-validate with
+    #: ``validate_category_text`` before writing them back verbatim (issue
+    #: #547). Empty by default. The six repos owning a category/subcategory
+    #: field #517 protects on the forward write path (``user_categories``,
+    #: ``user_merchants``, ``transaction_splits``, ``budgets``,
+    #: ``categorization_rules``, ``proposed_rules``) declare the applicable
+    #: column names here; the admissibility rule itself is stated in exactly
+    #: one place, ``services._validators.validate_category_text`` — this only
+    #: says which of THIS table's columns that rule applies to. See
+    #: :meth:`_require_admissible`.
+    _CATEGORY_TEXT_COLUMNS: ClassVar[tuple[str, ...]] = ()
 
     #: The one grandfathered non-``app`` table a ``BaseRepo`` subclass owns
     #: (MB-255). ``ManualInvestmentTransactionsRepo`` predates this guard and
@@ -343,6 +356,13 @@ class BaseRepo:
         ``DECIMAL``, and binds ``dict``/``list`` directly to ``JSON``/array
         columns — so no per-repo type handling is needed (``match_signals`` JSON
         and ``exemplars`` arrays round-trip natively).
+
+        A DELETE-undo or UPDATE-undo that would write ``before`` back verbatim
+        first runs it through :meth:`_require_admissible` — the write path can
+        reject a value (e.g. blank category text, #517) that an older audit row
+        still carries, and restoring it here would resurrect state no live
+        write path can produce (#547). No-op on the many repos with no declared
+        ``_CATEGORY_TEXT_COLUMNS``.
         """
         before = event.before_value
         after = event.after_value
@@ -355,6 +375,7 @@ class BaseRepo:
                 self._delete_by_pk(after)
             elif after is None and before is not None:
                 self._require_capture(before, self._not_null_columns(), event)
+                self._require_admissible(before, event)
                 self._insert_row(before)
             elif before is not None and after is not None:
                 self._require_capture(after, self.pk_columns, event)
@@ -362,6 +383,7 @@ class BaseRepo:
                 # writes only the captured columns and leaves the rest at their
                 # current (post-mutation) values.
                 self._require_capture(before, after.keys(), event)
+                self._require_admissible(before, event)
                 self._restore_row(before=before, locate=after)
             # Target the row the inverse actually leaves behind, not event.target_id:
             # a PK-changing undo (tag rename restore) lands on the *before* key, so
@@ -414,6 +436,44 @@ class BaseRepo:
                 "— not reversible.",
                 code=error_codes.RECOVERY_NO_PATH,
             )
+
+    def _require_admissible(self, row: dict[str, Any], event: AuditEvent) -> None:
+        """Refuse to write ``row`` back verbatim if the write path would now reject it.
+
+        Design decision (issue #547): refuse with a classified error rather than
+        rebuild the six affected tables with a DB-level ``CHECK`` — DuckDB has no
+        ``ALTER TABLE ADD CONSTRAINT``, so a `CHECK` needs a create/copy/drop/rename
+        per table (the cost #517 already declined to pay); refusing is a code-only
+        change that reuses the write path's own validator, so the rule stays
+        stated in exactly one place (``validate_category_text``) instead of a
+        second copy restated in SQL. This makes the specific audited operation
+        permanently un-undoable through this path — accepted because the
+        alternative is silently resurrecting a value no live write path can
+        produce (the #547 scenario: a pre-#517 blank category survives a
+        migration cleanup by hiding inside a delete's audit row). The error names
+        the exact field and offending value so the row is not a dead end: the
+        other captured fields stay visible via ``system_audit(view="detail")``
+        and the entity can be recreated with a valid value through the table's
+        normal write tool.
+
+        Checks only ``_CATEGORY_TEXT_COLUMNS`` — empty on every repo but the six
+        #517 protects, so this is a no-op for every other table.
+        """
+        for column in self._CATEGORY_TEXT_COLUMNS:
+            value = row.get(column)
+            if value is None:
+                continue
+            try:
+                validate_category_text(value, column)
+            except ValueError as exc:
+                raise UserError(
+                    f"Cannot undo {event.action!r}: the captured {column}="
+                    f"{value!r} on {event.target_table} is no longer admissible "
+                    f"({exc}). Undo cannot restore a value the write path would "
+                    "refuse — create a corrected row through the normal write "
+                    "path instead.",
+                    code=error_codes.UNDO_VALUE_INADMISSIBLE,
+                ) from exc
 
     def _row_target_id(self, row: dict[str, Any]) -> str:
         """The audit ``target_id`` for ``row`` — the row's own identity (row-grain).
