@@ -601,6 +601,18 @@ def header_row_consumed_recovery(
     ``format_name`` is expected to be absent from them; it is the one option
     a retry must not repeat.
 
+    The delete command carries ``--yes`` rather than naming it alongside.
+    This text is emitted into ``confirm_actions``, which reaches an agent or a
+    script as a JSON actions list, and ``formats delete`` gates on a
+    ``typer.confirm`` — so a command printed without the flag is an action a
+    machine cannot execute, which is what ``cli.md``'s Non-Interactive Parity
+    rule exists to prevent. The parenthetical gives a human at a terminal the
+    off-ramp back to the prompt. Embedding it is safe *here* specifically:
+    MoneyBin supplies the name, and it names the format it has just refused as
+    unusable — so neither thing the confirm guards against (a mistyped name, an
+    unrecognized destructive verb) is live on this path. That reasoning does
+    not generalize to a delete the user chose themselves.
+
     ``retry_command`` names the subcommand the printed retry invokes —
     ``import files`` (the default) when this text answers a load-time
     confirmation, or ``import preview`` when ``import preview`` itself is
@@ -619,14 +631,14 @@ def header_row_consumed_recovery(
     read_args_str = retry_args.cli_fragment()
     if format_name is not None:
         removal = (
-            f"run `moneybin import formats delete {shlex.quote(format_name)}` "
-            "(--yes skips the confirmation prompt)"
+            "run `moneybin import formats delete "
+            f"{shlex.quote(format_name)} --yes` (drop --yes to be asked first)"
         )
     else:
         removal = (
-            "run `moneybin import formats delete` with that format's name "
-            "(`moneybin import formats list` shows saved formats; --yes skips "
-            "the confirmation prompt)"
+            "run `moneybin import formats delete` with that format's name and "
+            "--yes (`moneybin import formats list` shows saved formats; drop "
+            "--yes to be asked first)"
         )
     return (
         "This file's first row was read as column names, but it parses as a "

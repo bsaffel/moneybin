@@ -1235,6 +1235,7 @@ class TestHeaderRowConsumedRecovery:
             "formats",
             "delete",
             format_name,
+            "--yes",
         ] in tokenized
 
     def test_cli_with_no_format_name_has_no_redirection_placeholder(self) -> None:
@@ -1324,22 +1325,45 @@ class TestHeaderRowConsumedRecovery:
         assert "correct the saved format" not in message
         assert "Add a header row" not in message
 
-    def test_cli_names_the_yes_flag_that_skips_the_delete_confirmation(self) -> None:
-        """The printed delete command aborts non-interactively without --yes.
+    def test_the_printed_delete_command_itself_carries_yes(self) -> None:
+        """The flag must be IN the command, not merely mentioned near it.
 
         `moneybin import formats delete <name>` calls `typer.confirm(...)`
-        unless `--yes` is passed. A script or agent that runs the printed
-        command as-is hits `Aborted!` instead of the deletion the message
-        promises, so the flag must be discoverable at the point of use.
+        unless `--yes` is passed, and this text reaches an agent as a JSON
+        actions entry. So the assertion has to read the backtick-quoted
+        command rather than the prose around it: a `"--yes" in message` check
+        passes just as happily when the flag sits in a parenthetical beside a
+        command that still aborts, which is the state this replaced.
         """
+        import re
+        import shlex
+
         message = header_row_consumed_recovery(
             "/data/plain.csv", format_name="acme_format"
         )
-        assert "--yes" in message
+        delete_cmd = next(
+            cmd
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import formats delete")
+        )
+        assert shlex.split(delete_cmd) == [
+            "moneybin",
+            "import",
+            "formats",
+            "delete",
+            "acme_format",
+            "--yes",
+        ]
 
-    def test_cli_names_the_yes_flag_even_with_no_format_name(self) -> None:
+    def test_the_no_name_branch_still_names_yes(self) -> None:
+        """With no format name there is no runnable command to embed it in.
+
+        The caller has to supply the name, so this branch names `--yes` in
+        prose alongside the `formats list` pointer instead.
+        """
         message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
         assert "--yes" in message
+        assert "moneybin import formats list" in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:
