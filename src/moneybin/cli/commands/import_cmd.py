@@ -2876,6 +2876,13 @@ def import_preview(
                 ("--sheet", sheet),
                 ("--delimiter", delimiter),
                 ("--encoding", encoding),
+                # The limit overrides are ignored here as completely as the
+                # six above: _preview_pdf takes the source and nothing else,
+                # so neither can reach a gate on this branch. Their help says
+                # they carry over from `import files`, which is exactly the
+                # inference this warning has to stop a caller from drawing.
+                ("--no-row-limit", no_row_limit),
+                ("--no-size-limit", no_size_limit),
                 ("--override", override),
             )
             if value
