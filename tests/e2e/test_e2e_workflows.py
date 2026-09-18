@@ -497,11 +497,11 @@ class TestSingleAccountConfirmPipeline:
             "json",
             env=env,
         )
-        # import files exits 0 even on confirmation_required in --output json mode;
-        # the body's data.status is the discriminant.
-        assert result.exit_code == 0, (
-            f"Expected exit 0 from import files (confirmation_required exits 0 "
-            f"in JSON mode)\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        # The JSON envelope remains machine-readable, but requested work is
+        # incomplete until this account identity confirmation is resolved.
+        assert result.exit_code == 1, (
+            f"Expected exit 1 from incomplete import confirmation\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         payload = json.loads(result.stdout)
         data = payload["data"]
@@ -528,6 +528,7 @@ class TestSingleAccountConfirmPipeline:
         )
         ref = proposals[0]["proposal_ref"]
         assert ref == "@0", f"the first proposal's ref must be @0, got {ref!r}"
+        assert any("moneybin import confirm" in action for action in payload["actions"])
 
         # Step 2: Resolve — accept the mapping and bind by the positional ref so
         # the import can complete. Binding the masked key instead is refused; that

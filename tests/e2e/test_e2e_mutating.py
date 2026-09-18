@@ -659,7 +659,8 @@ class TestImportMutating:
         env = make_workflow_env_fast(tmp_path, "importrev", _mutating_profile_template)
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
-        # Import
+        # First-contact layout needs an explicit confirmation; the receipt is
+        # complete but the requested import is not complete, so it exits 1.
         result = run_cli(
             "import",
             "files",
@@ -669,7 +670,10 @@ class TestImportMutating:
             "--no-refresh",
             env=env,
         )
-        result.assert_success()
+        assert result.exit_code == 1, result.output
+        assert "Confirmation required" in result.stdout
+        assert "moneybin import files" in result.stdout
+        assert "--confirm" in result.stdout
 
         # Revert with a fake ID — should fail gracefully, not crash
         result = run_cli("import", "revert", "nonexistent-id", "--yes", env=env)

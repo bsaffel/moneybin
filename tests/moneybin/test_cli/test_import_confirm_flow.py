@@ -36,9 +36,11 @@ from moneybin.services.import_confirmation import (
     SignConventionProposal,
 )
 from moneybin.services.import_service import (
+    BatchImportResult,
     BridgeApplyResult,
     CreatedAccount,
     ImportResult,
+    PerFileResult,
 )
 from moneybin.services.ledger_overlap import LedgerOverlap
 
@@ -338,6 +340,52 @@ class TestImportFilesConfirmFlow:
         assert result.exit_code == 0
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
+
+    def test_batch_receipt_keeps_confirmation_work_visible_and_nonzero(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A batch with saved work and a pending choice is partial, not successful."""
+        saved = tmp_path / "saved.csv"
+        pending = tmp_path / "pending.csv"
+        for path in (saved, pending):
+            path.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        confirmation = _make_confirmation_error().outcome
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_files",
+            return_value=BatchImportResult(
+                per_file=[
+                    PerFileResult(
+                        path=str(saved),
+                        status="imported",
+                        source_type="tabular",
+                        rows_loaded=2,
+                    ),
+                    PerFileResult(
+                        path=str(pending),
+                        status="confirmation_required",
+                        source_type=None,
+                        confirmation_payload={
+                            "channel": confirmation.channel,
+                            "reason": confirmation.reason,
+                        },
+                    ),
+                ],
+                transforms_applied=False,
+                transforms_duration_seconds=None,
+            ),
+        )
+
+        result = runner.invoke(
+            app, ["files", str(saved), str(pending), "--output", "json"]
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["data"]["imported_count"] == 1
+        assert payload["data"]["confirmation_required_count"] == 1
+        pending_row = payload["data"]["files"][1]
+        assert pending_row["status"] == "confirmation_required"
+        assert pending_row["confirmation_payload"]["reason"] == "unknown_layout"
 
     def test_a_created_account_is_named_in_the_json_envelope(
         self,
@@ -656,7 +704,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--account-name", "Checking", "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         data = payload["data"]
         assert data["status"] == "confirmation_required"
@@ -964,7 +1012,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "moneybin import confirm" in recovery
@@ -1591,7 +1639,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(pdf_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         data = payload["data"]
         assert data["reason"] == "sign_convention"
@@ -1612,7 +1660,7 @@ class TestImportFilesConfirmFlow:
         mock_import_file_raises_confirm: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """When --output json and service raises, emit confirmation_required envelope; exit 0."""
+        """A confirmation envelope retains its shape and exits nonzero."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
 
@@ -1621,7 +1669,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"
@@ -1632,6 +1680,28 @@ class TestImportFilesConfirmFlow:
         assert payload["data"]["channel"] == "tabular"
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
+
+    def test_redirected_text_confirmation_stays_text(
+        self,
+        mock_db: MagicMock,
+        mock_import_file_raises_confirm: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Redirecting text does not silently substitute a JSON envelope."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdin.isatty.return_value = False
+        mock_sys.stdout.isatty.return_value = False
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "text"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.output
+        assert "moneybin import files" in result.output
+        assert "--confirm" in result.output
+        assert not result.output.lstrip().startswith("{")
 
     def test_consumed_header_actions_do_not_prescribe_another_mapping(
         self,
@@ -1654,7 +1724,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "header_row_consumed"
         actions = payload["actions"]
@@ -1688,7 +1758,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "unreadable_date"
         actions = payload["actions"]
@@ -1713,7 +1783,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"
@@ -1751,7 +1821,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"

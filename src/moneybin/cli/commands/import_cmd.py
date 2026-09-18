@@ -712,11 +712,10 @@ def import_files_command(
                         f"Run 'moneybin import preview {file_path_str}' to inspect "
                         "the proposal."
                     )
-            if output == OutputFormat.JSON or not sys.stdout.isatty():
-                # Non-TTY / --output json: emit the full ResponseEnvelope so
-                # CLI --output json matches the MCP envelope shape (same
-                # top-level status/summary/data/actions wrapper).
-                # Exit 0 so scripted consumers receive the envelope cleanly.
+            if output == OutputFormat.JSON:
+                # JSON always emits the full ResponseEnvelope so CLI --output
+                # json matches the MCP envelope shape (same top-level
+                # status/summary/data/actions wrapper), even under redirection.
                 confirm_envelope = build_envelope(
                     data=envelope_data,
                     sensitivity="medium",
@@ -727,10 +726,9 @@ def import_files_command(
                     OutputFormat.JSON,
                     cli_actor="import_files_command",
                 )
-                raise typer.Exit(0) from _exc
-            # Interactive human path: render a human-readable summary and exit
-            # 1 so pipelines halt cleanly (unlike the non-TTY path which exits
-            # 0 so scripted consumers can parse the envelope).
+                raise typer.Exit(1) from _exc
+            # Text remains text under redirection. This receipt does not prompt;
+            # it records the required confirmation and exits nonzero.
             _render_confirmation_prompt(
                 outcome,
                 file_path_str,
@@ -831,10 +829,25 @@ def import_files_command(
         )
     elif not quiet:
         for f in files_list:
-            icon = "✅" if f["status"] == "imported" else "❌"
-            label = f["source_type"] or "?"
-            rows = f.get("rows_loaded") or 0
-            logger.info(f"{icon} {f['path']} [{label}] — {rows} rows")
+            if f["status"] == "imported":
+                icon = "✅"
+                receipt = (
+                    f"{f['path']} [{f['source_type'] or '?'}] — "
+                    f"{f.get('rows_loaded') or 0} rows"
+                )
+            elif f["status"] == "confirmation_required":
+                icon = "!"
+                receipt = (
+                    f"{f['path']} — needs confirmation; no transactions "
+                    "imported from this file"
+                )
+            else:
+                icon = "❌"
+                receipt = (
+                    f"{f['path']} [{f['source_type'] or '?'}] — "
+                    f"{f.get('rows_loaded') or 0} rows"
+                )
+            logger.info(f"{icon} {receipt}")
             # A failed row's whole value is why it failed and how to fix it.
             # Text mode is the CLI default, so leaving these to the JSON branch
             # made the recovery advice invisible to anyone running the bare
@@ -875,7 +888,11 @@ def import_files_command(
     # The envelope's own status covers the other batch-level failure: an
     # all-failed batch. Reading it (rather than re-deriving the condition)
     # keeps the exit code and the reported status from disagreeing.
-    if data.get("transforms_error") or envelope.status == "error":
+    if (
+        data.get("transforms_error")
+        or envelope.status == "error"
+        or data.get("confirmation_required_count")
+    ):
         raise typer.Exit(1)
 
 
@@ -968,6 +985,7 @@ def _batch_payload(
     data: dict[str, Any] = {
         "imported_count": batch.imported_count,
         "failed_count": batch.failed_count,
+        "confirmation_required_count": batch.confirmation_required_count,
         "total_count": batch.total_count,
         "transforms_applied": batch.transforms_applied,
         "transforms_duration_seconds": batch.transforms_duration_seconds,

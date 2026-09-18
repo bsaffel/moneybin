@@ -595,6 +595,11 @@ class BatchImportResult:
         return sum(1 for r in self.per_file if r.status == "failed")
 
     @property
+    def confirmation_required_count(self) -> int:
+        """Number of files awaiting an explicit confirmation."""
+        return sum(1 for r in self.per_file if r.status == "confirmation_required")
+
+    @property
     def total_count(self) -> int:
         """Total number of files attempted in this batch."""
         return len(self.per_file)
