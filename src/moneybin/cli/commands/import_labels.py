@@ -7,21 +7,20 @@ list_distinct_labels}``. Labels are slug-flavored markers attached to a single
 
 from __future__ import annotations
 
-import logging
-
 import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
-
-logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Manage labels on import_log rows",
@@ -55,7 +54,20 @@ def import_labels_add(
             cli_actor="import_labels_add",
         )
         return
-    logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Import", import_id),
+                    ("Labels", ", ".join(updated) if updated else "None"),
+                ],
+                title="Labels added",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("remove")
@@ -86,7 +98,20 @@ def import_labels_remove(
             cli_actor="import_labels_remove",
         )
         return
-    logger.info(f"✅ Labels on {import_id}: {', '.join(updated) if updated else '-'}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Import", import_id),
+                    ("Labels", ", ".join(updated) if updated else "None"),
+                ],
+                title="Labels removed",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("list")
@@ -95,7 +120,8 @@ def import_labels_list(
         None, "--import-id", help="Filter to one import (omit for distinct counts)"
     ),
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # the requested label inventory remains visible
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List labels for one import, or all distinct labels with usage counts."""
     from moneybin.services.import_service import ImportService
@@ -115,12 +141,33 @@ def import_labels_list(
                         cli_actor="import_labels_list",
                     )
                     return
-                if not labels:
-                    if not quiet:
-                        logger.info(f"No labels on {import_id}")
-                    return
-                for label in labels:
-                    typer.echo(label)
+                parts: list[object] = [
+                    build_summary(
+                        [("Import", import_id), ("Labels", str(len(labels)))],
+                        title="Import labels",
+                    )
+                ]
+                if labels:
+                    parts.append(build_rows(["Label"], [(label,) for label in labels]))
+                else:
+                    parts.append(
+                        build_summary(
+                            [
+                                (
+                                    "Result",
+                                    "No labels on this import. Next: moneybin import labels add "
+                                    f"{import_id} <label>",
+                                )
+                            ],
+                            title="No labels",
+                        )
+                    )
+                emit_human_result(
+                    compose_human_result(parts),
+                    policy=get_terminal_policy(no_pager=no_pager),
+                    finite_read=True,
+                    no_pager=no_pager,
+                )
                 return
 
             rows = svc.list_distinct_labels()
@@ -135,9 +182,29 @@ def import_labels_list(
             cli_actor="import_labels_list",
         )
         return
-    if not rows:
-        if not quiet:
-            logger.info("No labels in use")
-        return
-    for label, count in rows:
-        typer.echo(f"  {label}\t{count}")
+    parts = [
+        build_summary(
+            [("Distinct labels", str(len(rows)))],
+            title="Import labels",
+        )
+    ]
+    if rows:
+        parts.append(build_rows(["Label", "Imports"], rows, numeric=["Imports"]))
+    else:
+        parts.append(
+            build_summary(
+                [
+                    (
+                        "Result",
+                        "No labels are in use. Next: moneybin import labels add <import-id> <label>",
+                    )
+                ],
+                title="No labels",
+            )
+        )
+    emit_human_result(
+        compose_human_result(parts),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )

@@ -7,7 +7,6 @@ import shlex
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -15,24 +14,10 @@ from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
-from moneybin.services.import_service import ImportResult
 from moneybin.services.inbox_service import (
     InboxListResult,
     InboxSyncResult,
 )
-
-
-def _make_import_result(**kwargs: Any) -> ImportResult:
-    """Factory for ImportResult with sensible defaults."""
-    defaults: dict[str, Any] = {
-        "file_path": "statement.ofx",
-        "file_type": "ofx",
-        "accounts": 1,
-        "transactions": 5,
-        "import_id": "abc123",
-    }
-    defaults.update(kwargs)
-    return ImportResult(**defaults)
 
 
 @contextmanager
@@ -73,10 +58,10 @@ def test_inbox_drain_prints_summary(runner: CliRunner, patch_inbox: MagicMock) -
     result = runner.invoke(app, ["import", "inbox"])
 
     assert result.exit_code == 0, result.stderr
-    # Per-file ✓ lines on stdout (data); summary on stderr (status).
+    # The complete operation receipt stays on stdout for redirection.
     assert "chase-checking/march.csv" in result.stdout
-    assert "1 imported" in result.stderr
-    assert "0 failed" in result.stderr
+    assert "Imported" in result.stdout
+    assert "Failed" in result.stdout
 
 
 def test_inbox_drain_warns_about_a_retired_transfer_in_both_output_modes(
@@ -92,7 +77,11 @@ def test_inbox_drain_warns_about_a_retired_transfer_in_both_output_modes(
     uses. The count rides in the payload either way; the warning is what names
     `system audit undo`.
     """
-    for mode in (["import", "inbox"], ["import", "inbox", "--output", "json"]):
+    for mode in (
+        ["import", "inbox"],
+        ["import", "inbox", "--quiet"],
+        ["import", "inbox", "--output", "json"],
+    ):
         patch_inbox.sync.return_value = InboxSyncResult(
             processed=[{"filename": "chase-checking/march.csv", "transactions": 47}],
             failed=[],
@@ -133,10 +122,10 @@ def test_inbox_drain_reports_the_best_effort_steps_its_refresh_ran(
     assert "moneybin fx set" in result.stderr
 
 
-def test_inbox_drain_failure_exits_zero_but_warns(
+def test_inbox_drain_failure_exits_nonzero_but_keeps_failure_facts(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
-    """Failed files exit 0 but display error_code in output."""
+    """A failed requested drain is nonzero without discarding its recovery facts."""
     patch_inbox.sync.return_value = InboxSyncResult(
         processed=[],
         failed=[
@@ -150,10 +139,10 @@ def test_inbox_drain_failure_exits_zero_but_warns(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0
-    assert "transform_error" in result.stderr
-    assert "0 imported" in result.stderr
-    assert "1 failed" in result.stderr
+    assert result.exit_code == 1
+    assert "transform_error" in result.stdout
+    assert "Imported" in result.stdout
+    assert "Failed" in result.stdout
 
 
 def test_inbox_drain_renders_pending_files(
@@ -184,13 +173,13 @@ def test_inbox_drain_renders_pending_files(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "unknown-statement.csv" in result.stderr
-    assert "pending confirmation" in result.stderr
-    assert "moneybin import confirm" in result.stderr
+    assert result.exit_code == 1, result.stderr
+    assert "unknown-statement.csv" in result.stdout
+    assert "Pending confirmation" in result.stdout
+    assert "moneybin import confirm" in result.stdout
     # Non-low tier: --accept ratifies the detected mapping.
-    assert "--accept" in result.stderr
-    assert "1 pending" in result.stderr
+    assert "--accept" in result.stdout
+    assert "Pending confirmation" in result.stdout
 
 
 def test_inbox_drain_low_tier_mapping_hint_omits_accept(
@@ -219,12 +208,12 @@ def test_inbox_drain_low_tier_mapping_hint_omits_accept(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "fuzzy.csv" in result.stderr
+    assert result.exit_code == 1, result.stderr
+    assert "fuzzy.csv" in result.stdout
     # The suggested command points at --mapping, not --accept. (The only
     # "--accept" in the output is the explanatory "--accept would be rejected".)
-    assert "fuzzy.csv --mapping" in result.stderr
-    assert "fuzzy.csv --accept" not in result.stderr
+    assert "fuzzy.csv --mapping" in result.stdout
+    assert "fuzzy.csv --accept" not in result.stdout
 
 
 def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
@@ -267,18 +256,17 @@ def test_inbox_drain_header_position_ambiguous_routes_on_reason_not_tier(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "data_before_header.csv --accept" in result.stderr
-    assert "would be rejected" not in result.stderr
-    assert "--mapping" not in result.stderr
-    assert "import files" not in result.stderr
+    assert result.exit_code == 1, result.stderr
+    assert "data_before_header.csv --accept" in result.stdout
+    assert "would be rejected" not in result.stdout
+    assert "--mapping" not in result.stdout
+    assert "import files" not in result.stdout
     # The disputed row is live drain-summary data, not part of the
     # row-free persisted sidecar — the drain must still show it.
     # Already allowlisted (disputed_row_fields) by the time it reaches
     # here, so the rendering is dest=value pairs, not raw positional cells.
-    assert (
-        "transaction_date=2026-01-01, amount=42.50, description=Coffee" in result.stderr
-    )
+    assert "transaction_date" in result.stdout
+    assert "Coffee" in result.stdout
 
 
 def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> None:
@@ -294,6 +282,47 @@ def test_inbox_drain_json_output(runner: CliRunner, patch_inbox: MagicMock) -> N
     assert payload["data"]["processed"][0]["filename"] == "a.csv"
     # No pending entries → only paths and counts → low.
     assert payload["summary"]["sensitivity"] == "low"
+
+
+def test_inbox_drain_busy_is_nonzero_in_json_with_the_service_payload(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A blocked requested drain keeps its JSON facts but cannot report success."""
+    patch_inbox.sync.return_value = InboxSyncResult(
+        skipped=[{"filename": "statement.csv", "reason": "inbox_busy"}]
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["data"]["skipped"] == [
+        {"filename": "statement.csv", "reason": "inbox_busy"}
+    ]
+
+
+def test_inbox_drain_receipt_never_opens_a_pager(
+    runner: CliRunner, patch_inbox: MagicMock, mocker: MockerFixture
+) -> None:
+    """A long drain receipt stays fully on stdout rather than entering a pager."""
+    patch_inbox.sync.return_value = InboxSyncResult(
+        processed=[
+            {"filename": f"file-{index}.csv", "transactions": index}
+            for index in range(20)
+        ]
+    )
+    mocker.patch(
+        "moneybin.cli.utils.get_terminal_policy",
+        return_value=MagicMock(
+            output="text", page=True, width=80, height=1, style=False, color=False
+        ),
+    )
+    pager = mocker.patch("moneybin.cli.pager.page_text")
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 0, result.output
+    assert "file-19.csv" in result.stdout
+    pager.assert_not_called()
 
 
 def test_inbox_drain_json_pending_is_medium_sensitivity(
@@ -340,7 +369,7 @@ def test_inbox_drain_json_pending_is_medium_sensitivity(
 
     result = runner.invoke(app, ["import", "inbox", "--output", "json"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = json.loads(result.stdout)
     assert payload["summary"]["sensitivity"] == "critical"
 
@@ -452,7 +481,7 @@ def test_inbox_drain_json_masks_the_institutions_account_number(
 
     result = runner.invoke(app, ["import", "inbox", "--output", "json"])
 
-    assert result.exit_code == 0, result.stderr
+    assert result.exit_code == 1, result.stderr
     assert acctid not in result.stdout, result.stdout
     proposal = json.loads(result.stdout)["data"]["pending"][0]["account_proposals"][0]
     assert proposal["source_account_key"] == "****6789"
@@ -461,24 +490,15 @@ def test_inbox_drain_json_masks_the_institutions_account_number(
     assert proposal["proposed_account_id"] == "prov12345678"
 
 
-def test_the_drains_printed_confirm_command_actually_runs(
-    runner: CliRunner, patch_inbox: MagicMock, mocker: MockerFixture, tmp_path: Path
+@pytest.mark.parametrize(
+    "filename",
+    ["statement.ofx", "statement with spaces;$(not-run).ofx"],
+)
+def test_the_drains_copyable_confirm_command_round_trips_ordinary_paths(
+    runner: CliRunner, patch_inbox: MagicMock, tmp_path: Path, filename: str
 ) -> None:
-    """The drain's recovery hint must be a command, not a description of one.
-
-    The drain is the one surface whose recovery nobody watches get produced, and
-    its hint is assembled by hand from a persisted sidecar rather than from the
-    ConfirmationRequired the other surfaces hold — so its command name, flags,
-    and referent vocabulary are three hand-copied strings with nothing binding
-    them to the CLI they name. Verified against a drifted flag name
-    (``--account-bindings``), which this catches and which no assertion on the
-    hint text would.
-
-    It does not guard the glued-period paste bug the sign recoveries had: this
-    command is quote-delimited, so trailing prose cannot reach the argv.
-    """
-    pending_file = tmp_path / "statement.ofx"
-    pending_file.write_text("OFXHEADER:100\n")
+    """The shell's parsed argv preserves ordinary paths and binding arguments."""
+    pending_file = tmp_path / filename
     patch_inbox.sync.return_value = InboxSyncResult(
         pending=[
             {
@@ -500,28 +520,94 @@ def test_the_drains_printed_confirm_command_actually_runs(
     )
 
     drain = runner.invoke(app, ["import", "inbox"])
-    assert drain.exit_code == 0, drain.stderr
+    assert drain.exit_code == 1, drain.stderr
 
     hint = next(
-        line for line in drain.stderr.splitlines() if "--account-binding" in line
+        line
+        for line in drain.stdout.splitlines()
+        if line.startswith("moneybin import confirm ") and "--account-binding" in line
     )
-    command = hint[hint.index("moneybin") : hint.rindex("'")]
+    command = hint[hint.index("moneybin") :]
     # The two placeholders the caller substitutes: the ref is listed beside each
     # proposal, and the target is theirs to choose.
     argv = shlex.split(command.replace("@N=<account_id|new>", "@0=new"))[1:]
 
-    imported = mocker.patch(
-        "moneybin.services.import_service.ImportService.import_file",
-        return_value=_make_import_result(),
-    )
-    mocker.patch(
-        "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+    # This is a shell-argv stub, not a second MoneyBin CLI invocation: it tests
+    # the command text the shell receives without creating an import/profile.
+    assert argv == [
+        "import",
+        "confirm",
+        str(pending_file),
+        "--accept",
+        "--account-binding",
+        "@0=new",
+    ]
+
+
+@pytest.mark.parametrize(
+    "moved_to",
+    [
+        "pending/statement\nnext.csv",
+        "pending/statement\x1b[2J.csv",
+        "pending/statement\rnext.csv",
+        "pending/statement\x07next.csv",
+    ],
+)
+def test_inbox_drain_control_path_uses_a_safe_recovery_fallback(
+    runner: CliRunner, patch_inbox: MagicMock, moved_to: str
+) -> None:
+    """Terminal-control paths must not become direct shell command output."""
+    patch_inbox.sync.return_value = InboxSyncResult(
+        pending=[
+            {
+                "filename": "statement.csv",
+                "channel": "ofx",
+                "tier": "high",
+                "reason": "account_confirmation",
+                "moved_to": moved_to,
+                "account_proposals": [],
+            }
+        ]
     )
 
-    rerun = runner.invoke(app, argv)
+    result = runner.invoke(app, ["import", "inbox"])
 
-    assert rerun.exit_code == 0, rerun.output
-    assert imported.call_args.kwargs["account_bindings"] == {"@0": "new"}
+    assert result.exit_code == 1, result.output
+    safe_text = " ".join(result.stdout.split())
+    assert "terminal control" in safe_text
+    assert "moneybin import inbox --output json" in safe_text
+    assert "\x1b" not in result.stdout
+    assert "\r" not in result.stdout
+    assert "\x07" not in result.stdout
+    assert not any(
+        line.startswith("moneybin import confirm ")
+        for line in result.stdout.splitlines()
+    )
+
+
+def test_inbox_drain_json_keeps_an_exact_control_path(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """The text fallback does not alter the existing machine-readable payload."""
+    moved_to = "pending/statement\x1b[2J\nnext.csv"
+    patch_inbox.sync.return_value = InboxSyncResult(
+        pending=[
+            {
+                "filename": "statement.csv",
+                "channel": "ofx",
+                "tier": "high",
+                "reason": "account_confirmation",
+                "moved_to": moved_to,
+                "account_proposals": [],
+            }
+        ]
+    )
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["data"]["pending"][0]["moved_to"] == moved_to
+    assert "\x1b" not in result.stdout
 
 
 def test_inbox_list_prints_would_process(
@@ -540,6 +626,55 @@ def test_inbox_list_prints_would_process(
     assert "chase-checking/march.csv" in result.stdout
 
 
+def test_inbox_list_quiet_keeps_scope_and_empty_recovery(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """An empty finite preview remains an actionable answer under --quiet."""
+    patch_inbox.enumerate.return_value = InboxListResult()
+
+    result = runner.invoke(app, ["import", "inbox", "list", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    assert "Inbox preview" in result.stdout
+    assert "No files" in result.stdout
+    assert "moneybin import inbox path" in result.stdout
+
+
+def test_inbox_list_pages_complete_answer_unless_no_pager_is_requested(
+    runner: CliRunner, patch_inbox: MagicMock, mocker: MockerFixture
+) -> None:
+    """The finite preview uses the pager boundary; its escape prints every file."""
+    patch_inbox.enumerate.return_value = InboxListResult(
+        would_process=[
+            {"filename": f"account/file-{index}.csv", "account_hint": "account"}
+            for index in range(20)
+        ]
+    )
+    mocker.patch(
+        "moneybin.cli.utils.get_terminal_policy",
+        return_value=MagicMock(
+            output="text", page=True, width=80, height=1, style=False, color=False
+        ),
+    )
+    paged: list[str] = []
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        del color, wide
+        paged.append(text)
+        return True
+
+    mocker.patch("moneybin.cli.pager.page_text", capture_page)
+
+    normal = runner.invoke(app, ["import", "inbox", "list"])
+    bypass = runner.invoke(app, ["import", "inbox", "list", "--no-pager"])
+
+    assert normal.exit_code == 0, normal.output
+    assert bypass.exit_code == 0, bypass.output
+    assert len(paged) == 1
+    assert "file-19.csv" in paged[0]
+    assert "file-19.csv" in bypass.stdout
+
+
 def test_inbox_path_prints_active_profile_root(
     runner: CliRunner, patch_inbox: MagicMock
 ) -> None:
@@ -548,6 +683,16 @@ def test_inbox_path_prints_active_profile_root(
 
     assert result.exit_code == 0
     assert str(patch_inbox.root) in result.stdout.strip()
+
+
+def test_inbox_path_quiet_stays_raw_for_command_substitution(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """Quiet cannot erase the requested raw path artifact."""
+    result = runner.invoke(app, ["import", "inbox", "path", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    assert result.stdout == f"{patch_inbox.root}\n"
 
 
 def test_inbox_drain_renders_account_confirmation_pending(
@@ -575,13 +720,13 @@ def test_inbox_drain_renders_account_confirmation_pending(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "statement.csv" in result.stderr
+    assert result.exit_code == 1, result.stderr
+    assert "statement.csv" in result.stdout
     # --accept (ratifies the settled mapping) is paired with the binding so the
     # copy-pasted command passes the `import confirm` guard; no --mapping override.
-    assert "--accept --account-binding" in result.stderr
-    assert "1 pending" in result.stderr
-    assert "--mapping" not in result.stderr
+    assert "--accept --account-binding" in result.stdout
+    assert "Pending confirmation" in result.stdout
+    assert "--mapping" not in result.stdout
 
 
 def test_inbox_drain_names_each_proposal_by_its_ref(
@@ -619,15 +764,15 @@ def test_inbox_drain_names_each_proposal_by_its_ref(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "@0" in result.stderr, result.stderr
+    assert result.exit_code == 1, result.stderr
+    assert "@0" in result.stdout, result.stdout
     # Masked, not raw: `source_account_key` is ACCOUNT_IDENTIFIER on every
     # channel, and on OFX — which this fixture is — it carries the <ACCTID> the
     # institution issued. stderr is not exempt from the redaction contract, so
     # the ref above is the half the user types and this is only the
     # disambiguator that tells two proposals apart.
-    assert "chase-1234" not in result.stderr, result.stderr
-    assert "****1234" in result.stderr, result.stderr
+    assert "chase-1234" not in result.stdout, result.stdout
+    assert "****1234" in result.stdout, result.stdout
 
 
 def test_inbox_drain_renders_candidate_ledger_overlap(
@@ -666,6 +811,7 @@ def test_inbox_drain_renders_candidate_ledger_overlap(
 
     result = runner.invoke(app, ["import", "inbox"])
 
-    assert result.exit_code == 0, result.stderr
-    assert "ledger overlap: 2/2 matched" in result.stderr
-    assert "2024-01-15 to 2024-01-20" in result.stderr
+    assert result.exit_code == 1, result.stderr
+    compact = " ".join(result.stdout.split())
+    assert "ledger overlap: 2/2 matched" in compact
+    assert "2024-01-15 to 2024-01-20" in compact
