@@ -1,13 +1,11 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-17 -->
 # Data Import
 
-MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
+MoneyBin ingests financial data from files you already have (CSV, TSV, Excel, Parquet, Feather, OFX/QFX/QBO, native-text PDF) and from Plaid-connected banks. Every file lands in `raw.*`, flows through the SQLMesh pipeline into `core.fct_transactions` / `core.dim_accounts`, and is queryable by the CLI, MCP server, and any DuckDB client. This guide walks through the entry points by source tool and by file format, plus the housekeeping commands you'll reach for after the first import.
 
-> **How does MoneyBin know two files are the same account?** When you import the
-> same account from more than one source (a QFX and a CSV, history files plus
-> Plaid), MoneyBin collapses them into one canonical account and asks you to
-> confirm when it isn't sure. The full signal-by-signal breakdown — and what each
-> file format provides — is in [Account Matching](../reference/account-matching.md).
+When the same account arrives from more than one source (a QFX and a CSV, history files plus Plaid), MoneyBin collapses them into one canonical account, and stops to ask when the signal is weak. The signal-by-signal breakdown — and what each file format provides — is in [Account Matching](../reference/account-matching.md).
+
+Every transcript below is real output captured against one empty profile, from four synthetic files written for this guide: a CSV with a non-obvious column layout, an "Example Bank" OFX, an unreadable text file, and a CSV passed with a format name that does not exist. File paths are shortened to bare names throughout; the commands as run took absolute paths. Trims are noted where they occur, and `import history` was captured before the forced re-import shown under [For scripts and agents](#for-scripts-and-agents).
 
 ## Before you import
 
@@ -39,7 +37,7 @@ If you're migrating from another personal-finance tool, start here. The named fo
 
 ### Tiller
 
-Tiller users have the deepest first-class support. The `tiller` format profile matches the standard Tiller Money sheet export (Transactions tab → "Download as CSV").
+The `tiller` format profile matches the standard Tiller Money sheet export (Transactions tab → "Download as CSV"). It is one of three built-in format profiles — `tiller`, `mint`, `ynab` — that `moneybin import formats list` reports with source `builtin`.
 
 ```bash
 moneybin import files ~/Downloads/transactions.csv --format tiller
@@ -51,7 +49,7 @@ Auto-detection picks it up without `--format` — the header signature is distin
 moneybin import files ~/Downloads/transactions.csv
 ```
 
-Re-import overlapping months without fear. Cross-source dedup (SHA-256 content hashes) means the same row imported twice is a no-op.
+Overlapping months are safe to re-import. Cross-source dedup (SHA-256 content hashes) collapses a row imported twice into one canonical row in `core.fct_transactions`.
 
 ### Mint (and Mint successors)
 
@@ -73,11 +71,16 @@ moneybin import files ~/Downloads/Register.csv --format ynab
 
 ### Maybe / Sure
 
-The `maybe` format profile reads Maybe Finance's CSV export.
+No named format profile. `--format maybe` is refused, naming what does exist:
 
-```bash
-moneybin import files ~/Downloads/maybe-export.csv --format maybe
+```console
+$ moneybin import files maybe-export.csv --format maybe
+Import failed for one file: ValueError
+❌ maybe-export.csv [?] — 0 rows
+   Unknown format 'maybe'. Available: ['everyday-checking', 'mint', 'tiller', 'ynab']
 ```
+
+(`everyday-checking` in that list is a user-saved format this profile picked up earlier in the guide, not a built-in.) Maybe Finance's CSV export goes through the generic tabular path below — omit `--format` and confirm the detected mapping once.
 
 ### Lunch Money
 
@@ -130,8 +133,7 @@ The migration question that matters: **what carries over from your old tool, and
 | **Tiller** | ✅ | ✅ (Full Description) | ❌ | ❌ source-side; rebuild via `transactions splits` | 🟡 detected post-load via matching | ✅ multi-account in one file |
 | **Mint** | ✅ | ✅ (Original Description) | ❌ (Labels column dropped) | ❌ | 🟡 detected post-load | ✅ multi-account in one file |
 | **YNAB** | ✅ (Category Group/Category) | ✅ (Memo) | 🟡 (Flag preserved as status) | ❌ source-side; rebuild via `transactions splits` | 🟡 detected post-load | ✅ |
-| **Maybe / Sure** | ✅ | ✅ (note) | ❌ (tags column dropped) | ❌ | 🟡 detected post-load | ✅ |
-| **Generic CSV** (Lunch Money, Monarch, Copilot) | ✅ if a category column is detected | ✅ if a memo/notes column is detected | ❌ | ❌ | 🟡 detected post-load | ✅ if column present, else use `--account-name` |
+| **Generic CSV** (Maybe / Sure, Lunch Money, Monarch, Copilot) | ✅ if a category column is detected | ✅ if a memo/notes column is detected | ❌ | ❌ | 🟡 detected post-load | ✅ if column present, else use `--account-name` |
 | **OFX / QFX / QBO** | ❌ (format carries none) | ✅ (`<MEMO>`) | ❌ | ❌ | 🟡 detected post-load | ✅ |
 | **Plaid sync** | 🟡 (Plaid's PFC taxonomy, separate from MoneyBin categories) | 🟡 (`memo` is always NULL; Plaid's raw text lands in the separate `original_description` column) | ❌ | ❌ | 🟡 detected post-load | ✅ |
 
@@ -157,14 +159,36 @@ The bridge tables (`core.bridge_*`) record which source contributed each row, so
 
 ## How long this takes
 
-Order-of-magnitude, not benchmarks:
+The refresh pipeline, not the file, sets the floor. A 3-transaction OFX imported into an empty profile took 10.7s wall, of which the SQLMesh transforms were 7.6s:
 
-- A single 10 MB CSV: a few seconds end-to-end (extract + load + refresh).
-- 5 years of monthly Tiller exports: tens of seconds total.
-- A large multi-year institutional CSV dump (100k+ rows): can stretch to a minute or two with the refresh pipeline included.
-- Pass `--no-refresh` to defer the SQLMesh apply when chaining many imports; finish with one `moneybin transform apply`.
+```console
+$ time moneybin import files savings.ofx
+Using profile: main
+Importing OFX file: savings.ofx
+Created import batch: 4a2333b1...
+Extracted 1 account(s), 3 transaction(s)
+Import 4a2333b1... finalized: complete (5 imported, 0 rejected)
+Running transforms
+Transforms completed in 7.62s
+Account-link backfill wrote 0 new pending decisions
+Merchant linking complete: 0 linked automatically, 0 sent for review.
+Import complete: Imported OFX file: savings.ofx
+  Accounts: 1
+  Transactions: 3
+  Balances: 1
+  Date range: 2026-01-05 to 2026-01-31
+  Core tables rebuilt (dim_accounts, fct_transactions)
+✅ savings.ofx [ofx] — 3 rows
+👀 Created account: EXAMPLE BANK savings …5678 (42a0a338976e)
+✅ Core tables rebuilt
+        12.06s user 1.13s system 123% cpu 10.706 total
+```
 
-Actual timing for any specific batch appears in `moneybin import history` and in the structured log under the profile data directory.
+Four lines are trimmed above: the extractor's output-directory line, a `FutureWarning` the SQLMesh dependency emits, and the two-line rename hint under the created account.
+
+Read that as a cost per batch, not per row: the refresh runs once at the end of the batch however many rows it carried, so chaining twelve monthly files into one command costs it once rather than twelve times. Pass `--no-refresh` to defer the SQLMesh apply when chaining many imports, and finish with one `moneybin transform apply`.
+
+The text path prints the refresh duration as `Transforms completed in Ns` on every run. In `--output json`, `data.transforms_duration_seconds` is populated only for a multi-file batch; a single-file invocation reports `null` there. Per-batch row counts are in `moneybin import history`.
 
 ## By file format
 
@@ -202,7 +226,18 @@ moneybin import files ~/Downloads/statement.qfx --institution "Wells Fargo"
 
 You almost never need step 4 — only if your bank uses a non-standard FID the importer can't auto-resolve.
 
-**Re-import safety.** OFX files carry their own transaction IDs (FITID), so re-importing the same statement is a no-op. The import log also tracks file-content hashes — re-running the exact same file is short-circuited. Pass `--force` to re-import anyway (creates a new batch). If a bank reuses the same FITID for two distinct same-day transactions (a real institution bug), MoneyBin disambiguates them so both survive instead of one silently dropping.
+**Re-import safety.** OFX is the one channel where the import log refuses a repeat outright. It hashes the raw file bytes and matches on content first, path second, and a second run of the same file never opens a batch:
+
+```console
+$ moneybin import files savings.ofx
+Using profile: main
+Importing OFX file: savings.ofx
+Import failed for one file: ValueError
+❌ savings.ofx [?] — 0 rows
+   File already imported (import_id 4a2333b1...). Use --force to re-import.
+```
+
+That exits 1. Pass `--force` to import anyway, which creates a new batch and leaves the old one in place. OFX rows also carry their own transaction IDs (FITID), so even a forced re-import contributes no new canonical transactions. If a bank reuses one FITID for two distinct same-day transactions (a real institution bug), MoneyBin disambiguates them so both survive instead of one silently dropping.
 
 **Description cleanup.** OFX `<PAYEE>` and `<MEMO>` fields are HTML-entity-decoded at import; banks that double-escape (Wells Fargo's `AT&amp;amp;T`) are unwound to `AT&T`.
 
@@ -216,9 +251,81 @@ moneybin import files ~/Downloads/report.xlsx --sheet "Transactions"
 moneybin import files ~/Downloads/export.parquet --account-name "Main Account"
 ```
 
-**What the smart importer saves you from:** writing a column-mapping file by hand. It detects format (encoding, delimiter, file type, preamble rows), finds the header row, matches headers to canonical fields via a 100+ entry alias dictionary, and validates each guess against actual data (a column mapped as `date` is checked for date-parseable values). Full design: [smart-import-tabular spec](../specs/smart-import-tabular.md).
+**No column-mapping file to write.** The importer detects format (encoding, delimiter, file type, preamble rows), finds the header row, matches headers to canonical fields via an alias table of 100 entries across 21 destination fields (`src/moneybin/extractors/tabular/field_aliases.py`), and validates each guess against actual data (a column mapped as `date` is checked for date-parseable values). Full design: [smart-import-tabular spec](../specs/smart-import-tabular.md).
 
-**Every new layout confirms once.** The first file of a header shape MoneyBin hasn't saved before returns `confirmation_required` with the detected mapping and sample values — a three-tier **confidence score** (high/medium/low) changes what the proposal shows, never whether it asks. Re-run with `--confirm` to accept the mapping as shown, or `--override <field>=<column>` (repeatable) to correct a field — an explicit override resolves immediately, even on first contact. Either path saves the mapping as a user format, so every later file with the same header signature loads without a prompt. `-y` / `--yes` is unrelated: it auto-accepts the top fuzzy *account name* match, not a column mapping.
+**Every new layout confirms once.** The first file of a header shape MoneyBin hasn't saved before returns `confirmation_required` with the detected mapping and sample values — a three-tier **confidence score** (high/medium/low) changes what the proposal shows, never whether it asks. Here is a real first contact with a file whose headers are `Posting Dt,Txn Detail,Debit Amt,Credit Amt,Running Bal`, reformatted from one JSON line for reading:
+
+```console
+$ moneybin import files checking.csv --account-name "Everyday Checking" --output json
+Using profile: main
+Importing CSV file: checking.csv
+{"status": "ok",
+ "summary": {"total_count": 1, "returned_count": 1, "has_more": false,
+             "sensitivity": "critical", "display_currency": null},
+ "data": {"status": "confirmation_required", "channel": "tabular",
+          "tier": "medium", "score": 0.85, "reason": "unknown_layout",
+          "proposed_mapping": {"debit_amount": "Debit Amt",
+                               "credit_amount": "Credit Amt",
+                               "transaction_date": "Posting Dt",
+                               "amount": "Running Bal",
+                               "description": "Txn Detail"},
+          "flagged": ["transaction_date", "amount", "description"],
+          "missing_required": [], "unmapped_columns": []},
+ "actions": ["Re-run with --confirm to accept the proposed mapping as-is.",
+             "Re-run with --mapping <field>=<column> to override specific fields.",
+             "Run 'moneybin import confirm checking.csv --accept' as a subcommand.",
+             "Run 'moneybin import preview checking.csv' to inspect the proposal."]}
+```
+
+The `samples`, `bridge_payload`, `sign_*`, `account_proposals` and `error_message` keys are trimmed from `data` above; `samples` echoes cell values from each mapped column, which is why `sensitivity` is `critical`.
+
+That proposal is wrong in a way worth reading closely: it mapped `amount` to `Running Bal`, the running balance. Accepting it as-is would have loaded balances as transaction amounts. Correcting it is the `--mapping` path, and an explicit override resolves on first contact:
+
+```console
+$ moneybin import confirm checking.csv --accept --account-name "Everyday Checking" \
+    --mapping debit_amount="Debit Amt" --mapping credit_amount="Credit Amt" \
+    --sign split_debit_credit
+Using profile: main
+Importing CSV file: checking.csv
+Created import batch: 32040fe6...
+Transform complete: 7 accepted, 0 rejected
+Loaded 7 transactions
+Loaded 1 accounts
+Import 32040fe6... finalized: complete (7 imported, 0 rejected)
+Auto-saved format 'everyday-checking' for future imports
+Import complete: Imported CSV file: checking.csv
+  Accounts: 1
+  Transactions: 7
+  Date range: 2026-01-04 to 2026-01-28
+✅ Imported checking.csv: 7 rows (import_id: 32040fe6-8ca9-4265-81cf-3ee6c304f943)
+👀 Created account: Everyday Checking (ef35efac424c)
+💡 Run 'moneybin transform apply' to rebuild derived tables.
+```
+
+Two lines are trimmed: the rename hint under the created account. Note the last line — `import confirm` loads the rows but does not run the refresh that `import files` runs, so derived tables need a `moneybin transform apply` (or a `moneybin refresh`) afterward.
+
+`--sign split_debit_credit` is required here rather than optional: the proposal resolves a single `amount` column, and asking for the split convention without also mapping both halves is refused rather than guessed —
+
+```console
+❌ Sign convention 'split_debit_credit' does not fit this file's columns: the mapping resolves a single amount column, which this convention does not read. Re-run with --sign negative_is_expense or --sign negative_is_income, or map both debit_amount and credit_amount; nothing was imported.
+```
+
+Either resolution path saves the mapping as a user format — named `everyday-checking` above, after the account — so every later file with the same header signature loads without a prompt. `-y` / `--yes` is unrelated: it auto-accepts the top fuzzy *account name* match, not a column mapping.
+
+The loaded amounts carry the sign convention, not the file's raw columns:
+
+```console
+$ moneybin sql query "SELECT transaction_date, description, amount FROM raw.tabular_transactions ORDER BY transaction_date"
+Using profile: main
+transaction_date | description | amount
+2026-01-04 | COFFEE STAND | -4.75
+2026-01-06 | GROCERY MARKET | -82.40
+2026-01-10 | PAYROLL DEPOSIT | 2400.00
+2026-01-14 | ELECTRIC UTILITY | -118.60
+2026-01-19 | BOOKSHOP | -26.10
+2026-01-23 | PHARMACY | -41.05
+2026-01-28 | RENT PAYMENT | -1450.00
+```
 
 **Supported formats:**
 
@@ -249,19 +356,13 @@ moneybin import preview ~/Downloads/transactions.csv
 moneybin import preview ~/Downloads/report.xlsx --sheet Sheet2
 ```
 
-**Most common per-file overrides** (single-file mode only — passing multiple paths disables them):
+**Per-file overrides are single-file mode only.** `--account-name`, `--format`, `--override` / `--mapping`, `--confirm-sign`, `--sign`, `--date-format`, `--number-format`, `--sheet`, `--delimiter`, `--encoding`, `--institution`, `--account-id` and `--account-binding` are all read only when exactly one path is supplied. `--confirm` is the exception: the batch path forwards it. Passing several paths with any of the others set prints this warning first, except for `--confirm-sign` and `--account-binding`, which the warning does not cover and which are dropped silently:
 
-| Flag | Purpose |
-|------|---------|
-| `-n, --account-name` | Account name when the file is single-account and the column doesn't carry one. |
-| `-f, --format` | Force a named format (`tiller`, `mint`, etc.). |
-| `--override` | Field-to-column override, repeatable (`--override date=Posted --override amount=Amt`). |
-| `--confirm` | Accept the proposed mapping as-is after a `confirmation_required` response. |
-| `--confirm-sign` | Ratify an inferred credit-card-shaped sign inversion (see [Sign conventions](#csv--tsv--excel--parquet--feather) above). |
-| `--sign` | Sign convention override. |
-| `-y, --yes` | Auto-accept the top fuzzy account match without prompting. |
+```console
+⚠️  Per-file flags only apply in single-file mode and will be ignored. Use one file per command for per-file overrides.
+```
 
-Full flag list (institution overrides, date format, encoding, sheet, delimiter, safety-limit toggles, format-save toggles): [CLI reference](cli-reference.md).
+Every option, with its type and default: [`moneybin import files` reference](../reference/cli/import.md#moneybin-import-files).
 
 ### PDF (native-text)
 
@@ -272,7 +373,7 @@ moneybin import files ~/Downloads/chase_statement.pdf
 moneybin import files ~/Downloads/*.pdf
 ```
 
-**What the smart importer saves you from:** writing a layout recipe by hand. On first contact MoneyBin reads the PDF locally with `pdfplumber`, derives a recipe (column positions, header names, date format, sign convention, number format, and the start/end anchors that bound the transaction table), validates the extracted rows by reconciling their sum against the statement's reported balance delta (±1¢ tolerance), and persists the recipe to `app.pdf_formats` keyed by a fingerprint of the layout (issuer + ordered column headers + page bucket). The next statement from the same institution skips derivation entirely — the saved recipe replays in milliseconds.
+**No layout recipe to write.** On first contact MoneyBin reads the PDF locally with `pdfplumber`, derives a recipe (column positions, header names, date format, sign convention, number format, and the start/end anchors that bound the transaction table), validates the extracted rows by reconciling their sum against the statement's reported balance delta (±1¢ tolerance), and persists the recipe to `app.pdf_formats` keyed by a fingerprint of the layout (issuer + ordered column headers + page bucket). The next statement from the same institution skips derivation entirely — the saved recipe replays in milliseconds.
 
 A statement whose own disclosures (minimum payment, credit limit, APR) name it a credit card proposes inverting every amount — never applied silently, and confirmed once per saved format rather than once per statement. `moneybin import files <path>.pdf --confirm` ratifies it — note that `import confirm` accepts `--confirm` only alongside `--bridge-response`, so the `import files` form is the one to use here; `--sign negative_is_expense` overrules a false positive. The MCP equivalent, `import_confirm`, elicits the human directly instead of requiring a scripted retry.
 
@@ -374,16 +475,16 @@ The inbox lives at `~/Documents/MoneyBin/<profile>/inbox/`. Successes move to `p
 
 There is no built-in `--watch` mode today — cron or `launchd`/`systemd` against `moneybin import inbox` is the supported pattern.
 
-Useful when you keep a folder of monthly OFX downloads or a shared download directory — drop, drain, done.
+The drain is one batch with one closing refresh, so a folder of twelve monthly OFX downloads costs the refresh pipeline once rather than twelve times.
 
 ## Re-importing and dedup
 
 Two layers prevent duplicates:
 
-1. **The import log.** Each completed import records a SHA-256 of the source file. Re-running the same file is short-circuited — nothing is loaded, no batch is created. Pass `--force` / `-F` to load anyway (creates a new batch).
+1. **The import log — OFX only.** Every import records a SHA-256 of the source file's raw bytes, but only the OFX channel refuses a repeat on it: a second `import files` of the same OFX opens no batch and loads nothing until `--force` / `-F` is passed. A tabular or PDF re-import does open a new batch and does re-read the file; nothing stops it at the log.
 2. **Per-row content hashes.** Inside the SQLMesh pipeline, cross-source dedup matches rows by content hash (date + amount + description + account) across CSV, OFX, and Plaid. Two imports of the same transaction collapse to one canonical row in `core.fct_transactions`; the bridge tables retain provenance for both sources.
 
-So: re-importing a file is a no-op. Importing the same transaction from two different sources is also a no-op — the second source contributes its provenance without double-counting.
+So layer 2 is what makes a repeat harmless, not layer 1. Re-importing the same CSV twice leaves `core.fct_transactions` unchanged and `raw.tabular_transactions` unchanged — the raw table's `(transaction_id, account_id, source_file)` primary key rejects the duplicates — but it does leave a second row in `moneybin import history`, which is how you tell the two runs apart. Importing the same transaction from two different sources is likewise a no-op on the canonical row; the second source contributes its provenance without double-counting.
 
 ## Reverting an import
 
@@ -432,6 +533,43 @@ moneybin import labels list                         # every label in use, with c
 moneybin import labels remove abc123 tax-2025       # detach a label
 ```
 
+`import history` is the batch log, newest first. After the two imports above — the CSV that went through `import confirm`, then the OFX:
+
+```console
+$ moneybin import history
+Using profile: main
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┓
+┃ import                               ┃ status   ┃ imported ┃ rejected ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━┩
+│ 4a2333b1-3e5f-482f-8fd9-246cf4592546 │ complete │ 5        │ 0        │
+│ 32040fe6-8ca9-4265-81cf-3ee6c304f943 │ complete │ 7        │ 0        │
+└──────────────────────────────────────┴──────────┴──────────┴──────────┘
+4 of 5 columns shown — --wide for all
+```
+
+The `imported` count is rows written to `raw.*`, not transactions: the OFX batch reports 5 for 3 transactions plus 1 account plus 1 balance. `--wide` adds the source file.
+
+`import formats list` shows what a later import will match against. The three `builtin` rows ship with MoneyBin; `user` rows are mappings your own confirmations saved:
+
+```console
+$ moneybin import formats list --type=tabular
+Using profile: main
+
+Tabular formats (4)
+┏━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━┓
+┃ name              ┃ institution ┃ sign convention    ┃ date format ┃ source  ┃
+┡━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━┩
+│ everyday-checking │ unknown     │ split_debit_credit │ %Y-%m-%d    │ user    │
+│ mint              │ Mint        │ negative_is_expens │ %m/%d/%Y    │ builtin │
+│                   │             │ e                  │             │         │
+│ tiller            │ Tiller      │ negative_is_expens │ %m/%d/%Y    │ builtin │
+│                   │             │ e                  │             │         │
+│ ynab              │ YNAB        │ split_debit_credit │ %m/%d/%Y    │ builtin │
+└───────────────────┴─────────────┴────────────────────┴─────────────┴─────────┘
+```
+
+`--type=pdf` lists saved PDF recipes instead, and `--type=all` (the default) lists both.
+
 Pair any read command with `--output json` for machine-readable output — the same envelope shape the MCP server uses.
 On MCP, list formats with `import_status(sections=["formats"])` and remove a
 user-saved format with
@@ -443,49 +581,62 @@ Set a batch's full label state with `import_labels_set(import_id=..., labels=[..
 
 `moneybin import` is designed to drive from cron, CI, or an agent loop. The contract:
 
-**Non-interactive flags.**
+**Non-interactive flags.** Every flag and its type: [`moneybin import files` reference](../reference/cli/import.md#moneybin-import-files) and [`moneybin import confirm`](../reference/cli/import.md#moneybin-import-confirm). What `--help` does not tell you:
 
-- `--yes` / `-y` — auto-accept the top fuzzy account match without prompting. Unrelated to column-mapping or sign confirmation.
-- `--confirm` — accept the proposed mapping (tabular) or ratify a proposed sign inversion (PDF) after a `confirmation_required` response. A brand-new layout always needs this once, regardless of detector confidence; a saved layout replays without it.
-- `--confirm-sign` — ratify an inferred sign inversion for a tabular file specifically.
-- `--account-binding REF=<account_id|new>` — answer an account confirmation without a prompt (repeatable). `REF` is the positional referent the confirmation printed: `@0` for the first account the file declares.
-- `--output json` — emits the [standard response envelope](cli-reference.md#output-envelopes) on stdout.
-- `--no-refresh` — defer the post-load SQLMesh apply. Useful when chaining many imports.
-- `--force` / `-F` — re-import a file already in the log.
+- The four confirmation flags answer four different questions and none substitutes for another. `--yes` / `-y` auto-accepts the top fuzzy *account name* match — nothing else. `--confirm` accepts a proposed column mapping (tabular) or ratifies a proposed sign inversion (PDF). `--confirm-sign` ratifies an inferred sign inversion for a tabular file. `--account-binding REF=<account_id|new>` answers an account-identity gate, repeatable, where `REF` is the referent the gate printed (`@0` for the file's first account).
+- A brand-new layout needs `--confirm` or an explicit `--mapping` exactly once, regardless of detector confidence. A saved layout replays without either.
+- On retry, re-supply every `--account-binding` you gave before. No partial answer persists between calls.
+- `--force` / `-F` only reaches the OFX channel; see [Re-importing and dedup](#re-importing-and-dedup).
+- `--output json` puts the [standard response envelope](cli-reference.md#output-envelopes) on stdout and nothing else; the `Using profile:` / `Importing CSV file:` status lines go to stderr, so `2>/dev/null` leaves stdout parseable as one JSON document.
 
 `moneybin import confirm <path>` is the recovery command for a `confirmation_required` response — pass `--accept`, `--mapping <field>=<column>` (repeatable), `--confirm-sign`, or `--account-binding` depending on what's pending; see its `--help` for the full set. Mapping and sign proposals are tabular; an **account** confirmation reaches it from any of the three channels — tabular, OFX, or PDF. Carry `--institution` back when the original `import files` call needed one: institution resolution runs before the account gate, so an OFX whose issuer is underivable never reaches the gate on a re-run without it. A **PDF** sign-ratification proposal takes a different path: `import confirm` accepts `--confirm` only alongside `--bridge-response`, so re-run `moneybin import files <path>.pdf --confirm` to ratify one. The MCP equivalent is `import_confirm`, which elicits the human directly instead of requiring a second scripted call.
 
 **Exit codes for `moneybin import files`.**
 
-- `0` — every file imported and (when refresh is enabled) the post-load refresh succeeded.
-- `1` — at least one file failed, or the refresh pipeline failed. Per-file failures do **not** abort the batch (the rest still import); the non-zero exit signals "look at the envelope."
+- `0` — at least one file imported and (when refresh is enabled) the post-load refresh succeeded.
+- `1` — **every** file in the batch failed, or the refresh pipeline failed.
 - `2` — usage error (missing arg, bad flag).
+
+A partial batch exits `0`. Per-file failures do not abort the batch, and they do not reach the exit code either: one imported file plus one failed file is exit `0` with `failed_count: 1` in the envelope. A single-file invocation is the special case where "every file failed" and "one file failed" are the same condition, which is why a lone bad file does exit `1`. Scripts must read `data.failed_count` or each file's `status`, not the exit code.
 
 A `confirmation_required` result does not, by itself, flip a batch's exit code to `1` — check each file's `status` field, not just the exit code, to catch one waiting on confirmation. Single-file invocations differ: `--output json` (or any non-TTY caller) exits `0` on `confirmation_required` so the envelope parses cleanly; the interactive text path exits `1`.
 
 The same contract applies to `moneybin import inbox`: the command exits 0 when the drain completes, even if individual files moved to `failed/`. Detect per-file failure via the `--output json` envelope or by checking the `failed/` directory — do not rely on exit code alone for the inbox.
 
-**`--output json` envelope shape** (mutating-command envelope; see [cli-reference.md](cli-reference.md#output-envelopes) for the full schema):
+**`--output json` envelope shape.** A real partial batch — one OFX imported, one unreadable file — captured with `moneybin import files savings.ofx broken.txt --force --output json` and reindented:
 
 ```json
 {
+  "status": "ok",
+  "summary": {"total_count": 1, "returned_count": 1, "has_more": false,
+              "sensitivity": "medium", "display_currency": null},
   "data": {
-    "imported_count": 2,
+    "imported_count": 1,
     "failed_count": 1,
-    "total_count": 3,
+    "total_count": 2,
     "transforms_applied": true,
-    "transforms_duration_seconds": 4.2,
+    "transforms_duration_seconds": 15.289261540980078,
+    "transfers_retired": 0,
     "files": [
-      {"path": "a.ofx", "status": "imported", "source_type": "ofx", "rows_loaded": 142, "import_id": "..."},
-      {"path": "b.csv", "status": "imported", "source_type": "csv", "rows_loaded": 88, "import_id": "..."},
-      {"path": "c.xlsx", "status": "failed", "source_type": null, "rows_loaded": 0, "import_id": null, "error": "ValueError"}
-    ]
+      {"path": "savings.ofx", "status": "imported", "source_type": "ofx",
+       "rows_loaded": 3, "import_id": "378d9246-7bb2-4190-8108-ecf38603177a",
+       "sign_correction_suggested": false, "sign_override_replayed": false},
+      {"path": "broken.txt", "status": "failed", "source_type": null,
+       "rows_loaded": 0, "import_id": null,
+       "sign_correction_suggested": false, "sign_override_replayed": false,
+       "error": "No data rows found in broken.txt",
+       "error_code": "infra_invalid_input"}
+    ],
+    "identity_errors": [], "rate_pairs_failed": [],
+    "rate_pairs_unsupported": [], "rate_pairs_discarded": []
   },
-  "metadata": {"sensitivity": "low", ...}
+  "actions": []
 }
 ```
 
-`transforms_error` is set on the envelope when refresh failed; non-zero exit follows. Each file entry also carries `sign_correction_suggested` and `sign_override_replayed` booleans (see [Sign conventions](#csv--tsv--excel--parquet--feather)), and a `confirmation_payload` object when `status` is `"confirmation_required"`.
+The `data.stages` array is trimmed above: six `{step, ran, counts, error}` objects, one per refresh step (`gsheet`, `match`, `transform`, `categorize`, `identity`, `rates`). Note `"status": "ok"` on a batch that lost a file — top-level `status` flips to `error` only when every file fails, the same condition the exit code follows. `summary.total_count` counts envelope payloads, not files; `data.total_count` counts files.
+
+`transforms_error` is set on the envelope when refresh failed; non-zero exit follows. Each file entry carries `sign_correction_suggested` and `sign_override_replayed` (see [Sign conventions](#csv--tsv--excel--parquet--feather)), and a `confirmation_payload` object when `status` is `"confirmation_required"`. Full schema: [cli-reference.md](cli-reference.md#output-envelopes).
 
 **Concurrency.** The inbox lockfile serializes inbox drains within a profile. There is no equivalent lock around bare `moneybin import files` — two parallel invocations against the same profile race on the import log. The supported pattern is: serialize at the caller (one cron job, one agent worker), or drop files in the inbox and let the inbox lock handle ordering.
 
@@ -503,3 +654,7 @@ The honest gap list. See the [roadmap](../roadmap.md) for current sequencing.
 - **General-purpose row-level updates.** No `transactions update` command; use notes, tags, splits, categorize subcommands or revert and re-import.
 - **`--watch` mode for the inbox.** Cron or `launchd`/`systemd` is the supported pattern today.
 - **Bulk manual transaction entry.** One row at a time via `moneybin transactions create`; for batches, build a CSV and import it.
+- **Named format profiles for Maybe / Sure, Lunch Money, Monarch, and Copilot.** Three built-ins ship — `tiller`, `mint`, `ynab`. Every other tool's export goes through the generic tabular path and confirms its mapping once.
+- **A duplicate-file guard outside OFX.** Re-running the same tabular or PDF file opens a new batch and re-reads it. Row-level dedup keeps the data correct, so the cost is a second `import history` row, not a double-count. Revert the extra batch with `moneybin import revert <import_id>` if the log matters to you.
+- **A refresh after `moneybin import confirm`.** `import files` runs the post-load refresh; `import confirm` loads the rows and prints `💡 Run 'moneybin transform apply' to rebuild derived tables` instead. Run that, or a `moneybin refresh`, before reading any `core.*` or `reports.*` table.
+- **A non-zero exit on a partial batch.** One failed file among several still exits `0`; read `data.failed_count`. See [Exit codes](#for-scripts-and-agents).
