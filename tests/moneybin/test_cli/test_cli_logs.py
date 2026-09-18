@@ -158,6 +158,98 @@ class TestLogsPrune:
         result = runner.invoke(logs_command_app, ["--prune"])
         assert result.exit_code != 0
 
+    def test_prune_partial_failure_reports_completed_and_failed_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A later unlink failure must not claim every selected file was deleted."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        first = log_dir / "a-old.log"
+        failed = log_dir / "b-old.log"
+        first.write_text("a")
+        failed.write_text("b")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(first, (old_time, old_time))
+        os.utime(failed, (old_time, old_time))
+        original_unlink = Path.unlink
+
+        def fail_second(path: Path, missing_ok: bool = False) -> None:
+            if path == failed:
+                raise OSError("permission denied")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_second)
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
+
+        assert result.exit_code == 1
+        assert "Prune partially completed" in result.output
+        assert "Removed regular files: 1" in result.output
+        assert "Failed: 1 file(s)" in result.output
+        assert "a-old.log" in result.output
+        assert "b-old.log" in result.output
+        assert not first.exists()
+        assert failed.exists()
+
+    def test_prune_symlink_removes_only_the_link_without_claiming_target_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        """The retained symlink predicate cannot imply that target storage was freed."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        target = tmp_path / "large-target"
+        target.write_bytes(b"x" * 8192)
+        link = log_dir / "old-link.log"
+        link.symlink_to(target)
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(target, (old_time, old_time))
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
+
+        assert result.exit_code == 0, result.output
+        assert not link.exists()
+        assert target.exists()
+        assert "Removed symlinks: 1" in result.output
+        assert "8.0 KB" not in result.output
+
+    def test_prune_receipt_strips_controls_from_filenames_and_failures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Filesystem-provided receipt fields must not control the terminal."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        safe = log_dir / "safe\x1b[31m.log"
+        failed = log_dir / "failed.log"
+        safe.write_text("x")
+        failed.write_text("x")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(safe, (old_time, old_time))
+        os.utime(failed, (old_time, old_time))
+        original_unlink = Path.unlink
+
+        def fail_one(path: Path, missing_ok: bool = False) -> None:
+            if path == failed:
+                raise OSError("bad\x1b[31m reason")
+            original_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_one)
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
+
+        assert result.exit_code == 1
+        assert "\x1b" not in result.output
+        assert "safe.log" in result.output
+        assert "bad reason" in result.output
+
 
 class TestLogsView:
     """Tests for `logs <stream>` viewing."""
@@ -177,7 +269,7 @@ class TestLogsView:
         result = runner.invoke(logs_command_app, ["cli", "--lines", "5"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
-        assert len(output_lines) == 5
+        assert len([line for line in output_lines if line.startswith("line ")]) == 5
         assert "line 49" in result.output
 
     @patch("moneybin.cli.commands.logs.get_settings")
@@ -193,7 +285,7 @@ class TestLogsView:
         result = runner.invoke(logs_command_app, ["cli"])
         assert result.exit_code == 0
         output_lines = [ln for ln in result.output.strip().split("\n") if ln]
-        assert len(output_lines) == 20
+        assert len([line for line in output_lines if line.startswith("line ")]) == 20
 
     @patch("moneybin.cli.commands.logs.get_settings")
     def test_view_stream_selects_correct_files(
@@ -264,6 +356,24 @@ class TestLogsView:
         messages = [e["message"] for e in entries]
         assert "from cli" in messages
         assert "from mcp" not in messages
+
+    @patch("moneybin.cli.commands.logs.get_settings")
+    def test_quiet_keeps_empty_filtered_scope(
+        self, mock_settings: MagicMock, tmp_path: Path
+    ) -> None:
+        """Quiet may suppress optional chatter but not the requested empty answer."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        (log_dir / "cli_2026-04-21.log").write_text(
+            "2026-04-21 14:00:00,000 - cli - INFO - hello\n"
+        )
+        mock_settings.return_value.logging.log_file_path = log_dir / "moneybin.log"
+
+        result = runner.invoke(logs_command_app, ["cli", "--grep", "absent", "--quiet"])
+
+        assert result.exit_code == 0
+        assert "No log entries match the requested filters." in result.output
+        assert "grep=absent" in result.output
 
 
 def _make_structured_log(tmp_path: Path) -> Path:
