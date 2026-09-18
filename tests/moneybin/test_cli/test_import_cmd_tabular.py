@@ -900,6 +900,43 @@ class TestPreview:
         # rather than sweeping in every native-date column it can find.
         assert "2026-01-15 00:00:00" in result.output
 
+    @pytest.mark.parametrize("command_name", ["files", "confirm", "preview"])
+    def test_date_format_help_example_is_a_usable_strptime_string(
+        self, command_name: str
+    ) -> None:
+        """The example each command prints must parse a date, not a percent sign.
+
+        `%%` is how strptime spells a *literal* percent, and Click performs no
+        %-substitution on help text — it prints what it is given. So a help
+        string carrying `%%Y-%%m-%%d` showed exactly that, and a caller who
+        copied it got a format matching the eight characters `%Y-%m-%d` and no
+        date at all. All three commands print this example, so all three are
+        checked here.
+
+        The example is read back out of the help and run, rather than compared
+        against a spelling: the property is that what MoneyBin prints is
+        usable, and a spelling assertion would pass on the next unusable one.
+        """
+        import datetime
+        import re
+
+        import click
+        from typer.main import get_command
+
+        group = get_command(app)
+        assert isinstance(group, click.Group)
+        command = group.commands[command_name]
+        option = next(p for p in command.params if "--date-format" in p.opts)
+        assert isinstance(option, click.Option)
+        assert option.help is not None
+        match = re.search(r"e\.g\. (\S+?)\)", option.help)
+        assert match is not None, option.help
+        example = match.group(1)
+
+        assert datetime.datetime.strptime("2026-01-01", example) == datetime.datetime(
+            2026, 1, 1
+        )
+
     def test_preview_validates_a_named_formats_date_format(
         self, tmp_path: Path, mocker: Any
     ) -> None:

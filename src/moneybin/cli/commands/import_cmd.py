@@ -322,7 +322,7 @@ def import_files_command(
         None,
         "--date-format",
         help=(
-            "Date format override (strptime format string, e.g. %%Y-%%m-%%d). "
+            "Date format override (strptime format string, e.g. %Y-%m-%d). "
             "Single-file mode only."
         ),
     ),
@@ -1946,7 +1946,7 @@ def import_confirm_command(
     date_format: str | None = typer.Option(
         None,
         "--date-format",
-        help="Date format override (strptime format string, e.g. %%Y-%%m-%%d).",
+        help="Date format override (strptime format string, e.g. %Y-%m-%d).",
     ),
     number_format: NumberFormatType | None = typer.Option(
         None,
@@ -2797,7 +2797,7 @@ def import_preview(
     date_format: str | None = typer.Option(
         None,
         "--date-format",
-        help="Date format override (strptime format string, e.g. %%Y-%%m-%%d).",
+        help="Date format override (strptime format string, e.g. %Y-%m-%d).",
     ),
     number_format: NumberFormatType | None = typer.Option(
         None,
