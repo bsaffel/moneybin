@@ -211,12 +211,16 @@ def _home(db: Database, currency: str) -> None:
 def test_accounts_rung_converts_to_home_at_the_effective_rate(
     model_db: Database,
 ) -> None:
-    """A EUR balance converts to USD at the provider rate published that day."""
+    """A EUR balance converts to USD at the provider rate effective that day.
+
+    ``published`` is a distinct, earlier date from ``balance_date`` so the
+    assertion cannot pass by coincidence of the two dates matching.
+    """
     _install_net_worth_sources(model_db)
     _account(model_db, "acct-a", "Euro Checking", "EUR")
     _balance(model_db, "acct-a", "2026-01-05", "100.00", "EUR")
     _home(model_db, "USD")
-    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.10", published="2026-01-02")
     _install_report(model_db, "net_worth_accounts")
 
     row = model_db.execute(
@@ -226,7 +230,7 @@ def test_accounts_rung_converts_to_home_at_the_effective_rate(
         WHERE account_id = 'acct-a' AND balance_date = '2026-01-05'
         """
     ).fetchone()
-    assert row == (Decimal("110.00"), "provider", date(2026, 1, 5))
+    assert row == (Decimal("110.00"), "provider", date(2026, 1, 2))
 
 
 def test_accounts_rung_identity_rate_prices_a_home_currency_account(
@@ -290,10 +294,18 @@ def test_accounts_rung_unknown_currency_is_never_priced(model_db: Database) -> N
 
 
 def test_accounts_rung_null_home_currency_prices_nothing(model_db: Database) -> None:
-    """No app.profile_settings row means every account is unpriced."""
+    """No app.profile_settings row means every account is unpriced.
+
+    A USD→USD identity rate exists for the test date, so a mutation that
+    defaulted the missing home currency to 'USD' (e.g.
+    ``COALESCE(h.home_currency_code, 'USD')``) would find it and price the
+    account — the NULL result here can only come from the missing home
+    currency itself, not from an absent rate row.
+    """
     _install_net_worth_sources(model_db)
     _account(model_db, "acct-a", "Checking", "USD")
     _balance(model_db, "acct-a", "2026-01-05", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-05", "1.0", source="identity")
     _install_report(model_db, "net_worth_accounts")
 
     row = model_db.execute(

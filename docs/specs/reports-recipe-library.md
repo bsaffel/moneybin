@@ -18,11 +18,13 @@
 
 Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
-The current catalog has since grown: eight SQLMesh report views back nine report
+The current catalog has since grown: nine SQLMesh report views back nine report
 routes, with seven `@report` SQL runners plus the same two service-backed
 net-worth routes. The added `reports.realized_fx` view is specified by
 [`multi-currency.md`](multi-currency.md), not by this initial recipe-library
-slice.
+slice. `reports.net_worth_accounts`, specified by
+[`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md), has no
+registered report route yet, so every view is accounted for.
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 
