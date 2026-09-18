@@ -140,6 +140,49 @@ def plaid_bridge_match_predicate(detailed_expr: str, primary_expr: str) -> str:
     )
 
 
+def source_category_code_expr(category_expr: str, subcategory_expr: str) -> str:
+    """Render the SQL expression combining category+subcategory into one opaque code.
+
+    ``app.category_source_map.source_category_code`` is a single string, but an
+    imported row (tabular/manual) carries ``category`` and ``subcategory`` as
+    independent text — and the YNAB preset already compounds "Group/Category"
+    into a single string, so a naive delimiter join risks colliding with real
+    category text a user or exporter wrote. JSON-encoding the pair keeps the
+    code lossless (subcategory always survives, including a NULL one) and
+    delimiter-free (DuckDB's ``to_json`` escapes any character embedded in
+    either field, so no real category text can ever be mistaken for a
+    boundary). Rendered in SQL rather than composed in Python so the write
+    side (``CategorySourceMapRepo.upsert``) and the read side
+    (``CategorizationOrchestrator._source_category_bridge_candidates``) both
+    go through DuckDB's own serializer — no cross-serializer parity to keep in
+    sync across a future DuckDB upgrade. ``category_expr`` / ``subcategory_expr``
+    are SQL expressions (column references or ``?`` placeholders), never raw
+    user input spliced into the string.
+    """
+    return (
+        f"to_json({{'category': {category_expr}, 'subcategory': {subcategory_expr}}})"
+    )
+
+
+def source_category_bridge_match_predicate(
+    source_origin_expr: str, category_expr: str, subcategory_expr: str
+) -> str:
+    """Render the predicate matching one imported row to the category-source bridge.
+
+    Keyed on ``core.bridge_category_source_map`` (alias ``b``), mirroring
+    :func:`plaid_bridge_match_predicate`. Per the owner's ruling
+    (docs/specs/category-source-map.md's "Multi-aggregator and free-text
+    boundary" extension), imported rows are matched on ``source_origin`` —
+    e.g. ``chase_credit``, ``mint`` — not the generic ``source_type`` value
+    (``tabular``/``manual``): two exporters must be free to map the same
+    category string to two different MoneyBin categories.
+    """
+    code_expr = source_category_code_expr(category_expr, subcategory_expr)
+    return (
+        f"b.source_type = {source_origin_expr} AND b.source_category_code = {code_expr}"
+    )
+
+
 def is_unselective_contains(pattern: str, match_type: str) -> bool:
     """True when a `contains` pattern is too short to discriminate.
 

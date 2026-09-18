@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-07-09
-> Status: Implemented — M1V (Ingestion Core). Feature spec.
+> Last updated: 2026-09-18
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -134,6 +134,52 @@ own `source_taxonomy_version` — **zero schema change**. The bridge serves
 code set; they correctly produce no bridge row and fall through to
 rules/AI/LLM, which is the right solver for free text. Absence of a row is
 fall-through, not data loss.
+
+## Extension: imported (tabular/manual) category text (MB-180)
+
+An imported row (tabular/CSV, manual entry) was passed straight through to
+`core.fct_transactions.category` via `fct_transactions.sql`'s
+`COALESCE(dc.category, c.category, t.category)` — no `categorized_by`
+attribution, invisible to `core.uncategorized_queue`, and never overridable
+by a later rule. The owner's ruling: this text is only ever an INPUT to the
+existing bridge above, never a passed-through value. The engine leg
+(`CategorizationOrchestrator.apply_source_category_map`, PR1 of MB-180)
+reuses `app.category_source_map` / `core.bridge_category_source_map`
+unchanged; only the reverse-lookup key and code shape are new:
+
+- **Keyed on `source_origin`, not the generic `source_type` ('tabular').**
+  The primary key is `(source_type, source_category_code)`; storing a
+  concrete `source_origin` value (`chase_credit`, `mint`, `tiller`) in that
+  column — instead of Plaid's provider tag — lets two exporters map an
+  identical category string to two different MoneyBin categories. This
+  reframes rather than contradicts "Multi-aggregator and free-text
+  boundary" above: a single exporter's own category list IS a closed
+  vocabulary from that exporter's perspective, even though the generic
+  `tabular`/`manual` discriminator is not — SimpleFIN's genuinely arbitrary
+  free text is a different case and still falls through as documented.
+- **Composite code: JSON-encode `(category, subcategory)`.** An imported row
+  carries both fields independently (and the YNAB preset already compounds
+  "Group/Category" into `category` alone, so compound strings are already in
+  the data). A delimiter join risks colliding with real category text; the
+  code is instead `to_json({'category': ..., 'subcategory': ...})`, rendered
+  by DuckDB on both the write side (`CategorySourceMapRepo.upsert`) and the
+  read side (`_source_category_bridge_candidates`) via one shared SQL-builder
+  (`_shared.source_category_code_expr`) — lossless, delimiter-free, and never
+  dependent on two serializers agreeing.
+- **No confidence gate.** Unlike Plaid's ML-classifier confidence, a curated
+  mapping row is a deterministic assertion — the same footing as a rule or
+  merchant — so every match writes `confidence=1.0`.
+- **Row grain, not merge grain.** Reads `prep.int_transactions__matched`
+  (row-grain, pre-merge — carries the gold `transaction_id` alongside each
+  source row's own `source_origin`/`category`/`subcategory`), not
+  `prep.int_transactions__merged` (which resolves one winning value per
+  transaction but drops which member contributed it).
+
+PR1 ships the engine only (repo write method + orchestrator leg, wired into
+`categorize_pending`). The CLI/MCP surface to author `app.category_source_map`
+rows for an exporter is a later slice — until it ships, this leg is a
+capability with no way to populate its own input for imported sources users
+haven't already mapped via Plaid-style curation.
 
 ## Reverse-lookup contract
 

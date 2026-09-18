@@ -4,6 +4,7 @@ Covers merchant normalization, pattern matching, rule engine, merchant
 matching, prompt construction, and response parsing.
 """
 
+import json
 from collections import Counter
 from decimal import Decimal
 from pathlib import Path
@@ -3118,6 +3119,7 @@ def _seed_bridge_mapping(
     category_id: str,
     category: str,
     subcategory: str | None,
+    source_type: str = "plaid",
 ) -> None:
     """Seed one core.bridge_category_source_map row, real mechanism.
 
@@ -3129,6 +3131,11 @@ def _seed_bridge_mapping(
     subcategory)`` pair the same way production does. Callers must call
     ``refresh_views(db)`` first so the seed tables exist.
 
+    ``source_type`` defaults to ``'plaid'`` for the existing Plaid-bridge
+    tests; the imported-category-text tests (``TestApplySourceCategoryMap``)
+    pass an exporter's ``source_origin`` value instead (``'chase_credit'``,
+    ``'manual'``) — that column holds either, per the owner's ruling.
+
     Named-column insert (not positional) on purpose: the bootstrap
     ``seeds.categories`` table (``moneybin.seeds._ensure_seed_tables_exist``)
     still carries its historical 5th column (kept for V014 migration replay,
@@ -3139,8 +3146,8 @@ def _seed_bridge_mapping(
     db.execute(
         "INSERT INTO seeds.category_source_map "
         "(source_type, source_category_code, code_level, category_id, "
-        "source_taxonomy_version) VALUES ('plaid', ?, ?, ?, 'plaid_pfc_v2')",
-        [source_category_code, code_level, category_id],
+        "source_taxonomy_version) VALUES (?, ?, ?, ?, 'plaid_pfc_v2')",
+        [source_type, source_category_code, code_level, category_id],
     )
     db.execute(
         "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
@@ -3289,6 +3296,365 @@ class TestApplyPlaidCategories:
                 "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t4'"
             ).fetchone()
             is None
+        )
+
+
+# ---------------------------------------------------------------------------
+# apply_source_category_map — imported (tabular/manual) category text ->
+# provider_native, keyed by source_origin
+# ---------------------------------------------------------------------------
+
+
+def apply_source_category_map(db: Database) -> int:
+    """Test shim — delegates to CategorizationService.apply_source_category_map."""
+    return CategorizationService(db).apply_source_category_map()
+
+
+def _insert_matched_txn(
+    db: Database,
+    transaction_id: str,
+    *,
+    source_type: str,
+    source_origin: str,
+    category: str | None,
+    subcategory: str | None,
+    source_transaction_id: str | None = None,
+) -> None:
+    """Insert one imported row into a stub ``prep.int_transactions__matched``.
+
+    ``apply_source_category_map`` reads the row-grain matched layer (gold
+    ``transaction_id`` alongside each source row's own ``source_origin`` +
+    ``category``/``subcategory``), not the merged layer — see
+    ``_source_category_bridge_candidates``'s docstring for why. Mirrors
+    ``_insert_plaid_txn``'s stub-table approach: building the real SQLMesh
+    VIEW here would require a full SQLMesh plan, so this creates just the
+    columns the query reads as a physical table.
+    """
+    db.execute("CREATE SCHEMA IF NOT EXISTS prep")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS prep.int_transactions__matched ("
+        "  transaction_id VARCHAR, "
+        "  source_transaction_id VARCHAR, "
+        "  source_type VARCHAR, "
+        "  source_origin VARCHAR, "
+        "  category VARCHAR, "
+        "  subcategory VARCHAR"
+        ")"
+    )
+    db.execute(
+        "INSERT INTO prep.int_transactions__matched "
+        "(transaction_id, source_transaction_id, source_type, source_origin, "
+        " category, subcategory) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+            transaction_id,
+            source_transaction_id or transaction_id,
+            source_type,
+            source_origin,
+            category,
+            subcategory,
+        ],
+    )
+
+
+class TestApplySourceCategoryMap:
+    """Tests for the imported-category-text categorizer.
+
+    Mirrors ``TestApplyPlaidCategories`` but keys the bridge on
+    ``source_origin`` (an exporter, e.g. ``chase_credit``) rather than a
+    provider code, matches on the row's own free-text ``category``/
+    ``subcategory`` instead of a controlled vocabulary code, and applies no
+    confidence gate — a curated mapping row is a deterministic assertion.
+    """
+
+    @pytest.mark.unit
+    def test_matches_on_category_and_subcategory(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Groceries", "subcategory": "Produce"},
+                separators=(",", ":"),
+            ),
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t1",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory="Produce",
+        )
+        _seed_gold_transaction(db, "t1")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by, source_type, confidence "
+            "FROM app.transaction_categories WHERE transaction_id='t1'"
+        ).fetchone()
+        assert row == ("cat-groceries", "provider_native", "tabular", Decimal("1.00"))
+
+    @pytest.mark.unit
+    def test_matches_with_no_subcategory(self, db: Database) -> None:
+        """A category with no subcategory still resolves via the same JSON code."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Rent", "subcategory": None}, separators=(",", ":")
+            ),
+            code_level="detailed",
+            category_id="cat-rent",
+            category="Housing",
+            subcategory="Rent",
+            source_type="manual",
+        )
+        _insert_matched_txn(
+            db,
+            "t2",
+            source_type="manual",
+            source_origin="manual",
+            category="Rent",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t2")
+
+        n = apply_source_category_map(db)
+
+        assert n == 1
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t2'"
+        ).fetchone()
+        assert row == ("cat-rent",)
+
+    @pytest.mark.unit
+    def test_two_exporters_map_the_same_text_to_different_categories(
+        self, db: Database
+    ) -> None:
+        """Keying on source_origin, not source_type, lets exporters disagree.
+
+        Both rows carry the SAME category string ("Auto") from the SAME
+        generic ``source_type`` ('tabular'), but two different exporters
+        (``chase_credit`` vs ``amex_gold``) map it to two different
+        MoneyBin categories — proving the bridge is keyed per-exporter, not
+        per the generic tabular discriminator.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Auto", "subcategory": None}, separators=(",", ":")
+            ),
+            code_level="detailed",
+            category_id="cat-transportation",
+            category="Transportation",
+            subcategory=None,
+            source_type="chase_credit",
+        )
+        db.execute(
+            "INSERT INTO seeds.category_source_map "
+            "(source_type, source_category_code, code_level, category_id, "
+            "source_taxonomy_version) VALUES ('amex_gold', ?, 'detailed', "
+            "'cat-insurance', 'na')",
+            [
+                json.dumps(
+                    {"category": "Auto", "subcategory": None}, separators=(",", ":")
+                )
+            ],
+        )
+        db.execute(
+            "INSERT INTO seeds.categories (category_id, category, subcategory, description) "
+            "VALUES ('cat-insurance', 'Insurance', 'Auto', 'test category')"
+        )
+        _insert_matched_txn(
+            db,
+            "t3",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Auto",
+            subcategory=None,
+        )
+        _insert_matched_txn(
+            db,
+            "t4",
+            source_type="tabular",
+            source_origin="amex_gold",
+            category="Auto",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t3")
+        _seed_gold_transaction(db, "t4")
+
+        n = apply_source_category_map(db)
+
+        assert n == 2
+        t3_category = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t3'"
+        ).fetchone()
+        t4_category = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t4'"
+        ).fetchone()
+        assert t3_category == ("cat-transportation",)
+        assert t4_category == ("cat-insurance",)
+
+    @pytest.mark.unit
+    def test_does_not_overwrite_higher_priority_row(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Coffee", "subcategory": None}, separators=(",", ":")
+            ),
+            code_level="detailed",
+            category_id="cat-coffee",
+            category="Food & Dining",
+            subcategory="Coffee Shops",
+            source_type="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t5",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Coffee",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t5")
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by) VALUES ('t5', 'Coffee', 'user')"
+        )
+
+        n = apply_source_category_map(db)
+
+        assert n == 0
+        row = db.execute(
+            "SELECT categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id='t5'"
+        ).fetchone()
+        assert row == ("user",)
+
+    @pytest.mark.unit
+    def test_no_bridge_row_is_a_no_op(self, db: Database) -> None:
+        """An imported category string with no curated mapping falls through."""
+        refresh_views(db)
+        _insert_matched_txn(
+            db,
+            "t6",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Some Unmapped Category",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t6")
+
+        n = apply_source_category_map(db)
+
+        assert n == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t6'"
+            ).fetchone()
+            is None
+        )
+
+
+class TestCategorizePendingSourceCategoryMapPass:
+    """Proves the source-category-map pass is wired into categorize_pending."""
+
+    @pytest.mark.unit
+    def test_source_category_map_fills_bare_row(self, db: Database) -> None:
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Groceries", "subcategory": None},
+                separators=(",", ":"),
+            ),
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t7",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t7', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+        )
+
+        result = categorize_pending(db)
+
+        assert result["source_category_map"] == 1
+        assert result["total"] == 1
+        row = db.execute(
+            "SELECT category_id, categorized_by FROM app.transaction_categories "
+            "WHERE transaction_id='t7'"
+        ).fetchone()
+        assert row == ("cat-groceries", "provider_native")
+
+    @pytest.mark.unit
+    def test_categorize_run_rules_and_merchants_excludes_source_category_map(
+        self, db: Database
+    ) -> None:
+        """categorize_run's explicit methods=[...] selection must not silently add this pass."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code=json.dumps(
+                {"category": "Groceries", "subcategory": None},
+                separators=(",", ":"),
+            ),
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+            source_type="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t8",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO core.fct_transactions "
+            "(transaction_id, account_id, transaction_date, amount, "
+            "description, source_type) VALUES "
+            "('t8', 'ACC1', '2025-06-01', -40.00, 'SUPERMARKET', 'tabular')"
+        )
+
+        result = CategorizationService(db).categorize_run()
+
+        assert result["applied_by_method"] == {"rules": 0, "merchants": 0}
+        assert result["total_applied"] == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t8'"
+            ).fetchone()
+            is None
+        ), (
+            "categorize_run(methods=['rules','merchants']) must not trigger source_category_map"
         )
 
 
@@ -3793,12 +4159,13 @@ class TestCategorizePendingPlaidPass:
         ``CategorizationService.categorize_run`` (``effective == ["rules",
         "merchants"]``): before the plaid pass existed, that fast path
         delegated straight to ``categorize_pending()`` because the two were
-        equivalent. Now that ``categorize_pending()`` also runs plaid by
-        default, the fast path must opt out (``include_plaid=False``) or it
-        would apply a third, unrequested engine whose writes go unreported
-        in ``applied_by_method`` — and, depending on the requested method
+        equivalent. Now that ``categorize_pending()`` also runs plaid (and
+        the source-category-map pass) by default, the fast path must opt
+        out (``include_provider_native=False``) or it would apply
+        unrequested engines whose writes go unreported in
+        ``applied_by_method`` — and, depending on the requested method
         order, only sometimes (the per-method loop for other orders never
-        touches plaid at all).
+        touches either pass at all).
         """
         refresh_views(db)
         _seed_bridge_mapping(
