@@ -3045,30 +3045,26 @@ def import_preview(
             )
         typer.echo(f"Columns ({len(df.columns)}): {', '.join(df.columns)}")
 
+        from moneybin.config import get_settings
+        from moneybin.services.import_service import (
+            declared_date_format_reads_column,
+        )
+
+        # Resolve the mapping and the date format the import would use, render
+        # the frame against them, and only then report. The report reads the
+        # mapped date column's own text, and on an Excel file that text is
+        # still `2026-01-05 00:00:00` until the render below rewrites it into
+        # the declared format — so reporting first asked the format question
+        # against text no import ever sees.
         final_field_mapping: dict[str, str]
         final_effective_date_format: str | None
+        mapping_result = None
         if matched_format:
-            typer.echo(
-                f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
-            )
-            typer.echo(f"Sign convention: {matched_format.sign_convention}")
-            # An explicit flag outranks the saved format's own value, on both
-            # lines, because that is the value the import will use.
-            typer.echo(f"Date format: {declared_date_format}")
-            typer.echo(
-                f"Number format: {number_format or matched_format.number_format}"
-            )
-            typer.echo("\nColumn mapping:")
-            for field, col in matched_format.field_mapping.items():
-                typer.echo(f"  {field} ← {col}")
             final_field_mapping = matched_format.field_mapping
+            # An explicit flag outranks the saved format's own value, because
+            # that is the value the import will use.
             final_effective_date_format = declared_date_format
         else:
-            from moneybin.config import get_settings
-            from moneybin.services.import_service import (
-                declared_date_format_reads_column,
-            )
-
             bands = get_settings().import_.confidence
             mapping_result = map_columns(
                 detection_df,
@@ -3078,6 +3074,61 @@ def import_preview(
                 structural_red_flag=read_result.header_row_looks_like_data,
                 declared_date_format=declared_date_format,
             )
+            final_field_mapping = mapping_result.field_mapping
+            # Not "the declared format only when it reads the column": the
+            # import renders with whatever format it resolved and validates
+            # after, so dropping an unreadable one here showed ISO samples for
+            # an import that would have shown the caller's own format.
+            final_effective_date_format = mapping_result.date_format or date_format
+
+        # The ONLY render of df — exactly once, against the FINAL mapping,
+        # whether a column got there via matched_format/--override or
+        # map_columns's own alias detection over detection_df above.
+        df = normalize_excel_date_columns_after_mapping(
+            df,
+            file_type=format_info.file_type,
+            field_mapping=final_field_mapping,
+            date_format=final_effective_date_format,
+        )
+
+        # One question for both branches, asked the way ImportService asks it
+        # (`_validate_date_format_override`, over the rendered frame): does the
+        # format the import will use read the column it will read it from? A
+        # matched format used to skip the question and print its own value as
+        # fact, so a preview exited 0 announcing a format that the very next
+        # `import files` refused.
+        effective_reads_column = final_effective_date_format is not None and (
+            declared_date_format_reads_column(
+                df, final_field_mapping, final_effective_date_format
+            )
+        )
+
+        # The resolve above sets exactly one of these two.
+        if matched_format is not None:
+            typer.echo(
+                f"\nMatched format: {matched_format.name} ({matched_format.institution_name})"
+            )
+            typer.echo(f"Sign convention: {matched_format.sign_convention}")
+            if effective_reads_column:
+                typer.echo(f"Date format: {declared_date_format}")
+            else:
+                # The saved format's own value reaches the import the same way
+                # an explicit flag does, so it is refused the same way — name
+                # the flag that replaces it rather than `--override`, which
+                # this branch's mapping comes from the format and ignores.
+                typer.echo(
+                    f"Date format: {declared_date_format} does not read the "
+                    "mapped column — the import would refuse it rather than "
+                    "drop most rows. Check it against the column's own values, "
+                    "or declare this file's own with `--date-format <strptime>`"
+                )
+            typer.echo(
+                f"Number format: {number_format or matched_format.number_format}"
+            )
+            typer.echo("\nColumn mapping:")
+            for field, col in matched_format.field_mapping.items():
+                typer.echo(f"  {field} ← {col}")
+        elif mapping_result is not None:
             typer.echo(f"\nDetected mapping (confidence: {mapping_result.confidence}):")
             for field, col in mapping_result.field_mapping.items():
                 typer.echo(f"  {field} ← {col}")
@@ -3093,14 +3144,9 @@ def import_preview(
             # accepts it at 50% and reports the rows it rejected. Ask the
             # import's question, so a caller who passed --date-format is never
             # told the format is "not detected" and advised to pass it.
-            declared_reads_column = bool(date_format) and (
-                declared_date_format_reads_column(
-                    df, mapping_result.field_mapping, date_format
-                )
-            )
             if mapping_result.date_format:
                 typer.echo(f"Date format: {mapping_result.date_format}")
-            elif declared_reads_column:
+            elif effective_reads_column:
                 typer.echo(
                     f"Date format: {date_format} (declared; detection did not "
                     "confirm it, so the import will load the rows it reads and "
@@ -3131,10 +3177,6 @@ def import_preview(
                 typer.echo(
                     f"Number format: {number_format or mapping_result.number_format}"
                 )
-            final_field_mapping = mapping_result.field_mapping
-            final_effective_date_format = mapping_result.date_format or (
-                date_format if declared_reads_column else None
-            )
 
         if read_result.header_position_ambiguous:
             echo_disputed_rows(
@@ -3142,16 +3184,6 @@ def import_preview(
                 read_result.header_position_ambiguous_header_cells,
                 final_field_mapping,
             )
-
-        # The ONLY render of df — exactly once, against the FINAL mapping,
-        # whether a column got there via matched_format/--override or
-        # map_columns's own alias detection over detection_df above.
-        df = normalize_excel_date_columns_after_mapping(
-            df,
-            file_type=format_info.file_type,
-            field_mapping=final_field_mapping,
-            date_format=final_effective_date_format,
-        )
 
         # Show sample rows
         sample_n = min(5, len(df))

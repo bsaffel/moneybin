@@ -900,6 +900,117 @@ class TestPreview:
         # rather than sweeping in every native-date column it can find.
         assert "2026-01-15 00:00:00" in result.output
 
+    def test_preview_validates_a_named_formats_date_format(
+        self, tmp_path: Path, mocker: Any
+    ) -> None:
+        """A matched format must be held to the import's own date-format gate.
+
+        `ImportService` validates `date_format_override or resolved.date_format`
+        on every branch, so the value a `--format` preview prints is the value
+        the import refuses when it cannot read the mapped column. This branch
+        used to print it as fact and exit 0, so `import preview` advertised a
+        format the very next `import files` rejected — the one shape a preview
+        must never take, since it exists to predict that import.
+
+        The remedy named here is `--date-format`, not `--override`: this branch
+        takes its mapping from the saved format and ignores `--override`.
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat
+
+        csv_file = tmp_path / "iso_dates.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2026-01-05,42.50,Coffee\n"
+            "2026-01-06,10.00,Tea\n"
+            "2026-01-07,-20.00,Groceries\n",
+            encoding="utf-8",
+        )
+        saved_format = TabularFormat(
+            name="iso_test",
+            institution_name="Test",
+            file_type="csv",
+            header_signature=["Date", "Amount", "Description"],
+            field_mapping={
+                "transaction_date": "Date",
+                "amount": "Amount",
+                "description": "Description",
+            },
+            sign_convention="negative_is_expense",
+            date_format="%Y-%m-%d",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd._load_all_formats",
+            return_value=({saved_format.name: saved_format}, {}),
+        )
+
+        # %d/%m/%Y cannot read an ISO column: no row parses, so the loader's
+        # 50% override gate refuses it rather than dropping most rows.
+        result = runner.invoke(
+            app,
+            [
+                "preview",
+                str(csv_file),
+                "--format",
+                saved_format.name,
+                "--date-format",
+                "%d/%m/%Y",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        line = next(
+            ln for ln in result.output.splitlines() if ln.startswith("Date format:")
+        )
+        assert "%d/%m/%Y" in line, line
+        assert "does not read the mapped column" in line, line
+        # The remedy must not name a flag this branch ignores.
+        assert "--override" not in line, line
+
+    def test_preview_asks_the_date_question_of_the_rendered_frame(
+        self, tmp_path: Path
+    ) -> None:
+        """Excel native dates must be rendered before the format is judged.
+
+        `normalize_excel_date_columns_after_mapping` states the ordering: the
+        override validation, the disputed-row echo and the samples all read the
+        mapped date column's text, and until it runs that text is still
+        `2026-01-05 00:00:00` for a native cell. `ImportService` renders first
+        and validates after, so it accepts `%m/%d/%Y` here and loads the rows
+        it reads. The preview asked the same question one step too early, of
+        pre-render text no import ever sees, and answered the opposite.
+
+        Six native date cells and four unparseable ones put the declared format
+        at 60% — deliberately between the loader's 50% gate and the detector's
+        90% bar, so detection confirms nothing and the declared format is the
+        one under test rather than a detected one standing in for it.
+        """
+        from datetime import date
+
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append(["Date", "Amount", "Description"])
+        for day in range(1, 7):
+            ws.append([date(2026, 1, day), 5.00 + day, f"Item {day}"])
+        for n in range(7, 11):
+            ws.append(["n/a", 5.00 + n, f"Item {n}"])
+        path = tmp_path / "native_dates_with_dirt.xlsx"
+        wb.save(path)
+
+        result = runner.invoke(app, ["preview", str(path), "--date-format", "%m/%d/%Y"])
+
+        assert result.exit_code == 0, result.output
+        line = next(
+            ln for ln in result.output.splitlines() if ln.startswith("Date format:")
+        )
+        assert "%m/%d/%Y" in line, line
+        assert "declared" in line, line
+        # The pre-render frame's `2026-01-05 00:00:00` parses under no
+        # `%m/%d/%Y`, so judging it early reported the opposite verdict.
+        assert "does not read the mapped column" not in line, line
+
     def test_permission_error_is_classified_not_raw(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -1278,6 +1389,75 @@ class TestDeclaredDateFormatConfirmConverges:
         retry = self._extract_confirm_command(payload["actions"])
         tokens = shlex.split(retry)
         assert "--no-row-limit" in tokens, tokens
+
+    def test_confirm_hints_carry_the_size_override_that_allowed_the_read(
+        self,
+        db: Database,
+        mocker: Any,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The size override's twin of the row-limit case, on its own gate.
+
+        `--no-row-limit` is answered in `read_file` and `--no-size-limit` in
+        `detect_format`, one stage earlier, so the row-limit test cannot reach
+        this one's threading — its file clears the size check outright. The
+        threshold is configuration rather than a constant, so a 0 MB limit
+        refuses any non-empty file and keeps the fixture small; the refusal
+        asserted first is what proves the gate is live rather than absent.
+        """
+        from moneybin.config import get_settings
+
+        settings = get_settings()
+        limited = settings.model_copy(
+            update={
+                "providers": settings.providers.model_copy(
+                    update={
+                        "tabular": settings.providers.tabular.model_copy(
+                            update={"text_size_limit_mb": 0}
+                        )
+                    }
+                )
+            }
+        )
+        monkeypatch.setattr("moneybin.config.get_settings", lambda: limited)
+        mocker.patch(
+            "moneybin.database.get_database",
+            return_value=nullcontext(db),
+        )
+        csv_file = tmp_path / "oversized.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2026-01-01,42.50,Coffee\n"
+            "2026-01-02,10.00,Tea\n"
+            "2026-01-03,-20.00,Groceries\n"
+        )
+        confirm_argv = [
+            "confirm",
+            str(csv_file),
+            "--mapping",
+            "transaction_date=no_such_column",
+            "--output",
+            "json",
+        ]
+
+        # The gate must actually refuse this file, or everything below passes
+        # for the wrong reason.
+        refused = runner.invoke(app, confirm_argv)
+        assert refused.exit_code != 0, refused.output
+
+        result = runner.invoke(app, [*confirm_argv, "--no-size-limit"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["data"]["status"] == "confirmation_required", payload
+
+        ran = self._run_printed_preview_commands(
+            payload["actions"], csv_file, expect_rows=3, expect_header=True
+        )
+        assert ran == 1
+        retry = self._extract_confirm_command(payload["actions"])
+        tokens = shlex.split(retry)
+        assert "--no-size-limit" in tokens, tokens
 
     def test_confirm_mapping_failure_hint_is_runnable_from_a_spaced_directory(
         self,
