@@ -15,4 +15,4 @@ def test_w2_modules_removed() -> None:
     have stayed green if a W-2 loader reappeared under any other package.
     """
     with pytest.raises(ModuleNotFoundError):
-        import moneybin.extractors.w2_extractor  # type: ignore[import]  # noqa: F401
+        import moneybin.extractors.w2_extractor  # type: ignore[import]  # noqa: F401  # the import is asserted to raise, so the name is never bound
