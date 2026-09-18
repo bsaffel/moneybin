@@ -8,13 +8,16 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import (
     confidence_cell,
+    get_terminal_policy,
     handle_cli_errors,
     warn_match_decisions_committed,
     warn_transfers_retired,
@@ -47,7 +50,7 @@ def _score(row: dict[str, Any]) -> float | None:
 
 
 _NO_TRANSFORMS_MSG = (
-    "❌ No transaction data available — run 'moneybin transform apply' first"
+    "No transaction data available — run 'moneybin transform apply' first"
 )
 
 
@@ -57,12 +60,13 @@ def matches_pending(
         None, "--type", help="Filter by match type: dedup or transfer"
     ),
     limit: int = typer.Option(50, "--limit", "-n", help="Max records to show"),
+    no_pager: bool = no_pager_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
     """List pending matches, grouped by component (copies of the same transaction cluster together)."""
     if match_type and match_type not in VALID_MATCH_TYPES:
-        logger.error("❌ --type must be 'dedup' or 'transfer'")
+        logger.error("--type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
     with handle_cli_errors(cli_actor="matches_pending"):
@@ -103,9 +107,24 @@ def matches_pending(
                 )
                 return
 
+            total_count = service.count_pending(match_type=match_type)
+
         if not rows:
-            if not quiet:
-                logger.info("No pending matches")
+            scope = f" {match_type}" if match_type else ""
+            action = (
+                "Run 'moneybin transactions matches run' to find new matches."
+                if match_type is None
+                else "Try 'moneybin transactions matches pending' without --type."
+            )
+            emit_human_result(
+                compose_human_result(
+                    [build_summary([(f"No pending{scope} matches", "")])],
+                    disclosures=[action],
+                ),
+                policy=get_terminal_policy(no_pager=no_pager),
+                finite_read=True,
+                no_pager=no_pager,
+            )
             return
 
         # Group by component_key so N-way clusters surface as one block.
@@ -115,23 +134,47 @@ def matches_pending(
         for row in rows:
             groups.setdefault(str(row["component_key"]), []).append(row)
 
-        for ck, group_rows in groups.items():
-            typer.echo(f"\n── component {ck} ({len(group_rows)} edge(s)) ──")
-            render_rows(
-                ["match id", "type", "tier", "score", "type a", "type b"],
-                [
-                    (
-                        str(row["match_id"])[:12],
-                        str(row.get("match_type", "dedup")),
-                        str(row.get("match_tier") or "-"),
-                        confidence_cell(_score(row)),
-                        str(row["source_type_a"]),
-                        str(row["source_type_b"]),
-                    )
-                    for row in group_rows
-                ],
-                numeric=("score",),
+        parts: list[object] = [
+            build_summary(
+                [("Scope", f"Showing {len(rows)} of {total_count} pending matches")],
+                title="Pending matches",
             )
+        ]
+        for component_key, group_rows in groups.items():
+            parts.extend((
+                build_summary([
+                    ("Component", f"{component_key} ({len(group_rows)} edge(s))")
+                ]),
+                build_rows(
+                    ["match id", "type", "tier", "score", "type a", "type b"],
+                    [
+                        (
+                            str(row["match_id"]),
+                            str(row.get("match_type", "dedup")),
+                            str(row.get("match_tier") or "-"),
+                            confidence_cell(_score(row)),
+                            str(row["source_type_a"]),
+                            str(row["source_type_b"]),
+                        )
+                        for row in group_rows
+                    ],
+                    numeric=("score",),
+                    fit=True,
+                ),
+            ))
+        disclosures = [
+            "Use 'moneybin transactions matches set <match-id> --status accepted|rejected' to decide a match."
+        ]
+        if len(rows) < total_count:
+            disclosures.insert(
+                0, "More pending matches remain; raise --limit to review them."
+            )
+        emit_human_result(
+            compose_human_result(parts, disclosures=disclosures),
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 @app.command("run")
@@ -198,12 +241,13 @@ def matches_history(
     match_type: str | None = typer.Option(
         None, "--type", help="Filter by match type: dedup or transfer"
     ),
+    no_pager: bool = no_pager_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
     """Show recent match decisions."""
     if match_type and match_type not in VALID_MATCH_TYPES:
-        logger.error("❌ --type must be 'dedup' or 'transfer'")
+        logger.error("--type must be 'dedup' or 'transfer'")
         raise typer.Exit(2)
 
     with handle_cli_errors(cli_actor="matches_history"):
@@ -231,35 +275,62 @@ def matches_history(
                 return
 
             if not entries:
-                if not quiet:
-                    logger.info("No match decisions found")
+                emit_human_result(
+                    compose_human_result(
+                        [build_summary([("No match decisions found", "")])],
+                        disclosures=[
+                            "Run 'moneybin transactions matches pending' to review the active queue."
+                        ],
+                    ),
+                    policy=get_terminal_policy(no_pager=no_pager),
+                    finite_read=True,
+                    no_pager=no_pager,
+                )
                 return
 
-            render_rows(
-                [
-                    "match id",
-                    "type",
-                    "status",
-                    "tier",
-                    "score",
-                    "decided by",
-                    "type a",
-                    "type b",
-                ],
-                [
-                    (
-                        entry["match_id"][:12],
-                        entry.get("match_type", "dedup"),
-                        entry["match_status"],
-                        entry.get("match_tier") or "-",
-                        confidence_cell(_score(entry)),
-                        entry["decided_by"],
-                        entry["source_type_a"],
-                        entry["source_type_b"],
-                    )
-                    for entry in entries
-                ],
-                numeric=("score",),
+            emit_human_result(
+                compose_human_result(
+                    [
+                        build_summary(
+                            [("Scope", f"Showing up to {limit} most recent decisions")],
+                            title="Match decision history",
+                        ),
+                        build_rows(
+                            [
+                                "match id",
+                                "type",
+                                "status",
+                                "tier",
+                                "score",
+                                "decided by",
+                                "type a",
+                                "type b",
+                            ],
+                            [
+                                (
+                                    entry["match_id"],
+                                    entry.get("match_type", "dedup"),
+                                    entry["match_status"],
+                                    entry.get("match_tier") or "-",
+                                    confidence_cell(_score(entry)),
+                                    entry["decided_by"],
+                                    entry["source_type_a"],
+                                    entry["source_type_b"],
+                                )
+                                for entry in entries
+                            ],
+                            numeric=("score",),
+                            fit=True,
+                        ),
+                    ],
+                    disclosures=[
+                        "The complete history count is unavailable; raise --limit to inspect earlier decisions.",
+                        "Use 'moneybin transactions matches undo <match-id>' to reverse an accepted decision.",
+                    ],
+                ),
+                policy=get_terminal_policy(no_pager=no_pager),
+                finite_read=True,
+                no_pager=no_pager,
             )
 
 
@@ -270,18 +341,18 @@ def matches_undo(
 ) -> None:
     """Reverse a match decision."""
     if not yes:
-        confirmed = typer.confirm(f"Undo match {match_id[:8]}...?")
+        confirmed = typer.confirm(f"Undo match {match_id}?")
         if not confirmed:
-            logger.info("Undo cancelled")
+            logger.info("Undo cancelled; no match decision changed")
             raise typer.Exit(0)
 
     try:
         with handle_cli_errors():
             with get_database(read_only=False) as db:
                 MatchingService(db).undo(match_id, reversed_by="user", actor="cli")
-                logger.info(f"Reversed match {match_id[:8]}...")
+                logger.info(f"Reversed match {match_id}")
     except ValueError as e:
-        logger.error(f"❌ {e}")
+        logger.error(str(e))
         raise typer.Exit(1) from e
 
 
@@ -292,7 +363,7 @@ def matches_set(
 ) -> None:
     """Accept or reject one pending match by id."""
     if status not in {"accepted", "rejected"}:
-        logger.error("❌ --status must be 'accepted' or 'rejected'")
+        logger.error("--status must be 'accepted' or 'rejected'")
         raise typer.Exit(2)
     with handle_cli_errors():
         with get_database(read_only=False) as db:
@@ -300,13 +371,13 @@ def matches_set(
                 match_id, status=status, actor="cli"
             )
     if outcome.match_status == status:
-        logger.info(f"✅ Set match {match_id[:8]}... to {status}")
+        logger.info(f"Set match {match_id} to {status}")
     else:
-        # The reconciliation this accept triggered reversed this very row. A ✅
+        # The reconciliation this accept triggered reversed this very row. A success
         # here would report the opposite of what committed, and the count-shaped
         # warning below would not contradict it.
         logger.warning(
-            f"⚠️  Match {match_id[:8]}... was not {status}: it is "
+            f"Match {match_id} was not {status}: it is "
             f"{outcome.match_status} — an accepted transfer already claims the "
             "merged pair, and the earlier decision stands"
         )
