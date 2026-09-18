@@ -55,7 +55,12 @@ ORIGINAL_CURRENCY_COLUMN = "original_currency_code"
 #: in one — first exercised by `reports.net_worth_accounts` /
 #: `reports.net_worth_currencies` (`account_balance_home`, `net_worth_home`,
 #: `total_assets_home`, `total_liabilities_home` — reports-net-worth-sql-
-#: surface.md Requirement 10).
+#: surface.md Requirement 10). Two call sites publish it, and both must
+#: carry it: the CLI reads it for free through `ReportResult.to_envelope()`,
+#: but `mcp/tools/reports.py`'s `reports` tool builds its envelope by hand
+#: (its own comment there says every `ReportResult` field must be repeated)
+#: and must pass `home_currency=result.home_currency` explicitly, the same
+#: way it already repeats `applied_rates`.
 
 #: ``report_id`` namespace owned by the user tier — the one tier whose reports
 #: are database rows rather than code. ``mint_user_report_id`` produces it and

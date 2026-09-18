@@ -166,14 +166,18 @@ def net_worth_currencies(
     rng = resolve_date_range(
         from_date, to_date, report_id=_REPORT_ID, view=REPORTS_NET_WORTH_CURRENCIES
     )
-    # Sorting on balance_date major and the currency column minor can hand a
-    # row cap one date's currencies in full and cut the next date off partway
-    # through its own currency list — the default (no range given) query
-    # never has more than one date, but an explicit range can. `rank_in_currency`
-    # — one currency's own row sequence, oldest first — makes the cap advance
-    # every currency's date depth evenly instead: no currency is dropped from
-    # a date while another currency still has a row at that same depth
-    # (test_currency_truncation.py).
+    # `rank_in_currency` — each currency's own row sequence, oldest first — is
+    # what a row cap consumes: sorting `rank_in_currency`-major guarantees
+    # every currency reaches one rank depth before any currency reaches the
+    # next, so a cap large enough for one row per currency can never leave a
+    # currency with zero rows while another currency still has rows at that
+    # depth. This is a guarantee about rank depth, not about dates — two
+    # currencies at the same rank can hold different balance_dates if one is
+    # observed more often than the other. A plain `balance_date`-major sort
+    # has no such guarantee at all: the default (no range given) query never
+    # returns more than one date, but an explicit range can, and a cap could
+    # then exhaust its budget on one date's currencies before reaching the
+    # next date's (test_currency_truncation.py).
     sql = f"""
         WITH ranked AS (
             SELECT currency_code, home_currency_code, rate_source, balance_date,

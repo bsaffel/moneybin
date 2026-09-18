@@ -41,9 +41,9 @@ _COLUMNS = (
 _CURRENCIES_COLUMNS = (
     "currency_code",
     "home_currency_code",
+    "rate_source",
     "balance_date",
     "rate_published_date",
-    "rate_source",
     "account_count",
     "carried_forward_count",
     "total_assets",

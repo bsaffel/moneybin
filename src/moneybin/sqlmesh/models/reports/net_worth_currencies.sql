@@ -24,9 +24,9 @@ WITH home AS (
   SELECT
     d.currency_code,
     h.home_currency_code,
+    r.rate_source,
     d.balance_date,
     r.published_date AS rate_published_date,
-    r.rate_source,
     r.rate,
     COUNT(DISTINCT d.account_id) AS account_count,
     COUNT(DISTINCT CASE WHEN NOT d.is_observed THEN d.account_id END) AS carried_forward_count,
@@ -52,17 +52,17 @@ WITH home AS (
   GROUP BY
     d.currency_code,
     h.home_currency_code,
+    r.rate_source,
     d.balance_date,
     r.published_date,
-    r.rate_source,
     r.rate
 ), converted AS (
   SELECT
     currency_code,
     home_currency_code,
+    rate_source,
     balance_date,
     rate_published_date,
-    rate_source,
     account_count,
     carried_forward_count,
     total_assets,
@@ -75,9 +75,9 @@ WITH home AS (
 SELECT
   currency_code, /* ISO 4217 currency this row's totals are denominated in; NULL is the unknown-currency segment, never resolved to the home currency (multi-currency.md Requirement 5). Rows sharing NULL pool into one segment and are summed: unknown is one bucket, not one bucket per real currency, so two accounts in genuinely different currencies that both lack one are added together. That is why an unknown currency is a `system doctor` FAILURE rather than a warning — the remedy is `accounts set --currency`, not a total MoneyBin could compute. Splitting the bucket is impossible by construction: nothing distinguishes two unknowns. Every other money-summing reports.* model pools the same way. */
   home_currency_code, /* app.profile_settings.home_currency; NULL until the user chooses one, and then every row is unpriced */
+  rate_source, /* override / provider / identity; NULL when the pair is unpriced on this date */
   balance_date, /* Grain. Calendar date */
   rate_published_date, /* The day the applied rate was actually published; NULL when this currency is unpriced on this date */
-  rate_source, /* override / provider / identity; NULL when the pair is unpriced on this date */
   account_count, /* Accounts contributing on this date in this currency */
   carried_forward_count, /* How many of them are carried forward, not observed */
   total_assets, /* Sum of positive balances, in currency_code */

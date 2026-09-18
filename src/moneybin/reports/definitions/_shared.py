@@ -134,7 +134,13 @@ def resolve_window(
 
 
 def _invalid_date_range_param(report_id: str, parameter: str) -> UserError:
-    """R9's inverted/malformed date-range refusal, shared by every net-worth rung."""
+    """R9's malformed-date-range-bound refusal, shared by every net-worth rung.
+
+    Only the shape/calendar-validity refusal — the inverted-range refusal
+    (``from_date > to_date``) carries a different code and is built inline in
+    ``resolve_date_range``, since it needs both bounds at once rather than
+    one parameter in isolation.
+    """
     return UserError(
         "Report parameter must be an ISO date.",
         code=error_codes.REPORT_PARAMETER_INVALID_VALUE,
@@ -211,26 +217,35 @@ def resolve_date_range(
                 "relation": "from_date <= to_date",
             },
         )
-    if from_date and to_date:
+    # Branches on the *parsed* bounds, not the raw strings: `parsed_from` /
+    # `parsed_to` are what validation actually produced, and `.isoformat()`
+    # re-derives the bound from that single validated value — a raw string
+    # can only reach this point already shape- and calendar-valid (the regex
+    # anchors the exact `YYYY-MM-DD` width `_parse_range_bound` requires), so
+    # this is a no-op re-encoding, not a second source of truth.
+    if parsed_from is not None and parsed_to is not None:
+        from_bound, to_bound = parsed_from.isoformat(), parsed_to.isoformat()
         return DateRange(
             where_sql=" AND balance_date >= ? AND balance_date <= ?",
             params=[
-                Binding(from_date, DataClass.TXN_DATE),
-                Binding(to_date, DataClass.TXN_DATE),
+                Binding(from_bound, DataClass.TXN_DATE),
+                Binding(to_bound, DataClass.TXN_DATE),
             ],
-            period=f"{from_date} to {to_date}",
+            period=f"{from_bound} to {to_bound}",
         )
-    if from_date:
+    if parsed_from is not None:
+        from_bound = parsed_from.isoformat()
         return DateRange(
             where_sql=" AND balance_date >= ?",
-            params=[Binding(from_date, DataClass.TXN_DATE)],
-            period=f"from {from_date}",
+            params=[Binding(from_bound, DataClass.TXN_DATE)],
+            period=f"from {from_bound}",
         )
-    if to_date:
+    if parsed_to is not None:
+        to_bound = parsed_to.isoformat()
         return DateRange(
             where_sql=" AND balance_date <= ?",
-            params=[Binding(to_date, DataClass.TXN_DATE)],
-            period=f"through {to_date}",
+            params=[Binding(to_bound, DataClass.TXN_DATE)],
+            period=f"through {to_bound}",
         )
     latest_day_sql = (
         f" AND balance_date = (SELECT MAX(balance_date) FROM {view.full_name})"  # noqa: S608  # TableRef interpolation, not a user value

@@ -461,6 +461,123 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
 
 
 @pytest.mark.unit
+async def test_reports_with_id_passes_through_a_priced_home_currency() -> None:
+    """A converted core:net_worth_accounts read carries summary.home_currency.
+
+    Same failure mode as `applied_rates` above: this tool builds its envelope
+    by hand rather than through `ReportResult.to_envelope`, so a field the
+    result carries reaches the agent only if this function repeats it —
+    `home_currency` went missing here until this test caught it.
+    """
+    result = CatalogReportResult(
+        report_id="core:net_worth_accounts",
+        parameters={},
+        semantics=_SEMANTICS,
+        provenance=_SEMANTICS.provenance,
+        records=[
+            {
+                "period_date": date(2026, 6, 1),
+                "amount": Decimal("125.00"),
+                "account_id": "****2222",
+            }
+        ],
+        columns=[column.name for column in _COLUMNS],
+        output_classes=_CLASSES,
+        tier=Tier.CRITICAL,
+        total_count=1,
+        truncated=False,
+        actions=[],
+        period=None,
+        display_currency="EUR",
+        applied_rates=(
+            ResolvedRate(
+                from_currency="USD",
+                to_currency="EUR",
+                requested_date=date(2026, 6, 1),
+                rate_date=date(2026, 6, 1),
+                rate=Decimal("0.90"),
+                source="frankfurter",
+            ),
+        ),
+        home_currency="USD",
+    )
+    catalog = MagicMock(spec=ReportCatalog)
+    catalog.execute.return_value = result
+    db = _mock_database()
+    database_context = _database_context(db)
+
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=database_context,
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(
+            report_id="core:net_worth_accounts",
+            display_currency="EUR",
+        )
+
+    assert response.summary.home_currency == "USD"
+    assert response.summary.to_dict()["home_currency"] == "USD"
+
+
+@pytest.mark.unit
+async def test_reports_with_id_omits_home_currency_when_nothing_was_priced_from_it() -> (
+    None
+):
+    """A read that never priced a home-basis column carries no summary.home_currency."""
+    result = CatalogReportResult(
+        report_id="core:spending_trend",
+        parameters={},
+        semantics=_SEMANTICS,
+        provenance=_SEMANTICS.provenance,
+        records=[
+            {
+                "period_date": date(2026, 6, 1),
+                "amount": Decimal("12.34"),
+                "account_id": "****2222",
+            }
+        ],
+        columns=[column.name for column in _COLUMNS],
+        output_classes=_CLASSES,
+        tier=Tier.CRITICAL,
+        total_count=1,
+        truncated=False,
+        actions=[],
+        period=None,
+        # home_currency defaults to None: this result never priced a
+        # home-basis column, converted or not.
+    )
+    catalog = MagicMock(spec=ReportCatalog)
+    catalog.execute.return_value = result
+    db = _mock_database()
+    database_context = _database_context(db)
+
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=database_context,
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="core:spending_trend")
+
+    assert response.summary.home_currency is None
+    assert "home_currency" not in response.summary.to_dict()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("requested", "expected"),
     [

@@ -27,7 +27,7 @@ from moneybin.tables import REPORTS_NET_WORTH_ACCOUNTS
 # general." Reusing them here (rather than a second copy of the same core.*
 # stub schema) is exactly that reuse.
 from tests.moneybin.test_reports.test_definitions import (
-    _install_cash_flow_view,  # pyright: ignore[reportPrivateUsage]
+    _install_balance_drift,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.moneybin.test_reports.test_net_worth_models import (
     _account,  # pyright: ignore[reportPrivateUsage]
@@ -246,18 +246,69 @@ def test_accounts_runner_display_conversion_prices_home_basis_from_home(
     assert envelope.summary.home_currency == "USD"
 
 
-def test_cash_flow_envelope_omits_home_currency(model_db: Database) -> None:
-    """A report with no home-basis column never carries summary.home_currency."""
-    _install_cash_flow_view(model_db)
+def test_balance_drift_envelope_omits_home_currency_despite_a_real_conversion(
+    model_db: Database,
+) -> None:
+    """A converted report declaring no home-basis column never carries home_currency.
+
+    Isolates ``_priced_home_currency``'s ``if not home_basis: return None``
+    branch specifically: unlike a cash_flow read (which never converts at
+    all, since it declares no ``fx_date``), this read genuinely converts —
+    ``core:balance_drift`` declares ``fx_date="assertion_date"`` — so
+    ``execution.applied_rates`` is non-empty. The only thing that can still
+    withhold ``home_currency`` is the absence of any ``currency_basis="home"``
+    column on this report.
+    """
+    _install_balance_drift(model_db)
+    _seed_cached_rate(model_db, "USD", "EUR", date(2026, 4, 1), Decimal("0.90"))
 
     catalog = get_report_catalog()
     result = catalog.execute(
         model_db,
-        report_id="core:cash_flow",
-        parameters={"by": "account-and-category"},
+        report_id="core:balance_drift",
+        parameters={},
         limit=100,
         display_currency="EUR",
+        # A caller-supplied home_currency unrelated to this report's own
+        # basis — present so `execution.home_currency` is non-None, which
+        # isolates the `home_basis` check from the "no home_currency at all"
+        # short-circuit ahead of it.
+        home_currency="USD",
     )
+    assert result.applied_rates  # a real, non-identity conversion happened
     envelope = result.to_envelope()
     assert envelope.summary.home_currency is None
-    assert "home_currency" not in envelope.to_dict()["summary"]
+
+
+def test_accounts_runner_envelope_omits_home_currency_when_every_home_basis_value_is_null(
+    model_db: Database,
+) -> None:
+    """A converted net_worth_accounts read with account_balance_home all-NULL never carries summary.home_currency.
+
+    Isolates ``_priced_home_currency``'s "no surviving row holds a value"
+    check specifically: this report *does* declare a ``currency_basis="home"``
+    column (unlike the balance_drift case above), and the row-basis column
+    genuinely converts, but no profile home currency was ever set, so the
+    view itself never priced ``account_balance_home`` on any row.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "UK Checking", "GBP")
+    _balance(model_db, "acct-a", "2026-01-05", "100.00", "GBP")
+    # Deliberately no _home(...) call: account_balance_home stays NULL for
+    # every row (test_accounts_rung_null_home_currency_prices_nothing).
+    _install_report(model_db, "net_worth_accounts")
+    _seed_cached_rate(model_db, "GBP", "EUR", date(2026, 1, 5), Decimal("1.15"))
+
+    catalog = get_report_catalog()
+    result = catalog.execute(
+        model_db,
+        report_id="core:net_worth_accounts",
+        parameters={},
+        limit=100,
+        display_currency="EUR",
+        home_currency="USD",
+    )
+    assert result.applied_rates  # the row-basis column really converted
+    assert all(row["account_balance_home"] is None for row in result.records)
+    envelope = result.to_envelope()
+    assert envelope.summary.home_currency is None

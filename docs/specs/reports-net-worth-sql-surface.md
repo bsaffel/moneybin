@@ -1267,9 +1267,9 @@ by id rather than only a count.
 ```
 currency_code            VARCHAR        -- Grain. NULL is the unknown-currency segment
 home_currency_code       VARCHAR
+rate_source              VARCHAR
 balance_date             DATE           -- Grain
 rate_published_date      DATE
-rate_source              VARCHAR
 account_count            INTEGER        -- Accounts contributing on this date in this currency
 carried_forward_count    INTEGER        -- How many of them are carried forward, not observed
 total_assets             DECIMAL(18,2)
@@ -1279,6 +1279,11 @@ total_assets_home        DECIMAL(18,2)
 total_liabilities_home   DECIMAL(18,2)
 net_worth_home           DECIMAL(18,2)  -- NULL when this currency is unpriced on this date
 ```
+
+`rate_source` is a `DataClass.TXN_TYPE` dimension
+(`src/moneybin/privacy/taxonomy.py`), so Rule B
+(`.claude/rules/column-ordering.md`) places it before the date block, same as
+`reports.net_worth_accounts` above.
 
 The existing six columns keep their names, types, and meanings; the additions
 are additive, which is what M2B.1 Key Decision 5 anticipated when it said
