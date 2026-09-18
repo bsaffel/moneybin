@@ -21,12 +21,19 @@ from moneybin.adapters.refresh_adapters import refresh_steps_fields
 from moneybin.cli.commands import import_inbox, import_labels
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
     output_option,
     quiet_option,
     wide_option,
 )
 from moneybin.cli.prompts import Choice, choose_required
-from moneybin.cli.render import column_view, render_rows, render_summary
+from moneybin.cli.render import (
+    build_summary,
+    column_view,
+    compose_human_result,
+    render_rows,
+    render_summary,
+)
 from moneybin.cli.utils import (
     get_terminal_policy,
     handle_cli_errors,
@@ -827,44 +834,23 @@ def import_files_command(
             cli_actor="import_files_command",
             classes_returned=classes_returned,
         )
-    elif not quiet:
-        for f in files_list:
-            if f["status"] == "imported":
-                icon = "✅"
-                receipt = (
-                    f"{f['path']} [{f['source_type'] or '?'}] — "
-                    f"{f.get('rows_loaded') or 0} rows"
-                )
-            elif f["status"] == "confirmation_required":
-                icon = "!"
-                receipt = (
-                    f"{f['path']} — needs confirmation; no transactions "
-                    "imported from this file"
-                )
-            else:
-                icon = "❌"
-                receipt = (
-                    f"{f['path']} [{f['source_type'] or '?'}] — "
-                    f"{f.get('rows_loaded') or 0} rows"
-                )
-            logger.info(f"{icon} {receipt}")
-            # A failed row's whole value is why it failed and how to fix it.
-            # Text mode is the CLI default, so leaving these to the JSON branch
-            # made the recovery advice invisible to anyone running the bare
-            # command — the exact scenario this classification exists for.
-            if error := f.get("error"):
-                logger.error(f"   {error}")
-            if hint := f.get("hint"):
-                logger.info(f"   {hint}")
-            echo_accounts_created(f.get("accounts_created") or [])
-        if data["transforms_applied"]:
-            duration = data["transforms_duration_seconds"]
-            if duration is not None:
-                logger.info(f"✅ Core tables rebuilt in {duration:.1f}s")
-            else:
-                logger.info("✅ Core tables rebuilt")
-        if data.get("transforms_error"):
-            logger.warning(f"⚠️  Transform apply failed: {data['transforms_error']}")
+    else:
+        # A receipt is the requested result, not optional chatter.  In
+        # particular, --quiet cannot hide a saved file, a failed requested
+        # file, or its service-provided recovery.  It is intentionally a
+        # finite, unpaged answer even when a shell expands a large glob.
+        emit_human_result(
+            _batch_receipt(data),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
+        for file_result in files_list:
+            # Account display names are user supplied and stay off the logger
+            # path.  The compact receipt identifies the file; this direct
+            # stderr disclosure preserves the established account correction
+            # guidance without putting labels into durable logs.
+            echo_accounts_created(file_result.get("accounts_created") or [])
 
     # The import's refresh runs the matcher, so folding a duplicate can reverse
     # a transfer the user accepted. Same helper and sentence as the matcher
@@ -891,6 +877,7 @@ def import_files_command(
     if (
         data.get("transforms_error")
         or envelope.status == "error"
+        or data.get("failed_count")
         or data.get("confirmation_required_count")
     ):
         raise typer.Exit(1)
@@ -999,6 +986,67 @@ def _batch_payload(
     if batch.transforms_error:
         data["transforms_error"] = batch.transforms_error
     return files_list, data
+
+
+def _batch_receipt(data: Mapping[str, Any]) -> object:
+    """Build the complete unpaged text receipt for ``import files``.
+
+    The JSON projection remains `_batch_payload`; this only arranges its known
+    facts for people.  Keeping the decision here prevents quiet and redirected
+    text from losing a partial batch's saved/failed scope.
+    """
+    imported = int(data["imported_count"])
+    failed = int(data["failed_count"])
+    pending = int(data["confirmation_required_count"])
+    transforms_error = data.get("transforms_error")
+    if pending and not failed and not transforms_error and not imported:
+        title = "Import needs confirmation"
+    elif failed or pending or transforms_error:
+        title = "Import partially completed" if imported else "Import incomplete"
+    else:
+        title = "Import complete"
+
+    details: list[tuple[str, str]] = []
+    for file_result in cast("list[dict[str, Any]]", data["files"]):
+        path = str(file_result["path"])
+        status = str(file_result["status"])
+        if status == "imported":
+            details.append((
+                "Saved",
+                f"{path} — {file_result.get('rows_loaded') or 0} rows loaded",
+            ))
+        elif status == "confirmation_required":
+            details.append((
+                "Needs confirmation",
+                f"{path} — no transactions imported from this file",
+            ))
+        else:
+            details.append((
+                "Failed",
+                f"{path} — {file_result.get('error') or 'Import failed'}",
+            ))
+            if hint := file_result.get("hint"):
+                details.append(("Recovery", str(hint)))
+
+    if data["transforms_applied"]:
+        details.append(("Derived data", "Core tables rebuilt"))
+    elif transforms_error:
+        details.append((
+            "Derived data",
+            "Core tables were not rebuilt; reports may remain stale",
+        ))
+        details.append(("Transform error", str(transforms_error)))
+    return compose_human_result((build_summary(details, title=title),))
+
+
+def _confirm_receipt(title: str, pairs: Sequence[tuple[str, str]]) -> None:
+    """Emit one essential, unpaged ``import confirm`` receipt."""
+    emit_human_result(
+        compose_human_result((build_summary(pairs, title=title),)),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 def _accounts_created_payload(
@@ -2255,7 +2303,7 @@ def import_confirm_command(
             confirm_actions.append(
                 f"Run 'moneybin import preview {file_path}' to inspect the proposal."
             )
-        if output == OutputFormat.JSON or not sys.stdout.isatty():
+        if output == OutputFormat.JSON:
             envelope = build_envelope(
                 data=envelope_data,
                 sensitivity="medium",
@@ -2264,13 +2312,18 @@ def import_confirm_command(
             render_or_json(
                 envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
             )
-            # Exit 0 to mirror `moneybin import files` JSON-mode behavior on
-            # confirmation_required (data.status is the discriminant).
+            # JSON preserves its established envelope and exit behavior;
+            # explicit text reaches the receipt branch below even when redirected.
             # Scripted propose→review→confirm loops branch on the body, not
             # exit code — a non-zero exit would abort the loop on every
             # partial-override iteration.
             return
         # Interactive path: human-readable summary + exit code 1.
+        _confirm_receipt(
+            "Import needs confirmation",
+            [("File", str(file_path)), ("Reason", outcome.reason)]
+            + [("Recovery", action) for action in confirm_actions],
+        )
         if outcome.reason == "sign_convention":
             _render_confirmation_prompt(
                 outcome,
@@ -2289,38 +2342,8 @@ def import_confirm_command(
         elif outcome.reason == "account_confirmation":
             # The layout is settled; replay the current inputs and add the
             # bindings still required to finish this independent call.
-            logger.error("❌ Account identity must be confirmed before import.")
             _echo_account_proposals(outcome, err=True)
-            logger.info(
-                "💡 Re-run `"
-                + _account_recovery_command(
-                    str(file_path),
-                    outcome,
-                    accept=accept,
-                    mapping=parsed_mapping,
-                    save_format=save_format,
-                    institution=institution,
-                    account_id=account_id,
-                    account_name=account_name,
-                    account_metadata=parsed_metadata,
-                    confirm_sign=confirm_sign,
-                    sign=sign,
-                    # Forwarded for the same reason the JSON branch above does:
-                    # without it the printed line loses --bridge-response and
-                    # --confirm, gains an --accept this command refuses beside a
-                    # bridge response, and so cannot finish the agent-authored
-                    # import the user was answering the gate for.
-                    bridge_response=bridge_response,
-                )
-                + "`."
-            )
-        elif outcome.reason == "header_row_consumed":
-            logger.error("❌ A transaction row was consumed as the header.")
-            logger.info(f"💡 {header_row_consumed_recovery()}")
         elif outcome.reason == "header_position_ambiguous":
-            logger.error(
-                "❌ A row before the detected header looks like a transaction."
-            )
             echo_disputed_rows(
                 outcome.header_position_ambiguous_rows,
                 outcome.header_position_ambiguous_header_cells,
@@ -2328,20 +2351,6 @@ def import_confirm_command(
                 if isinstance(outcome.proposed, ProposedMapping)
                 else {},
             )
-            logger.info(f"💡 {header_position_ambiguous_recovery(str(file_path))}")
-        elif outcome.reason == "unreadable_date":
-            logger.error("❌ No date format could be read from the date column.")
-            logger.info(f"💡 {unreadable_date_recovery(str(file_path))}")
-        else:
-            msg = f"❌ Confirmation failed: {outcome.reason}" + (
-                f" — {outcome.error_message}" if outcome.error_message else ""
-            )
-            logger.error(msg)
-            if _can_preview(outcome):
-                logger.info(
-                    "💡 Inspect the proposal with 'moneybin import preview "
-                    f"{file_path}' and re-run with a corrected --mapping."
-                )
         raise typer.Exit(1) from e
 
     if bridge_result is not None:
@@ -2354,10 +2363,22 @@ def import_confirm_command(
                 "rows_diverged": bridge_result.rows_diverged,
             }
             envelope = build_envelope(data=data, sensitivity="medium", actions=[])
-            render_or_json(envelope, output, cli_actor="import_confirm_command")
-            if output != OutputFormat.JSON:
-                logger.error(
-                    "❌ PDF bridge response did not reconcile; nothing was imported."
+            if output == OutputFormat.JSON:
+                render_or_json(envelope, output, cli_actor="import_confirm_command")
+            else:
+                _confirm_receipt(
+                    "Import failed",
+                    [
+                        ("File", str(file_path)),
+                        (
+                            "Result",
+                            "PDF bridge response did not reconcile; nothing was imported",
+                        ),
+                        ("Rejection", str(bridge_result.reject_reason)),
+                        ("Expected rows", str(bridge_result.expected_row_count)),
+                        ("Actual rows", str(bridge_result.actual_row_count)),
+                        ("Rows diverged", str(bridge_result.rows_diverged)),
+                    ],
                 )
             raise typer.Exit(1)
 
@@ -2383,16 +2404,24 @@ def import_confirm_command(
             "Run 'moneybin import status' to confirm imported counts.",
         ]
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
-        render_or_json(envelope, output, cli_actor="import_confirm_command")
-        if not quiet and output != OutputFormat.JSON:
-            logger.info(
-                f"✅ Imported {file_path.name}: {bridge_result.rows_loaded} rows "
-                f"(import_id: {bridge_result.import_id})"
+        if output == OutputFormat.JSON:
+            render_or_json(envelope, output, cli_actor="import_confirm_command")
+        else:
+            _confirm_receipt(
+                "Import complete",
+                [
+                    ("File", str(file_path)),
+                    ("Saved", f"{bridge_result.rows_loaded} rows"),
+                    ("Import", str(bridge_result.import_id)),
+                    (
+                        "Derived data",
+                        "Run 'moneybin transform apply' to rebuild derived tables",
+                    ),
+                ],
             )
             echo_accounts_created(
                 _accounts_created_payload(bridge_result.accounts_created)
             )
-            logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
         return
 
     result = cast("ImportResult", result)
@@ -2441,19 +2470,25 @@ def import_confirm_command(
         render_or_json(envelope, output, cli_actor="import_confirm_command")
         return
 
-    if not quiet:
-        logger.info(
-            f"✅ Imported {file_path.name}: {result.rows_loaded} rows "
-            f"(import_id: {result.import_id})"
+    _confirm_receipt(
+        "Import complete",
+        [
+            ("File", str(file_path)),
+            ("Saved", f"{result.rows_loaded} rows"),
+            ("Import", str(result.import_id)),
+            (
+                "Derived data",
+                "Run 'moneybin transform apply' to rebuild derived tables",
+            ),
+        ],
+    )
+    echo_accounts_created(_accounts_created_payload(result.accounts_created))
+    if result.sign_correction_suggested:
+        typer.echo(
+            "⚠️  Sign convention may be inverted (running balance suggests "
+            "negation). If amounts look wrong, re-run with --mapping corrected.",
+            err=True,
         )
-        echo_accounts_created(_accounts_created_payload(result.accounts_created))
-        if result.sign_correction_suggested:
-            typer.echo(
-                "⚠️  Sign convention may be inverted (running balance suggests "
-                "negation). If amounts look wrong, re-run with --mapping corrected.",
-                err=True,
-            )
-        logger.info("💡 Run 'moneybin transform apply' to rebuild derived tables.")
 
 
 _HISTORY_COLUMNS: tuple[
