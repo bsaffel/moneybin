@@ -289,16 +289,30 @@ class TestMerchantLinksRun:
 
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
-    def test_run_mentions_pending_command(
+    def test_run_with_only_bindings_does_not_offer_empty_review_queue(
         self, mock_run: MagicMock, mock_get_db: MagicMock
     ) -> None:
-        """Run output hints the user toward `merchants links pending`."""
+        """Unambiguous bindings leave no decision for the review queue."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_run.return_value = HarvestResult(bound=2, conflicts=0)
 
         result = runner.invoke(app, ["run"])
         assert result.exit_code == 0
-        assert "pending" in result.output.lower()
+        assert "pending" not in result.output.lower()
+
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")
+    def test_run_with_conflicts_offers_pending_review(
+        self, mock_run: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Queued conflicts need the executable review action."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_run.return_value = HarvestResult(bound=2, conflicts=1)
+
+        result = runner.invoke(app, ["run"])
+
+        assert result.exit_code == 0
+        assert "moneybin merchants links pending" in result.output
 
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.run")

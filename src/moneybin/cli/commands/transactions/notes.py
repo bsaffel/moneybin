@@ -11,12 +11,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
     NoteDeletePayload,
@@ -70,7 +72,17 @@ def transactions_notes_add(
             cli_actor="transactions_notes_add",
         )
         return
-    logger.info(f"✅ Added note {note.note_id} to {transaction_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Transaction", transaction_id), ("Note ID", note.note_id)],
+                title="Note added",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("list")
@@ -78,6 +90,7 @@ def transactions_notes_list(
     transaction_id: str = typer.Argument(..., help="Transaction ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List all notes on a transaction."""
     from moneybin.services.transaction_service import TransactionService
@@ -96,13 +109,33 @@ def transactions_notes_list(
         )
         return
 
-    if not notes:
-        if not quiet:
-            logger.info(f"No notes for {transaction_id}")
-        return
-    render_rows(
-        ["note id", "created", "author", "note"],
-        [(n.note_id, n.created_at, n.author, n.text) for n in notes],
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Transaction", transaction_id)], title="Notes")
+    ]
+    if notes:
+        parts.append(
+            build_rows(
+                ["note id", "created", "author", "note"],
+                [
+                    (note.note_id, note.created_at, note.author, note.text)
+                    for note in notes
+                ],
+                terminal=policy,
+            )
+        )
+    else:
+        parts.append(build_summary([("Result", "No notes on this transaction.")]))
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                () if notes else ("Next: moneybin transactions notes add --help",)
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
     )
 
 
@@ -133,7 +166,17 @@ def transactions_notes_edit(
             cli_actor="transactions_notes_edit",
         )
         return
-    logger.info(f"✅ Updated note {note.note_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Note ID", note.note_id), ("Result", "updated")],
+                title="Note updated",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("delete")
@@ -165,4 +208,14 @@ def transactions_notes_delete(
             cli_actor="transactions_notes_delete",
         )
         return
-    logger.info(f"✅ Deleted note {note_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Note ID", note_id), ("Result", "deleted")],
+                title="Note deleted",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
