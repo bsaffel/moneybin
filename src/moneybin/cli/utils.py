@@ -337,7 +337,7 @@ def confidence_cell(confidence: float | None) -> str:
 def sqlmesh_command(
     label: str, *, success: str | None = None
 ) -> Generator[Database, None, None]:
-    """Wrap a SQLMesh-fronted command with consistent ⚙️/✅/❌ logging.
+    """Wrap a SQLMesh-fronted command with progress and factual receipts.
 
     Opens its own write connection, yields it, and handles both classified
     user errors and SQLMesh's broad untyped exceptions. Binds one
@@ -348,24 +348,54 @@ def sqlmesh_command(
 
     Args:
         label: Verb-noun describing the action (e.g. ``"Seed materialization"``).
-            Used in the leading ``⚙️ {label}…`` and trailing
-            ``❌ {label} failed`` lines, so it reaches the user verbatim and
-            names the action in their vocabulary, never a dependency (req 17).
-            The message guard cannot catch a violation here — the string lives
-            at the call site, which is neither ``logger.*`` nor ``typer.echo``.
-        success: Custom success message after ``✅ ``. Defaults to
-            ``f"{label} completed"``.
+            It names the progress stage and final receipt in user vocabulary.
+        success: Custom final outcome. Defaults to ``f"{label} completed"``.
     """
+    from moneybin.cli.progress import operation_progress
     from moneybin.database import get_database  # defer heavy import
+    from moneybin.progress import ProgressEvent
 
-    logger.info(f"⚙️  {label}...")
     try:
         with (
             operation(),
             get_database(read_only=False, operation_type="transform_apply") as db,
         ):
-            yield db
-        logger.info(f"✅ {success or f'{label} completed'}")
+            with operation_progress(get_terminal_policy()) as report:
+                report(ProgressEvent(label))
+                yield db
+        from moneybin.cli.output import emit_human_result
+        from moneybin.cli.render import build_summary, compose_human_result
+
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [("Outcome", success or f"{label} completed")],
+                    title=f"{label} complete",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
+    except KeyboardInterrupt:
+        from moneybin.cli.output import emit_human_result
+        from moneybin.cli.render import build_summary, compose_human_result
+
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Saved state", "Saved scope is unknown"),
+                        ("Next step", "`moneybin transform status`"),
+                    ],
+                    title=f"{label} cancelled",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
+        raise typer.Exit(130) from None
     except typer.Exit:
         raise
     except Exception as e:

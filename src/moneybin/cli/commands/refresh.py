@@ -11,13 +11,23 @@ from enum import StrEnum
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_note
+from moneybin import error_codes
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.progress import operation_progress
+from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import (
+    emit_json_failure,
+    get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
 )
+from moneybin.errors import UserError
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.services.refresh_outcome import StageOutcome, best_effort
 
@@ -34,6 +44,56 @@ _STAGE_LABELS: dict[str, str] = {
     "identity": "Identity",
     "rates": "Rates",
 }
+
+
+def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -> None:
+    """Render the pipeline's factual outcome after progress has cleaned up."""
+    from moneybin.orchestration.refresh import RefreshResult
+
+    refresh_result = result
+    if not isinstance(refresh_result, RefreshResult):
+        raise TypeError("refresh receipt requires RefreshResult")
+    if refresh_result.error is not None:
+        title = "× Refresh failed"
+        outcome = f"Failed: {refresh_result.error}"
+    elif partial:
+        title = "! Refresh partially completed"
+        outcome = "Requested steps completed with incomplete best-effort results"
+    else:
+        title = "✓ Refresh complete"
+        outcome = "Requested refresh steps completed"
+    pairs = [("Outcome", outcome)]
+    if partial:
+        pairs.append((
+            "State",
+            "Completed stages remain available; failed requested results may be stale.",
+        ))
+    if refresh_result.stages:
+        pairs.extend(
+            (stage.step, _stage_summary(stage).strip())
+            for stage in refresh_result.stages
+        )
+    if refresh_result.error is not None:
+        pairs.append((
+            "Recovery",
+            "Run `moneybin transform status` to inspect derived data.",
+        ))
+    elif retryable:
+        pairs.append((
+            "Recovery",
+            "Re-run the failed step or run `moneybin system doctor`.",
+        ))
+    elif partial:
+        pairs.append((
+            "Recovery",
+            "Run `moneybin transform status` to inspect derived data.",
+        ))
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title=title)]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 def _stage_summary(stage: StageOutcome) -> str:
@@ -130,8 +190,8 @@ def refresh_command(
     only their domain in `identity_errors`. The rates step gathers the exchange
     rates this profile's own transactions, balances and holdings imply, so
     reports can convert without reaching the network; a pair the provider could
-    not answer is reported and retried next run. Only a SQLMesh apply error
-    exits non-zero.
+    not answer is reported and retried next run. A requested incomplete stage
+    exits non-zero after its partial receipt.
     """
     from moneybin.adapters.refresh_adapters import (
         refresh_envelope,
@@ -148,11 +208,41 @@ def refresh_command(
     # service code that accepts ``list[str]`` works unchanged.
     steps: list[str] | None = [s.value for s in step] if step else None
 
-    with (
-        handle_cli_errors(cli_actor="refresh_command"),
-        get_database(read_only=False, operation_type="transform_apply") as db,
-    ):
-        result = refresh(db, steps=steps)
+    terminal = get_terminal_policy()
+    try:
+        with (
+            handle_cli_errors(cli_actor="refresh_command"),
+            get_database(read_only=False, operation_type="transform_apply") as db,
+        ):
+            with operation_progress(terminal, quiet=quiet) as report:
+                result = refresh(db, steps=steps, progress=report)
+    except KeyboardInterrupt:
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "Refresh cancelled; saved scope is unknown",
+                    code=error_codes.REFRESH_MODEL_FAILED,
+                    hint="Run 'moneybin transform status' to inspect derived data.",
+                    details={"saved_scope": "unknown", "outcome": "cancelled"},
+                ),
+                cli_actor="refresh_command",
+            )
+        else:
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [
+                            ("Saved state", "Saved scope is unknown"),
+                            ("Next step", "`moneybin transform status`"),
+                        ],
+                        title="! Refresh cancelled",
+                    )
+                ]),
+                policy=terminal,
+                finite_read=False,
+                receipt=True,
+            )
+        raise typer.Exit(130) from None
     requested = expand_steps(steps)
 
     # Best-effort step crashes (matcher/categorizer) don't fail the command,
@@ -194,52 +284,17 @@ def refresh_command(
             output,
             cli_actor="refresh_command",
         )
-        if result.error is not None:
+        if result.error is not None or has_step_error:
             raise typer.Exit(1)
         return
-
-    if quiet:
-        if result.error is not None:
-            raise typer.Exit(1)
-        return
-
-    # Requirement 18: one note per stage, before the summary line that closes
-    # the run. Sited after the `-q` return above rather than passing
-    # quiet=True, so there is one place that decides a status line is
-    # suppressed. A stage the caller never requested is absent from the tuple,
-    # so a narrowed `--step` run prints only what it actually ran.
-    if result.stages:
-        render_note("Pipeline:")
-        for stage in result.stages:
-            render_note(_stage_summary(stage))
 
     # Suppress the step-retry hint when apply also failed: the apply error is
     # the blocker (reported by ❌ below), so "re-run the failed step" would
     # misdirect the agent before it resolves the blocking failure.
-    if retryable_error and result.error is None:
-        logger.info(
-            "💡 Re-run the failed step (e.g. `moneybin refresh --step match`) "
-            "or run `moneybin system doctor` to diagnose."
-        )
-
-    if result.applied:
-        duration = result.duration_seconds or 0.0
-        # No ✅ when a best-effort step crashed — the warning above already
-        # told the truth, and a success banner would contradict it.
-        if has_step_error:
-            logger.info(
-                f"Refresh complete in {duration:.2f}s (best-effort step failures above)"
-            )
-        else:
-            logger.info(f"✅ Refresh complete in {duration:.2f}s")
-        return
-    if result.error is not None:
-        logger.error(f"❌ Refresh failed: {result.error}")
+    _render_refresh_receipt(
+        result,
+        partial=has_step_error,
+        retryable=retryable_error,
+    )
+    if result.error is not None or has_step_error:
         raise typer.Exit(1)
-    steps_str = ", ".join(sorted(requested))
-    if has_step_error:
-        logger.info(
-            f"Partial refresh complete (steps: {steps_str}; best-effort failures above)"
-        )
-    else:
-        logger.info(f"✅ Partial refresh complete (steps: {steps_str})")

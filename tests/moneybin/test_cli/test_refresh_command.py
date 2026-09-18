@@ -87,6 +87,21 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
     assert result.exit_code == 1
 
 
+def test_interrupted_refresh_reports_unknown_saved_scope(runner: CliRunner) -> None:
+    """Cancellation never invents rollback or an empty saved scope."""
+    with (
+        patch("moneybin.orchestration.refresh.refresh", side_effect=KeyboardInterrupt),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 130
+    assert "Refresh cancelled" in result.stdout
+    assert "saved scope is unknown" in result.stdout.lower()
+    assert "moneybin transform status" in result.stdout
+
+
 def test_refresh_step_transform_only(runner: CliRunner) -> None:
     """``--step transform`` runs only the transform step."""
     fake_result = RefreshResult(applied=True, duration_seconds=0.5, error=None)
@@ -100,7 +115,8 @@ def test_refresh_step_transform_only(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh", "--step", "transform"])
 
     assert result.exit_code == 0
-    assert svc.call_args.kwargs == {"steps": ["transform"]}
+    assert svc.call_args.kwargs["steps"] == ["transform"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_identity_only(runner: CliRunner) -> None:
@@ -116,7 +132,8 @@ def test_refresh_step_identity_only(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh", "--step", "identity"])
 
     assert result.exit_code == 0, result.output
-    assert svc.call_args.kwargs == {"steps": ["identity"]}
+    assert svc.call_args.kwargs["steps"] == ["identity"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_repeatable(runner: CliRunner) -> None:
@@ -136,7 +153,8 @@ def test_refresh_step_repeatable(runner: CliRunner) -> None:
     # applied=False with error=None (transform deliberately skipped) → exit 0.
     # The user got what they asked for; only genuine errors fail the command.
     assert result.exit_code == 0
-    assert svc.call_args.kwargs == {"steps": ["match", "categorize"]}
+    assert svc.call_args.kwargs["steps"] == ["match", "categorize"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
@@ -208,7 +226,7 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh", "--output", "json"])
 
-    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    assert result.exit_code == 1
     payload = json.loads(
         result.stdout
     )  # stdout stays clean JSON (warning is on stderr)
@@ -278,7 +296,7 @@ def test_refresh_warns_when_the_rates_step_itself_crashed(runner: CliRunner) -> 
         ),
     )
 
-    assert out.exit_code == 0, "the rates step is best-effort, like its siblings"
+    assert out.exit_code == 1
     assert "Exchange rate backfill failed" in out.output
     assert "✅ Refresh complete" not in out.output
 
@@ -294,7 +312,7 @@ def test_refresh_unfilled_rate_pair_warns_and_withholds_the_success_banner(
     """
     out = _invoke_refresh(runner, _rates_result(failed=("EUR/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "Exchange rates unavailable for EUR/USD" in out.output
     assert "✅ Refresh complete" not in out.output
 
@@ -311,7 +329,7 @@ def test_refresh_names_an_unsupported_pair_and_its_manual_remedy(
     """
     out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "No exchange rate series is published for JPY/USD" in out.output
     assert "moneybin fx set" in out.output
     assert "Re-run the failed step" not in out.output
@@ -331,7 +349,7 @@ def test_refresh_rate_warnings_survive_quiet(runner: CliRunner) -> None:
     """-q suppresses status and ✅, never a warning — same rule as the matcher."""
     out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)), "--quiet")
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "No exchange rate series is published for JPY/USD" in out.output
 
 
@@ -348,7 +366,7 @@ def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
     """
     out = _invoke_refresh(runner, _rates_result(discarded=("GBP/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "Exchange rate coverage is short for GBP/USD" in out.output
     assert "Re-run the failed step" not in out.output
     assert "✅ Refresh complete" not in out.output
@@ -373,6 +391,30 @@ def test_refresh_json_carries_every_rate_pair_list(runner: CliRunner) -> None:
     assert payload["rate_pairs_discarded"] == ["GBP/USD"]
 
 
+@pytest.mark.parametrize(
+    ("backfill", "field", "pair"),
+    [
+        ({"unsupported": ("JPY/USD",)}, "rate_pairs_unsupported", "JPY/USD"),
+        ({"discarded": ("GBP/USD",)}, "rate_pairs_discarded", "GBP/USD"),
+    ],
+)
+def test_refresh_json_nonretryable_rate_partial_exits_one(
+    runner: CliRunner,
+    backfill: dict[str, tuple[str, ...]],
+    field: str,
+    pair: str,
+) -> None:
+    """Each nonretryable requested rate gap is still a failed shell outcome."""
+    out = _invoke_refresh(runner, _rates_result(**backfill), "--output", "json")
+
+    assert out.exit_code == 1
+    payload = json.loads(out.stdout)["data"]
+    assert payload[field] == [pair]
+    assert payload["rate_pairs_failed"] == []
+    for other_field in {"rate_pairs_unsupported", "rate_pairs_discarded"} - {field}:
+        assert payload[other_field] == []
+
+
 def test_refresh_clean_rates_still_prints_the_success_banner(
     runner: CliRunner,
 ) -> None:
@@ -383,7 +425,7 @@ def test_refresh_clean_rates_still_prints_the_success_banner(
     """
     out = _invoke_refresh(runner, _rates_result())
 
-    assert "✅ Refresh complete" in out.output
+    assert "Refresh complete" in out.output
 
 
 def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
@@ -396,7 +438,8 @@ def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
+    assert "Refresh partially completed" in result.output
     assert "Matching step failed" in result.output
 
 
@@ -410,7 +453,7 @@ def test_refresh_matcher_crash_warns_even_in_quiet(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh", "--quiet"])
 
-    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    assert result.exit_code == 1
     assert "Matching step failed" in result.output  # warning still surfaced
 
 
@@ -425,7 +468,7 @@ def test_refresh_clean_success_keeps_check_banner(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh"])
 
     assert result.exit_code == 0
-    assert "✅ Refresh complete" in result.output
+    assert "Refresh complete" in result.output
 
 
 def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
@@ -443,7 +486,7 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
     assert result.exit_code == 1
     assert "Matching step failed" in result.output  # crash still surfaced
     assert "Re-run the failed step" not in result.output  # retry hint suppressed
-    assert "Refresh failed: apply boom" in result.output
+    assert "Failed: apply boom" in result.output
 
 
 def test_refresh_warns_when_the_match_step_retired_an_accepted_transfer(
@@ -647,7 +690,7 @@ def test_refresh_stage_notes_are_silenced_by_quiet(runner: CliRunner) -> None:
     )
 
     assert invocation.exit_code == 0, invocation.output
-    assert "categorize" not in invocation.output
+    assert "400 categorized" in invocation.output
 
 
 def _run_text_refresh_quiet(runner: CliRunner, result: RefreshResult) -> Result:
