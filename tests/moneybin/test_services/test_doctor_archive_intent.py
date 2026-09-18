@@ -191,6 +191,69 @@ def test_first_write_that_also_archives_is_the_cascade(intent_db: Database) -> N
 
 
 @pytest.mark.unit
+def test_pre_marker_exclude_superseded_by_later_cascade_warns(
+    intent_db: Database,
+) -> None:
+    # exclude -> include -> archive: the stored FALSE is the cascade's, so the
+    # earlier standalone exclusion no longer settles the account.
+    _legacy_settings_row(intent_db, "acct_a", archived=True)
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=False, include=True),
+        _row(archived=False, include=False),
+    )
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=False, include=False),
+        _row(archived=False, include=True),
+    )
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=False, include=True),
+        _row(archived=True, include=False),
+    )
+    assert _result(intent_db).affected_ids == ["acct_a"]
+
+
+@pytest.mark.unit
+def test_pre_marker_exclude_after_cascade_settles(intent_db: Database) -> None:
+    # cascade -> unarchive and include -> standalone exclude: the row shape
+    # postdates the evidence, so it settles the account without a marker.
+    _cascade_archive(intent_db, "acct_a")
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=True, include=False),
+        _row(archived=False, include=True),
+    )
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=False, include=True),
+        _row(archived=False, include=False),
+    )
+    assert _result(intent_db).status == "pass"
+
+
+@pytest.mark.unit
+def test_pre_v063_archive_of_already_excluded_account_never_warns(
+    intent_db: Database,
+) -> None:
+    # The before image already had include FALSE: the cascade did not write it.
+    _legacy_settings_row(intent_db, "acct_a", archived=True)
+    _legacy_audit(
+        intent_db,
+        "acct_a",
+        _row(archived=False, include=False),
+        _row(archived=True, include=False),
+    )
+    assert _result(intent_db).status == "pass"
+
+
+@pytest.mark.unit
 def test_only_ambiguous_accounts_are_named(intent_db: Database) -> None:
     _cascade_archive(intent_db, "acct_a")
     _cascade_archive(intent_db, "acct_b")

@@ -1189,9 +1189,10 @@ class DoctorService:
         The pre-V063 cascade forced ``include_in_net_worth = FALSE`` in the same
         write as ``archived = TRUE``, and its audit image is byte-identical to a
         caller who archived *and* excluded in one call, so V063 left the flag as
-        stored. Evidence is a pre-V063 archive image (no ``archived_at`` key),
-        since a later archive cannot be the cascade. This names every such
-        account until an audit row proves a decision: the
+        stored. Evidence is a pre-V063 archive image (no ``archived_at`` key)
+        that flipped include from TRUE (or absent) to FALSE, since a later
+        archive cannot be the cascade. This names every such account until a
+        later audit row proves a decision: the
         ``confirms_include_in_net_worth`` marker, or a pre-marker forward write
         that excluded without archiving, either one not since undone. Reads
         ``app.*`` directly, not ``core.dim_accounts``, so a fresh ``accounts
@@ -1202,18 +1203,31 @@ class DoctorService:
         try:
             rows = self._db.execute(
                 f"""
+                WITH evidence AS (
+                    SELECT a.target_id, a.occurred_at, a.rowid AS rid
+                    FROM {AUDIT_LOG.full_name} AS a
+                    WHERE a.target_schema = 'app'
+                      AND a.target_table = 'account_settings'
+                      AND a.action LIKE 'account_settings.set%'
+                      -- this write itself flipped include TRUE (or absent) -> FALSE
+                      AND (
+                          a.before_value IS NULL
+                          OR json_extract_string(
+                              a.before_value, '$.include_in_net_worth'
+                          ) = 'true'
+                      )
+                      AND json_extract_string(
+                          a.after_value, '$.include_in_net_worth'
+                      ) = 'false'
+                      AND json_extract_string(a.after_value, '$.archived') = 'true'
+                      -- pre-V063 image: post-V063 writes always carry the key
+                      AND NOT json_exists(a.after_value, '$.archived_at')
+                )
                 SELECT s.account_id
                 FROM {ACCOUNT_SETTINGS.full_name} AS s
                 WHERE NOT s.include_in_net_worth
                   AND EXISTS (
-                      SELECT 1 FROM {AUDIT_LOG.full_name} AS a
-                      WHERE a.target_schema = 'app'
-                        AND a.target_table = 'account_settings'
-                        AND a.target_id = s.account_id
-                        AND a.action LIKE 'account_settings.set%'
-                        AND json_extract_string(a.after_value, '$.archived') = 'true'
-                        -- pre-V063 image: post-V063 writes always carry the key
-                        AND NOT json_exists(a.after_value, '$.archived_at')
+                      SELECT 1 FROM evidence AS e WHERE e.target_id = s.account_id
                   )
                   AND NOT EXISTS (
                       SELECT 1 FROM {AUDIT_LOG.full_name} AS a
@@ -1224,6 +1238,13 @@ class DoctorService:
                         AND NOT EXISTS (
                             SELECT 1 FROM {AUDIT_LOG.full_name} AS u
                             WHERE u.undoes_operation_id = a.operation_id
+                        )
+                        -- a later cascade overwrote the decision; rowid breaks
+                        -- occurred_at ties within one transaction, as in V063
+                        AND NOT EXISTS (
+                            SELECT 1 FROM evidence AS e
+                            WHERE e.target_id = s.account_id
+                              AND (e.occurred_at, e.rid) > (a.occurred_at, a.rowid)
                         )
                         AND (
                             json_extract_string(a.context_json, ?) = 'true'
