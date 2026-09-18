@@ -504,9 +504,20 @@ def _attach_encrypted(
     IO error + ``"different configuration"`` catalog error in 1.5.2) into a
     single ``"Could not set lock on file"`` IO error. Both phrasings are
     matched for belt-and-suspenders coverage across environments.
+
+    Contention inside one process never reaches the file lock: DuckDB refuses
+    a second attach of a file another connection in the process still holds
+    with a ``"Unique file handle conflict"`` binder error. It is the same
+    transient condition, so it retries the same way.
     """
     try:
         conn.execute(sql)
+    except duckdb.BinderException as e:
+        scrub_key_material(e, encryption_key)
+        if "Unique file handle conflict" not in str(e):
+            raise
+        conn.close()
+        raise DatabaseLockError(str(e)) from e
     except duckdb.CatalogException as e:
         scrub_key_material(e, encryption_key)
         conn.close()

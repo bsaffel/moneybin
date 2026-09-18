@@ -644,6 +644,13 @@ The directional invariants from ADR-010 still hold: read-read
 coexists; all other combinations fail. The 1.5.2 table in ADR-010
 remains as the historical record.
 
+Contention inside one process never reaches the file lock. DuckDB refuses a
+write attach of a file that another connection in the same process still
+holds read-only with `BinderException: Unique file handle conflict`. `_attach_encrypted` classifies that message as `DatabaseLockError`
+too, so it retries until the deadline like cross-process contention. The
+read-only migration escalation hits it when two threads race the same upgrade
+(#628).
+
 ### Lock primitive contract
 
 ```python
