@@ -2144,6 +2144,76 @@ class TestTabularConfirmationFlow:
         assert retry.format_name is None
         assert "--sheet Statement" in " ".join(retry.cli_args())
 
+    def test_the_retry_keeps_the_number_format_the_stale_format_declared(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The printed retry must not silently re-detect the number format.
+
+        Every other fixture in this module uses ``number_format="us"`` — the
+        default a dropped override also falls back to — so a retry that
+        carried nothing at all for this field still looked correct. A format
+        declaring a non-default convention (``european``: comma decimal,
+        no caller ``--number-format``) exposes the gap: the retry must carry
+        the format's *own* value, not silently omit it and let the next read
+        auto-detect (and potentially misread decimal separators).
+        """
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        # Semicolon-delimited so a European comma decimal in Amount doesn't
+        # also read as a field separator.
+        csv = tmp_path / "stale_skip_number_format.csv"
+        csv.write_text(
+            "Date;Amount;Description\n"
+            "2026-01-05;-4,50;Coffee\n"
+            "2026-01-06;100,00;Payroll\n",
+            encoding="utf-8",
+        )
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="stale_skip_number_format",
+                institution_name="Test",
+                file_type="csv",
+                delimiter=";",
+                encoding="utf-8",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="european",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                csv,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_number_format",
+                save_format=False,
+            )
+
+        outcome = exc_info.value.outcome
+        assert outcome.reason == "header_row_consumed"
+        retry = outcome.retry_read_options
+        assert retry is not None
+        # The caller passed no --number-format; this value can only have come
+        # from the format. Dropping it is the defect this test exists to catch.
+        assert retry.number_format == "european"
+        assert retry.format_name is None
+        assert "--number-format european" in " ".join(retry.cli_args())
+
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database
     ) -> None:

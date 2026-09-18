@@ -1965,6 +1965,102 @@ class TestImportFilesConfirmFlow:
         assert "moneybin import files" not in logged, logged
         assert "--sheet Statement" in result.output, result.output
 
+    def test_consumed_header_interactive_prompt_drops_the_format_flag(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The interactive TTY prompt must not loop the caller back into --format.
+
+        `_render_confirmation_prompt` had no `header_row_consumed` branch of
+        its own, so it fell into the generic ``else`` — which replays
+        ``read_args_str`` (still carrying ``--format``) on every suggested
+        command. An interactive user has no JSON envelope to read the real
+        recovery from, so that generic advice was a closed loop.
+        """
+        csv_file = tmp_path / "headerless.csv"
+        csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="header_row_consumed"),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the branch under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(csv_file), "--format", "acme_fmt"])
+
+        assert result.exit_code == 1
+        # Every suggested files/confirm command, whichever quoting style
+        # printed it — a naive `"--format" not in result.output` would fail
+        # for the wrong reason, since the prose legitimately explains "the
+        # same read without --format".
+        commands = re.findall(
+            r"moneybin import (?:files|confirm)\b[^\n`]*", result.output
+        )
+        assert commands, result.output
+        # NEGATIVE: no suggested files/confirm command still carries
+        # --format — that is exactly the command that reproduces this refusal.
+        assert not any("--format" in cmd for cmd in commands), commands
+        # POSITIVE: the real recovery — the same read, without --format — is
+        # actually printed and is copy-pasteable as such.
+        retry = next(cmd for cmd in commands if "import files" in cmd)
+        assert shlex.split(retry) == ["moneybin", "import", "files", str(csv_file)]
+        assert "moneybin import formats delete acme_fmt" in result.output, result.output
+
+    def test_unreadable_date_interactive_prompt_names_the_real_recovery(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The interactive TTY prompt must not loop the caller through --confirm.
+
+        `_render_confirmation_prompt` had no `unreadable_date` branch of its
+        own, so it fell into the generic ``else``, which offers a bare
+        ``--confirm`` / ``import confirm --accept`` (both ratify the same
+        unreadable mapping and re-raise this exact refusal — the date field
+        itself is what failed to parse) and a ``--mapping
+        description=<column>`` hint (the wrong destination field: the date
+        column is what needs remapping, not the description). An interactive
+        user has no JSON envelope to read the real recovery from, so that
+        generic advice was a closed loop.
+        """
+        from moneybin.services.import_confirmation import unreadable_date_recovery
+
+        csv_file = tmp_path / "compact.csv"
+        csv_file.write_text("Date,Amount,Memo\n20260105,-50.00,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="unreadable_date"),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the branch under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(csv_file)])
+
+        assert result.exit_code == 1
+        # POSITIVE: the same text the JSON envelope path prints for this
+        # reason — remap transaction_date, or supply --date-format — appears
+        # verbatim, so the two surfaces agree.
+        expected = unreadable_date_recovery(str(csv_file))
+        assert expected in result.output, result.output
+        # NEGATIVE: no suggested command re-raises the same refusal or names
+        # the wrong destination field.
+        commands = re.findall(
+            r"moneybin import (?:files|confirm)\b[^\n`]*", result.output
+        )
+        assert commands, result.output
+        assert not any("--mapping description=" in cmd for cmd in commands), commands
+        assert not any(
+            "confirm" in cmd and "--date-format" not in cmd for cmd in commands
+        ), commands
+        assert not any("import confirm" in cmd for cmd in commands), commands
+
     def test_unreadable_date_json_actions_name_both_recoveries(
         self,
         mock_db: MagicMock,

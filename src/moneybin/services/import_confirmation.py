@@ -228,14 +228,18 @@ class ConfirmationRequired:
     # The options a retry must repeat, as the READ that failed actually
     # resolved them — not as the caller spelled them. Populated only for
     # reason='header_row_consumed', whose sole recovery is to re-run without
-    # the named format: a format carries a sheet, a delimiter and an encoding
-    # alongside the skip_rows being escaped, and dropping --format drops all
-    # four together. An unset sheet makes the reader auto-select the largest
-    # worksheet, so a workbook whose largest sheet has compatible headers
-    # imports the WRONG sheet, silently and with no error to notice. Carried
-    # from the service rather than re-derived by each surface because that
-    # re-derivation is the drift resolve_read_settings exists to end. Absent
-    # from confirmation_payload_dict, like ratified_bindings above.
+    # the named format: a format carries a sheet, a delimiter, an encoding, a
+    # date format and a number format alongside the skip_rows being escaped,
+    # and dropping --format drops all six together. An unset sheet makes the
+    # reader auto-select the largest worksheet, so a workbook whose largest
+    # sheet has compatible headers imports the WRONG sheet, silently and with
+    # no error to notice. A dropped number format is the same failure shape
+    # one field over: the retry re-reads under auto-detection instead of the
+    # format's declared convention, which can silently reinterpret decimal
+    # separators. Carried from the service rather than re-derived by each
+    # surface because that re-derivation is the drift resolve_read_settings
+    # exists to end. Absent from confirmation_payload_dict, like
+    # ratified_bindings above.
     retry_read_options: TabularReadOptions | None = None
 
 
@@ -573,6 +577,7 @@ def header_row_consumed_recovery(
     *,
     format_name: str | None,
     read_options: TabularReadOptions | None = None,
+    retry_command: str = "import files",
 ) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
@@ -590,6 +595,13 @@ def header_row_consumed_recovery(
     the caller passes the settings the failed read actually resolved, and they
     are respelled here as explicit flags. ``format_name`` is expected to be
     absent from them; it is the one option a retry must not repeat.
+
+    ``retry_command`` names the subcommand the printed retry invokes —
+    ``import files`` (the default) when this text answers a load-time
+    confirmation, or ``import preview`` when ``import preview`` itself is
+    what read a transaction as the header. Both name the identical fix
+    (re-run without --format); only the verb differs, and a caller already
+    inspecting via preview should be told to preview again, not to load.
     """
     import shlex
     from dataclasses import replace
@@ -612,7 +624,7 @@ def header_row_consumed_recovery(
         "transaction — a real record was consumed as the header. No --mapping "
         "or --override correction can recover it. The saved format named "
         "with --format skips more leading rows than this file has before its "
-        f"header. Re-run `moneybin import files {quoted_file}{read_args_str}` "
+        f"header. Re-run `moneybin {retry_command} {quoted_file}{read_args_str}` "
         "— the same read without --format, so the header is detected fresh. "
         "No command edits a saved format's skip_rows, so naming that format "
         f"again fails the same way; to remove it, {removal}."

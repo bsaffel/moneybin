@@ -701,11 +701,10 @@ def import_files_command(
                         header_row_consumed_recovery(
                             file_path_str,
                             format_name=format_name,
-                            # The service's own resolved settings, not
-                            # `read_options` above: the sheet that must survive
-                            # dropping --format is usually the FORMAT's, and a
-                            # caller who never typed --sheet has none in theirs.
-                            read_options=outcome.retry_read_options,
+                            # Prefer what the read actually resolved; fall back
+                            # to the caller's own flags when the confirmation
+                            # carries none.
+                            read_options=outcome.retry_read_options or read_options,
                         )
                     )
                 elif outcome.reason == "header_position_ambiguous":
@@ -1782,6 +1781,8 @@ def _render_confirmation_prompt(
         ProposedMapping,
         SignConventionProposal,
         TabularReadOptions,
+        header_row_consumed_recovery,
+        unreadable_date_recovery,
     )
 
     # A card sign-convention proposal is not an unknown-layout / validation
@@ -1882,6 +1883,32 @@ def _render_confirmation_prompt(
                 sign=sign,
                 read_options=read_options,
             )
+        )
+    elif outcome.reason == "header_row_consumed":
+        # The generic --confirm / --mapping / import confirm --accept commands
+        # below all replay read_args_str, which still carries --format — the
+        # exact input that made the reader eat a real row as the header. Printing
+        # any of them here would hand the user a command that re-raises this
+        # same refusal, so this reason gets its own recovery text instead.
+        typer.echo(
+            "     "
+            + header_row_consumed_recovery(
+                file_path_str,
+                format_name=opts.format_name,
+                read_options=outcome.retry_read_options or read_options,
+            )
+        )
+    elif outcome.reason == "unreadable_date":
+        # Same shape as header_row_consumed just above: the generic --confirm
+        # / import confirm --accept commands below would ratify the same
+        # unreadable mapping and re-raise this exact refusal, and the generic
+        # --mapping hint names the wrong destination field (description, not
+        # transaction_date). unreadable_date_recovery names both recoveries
+        # that actually work — remap transaction_date, or supply
+        # --date-format — the same text the JSON envelope path already prints
+        # for this reason, so the two surfaces agree.
+        typer.echo(
+            "     " + unreadable_date_recovery(file_path_str, read_options=read_options)
         )
     else:
         # Accept hint is gated on tier — resolve_or_confirm refuses Accept at
@@ -3071,10 +3098,55 @@ def import_preview(
         if read_result.header_row_looks_like_data:
             # A warning (diagnostic) → stderr via logger, not stdout, per
             # cli.md; the ⚠️ icon is reserved for logger.warning messages.
+            # No runnable command belongs on this line — see the split below.
             logger.warning(
                 "⚠️  The row consumed as the header also parses as a transaction "
                 "(date + amount) — this may be a headerless file misread as having "
-                "a header. Re-run with a corrected --format or check the source file."
+                "a header."
+            )
+            # The runnable retry is echoed to stderr and never reaches the log
+            # file, same split as header_position_ambiguous just below: it
+            # repeats the caller's read options, and a --sheet (a worksheet
+            # name from the user's own workbook) or --format (a name they
+            # authored) is neither log-allowlisted nor caught by
+            # SanitizedLogFormatter (it matches digit shapes, not words).
+            # Reuses header_row_consumed_recovery — the one shared text for
+            # "a real row was consumed as the header" — instead of hand-
+            # writing a fourth copy that names "a corrected --format" as the
+            # fix; no command edits a saved format's skip_rows, so that advice
+            # named nothing that exists (see _can_preview's docstring on this
+            # exact drift). retry_command="import preview" because preview has
+            # nothing to load — re-previewing without --format is preview's
+            # equivalent of import_files_command's "re-run without --format".
+            from moneybin.services.import_confirmation import (
+                TabularReadOptions,
+                header_row_consumed_recovery,
+            )
+
+            # Unlike header_position_ambiguous below, this recovery drops
+            # --format from the printed retry — so it must read read_settings
+            # (the format's resolved contribution), not the caller's raw
+            # flags, for the five fields a format can supply. Raw flags would
+            # be right only if --format survived the retry, which here it
+            # does not.
+            typer.echo(
+                "💡 "
+                + header_row_consumed_recovery(
+                    str(source),
+                    format_name=format_name,
+                    read_options=TabularReadOptions(
+                        format_name=format_name,
+                        date_format=read_settings.date_format,
+                        number_format=read_settings.number_format,
+                        sheet=read_settings.sheet,
+                        delimiter=read_settings.delimiter,
+                        encoding=read_settings.encoding,
+                        no_row_limit=no_row_limit,
+                        no_size_limit=no_size_limit,
+                    ),
+                    retry_command="import preview",
+                ),
+                err=True,
             )
         if read_result.header_position_ambiguous:
             # Dismissible, unlike the flag above: ratifying the detected

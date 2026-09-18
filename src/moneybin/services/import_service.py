@@ -2585,7 +2585,7 @@ class ImportService:
             matched_format = all_formats[format_name]
 
         # Stage 1: Format detection — apply matched format's properties as
-        # defaults. `import preview` resolves the same seven values from the
+        # defaults. `import preview` resolves the same eight values from the
         # same helper, which is what keeps a preview's read identical to the
         # import it previews.
         #
@@ -2605,6 +2605,7 @@ class ImportService:
             encoding=encoding,
             sheet=sheet,
             date_format=date_format_override,
+            number_format=number_format_override,
         )
 
         # What a `header_row_consumed` retry has to repeat: this read, minus
@@ -2613,20 +2614,17 @@ class ImportService:
         # classify_unconfirmable_plan — and a retry built at only some of them
         # is the same silent-wrong-worksheet bug on the paths that were missed.
         # Drawn from read_settings rather than the caller's flags: a sheet,
-        # delimiter or encoding the FORMAT supplied appears in no flag, and
-        # dropping --format drops it along with the skip_rows being escaped.
+        # delimiter, encoding or number_format the FORMAT supplied appears in
+        # no flag, and dropping --format drops it along with the skip_rows
+        # being escaped. This runs BEFORE the number-format validation further
+        # down, but read_settings.number_format is already safe here: an
+        # invalid raw override was dropped by resolve_read_settings itself
+        # (falling back to the format's own validated value), so nothing
+        # unvalidated is ever echoed onto the printed retry.
         retry_read_options = TabularReadOptions(
             format_name=None,
             date_format=read_settings.date_format,
-            # This runs BEFORE the number-format validation further down, so
-            # the override is still unchecked. An invalid one is dropped
-            # rather than echoed: printing a flag value the next run would
-            # reject turns one refusal into two.
-            number_format=(
-                cast(NumberFormatType, number_format_override)
-                if number_format_override in get_args(NumberFormatType)
-                else None
-            ),
+            number_format=read_settings.number_format,
             sheet=read_settings.sheet,
             delimiter=read_settings.delimiter,
             encoding=read_settings.encoding,
