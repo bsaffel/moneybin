@@ -14,7 +14,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import build_rows, build_summary
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.categories import (
@@ -124,7 +124,17 @@ def categories_create(
             cli_actor="categories_create",
         )
         return
-    typer.echo(category_id)
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Category", payload.display), ("Category ID", category_id)],
+                title="Category created",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("set")
@@ -156,7 +166,17 @@ def categories_set(
             cli_actor="categories_set",
         )
         return
-    typer.echo(category_id)
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Category ID", category_id), ("Result", payload.action)],
+                title="Category updated",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 @app.command("delete")
@@ -201,4 +221,14 @@ def categories_delete(
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="categories_delete")
         return
-    logger.info(f"✅ Deleted category {category_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Category ID", category_id), ("Result", "deleted")],
+                title="Category deleted",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )

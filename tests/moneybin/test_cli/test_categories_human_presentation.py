@@ -74,3 +74,19 @@ def test_categories_list_renders_labeled_rows(
     assert "category_id" in result.stdout
     assert "status" in result.stdout
     assert "cat_food" in result.stdout
+
+
+@patch("moneybin.cli.commands.categories.get_database")
+@patch("moneybin.services.categorization.CategorizationService")
+def test_categories_create_prints_an_outcome_receipt(
+    service_class: MagicMock, database: MagicMock
+) -> None:
+    """A successful create identifies the saved category instead of printing an id alone."""
+    database.return_value = MagicMock()
+    service_class.return_value.create_category.return_value = "cat_food"
+
+    result = CliRunner().invoke(app, ["categories", "create", "Food"])
+
+    assert result.exit_code == 0, result.output
+    assert "Category created" in result.stdout
+    assert "cat_food" in result.stdout
