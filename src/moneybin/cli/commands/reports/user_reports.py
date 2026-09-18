@@ -23,6 +23,7 @@ from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
     display_currency_option,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
@@ -147,6 +148,7 @@ def reports_run(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
@@ -199,6 +201,7 @@ def reports_run(
         quiet=quiet,
         columns=view.columns,
         fit=view.fit,
+        no_pager=no_pager,
     )
 
 

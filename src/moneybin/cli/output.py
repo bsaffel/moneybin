@@ -232,6 +232,12 @@ wide_option: bool = typer.Option(
     help="Render every column, not just the default set.",
 )
 
+no_pager_option: bool = typer.Option(
+    False,
+    "--no-pager",
+    help="Print the complete text result directly instead of opening a pager.",
+)
+
 display_currency_option: str | None = typer.Option(
     None,
     "--display-currency",

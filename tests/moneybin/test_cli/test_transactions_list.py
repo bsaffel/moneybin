@@ -78,6 +78,28 @@ def test_list_text_output_shows_columns() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("width", [40, 80, 120])
+def test_list_text_keeps_amount_currency_and_identity_at_all_terminal_widths(
+    width: int,
+) -> None:
+    """A narrow terminal cannot turn a money cell into a plausible smaller value."""
+    txn = _make_txn(amount=Decimal("-1234567.89"), currency_code="EUR")
+    with patch("moneybin.database.get_database", _mock_db_ctx):
+        with patch("moneybin.cli.utils.handle_cli_errors", _mock_db_ctx):
+            with patch.object(
+                TransactionService, "get", return_value=_mock_result([txn])
+            ):
+                result = runner.invoke(
+                    app, ["transactions", "list"], env={"COLUMNS": str(width)}
+                )
+    assert result.exit_code == 0, result.output
+    assert "1,234,567.89" in result.output
+    assert "EUR" in result.output
+    assert "A1" in result.output
+    assert "Coffee" in result.output
+
+
+@pytest.mark.unit
 def test_list_text_names_the_account_column_for_the_key_it_holds() -> None:
     """Requirement 28: the column is `account_id` on both sides of the join.
 

@@ -11,18 +11,22 @@ here).
 from __future__ import annotations
 
 import logging
+from numbers import Number
 from typing import Any
 
 import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
     json_fields_option,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
@@ -50,6 +54,7 @@ def sql_query_command(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # query emits result rows, not chatter
     json_fields: str | None = json_fields_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Execute a read-only SQL query with privacy enforcement.
 
@@ -94,20 +99,47 @@ def sql_query_command(
             classes_returned=result.classes_returned,
         )
 
-        def _render_text(_: object) -> None:
-            if not result.columns:
-                return
-            typer.echo(" | ".join(result.columns))
-            for record in result.records:
-                typer.echo(
-                    " | ".join(str(record.get(col, "")) for col in result.columns)
-                )
-
-        render_or_json(
-            envelope,
-            output,
-            render_fn=_render_text,
-            json_fields=json_fields,
-            cli_actor="sql_query",
-            classes_returned=result.classes_returned,
+        if output == OutputFormat.JSON:
+            render_or_json(
+                envelope,
+                output,
+                json_fields=json_fields,
+                cli_actor="sql_query",
+                classes_returned=result.classes_returned,
+            )
+            return
+        if not result.columns:
+            return
+        numeric = tuple(
+            column
+            for column in result.columns
+            if any(
+                isinstance(record.get(column), Number)
+                and not isinstance(record.get(column), bool)
+                for record in result.records
+            )
+        )
+        human = build_rows(
+            result.columns,
+            [
+                tuple(record.get(column) for column in result.columns)
+                for record in result.records
+            ],
+            numeric=numeric,
+            # SQL's cap returns `limit + 1` as a lower-bound sentinel, never
+            # an exact total. Only frame an exact count when no continuation
+            # exists; otherwise the visible --limit remedy is the truth.
+            total_rows=(
+                result.total_count
+                if result.total_count <= len(result.records)
+                else None
+            ),
+            has_more=result.total_count > len(result.records),
+            terminal=get_terminal_policy(no_pager=no_pager),
+        )
+        emit_human_result(
+            human,
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
         )

@@ -20,12 +20,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -78,6 +80,7 @@ def accounts_list(
             "savings, credit card, ...); case-insensitive"
         ),
     ),
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List accounts. Hides archived accounts by default."""
     with handle_cli_errors(cli_actor="accounts_list", payload_type=AccountListPayload):
@@ -110,7 +113,8 @@ def accounts_list(
         return UNNAMED_ACCOUNT_LABEL
 
     if result.rows:
-        render_rows(
+        policy = get_terminal_policy(no_pager=no_pager)
+        human = build_rows(
             # `account_id` is named identically in `transactions list` and
             # holds equal values, so the two outputs join on it (requirement
             # 28). That shared key is the whole of the fix; the display name
@@ -125,6 +129,13 @@ def accounts_list(
                 )
                 for acct in result.rows
             ],
+            terminal=policy,
+        )
+        emit_human_result(
+            human,
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
 

@@ -15,15 +15,19 @@ import typer
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import Money, MoneyWithCurrency, build_rows
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
     BalanceObservationListPayload,
+    BalanceObservationRow,
 )
 from moneybin.protocol.envelope import build_envelope
 from moneybin.services.balance_service import (
@@ -39,6 +43,37 @@ app = typer.Typer(
 )
 
 
+def _emit_observations(
+    observations: list[BalanceObservationRow], *, no_pager: bool, include_account: bool
+) -> None:
+    """Render balance observations as one pageable result with atomic amounts."""
+    policy = get_terminal_policy(no_pager=no_pager)
+    columns = (
+        ["account_id", "date", "balance", "observed", "source", "delta"]
+        if include_account
+        else ["date", "balance", "observed", "source", "delta"]
+    )
+    rows: list[tuple[object, ...]] = []
+    for obs in observations:
+        row = [
+            obs.account_id,
+            obs.balance_date,
+            MoneyWithCurrency(obs.balance, currency_label(obs.currency_code)),
+            obs.is_observed,
+            obs.observation_source,
+            obs.reconciliation_delta,
+        ]
+        rows.append(tuple(row if include_account else row[1:]))
+    human = build_rows(
+        columns,
+        rows,
+        money={"balance": Money("balance"), "delta": Money("delta", polarity="income")},
+        total_columns=len(columns),
+        terminal=policy,
+    )
+    emit_human_result(human, policy=policy, finite_read=True, no_pager=no_pager)
+
+
 @app.command("show")
 def accounts_balance_show(
     output: OutputFormat = output_option,
@@ -49,6 +84,7 @@ def accounts_balance_show(
     as_of: str | None = typer.Option(
         None, "--as-of", help="ISO date (YYYY-MM-DD); shows balance on or before"
     ),
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show current or as-of balances per account."""
     account_ids = [account] if account else None
@@ -61,20 +97,14 @@ def accounts_balance_show(
                 account_ids=account_ids, as_of_date=as_of_date
             )
 
-    def _render_text(_: object) -> None:
-        for obs in result.observations:
-            typer.echo(
-                f"  {obs.account_id}  {obs.balance_date}"
-                f"  {obs.balance} {currency_label(obs.currency_code)}"
-                f"  observed={obs.is_observed}  source={obs.observation_source}"
-                f"  delta={obs.reconciliation_delta}"
-            )
-
-    render_or_json(
-        build_envelope(data=result, display_currency=balances_display_currency(result)),
-        output,
-        render_fn=_render_text,
-        cli_actor="accounts_balance_show",
+    envelope = build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output, cli_actor="accounts_balance_show")
+        return
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=True
     )
 
 
@@ -85,6 +115,7 @@ def accounts_balance_history(
     to_date: str | None = typer.Option(None, "--to"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # history has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Per-account balance history (daily series)."""
     with handle_cli_errors(
@@ -96,19 +127,14 @@ def accounts_balance_history(
             to_d = _date.fromisoformat(to_date) if to_date else None
             result = BalanceService(db).history(account, from_date=from_d, to_date=to_d)
 
-    def _render_text(_: object) -> None:
-        for obs in result.observations:
-            typer.echo(
-                f"  {obs.balance_date}  {obs.balance} {currency_label(obs.currency_code)}"
-                f"  observed={obs.is_observed}  source={obs.observation_source}"
-                f"  delta={obs.reconciliation_delta}"
-            )
-
-    render_or_json(
-        build_envelope(data=result, display_currency=balances_display_currency(result)),
-        output,
-        render_fn=_render_text,
-        cli_actor="accounts_balance_history",
+    envelope = build_envelope(
+        data=result, display_currency=balances_display_currency(result)
+    )
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output, cli_actor="accounts_balance_history")
+        return
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=False
     )
 
 
@@ -147,6 +173,7 @@ def accounts_balance_list(
     account: str | None = typer.Option(None, "--account"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List balance assertions, optionally filtered by account."""
     with handle_cli_errors(
@@ -161,12 +188,29 @@ def accounts_balance_list(
             cli_actor="accounts_balance_list",
         )
         return
-    for assertion in result.assertions:
-        typer.echo(
-            f"  {assertion.account_id}  {assertion.assertion_date}  "
-            f"{assertion.balance} {currency_label(assertion.currency_code)}  "
-            f"notes={assertion.notes}"
+    policy = get_terminal_policy(no_pager=no_pager)
+    rows: list[tuple[object, ...]] = [
+        (
+            assertion.account_id,
+            assertion.assertion_date,
+            MoneyWithCurrency(
+                assertion.balance, currency_label(assertion.currency_code)
+            ),
+            assertion.notes,
         )
+        for assertion in result.assertions
+    ]
+    emit_human_result(
+        build_rows(
+            ["account_id", "date", "balance", "notes"],
+            rows,
+            money={"balance": Money("balance")},
+            terminal=policy,
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("assertion-delete")
@@ -195,6 +239,7 @@ def accounts_balance_reconcile(
     threshold: str = typer.Option("0.01", "--threshold"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # reconcile has no informational chatter
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show observed balance days with non-zero reconciliation delta."""
     account_ids = [account] if account else None
@@ -216,9 +261,6 @@ def accounts_balance_reconcile(
             cli_actor="accounts_balance_reconcile",
         )
         return
-    for obs in result.observations:
-        typer.echo(
-            f"  {obs.account_id}  {obs.balance_date}"
-            f"  {obs.balance} {currency_label(obs.currency_code)}"
-            f"  source={obs.observation_source}  delta={obs.reconciliation_delta}"
-        )
+    _emit_observations(
+        list(result.observations), no_pager=no_pager, include_account=True
+    )

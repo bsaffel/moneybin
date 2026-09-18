@@ -154,6 +154,28 @@ class TestReportsNetworth:
         assert payload["data"][0]["account_count"] == 3
 
     @pytest.mark.unit
+    def test_empty_snapshot_keeps_report_disclosures(self, runner: CliRunner) -> None:
+        empty = replace(
+            _result([]),
+            degraded=True,
+            degraded_reason="rate unavailable",
+            actions=["Run `moneybin refresh`"],
+        )
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch("moneybin.reports._framework.catalog.get_report_catalog") as catalog,
+        ):
+            catalog.return_value.execute.return_value = empty
+            result = runner.invoke(app, ["reports", "networth"])
+        assert result.exit_code == 0, result.output
+        assert "No net worth data available." in result.output
+        assert "rate unavailable" in result.output
+        assert "Run `moneybin refresh`" in result.output
+
+    @pytest.mark.unit
     def test_as_of_date(self, runner: CliRunner) -> None:
         with (
             patch(
@@ -473,6 +495,38 @@ class TestReportsNetworthHistory:
         assert result.exit_code == 0, result.stderr
         assert "net_worth" not in result.stdout
         assert "period" not in result.stdout
+
+    @pytest.mark.unit
+    def test_empty_series_keeps_report_disclosures(self, runner: CliRunner) -> None:
+        empty = replace(
+            _result([]),
+            degraded=True,
+            degraded_reason="rate unavailable",
+            actions=["Run `moneybin refresh`"],
+        )
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch("moneybin.reports._framework.catalog.get_report_catalog") as catalog,
+        ):
+            catalog.return_value.execute.return_value = empty
+            result = runner.invoke(
+                app,
+                [
+                    "reports",
+                    "networth-history",
+                    "--from",
+                    "2026-01-01",
+                    "--to",
+                    "2026-02-01",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert "No net worth history data available." in result.output
+        assert "rate unavailable" in result.output
+        assert "Run `moneybin refresh`" in result.output
 
     @pytest.mark.unit
     def test_text_render_says_why_a_conversion_fell_back(

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from itertools import accumulate
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import typer
 
@@ -43,10 +43,13 @@ __all__ = [
     "UNCATEGORIZED_LABEL",
     "ColumnView",
     "Money",
+    "MoneyWithCurrency",
     "Placeholder",
     "Style",
     "color_enabled",
     "build_rows",
+    "build_summary",
+    "compose_human_result",
     "column_view",
     "count_wide_request",
     "format_money",
@@ -144,6 +147,14 @@ class Money:
         # movement. Neither has a direction to signal, and colouring a
         # magnitude on its sign is exactly the green-spending bug.
         return Style.NEUTRAL
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyWithCurrency:
+    """A monetary value and its normalized currency, rendered atomically."""
+
+    amount: object
+    currency: str
 
 
 def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
@@ -716,6 +727,34 @@ def render_rows(
     console.print(result)
 
 
+def build_summary(
+    pairs: Sequence[tuple[str, str]], *, title: str | None = None
+) -> RenderableType:
+    """Build labelled scalars for composition with rows in one answer."""
+    from rich.text import Text
+
+    if not pairs:
+        return Text()
+    width = max(len(label) for label, _ in pairs) + 1
+    lines = ([] if title is None else [title]) + [
+        f"{label + ':':<{width}} {value}" for label, value in pairs
+    ]
+    return Text("\n".join(lines))
+
+
+def compose_human_result(
+    parts: Sequence[object], *, disclosures: Sequence[str] = ()
+) -> RenderableType:
+    """Compose scalars, rows, and disclosures before terminal paging."""
+    from rich.console import Group
+    from rich.text import Text
+
+    rendered = list(parts)
+    if disclosures:
+        rendered.append(Text("\n".join(disclosures)))
+    return Group(*cast("Sequence[RenderableType]", rendered))
+
+
 def render_summary(
     pairs: Sequence[tuple[str, str]], *, title: str | None = None
 ) -> None:
@@ -728,13 +767,9 @@ def render_summary(
     the reader needs to know which is which; `reports networth` emits one per
     currency the profile holds.
     """
-    if not pairs:
-        return
-    if title is not None:
-        typer.echo(title)
-    width = max(len(label) for label, _ in pairs) + 1
-    for label, value in pairs:
-        typer.echo(f"{label + ':':<{width}} {value}")
+    from rich.console import Console
+
+    Console(markup=False, highlight=False).print(build_summary(pairs, title=title))
 
 
 def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> None:
@@ -802,10 +837,14 @@ def _cells(
             else:
                 cells.append(Text("" if value is None else str(value)))
             continue
+        raw_amount = value.amount if isinstance(value, MoneyWithCurrency) else value
+        text = format_money(raw_amount, column_money.kind, minus=minus)
+        if isinstance(value, MoneyWithCurrency):
+            text = f"{text} {value.currency}"
         cells.append(
             Text(
-                format_money(value, column_money.kind, minus=minus),
-                style=str(column_money.style_for(value)),
+                text,
+                style=str(column_money.style_for(raw_amount)),
             )
         )
     return cells, absent

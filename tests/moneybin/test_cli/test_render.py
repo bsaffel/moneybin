@@ -30,6 +30,7 @@ from moneybin.cli.render import (
     ELISION,
     MINUS,
     Money,
+    MoneyWithCurrency,
     Placeholder,
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
@@ -68,6 +69,19 @@ def test_format_money_always_separates_thousands() -> None:
 def test_format_money_always_shows_two_decimal_places() -> None:
     """Requirement 11: two decimal places always, even on a whole amount."""
     assert format_money(Decimal("42"), "balance") == "42.00"
+
+
+def test_money_with_currency_keeps_a_large_negative_value_atomic(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The denomination follows the exact signed value on a 40-column terminal."""
+    monkeypatch.setenv("COLUMNS", "40")
+    render_rows(
+        ["balance"],
+        [(MoneyWithCurrency(Decimal("-1234567.89"), "EUR"),)],
+        money={"balance": Money("balance")},
+    )
+    assert "−1,234,567.89 EUR" in capsys.readouterr().out
 
 
 def test_a_boolean_in_a_money_column_renders_absent_not_as_one() -> None:
