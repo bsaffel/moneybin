@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 
 import typer
@@ -10,11 +11,12 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.protocol.envelope import build_envelope, build_error_envelope
@@ -116,6 +118,7 @@ def doctor_command(
             raise typer.Exit(1)
         return
 
+    lines: list[str] = []
     for result in report.invariants:
         # Requirement 20: a passing invariant is not news, and five ✅ lines are
         # five a reader has to rule out before finding the one ❌ among them.
@@ -129,9 +132,9 @@ def doctor_command(
         line = f"{icon} {result.name}"
         if result.detail:
             line += f" — {result.detail}"
-        typer.echo(line)
-        if verbose and result.affected_ids:
-            typer.echo(f"   Affected: {', '.join(result.affected_ids)}")
+        lines.append(line)
+        if result.status != "pass" and result.affected_ids:
+            lines.append(f"   Affected: {', '.join(result.affected_ids)}")
         # Recovery actions carry no --verbose gate. This is asymmetric with
         # affected_ids on purpose: raw IDs are debug-only (operator inspecting
         # the failure), but the actions are the agent's next-step contract —
@@ -145,23 +148,12 @@ def doctor_command(
         # else. A 💡 suggests a command to run next; the invariant above it and
         # the summary below it are the answer, and a flag asking for less
         # chatter is not a claim that anything stopped being wrong.
-        recovery = [] if quiet else (result.recovery_actions or [])
-        max_actions_rendered = 5
-        for action in recovery[:max_actions_rendered]:
-            # Render arguments as Python kwargs (key=repr(value)) so an agent
-            # reading this line can paste it directly into a follow-up call.
-            # `dict.__repr__` would produce single-quoted Python-literal syntax
-            # that's neither valid JSON nor valid kwargs.
-            kwargs = ", ".join(f"{k}={v!r}" for k, v in action.arguments.items())
-            typer.echo(
-                f"   💡 [{action.confidence}] {action.tool}({kwargs}) "
+        recovery = result.recovery_actions or []
+        for action in recovery:
+            lines.append(
+                f"   💡 [{action.confidence}] {action.tool} "
+                f"arguments: {json.dumps(action.arguments, sort_keys=True)} "
                 f"— {action.rationale}"
-            )
-        remaining = len(recovery) - max_actions_rendered
-        if remaining > 0:
-            typer.echo(
-                f"   … and {remaining} more recovery action(s) "
-                "(use --output json for the full list)"
             )
 
     # Ungated by `quiet`, unlike most summary lines: once requirement 20 stops
@@ -184,7 +176,13 @@ def doctor_command(
         summary += f" — {passing} passing, {warning} warn, {skipped} skipped"
     else:
         summary += " — all passing"
-    typer.echo(summary)
+    lines.append(summary)
+    emit_human_result(
+        "\n".join(lines),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
     if failing > 0:
         raise typer.Exit(1)

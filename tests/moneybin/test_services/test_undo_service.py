@@ -124,6 +124,37 @@ def _edit_note_op(db: Database, note_id: str = "n1", text: str = "edited") -> st
 class TestUndo:
     """undo(operation_id) reverses every row in the operation as a unit."""
 
+    def test_expected_audit_ids_refuse_an_appended_operation_event_before_writes(
+        self, db: Database
+    ) -> None:
+        """A preview cannot authorize an operation whose event set later grows."""
+        op = _note_op(db)
+        previewed_ids = tuple(
+            event.audit_id for event in UndoService(db).get(op).events
+        )
+        before_audit_rows = db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone()
+        assert before_audit_rows is not None
+
+        with operation(op):
+            AuditService(db).record_audit_event(
+                action="note.preview_marker",
+                target=("app", "transaction_notes", None),
+                before=None,
+                after={"reason": "appended after preview"},
+                actor="test",
+            )
+
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op, actor="cli", expected_audit_ids=previewed_ids)
+
+        assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+        assert db.execute(
+            "SELECT text FROM app.transaction_notes WHERE note_id = 'n1'"
+        ).fetchone() == ("hi",)
+        assert db.execute("SELECT COUNT(*) FROM app.audit_log").fetchone() == (
+            before_audit_rows[0] + 1,
+        )
+
     def test_round_trip_removes_all_rows(self, db: Database) -> None:
         op = _note_and_tag_op(db)
         result = UndoService(db).undo(op, actor="cli")
@@ -735,6 +766,11 @@ class TestGet:
         assert detail.can_undo is True
         actions = {e.action for e in detail.events}
         assert actions == {"note.add", "tag.add"}
+        assert detail.reversible_source_event_count == 2
+        assert detail.source_tables == [
+            "app.transaction_notes",
+            "app.transaction_tags",
+        ]
 
     def test_not_found_raises(self, db: Database) -> None:
         with pytest.raises(UserError) as exc:
@@ -753,7 +789,13 @@ class TestGet:
             " ?, ?, 'op_noopg')",
             [same, same],
         )
-        assert UndoService(db).get("op_noopg").can_undo is False
+        detail = UndoService(db).get("op_noopg")
+        assert detail.can_undo is False
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert detail.undo_refusal_message == (
+            "Operation 'op_noopg' has no net effect to reverse "
+            "(all captured rows show before == after)."
+        )
 
     def test_marker_only_not_undoable(self, db: Database) -> None:
         # A marker-only operation (tag.rename matching zero rows) is refused by
@@ -769,6 +811,42 @@ class TestGet:
             )
         detail = UndoService(db).get(op)
         assert detail.can_undo is False
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert "only marker events" in (detail.undo_refusal_message or "")
+
+    def test_get_refusal_does_not_record_a_mutation_outcome(self, db: Database) -> None:
+        """Inspection projects undo's exact refusal without recording an undo."""
+        from prometheus_client import REGISTRY
+
+        with operation() as op:
+            AuditService(db).record_audit_event(
+                action="tag.rename",
+                target=("app", "transaction_tags", None),
+                before={"old_tag": "ghost"},
+                after={"new_tag": "x", "row_count": 0},
+                actor="cli",
+            )
+        before = (
+            REGISTRY.get_sample_value(
+                "moneybin_audit_undo_total", {"outcome": "no_path"}
+            )
+            or 0.0
+        )
+
+        detail = UndoService(db).get(op)
+
+        after = (
+            REGISTRY.get_sample_value(
+                "moneybin_audit_undo_total", {"outcome": "no_path"}
+            )
+            or 0.0
+        )
+        assert detail.undo_refusal_code == error_codes.RECOVERY_NO_PATH
+        assert detail.undo_refusal_message == (
+            f"Operation {op!r} has no reversible row mutations "
+            "(only marker events) — nothing to undo."
+        )
+        assert after == before
 
 
 class TestUndoRefreshesPendingGauges:
