@@ -370,6 +370,35 @@ def test_record_categorization_does_not_double_count_a_rekeyed_transaction(
     assert row[1] == ["old_id"]
 
 
+def test_record_categorization_replay_of_the_same_live_id_does_not_double_count(
+    real_db: Database,
+) -> None:
+    """Recording the same live id twice (MCP retry, re-import) must not double-count.
+
+    The fix for issue #552 resolves ``sample_txn_ids`` through the alias chain
+    before the already-counted check, which also changed the comparison for
+    this ordinary (no re-key) replay path. Nothing else in this module pins
+    that path, so a future change to ``resolve_curation_transaction_ids`` or to
+    the ``.values()`` membership check could silently reintroduce
+    double-counting here with the rest of the suite staying green.
+    """
+    _seed_transaction(real_db, "t1", description="STARBUCKS")
+    svc = AutoRuleService(real_db)
+    proposed_rule_id = svc.record_categorization("t1", "Food & Drink")
+    assert proposed_rule_id is not None
+
+    svc.record_categorization("t1", "Food & Drink")
+
+    row = real_db.execute(
+        f"SELECT trigger_count, sample_txn_ids FROM {PROPOSED_RULES.full_name} "  # noqa: S608  # building test input string, not executing SQL
+        "WHERE proposed_rule_id = ?",
+        [proposed_rule_id],
+    ).fetchone()
+    assert row is not None
+    assert row[0] == 1
+    assert row[1] == ["t1"]
+
+
 def test_record_supersedes_when_same_pattern_different_category(
     real_db: Database,
 ) -> None:
