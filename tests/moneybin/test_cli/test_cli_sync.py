@@ -213,11 +213,9 @@ def test_sync_pull_text_output_shows_clean_investment_resolution(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
-    assert (
-        "Investments: 3 securities, 4 transactions, 3 holdings, 0 new closes."
-        in result.stdout
-    )
-    assert "Securities: 1 adopted, 1 auto-bound, 1 new." in result.stdout
+    assert "3 new securities" in result.stdout
+    assert "4 investment transactions" in result.stdout
+    assert "3 holdings snapshots" in result.stdout
     assert "awaiting" not in result.stdout
     assert "Review:" not in result.stdout
 
@@ -238,8 +236,8 @@ def test_sync_pull_text_output_names_review_command_when_awaiting(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
-    assert "Securities: 3 awaiting identity review." in result.stdout
-    assert "`moneybin investments securities links pending`" in result.stdout
+    assert "3 securities awaiting identity review" in result.stdout
+    assert "moneybin investments securities links pending" in result.stdout
 
 
 @pytest.mark.unit
@@ -258,8 +256,8 @@ def test_sync_pull_text_output_shows_bootstrap_and_overlap(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull"])
     assert result.exit_code == 0, result.output
-    assert "2 opening lot(s) seeded for pre-window positions." in result.stdout
-    assert "1 account(s) have both manual and Plaid investment history" in result.stdout
+    assert "2 cumulative lots seeded for pre-window positions" in result.stdout
+    assert "1 accounts have both manual and Plaid history" in result.stdout
 
 
 @pytest.mark.unit
@@ -749,7 +747,7 @@ def test_sync_pull_json_carries_the_refresh_step_outcome(
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(app, ["sync", "pull", "--output", "json"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)["data"]
     stages = {s["step"]: s for s in payload["stages"]}
     assert stages["rates"]["counts"]["rates_written"] == 4

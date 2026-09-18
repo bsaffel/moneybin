@@ -16,7 +16,7 @@ import typer
 
 from moneybin.cli.output import OutputFormat, derive_cli_actor, emit_json_error
 from moneybin.config import set_current_profile
-from moneybin.errors import classify_user_error
+from moneybin.errors import UserError, classify_user_error
 from moneybin.observability import setup_observability
 from moneybin.services.mutation_context import operation
 from moneybin.utils.user_config import ensure_default_profile, get_default_profile
@@ -60,6 +60,28 @@ def _error_audit_classification(payload_type: type | None) -> tuple[str, list[st
         return classification.sensitivity, classification.classes_returned
     except PrivacyContractError:
         return "high", []
+
+
+def emit_json_failure(
+    user_error: UserError,
+    *,
+    cli_actor: str | None = None,
+    payload_type: type | None = None,
+) -> None:
+    """Emit and audit one JSON error through the CLI's shared failure seam."""
+    emit_json_error(user_error)
+    from moneybin.privacy.log import build_tool_call_event, write_privacy_event
+
+    sensitivity, classes_returned = _error_audit_classification(payload_type)
+    actor = cli_actor or derive_cli_actor() or "unknown"
+    write_privacy_event(
+        build_tool_call_event(
+            actor=f"cli.{actor}",
+            sensitivity=sensitivity,
+            classes_returned=classes_returned,
+            row_count=0,
+        )
+    )
 
 
 @contextmanager
@@ -115,26 +137,8 @@ def handle_cli_errors(
                 # JSON-mode errors bypass logger.error intentionally: stdout
                 # stays machine-readable for agents and the structured envelope
                 # carries the full error context.
-                emit_json_error(user_error)
-                # Mirror the MCP decorator's error-path audit emission so
-                # JSON-mode failures appear in privacy.log.jsonl alongside
-                # success rows.
-                from moneybin.privacy.log import (
-                    build_tool_call_event,
-                    write_privacy_event,
-                )
-
-                sensitivity, classes_returned = _error_audit_classification(
-                    payload_type
-                )
-                actor = cli_actor or derive_cli_actor() or "unknown"
-                write_privacy_event(
-                    build_tool_call_event(
-                        actor=f"cli.{actor}",
-                        sensitivity=sensitivity,
-                        classes_returned=classes_returned,
-                        row_count=0,
-                    )
+                emit_json_failure(
+                    user_error, cli_actor=cli_actor, payload_type=payload_type
                 )
             else:
                 logger.error(f"❌ {user_error.message}")

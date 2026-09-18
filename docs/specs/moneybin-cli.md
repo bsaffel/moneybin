@@ -937,6 +937,9 @@ Error handling: if any pipeline stage fails, prior stages' data is preserved (ra
 ### `sync pull` follows the same pattern
 
 After fetching new data from providers, `sync pull` runs the same transform -> match -> categorize pipeline and reports identically.
+Any failed requested post-load refresh stage leaves the pull partial and exits
+nonzero in both text and JSON modes; intentionally unrequested or cleanly
+skipped stages do not change the exit status.
 
 ### `--validate` (parse-only preview)
 

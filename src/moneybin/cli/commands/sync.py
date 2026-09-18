@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     output_option,
@@ -14,13 +15,17 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.progress import operation_progress
+from moneybin.cli.render import render_rows, render_summary
+from moneybin.cli.terminal import TerminalPolicy
 from moneybin.cli.utils import (
+    emit_json_failure,
     get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
 )
-from moneybin.connectors.sync_models import LinkInitiateResponse
+from moneybin.connectors.sync_models import LinkInitiateResponse, PullResult
+from moneybin.errors import UserError
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 
 from .stubs import _not_implemented
@@ -35,6 +40,140 @@ key_app = typer.Typer(
 )
 app.add_typer(key_app, name="key", hidden=True)
 logger = logging.getLogger(__name__)
+
+
+def _sync_pull_has_incomplete_work(result: PullResult) -> bool:
+    """Whether the receipt must not describe the requested pull as complete."""
+    return bool(
+        any(inst.status == "failed" for inst in result.institutions)
+        or result.transforms_error
+        or result.security_resolution_error
+        or (result.refresh_steps is not None and result.refresh_steps.has_failure)
+    )
+
+
+def _render_sync_pull_receipt(result: PullResult, *, terminal: TerminalPolicy) -> None:
+    """Render the human result from the service's already-established facts."""
+    completed = [inst for inst in result.institutions if inst.status == "completed"]
+    failed = [inst for inst in result.institutions if inst.status == "failed"]
+    incomplete = _sync_pull_has_incomplete_work(result)
+    if incomplete and completed:
+        typer.echo("! Sync partially completed")
+    elif incomplete:
+        typer.echo("× Sync failed")
+    else:
+        typer.echo("✓ Sync complete")
+
+    institution_word = "institution" if len(completed) == 1 else "institutions"
+    render_summary([
+        (
+            "Loaded",
+            f"{result.transactions_loaded:,} transactions loaded from "
+            f"{len(completed):,} {institution_word}",
+        )
+    ])
+    render_rows(
+        ["Institution", "Transactions", "Status"],
+        [
+            (
+                inst.institution_name or "Unnamed institution",
+                inst.transaction_count
+                if inst.transaction_count is not None
+                else "Unknown",
+                inst.status,
+            )
+            for inst in result.institutions
+        ],
+        numeric=["Transactions"],
+        terminal=terminal,
+    )
+
+    changes: list[tuple[str, str]] = []
+    if result.transactions_removed:
+        changes.append((
+            "Removed",
+            f"{result.transactions_removed:,} stale transactions",
+        ))
+    for count, label in (
+        (result.securities_loaded, "new securities"),
+        (result.investment_transactions_loaded, "investment transactions"),
+        (result.holdings_loaded, "holdings snapshots"),
+        (result.security_prices_loaded, "new price closes"),
+    ):
+        if count:
+            changes.append(("Changed", f"{count:,} {label}"))
+    if result.opening_bootstrap_rows:
+        changes.append((
+            "Opening lots",
+            f"{result.opening_bootstrap_rows:,} cumulative lots seeded for "
+            "pre-window positions",
+        ))
+    if changes:
+        render_summary(changes, title="Other changes")
+
+    attention: list[tuple[str, str]] = []
+    for inst in failed:
+        detail = inst.error or inst.error_code or "refresh failed"
+        attention.append((inst.institution_name or "Unnamed institution", detail))
+        attention.append((
+            "Remaining data",
+            f"{inst.institution_name or 'This institution'} was not refreshed; "
+            "previously available data may be stale",
+        ))
+    if result.transforms_error:
+        attention.append(("Refresh", f"did not finish: {result.transforms_error}"))
+        attention.append((
+            "Derived data",
+            "Core tables and reports may still reflect data before this pull",
+        ))
+    if result.security_resolution_error:
+        attention.append((
+            "Investment identity",
+            f"did not finish: {result.security_resolution_error}",
+        ))
+        attention.append((
+            "Investment data",
+            "Investment transactions from this pull are not attributed to securities; "
+            "cost basis may be incomplete",
+        ))
+    if result.refresh_steps is not None and result.refresh_steps.has_failure:
+        attention.append((
+            "Post-load refresh",
+            "One or more requested stages did not finish",
+        ))
+        attention.append((
+            "Derived results",
+            "Derived matching, categorization, identity, or exchange-rate results "
+            "may be incomplete",
+        ))
+    awaiting_identity = result.security_resolution.get(
+        "proposed", 0
+    ) + result.security_resolution.get("pending", 0)
+    if awaiting_identity:
+        attention.append((
+            "Needs review",
+            f"{awaiting_identity:,} securities awaiting identity review",
+        ))
+    if result.investment_source_overlap_accounts:
+        attention.append((
+            "Investment sources",
+            f"{len(result.investment_source_overlap_accounts):,} accounts have "
+            "both manual and Plaid history",
+        ))
+    if attention:
+        render_summary(attention, title="! Needs attention")
+    if _sync_pull_has_incomplete_work(result):
+        typer.echo("Loaded transactions were saved.")
+    if failed:
+        typer.echo("› moneybin sync status")
+    if result.transforms_error:
+        typer.echo("› moneybin transform apply")
+    if result.security_resolution_error:
+        typer.echo("› moneybin sync pull")
+    if awaiting_identity:
+        typer.echo("› moneybin investments securities links pending")
+    if result.investment_source_overlap_accounts:
+        typer.echo("› moneybin doctor")
 
 
 def _build_sync_client():
@@ -392,15 +531,33 @@ def sync_pull(
     quiet: bool = quiet_option,
 ) -> None:
     """Pull data from connected institutions."""
-    with handle_cli_errors():
-        with _build_sync_service() as service:
-            with operation_progress(get_terminal_policy(), quiet=quiet) as report:
-                result = service.pull(
-                    institution=institution,
-                    force=force,
-                    refresh=refresh,
-                    progress=report,
-                )
+    terminal = get_terminal_policy()
+    try:
+        with handle_cli_errors():
+            with _build_sync_service() as service:
+                with operation_progress(terminal, quiet=quiet) as report:
+                    result = service.pull(
+                        institution=institution,
+                        force=force,
+                        refresh=refresh,
+                        progress=report,
+                    )
+    except KeyboardInterrupt:
+        if output == OutputFormat.TEXT:
+            typer.echo("! Sync cancelled")
+            typer.echo("Saved scope is unknown; inspect the current connection state.")
+            typer.echo("› moneybin sync status")
+        else:
+            emit_json_failure(
+                UserError(
+                    "Sync cancelled; saved scope is unknown",
+                    code=error_codes.SYNC_ERROR,
+                    hint="Run 'moneybin sync status' to inspect connection state.",
+                    details={"saved_scope": "unknown", "outcome": "cancelled"},
+                ),
+                cli_actor="sync_pull",
+            )
+        raise typer.Exit(130) from None
 
     # Ahead of both output branches, like `moneybin refresh` and `gsheet pull`:
     # a pull runs the full refresh, whose match step can reverse a transfer the
@@ -431,99 +588,14 @@ def sync_pull(
         # Fall through to the shared exit-code check so JSON-mode agents
         # gating on process status see the same signal as text-mode users.
     else:
-        for inst in result.institutions:
-            icon = "✅" if inst.status == "completed" else "❌"
-            count = inst.transaction_count or 0
-            typer.echo(f"{icon} {inst.institution_name}: {count} transactions")
-            if inst.status == "failed" and inst.error_code:
-                typer.echo(f"   💡 error: {inst.error_code}")
-        completed = sum(1 for i in result.institutions if i.status == "completed")
-        typer.echo(
-            f"✅ Loaded {result.transactions_loaded} transactions from "
-            f"{completed} institutions."
-        )
-        if result.transactions_removed:
-            typer.echo(f"   Removed {result.transactions_removed} stale transactions.")
-        investments_total = (
-            result.securities_loaded
-            + result.investment_transactions_loaded
-            + result.holdings_loaded
-            + result.security_prices_loaded
-        )
-        if investments_total:
-            # Prices are reported even at 0: raw.security_prices is append-only,
-            # so a pull that re-reports closes it already stored writes nothing,
-            # and "0 new closes" is the signal that the feed has not advanced.
-            typer.echo(
-                f"   Investments: {result.securities_loaded} securities, "
-                f"{result.investment_transactions_loaded} transactions, "
-                f"{result.holdings_loaded} holdings, "
-                f"{result.security_prices_loaded} new closes."
-            )
-        if result.opening_bootstrap_rows:
-            # opening_bootstrap_rows is a cumulative, standing count (every
-            # bootstrap lot ever seeded across all history), not a per-pull
-            # delta — bootstrap writes once per (account, source_origin), so
-            # wording must not read as "just seeded by this pull".
-            typer.echo(
-                f"   {result.opening_bootstrap_rows} opening lot(s) seeded "
-                "for pre-window positions."
-            )
-        if result.investment_source_overlap_accounts:
-            typer.echo(
-                f"   ⚠️  {len(result.investment_source_overlap_accounts)} account(s) "
-                "have both manual and Plaid investment history — pick one source "
-                "per account (see `moneybin doctor`)."
-            )
-        # Resolution is a reported stage (spec § SecurityResolver): render every
-        # nonzero outcome, and name the review command whenever any identity is
-        # awaiting a decision. `proposed` (filed this run) and `pending` (still
-        # open from a prior run) both mean "awaiting review" to the user; the
-        # JSON envelope keeps them distinct for agents.
-        res = result.security_resolution
-        awaiting = res.get("proposed", 0) + res.get("pending", 0)
-        parts = [
-            f"{res[key]} {label}"
-            for key, label in (
-                ("adopted", "adopted"),
-                ("auto_bound", "auto-bound"),
-                ("minted", "new"),
-            )
-            if res.get(key)
-        ]
-        if awaiting:
-            parts.append(f"{awaiting} awaiting identity review")
-        if parts:
-            line = f"   Securities: {', '.join(parts)}."
-            if awaiting:
-                line += " Review: `moneybin investments securities links pending`."
-            typer.echo(line)
-        if result.security_resolution_error:
-            # There is no staging fallback for an unresolved security_id
-            # (see SyncService.pull's comment) — a failed resolution means
-            # this pull's investment transactions will not be attributed to
-            # securities, so cost basis will be incomplete until it's retried.
-            logger.warning(
-                f"⚠️  security resolution failed ({result.security_resolution_error}); "
-                "investment transactions from this pull will not be attributed "
-                "to securities, so cost basis will be incomplete. Raw data "
-                "already landed — retry with `moneybin sync pull` (idempotent)."
-            )
-        if result.transforms_error:
-            # Mirror import_cmd.py: route the warning to stderr via the
-            # project logger so text-mode users see a human-readable hint.
-            # JSON mode already carries transforms_error in the envelope.
-            logger.warning(
-                f"⚠️  transforms failed ({result.transforms_error}); "
-                f"raw rows landed. Retry with `moneybin transform apply`."
-            )
+        _render_sync_pull_receipt(result, terminal=terminal)
 
     # Non-zero exit on refresh failure applies to BOTH output modes — agents
     # gating on process status need the signal whether they parse JSON or
     # scrape text. Mirrors import_cmd.py:406. security_resolution_error joins
     # the same gate — a swallowed resolution failure is exactly as silent a
     # cost-basis corruption as a swallowed transform failure.
-    if result.transforms_error or result.security_resolution_error:
+    if _sync_pull_has_incomplete_work(result):
         raise typer.Exit(1)
 
 
