@@ -80,7 +80,7 @@ Public Beta precedes the milestone gates above. Its bar is deliberately narrower
 4. **Guided CLI setup** — the first-run wizard and `moneybin demo` preset (from M3A) take a fresh install to a doctor-checked first result.
 5. **Distribution** — PyPI (that half of M3B), the official MCP Registry entry, and the `.mcpb` bundle. Availability, not promotion.
 
-The full test suite, `system doctor`, and privacy/security checks must be green for the release artifacts, and `sql_query` must not return a CRITICAL value to a cloud AI host by any route. **Distribution is not launch**: no announcement, no landing push — marketing waits until the product proves itself in daily use.
+The full test suite, `system doctor`, and privacy/security checks must be green for the release artifacts, and no `sql_query` projection may return a CRITICAL value unmasked. Deliberate bit-by-bit reconstruction through filter conditions is a documented limit (`privacy-data-classification.md` → "What the masking protects against"). **Distribution is not launch**: no announcement, no landing push — marketing waits until the product proves itself in daily use.
 
 The minimal web surface was on this bar until 2026-09-18 and now belongs to Early Access, along with authenticated remote MCP. Remote MCP needs a hosted endpoint, and hosted sync is Early Access. *(The web surface was originally a minimal MCP-app surface (M3M); it was re-pointed web-first on 2026-06-12 — a spike proved MoneyBin's MCP-App server contract works but shipping hosts don't render MCP Apps yet. See M3M below.)*
 
