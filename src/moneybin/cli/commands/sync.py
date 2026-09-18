@@ -10,12 +10,20 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
 from moneybin.cli.progress import operation_progress
-from moneybin.cli.render import render_rows, render_summary
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    compose_human_result,
+    render_rows,
+    render_summary,
+)
 from moneybin.cli.terminal import TerminalPolicy
 from moneybin.cli.utils import (
     emit_json_failure,
@@ -27,6 +35,7 @@ from moneybin.cli.utils import (
 from moneybin.connectors.sync_models import LinkInitiateResponse, PullResult
 from moneybin.errors import UserError
 from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
+from moneybin.progress import ProgressEvent
 
 from .stubs import _not_implemented
 
@@ -52,17 +61,24 @@ def _sync_pull_has_incomplete_work(result: PullResult) -> bool:
     )
 
 
-def _render_sync_pull_receipt(result: PullResult, *, terminal: TerminalPolicy) -> None:
+def _render_sync_pull_receipt(
+    result: PullResult,
+    *,
+    terminal: TerminalPolicy,
+    title: str | None = None,
+) -> None:
     """Render the human result from the service's already-established facts."""
     completed = [inst for inst in result.institutions if inst.status == "completed"]
     failed = [inst for inst in result.institutions if inst.status == "failed"]
     incomplete = _sync_pull_has_incomplete_work(result)
-    if incomplete and completed:
-        typer.echo("! Sync partially completed")
-    elif incomplete:
-        typer.echo("× Sync failed")
-    else:
-        typer.echo("✓ Sync complete")
+    if title is None:
+        if incomplete and completed:
+            title = "! Sync partially completed"
+        elif incomplete:
+            title = "× Sync failed"
+        else:
+            title = "✓ Sync complete"
+    typer.echo(title)
 
     institution_word = "institution" if len(completed) == 1 else "institutions"
     render_summary([
@@ -194,6 +210,16 @@ def _build_sync_client():
     return SyncClient(server_url=str(settings.sync.server_url), profile_id=profile_id)
 
 
+def _emit_sync_receipt(title: str, pairs: list[tuple[str, str]]) -> None:
+    """Render an outcome-first, unpaged receipt for one sync mutation."""
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title=title)]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
+
+
 @contextmanager
 def _build_sync_service():
     """Yield a SyncService with an active Database connection (per ADR-010)."""
@@ -217,7 +243,7 @@ def sync_login(
     with handle_cli_errors():
         client = _build_sync_client()
         client.login(open_browser=not no_browser)
-        typer.echo("✅ Logged in.")
+    _emit_sync_receipt("Login complete", [("Outcome", "Logged in")])
 
 
 @app.command("logout")
@@ -228,7 +254,7 @@ def sync_logout() -> None:
     with handle_cli_errors():
         client = _build_sync_client()
         SyncAuthService(client=client).logout()
-        typer.echo("✅ Logged out.")
+    _emit_sync_receipt("Logout complete", [("Outcome", "Logged out")])
 
 
 def _surface_link(initiate: LinkInitiateResponse, *, open_browser: bool) -> None:
@@ -282,111 +308,183 @@ def sync_link(
     Text mode blocks until the user finishes the Plaid flow in their
     browser and returns the auto-pull summary.
     """
-    with handle_cli_errors(cli_actor="sync_link"):
-        with _build_sync_service() as service:
-            if institution is None:
-                connections = service.list_connections()
-                error_state = [c for c in connections if c.status == "error"]
-                if len(error_state) == 1:
-                    target = error_state[0].institution_name
-                    if yes:
-                        institution = target
-                    elif sys.stdin.isatty():
-                        confirmed = typer.confirm(
-                            f"Re-authenticate {target}?",
-                            default=True,
-                        )
-                        if not confirmed:
-                            typer.echo("Cancelled.", err=True)
+    try:
+        with handle_cli_errors(cli_actor="sync_link"):
+            with _build_sync_service() as service:
+                if institution is None:
+                    connections = service.list_connections()
+                    error_state = [c for c in connections if c.status == "error"]
+                    if len(error_state) == 1:
+                        target = error_state[0].institution_name
+                        if yes:
+                            institution = target
+                        elif output == OutputFormat.JSON or not sys.stdin.isatty():
+                            message = (
+                                "A connected institution needs re-authentication. "
+                                f"Pass --institution {target} with --yes to re-authenticate, "
+                                "or pass --institution <new-bank-name> to add a different "
+                                "institution."
+                            )
+                            if output == OutputFormat.JSON:
+                                emit_json_failure(
+                                    UserError(
+                                        "Re-authentication selection is required",
+                                        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                                        hint=message,
+                                    ),
+                                    cli_actor="sync_link",
+                                )
+                            else:
+                                typer.echo(message, err=True)
+                            raise typer.Exit(2)
+                        elif not typer.confirm(
+                            f"Re-authenticate {target}?", default=True
+                        ):
+                            _emit_sync_receipt(
+                                "Link cancelled",
+                                [
+                                    ("Institution", target or "(no name)"),
+                                    ("Outcome", "No link was started"),
+                                ],
+                            )
                             raise typer.Exit(0)
-                        institution = target
-                    else:
-                        typer.echo(
-                            f"❌ Found 1 institution needing re-auth ({target}). "
-                            f"Pass `--institution {target}` to re-authenticate, or "
-                            f"`--institution <new-bank-name>` to add a different "
-                            "institution. Bare invocation is ambiguous in non-"
-                            "interactive mode.",
-                            err=True,
+                        else:
+                            institution = target
+                    elif len(error_state) > 1:
+                        message = (
+                            "Multiple institutions need re-authentication. "
+                            "Pass --institution NAME with --yes."
                         )
+                        if output == OutputFormat.JSON:
+                            emit_json_failure(
+                                UserError(
+                                    "Re-authentication selection is required",
+                                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                                    hint=message,
+                                ),
+                                cli_actor="sync_link",
+                            )
+                        else:
+                            typer.echo(message, err=True)
+                            for c in error_state:
+                                typer.echo(f"  {c.institution_name}", err=True)
                         raise typer.Exit(2)
-                elif len(error_state) > 1:
-                    typer.echo(
-                        "❌ Multiple institutions need re-auth. Pass `--institution NAME`:",
-                        err=True,
+                    # else: no error-state institutions → new connection flow
+
+                if output == OutputFormat.JSON:
+                    # Event-driven: emit initiate response and exit. Agent verifies
+                    # completion via `sync link-status` after the user finishes
+                    # the Plaid Hosted Link flow out-of-band.
+                    from moneybin.adapters.sync_adapters import (
+                        sync_link_envelope,
                     )
-                    for c in error_state:
-                        typer.echo(f"   - {c.institution_name}", err=True)
-                    raise typer.Exit(2)
-                # else: no error-state institutions → new connection flow
 
-            if output == OutputFormat.JSON:
-                # Event-driven: emit initiate response and exit. Agent verifies
-                # completion via `sync link-status` after the user finishes
-                # the Plaid Hosted Link flow out-of-band.
-                from moneybin.adapters.sync_adapters import (
-                    sync_link_envelope,
-                )
+                    initiate = service.initiate_link(institution=institution)
+                    render_or_json(
+                        sync_link_envelope(
+                            initiate,
+                            actions=[
+                                "Open link_url in a browser to complete the connection",
+                                "Then run 'moneybin sync link-status --session-id "
+                                "<session_id>' to verify",
+                            ],
+                        ),
+                        output,
+                        cli_actor="sync_link",
+                    )
+                    return
 
-                initiate = service.initiate_link(institution=institution)
-                render_or_json(
-                    sync_link_envelope(
-                        initiate,
-                        actions=[
-                            "Open link_url in a browser to complete the connection",
-                            "Then run 'moneybin sync link-status --session-id "
-                            "<session_id>' to verify",
-                        ],
+                terminal = get_terminal_policy()
+                with operation_progress(terminal) as report:
+
+                    def _on_initiate(init: LinkInitiateResponse) -> None:
+                        _surface_link(init, open_browser=not no_browser)
+                        report(ProgressEvent("Waiting for link completion"))
+
+                    result = service.link(
+                        institution=institution,
+                        auto_pull=not no_pull,
+                        on_initiate=_on_initiate,
+                    )
+    except KeyboardInterrupt:
+        if output == OutputFormat.JSON:
+            details = {
+                "saved_link_state": "unknown",
+                "outcome": "cancelled",
+            }
+            if not no_pull:
+                details.update({
+                    "auto_pull_data": "unknown",
+                    "refresh_freshness": "unconfirmed",
+                })
+            emit_json_failure(
+                UserError(
+                    "Link cancelled; saved state is unknown",
+                    code=error_codes.SYNC_ERROR,
+                    hint="Run 'moneybin sync status' to inspect connection state.",
+                    details=details,
+                ),
+                cli_actor="sync_link",
+            )
+        else:
+            state = (
+                "Unknown — link connection may have changed"
+                if no_pull
+                else "Unknown — link and any auto-pull data may have changed"
+            )
+            details = [
+                ("Saved state", state),
+                ("Next action", "moneybin sync status"),
+            ]
+            if not no_pull:
+                details.insert(
+                    1,
+                    (
+                        "Data freshness",
+                        "Refresh and report freshness are not confirmed",
                     ),
-                    output,
-                    cli_actor="sync_link",
                 )
-                return
-
-            def _on_initiate(init: LinkInitiateResponse) -> None:
-                _surface_link(init, open_browser=not no_browser)
-
-            result = service.link(
-                institution=institution,
-                auto_pull=not no_pull,
-                on_initiate=_on_initiate,
+            _emit_sync_receipt(
+                "Link cancelled",
+                details,
             )
+        raise typer.Exit(130) from None
 
-    typer.echo(f"✅ Linked {result.institution_name}")
     if result.pull_result is not None:
-        typer.echo(f"   Pulled {result.pull_result.transactions_loaded} transactions")
         pr = result.pull_result
-        if pr.security_resolution_error:
-            # Same fail-loud contract as `sync pull`: connect's auto-pull is
-            # the common path, so a silent resolution failure here would
-            # leave the success-looking ✅ line hiding investment
-            # transactions that never get attributed to a security.
-            logger.warning(
-                f"⚠️  security resolution failed ({pr.security_resolution_error}); "
-                "investment transactions from this pull will not be attributed "
-                "to securities, so cost basis will be incomplete. Raw data "
-                "already landed — retry with `moneybin sync pull` (idempotent)."
-            )
-        if pr.transforms_error:
-            # Same fail-loud contract as `sync pull`: connect's auto-pull is
-            # the common path, so a silent transforms failure here would
-            # leave the success-looking ✅ line hiding stale core.* tables.
-            logger.warning(
-                f"⚠️  transforms failed ({pr.transforms_error}); "
-                f"raw rows landed. Retry with `moneybin transform apply`."
-            )
+        incomplete = _sync_pull_has_incomplete_work(pr)
+        _render_sync_pull_receipt(
+            pr,
+            terminal=terminal,
+            title=(
+                "! Link partially completed"
+                if incomplete
+                else f"{terminal.symbols.success} Link complete: "
+                f"{result.institution_name}"
+            ),
+        )
         # connect's auto-pull reaches the same reconciliation `sync pull` does.
         warn_transfers_retired(pr.transfers_retired, cause=RETIRED_SIDES_COLLAPSED)
         # And the same best-effort steps, for the same reason.
         warn_refresh_steps(pr.refresh_steps)
-        if pr.transforms_error or pr.security_resolution_error:
+        if incomplete:
             raise typer.Exit(1)
+    else:
+        _emit_sync_receipt(
+            "Link complete",
+            [
+                ("Institution", result.institution_name or "(no name)"),
+                ("Outcome", "Connected"),
+            ],
+        )
 
 
 @app.command("link-status")
 def sync_link_status(
     session_id: str = typer.Option(..., "--session-id", help="Session ID from link."),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,  # result framing remains essential under quiet
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Poll a sync link session for completion (formerly: sync connect-status).
 
@@ -412,7 +510,21 @@ def sync_link_status(
             cli_actor="sync_link_status",
         )
         return
-    typer.echo(f"✅ {result.status}: {result.institution_name or '(no name)'}")
+    policy = get_terminal_policy(no_pager=no_pager)
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Status", result.status),
+                    ("Institution", result.institution_name or "(no name)"),
+                ],
+                title="Link status",
+            )
+        ]),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("connect", hidden=True)
@@ -458,13 +570,20 @@ def sync_connect_alias(  # Typer-registered alias; referenced by decorator
 def sync_connect_status_alias(  # Typer-registered alias; referenced by decorator
     session_id: str = typer.Option(..., "--session-id", help="Session ID from link."),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Deprecated alias for `sync link-status`. Will be removed in the next minor release."""
     logger.warning(
         "`moneybin sync connect-status` is deprecated; use `moneybin sync link-status`. "
         "The alias will be removed in the next minor release."
     )
-    sync_link_status(session_id=session_id, output=output)
+    sync_link_status(
+        session_id=session_id,
+        output=output,
+        quiet=quiet,
+        no_pager=no_pager,
+    )
 
 
 @app.command("disconnect")
@@ -483,9 +602,29 @@ def sync_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a bank connection."""
-    if not yes and sys.stdin.isatty():
+    if not yes:
+        if output == OutputFormat.JSON or not sys.stdin.isatty():
+            message = "Disconnect requires explicit confirmation. Re-run with --yes."
+            if output == OutputFormat.JSON:
+                emit_json_failure(
+                    UserError(
+                        "Disconnect confirmation is required",
+                        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                        hint=message,
+                    ),
+                    cli_actor="sync_disconnect",
+                )
+            else:
+                typer.echo(message, err=True)
+            raise typer.Exit(2)
         if not typer.confirm(f"Disconnect {institution}?", default=False):
-            typer.echo("Cancelled.", err=True)
+            _emit_sync_receipt(
+                "Disconnect cancelled",
+                [
+                    ("Institution", institution),
+                    ("Outcome", "No connection was removed"),
+                ],
+            )
             raise typer.Exit(0)
     with handle_cli_errors():
         with _build_sync_service() as service:
@@ -504,7 +643,10 @@ def sync_disconnect(
             cli_actor="sync_disconnect",
         )
     else:
-        typer.echo(f"✅ Disconnected {institution}")
+        _emit_sync_receipt(
+            "Disconnect complete",
+            [("Institution", institution), ("Outcome", "Disconnected")],
+        )
 
 
 @app.command("pull")
@@ -603,6 +745,7 @@ def sync_pull(
 def sync_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # nothing to suppress yet
+    no_pager: bool = no_pager_option,
     json_fields: str | None = typer.Option(
         None,
         "--json-fields",
@@ -637,17 +780,52 @@ def sync_status(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary(
+            [("Scope", "connected institutions")], title="Connected institutions"
+        )
+    ]
     if not connections:
-        typer.echo("No connected institutions. Run `moneybin sync link` to add one.")
-        return
-    for c in connections:
-        last = c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
-        line = f"{c.institution_name} — status: {c.status}, last sync: {last}"
-        typer.echo(line)
-        if c.error_code:
-            typer.echo(f"   ⚠️  error: {c.error_code}")
-        if c.guidance:
-            typer.echo(f"   💡 {c.guidance}")
+        parts.append(
+            build_summary([
+                (
+                    "Result",
+                    "No connected institutions. Run `moneybin sync link` to add one.",
+                )
+            ])
+        )
+    else:
+        parts.append(
+            build_rows(
+                ["Institution", "Status", "Last sync", "Error"],
+                [
+                    (
+                        c.institution_name,
+                        c.status,
+                        c.last_sync.strftime("%Y-%m-%d %H:%M UTC")
+                        if c.last_sync
+                        else "never",
+                        c.error_code or "-",
+                    )
+                    for c in connections
+                ],
+                terminal=policy,
+            )
+        )
+        guidance = [
+            (c.institution_name or "Institution", c.guidance)
+            for c in connections
+            if c.guidance
+        ]
+        if guidance:
+            parts.append(build_summary(guidance, title="Needs attention"))
+    emit_human_result(
+        compose_human_result(parts),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @key_app.command("rotate", hidden=True)

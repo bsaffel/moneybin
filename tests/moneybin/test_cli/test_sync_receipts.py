@@ -15,6 +15,11 @@ from moneybin.connectors.sync_models import InstitutionResult, PullResult
 runner = CliRunner()
 
 
+def _normalize_prose(text: str) -> str:
+    """Compare wrapped receipt prose without weakening numeric or identity assertions."""
+    return " ".join(text.split())
+
+
 def _pull_result(*, partial: bool = False) -> PullResult:
     """A completed pull, optionally with one failed institution."""
     institutions = [
@@ -83,7 +88,7 @@ def test_partial_sync_receipt_never_claims_overall_success(
     assert "connection timed out" in result.stdout
     assert (
         "Example Investing was not refreshed; previously available data may be stale"
-        in result.stdout
+        in _normalize_prose(result.stdout)
     )
     assert "Loaded transactions were saved" in result.stdout
     assert result.stderr == ""
@@ -131,7 +136,7 @@ def test_security_identity_failure_receipt_names_incomplete_cost_basis(
     assert result.exit_code == 1
     assert (
         "Investment transactions from this pull are not attributed to securities"
-        in result.stdout
+        in _normalize_prose(result.stdout)
     )
     assert "cost basis may be incomplete" in result.stdout
 
@@ -157,7 +162,7 @@ def test_refresh_stage_failure_is_partial_and_nonzero(mock_build: MagicMock) -> 
     assert "Post-load refresh" in result.stdout
     assert (
         "Derived matching, categorization, identity, or exchange-rate results may be incomplete"
-        in result.stdout
+        in _normalize_prose(result.stdout)
     )
     assert "Matching step failed: matcher unavailable" in result.stderr
 

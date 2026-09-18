@@ -7,9 +7,12 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.output import OutputFormat
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.connectors.sync_models import (
     InstitutionResult,
     LinkResult,
@@ -19,6 +22,26 @@ from moneybin.connectors.sync_models import (
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 runner = CliRunner()
+
+
+def _pager_policy(*, no_pager: bool = False, ascii: bool = False) -> TerminalPolicy:
+    """Make a terminal answer pager-eligible unless the command opts out."""
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=not no_pager,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=ascii,
+        width=80,
+        height=1,
+        symbols=TerminalSymbols(
+            "OK" if ascii else "✓", "!", "X" if ascii else "×", ">" if ascii else "›"
+        ),
+        minus="-" if ascii else "−",
+    )
 
 
 def _fake_pull_result(
@@ -72,6 +95,7 @@ def test_sync_login_invokes_client_login(mock_build: MagicMock) -> None:
     result = runner.invoke(app, ["sync", "login", "--no-browser"])
     assert result.exit_code == 0, result.output
     mock_client.login.assert_called_once_with(open_browser=False)
+    assert "Logged in" in result.stdout
 
 
 @pytest.mark.unit
@@ -92,6 +116,7 @@ def test_sync_logout_clears_tokens(mock_build: MagicMock) -> None:
     result = runner.invoke(app, ["sync", "logout"])
     assert result.exit_code == 0, result.output
     mock_client.logout.assert_called_once()
+    assert "Logged out" in result.stdout
 
 
 @pytest.mark.unit
@@ -382,6 +407,8 @@ def test_sync_link_new_institution(mock_build: MagicMock) -> None:
     service.link.assert_called_once()
     # auto_pull defaults to True
     assert service.link.call_args.kwargs.get("auto_pull", True) is True
+    assert "Link complete" in result.stdout
+    assert "Chase" in result.stdout
 
 
 @pytest.mark.unit
@@ -473,6 +500,141 @@ def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=False)
+def test_sync_link_declined_reauth_performs_no_link(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Declining the explicit re-authentication prompt leaves the service untouched."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            guidance=None,
+        )
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_link
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_link(
+            institution=None,
+            no_pull=False,
+            no_browser=False,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
+
+    assert exit_info.value.exit_code == 0
+    mock_confirm.assert_called_once()
+    service.link.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm")
+def test_sync_link_json_tty_refuses_ambiguous_reauth_without_prompt(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """JSON cannot use a TTY prompt to decide which errored connection to re-auth."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            guidance=None,
+        )
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_link
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_link(
+            institution=None,
+            no_pull=False,
+            no_browser=False,
+            yes=False,
+            output=OutputFormat.JSON,
+        )
+
+    assert exit_info.value.exit_code == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["error"]["code"] == "mutation_confirmation_required"
+    assert "--institution" in payload["error"]["hint"]
+    assert captured.err == ""
+    mock_confirm.assert_not_called()
+    service.initiate_link.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_json_refuses_multiple_reauth_choices_without_initiating(
+    mock_build: MagicMock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Multiple errored connections require an explicit JSON-safe target choice."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            guidance=None,
+        ),
+        SyncConnectionView(
+            id="u2",
+            provider_item_id="item_b",
+            institution_name="Schwab",
+            provider="plaid",
+            status="error",
+            last_sync=None,
+            guidance=None,
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.cli.commands.sync import sync_link
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_link(
+            institution=None,
+            no_pull=False,
+            no_browser=False,
+            yes=False,
+            output=OutputFormat.JSON,
+        )
+
+    assert exit_info.value.exit_code == 2
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["error"]["code"] == "mutation_confirmation_required"
+    assert "--institution NAME with --yes" in payload["error"]["hint"]
+    assert captured.err == ""
+    service.initiate_link.assert_not_called()
+    service.link.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_link_status_command(mock_build: MagicMock) -> None:
     from moneybin.connectors.sync_client import SyncClient
 
@@ -494,6 +656,67 @@ def test_sync_link_status_command(mock_build: MagicMock) -> None:
         )
     assert result.exit_code == 0, result.output
     assert "linked" in result.stdout
+
+
+@pytest.mark.unit
+def test_sync_link_status_text_is_a_finite_unpaged_result() -> None:
+    """Link status is a single read, so it may use the shared finite result path."""
+    from moneybin.connectors.sync_client import SyncClient
+
+    client = MagicMock(spec=SyncClient)
+    client.get_link_status.return_value = MagicMock(
+        session_id="sess_x",
+        status="linked",
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
+        result = runner.invoke(
+            app,
+            ["sync", "link-status", "--session-id", "sess_x", "--no-pager"],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Link status" in result.stdout
+    assert "linked" in result.stdout
+
+
+@pytest.mark.unit
+def test_sync_link_status_pages_complete_answer_and_no_pager_prints_same_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long finite link-status result pages without changing its returned answer."""
+    from moneybin.cli import pager
+    from moneybin.connectors.sync_client import SyncClient
+
+    client = MagicMock(spec=SyncClient)
+    client.get_link_status.return_value = MagicMock(
+        session_id="sess_x",
+        status="linked",
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    monkeypatch.setattr("moneybin.cli.commands.sync.get_terminal_policy", _pager_policy)
+    pages: list[str] = []
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr(pager, "page_text", capture_page)
+    with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
+        paged = runner.invoke(app, ["sync", "link-status", "--session-id", "sess_x"])
+        direct = runner.invoke(
+            app, ["sync", "link-status", "--session-id", "sess_x", "--no-pager"]
+        )
+
+    assert paged.exit_code == 0, paged.output
+    assert direct.exit_code == 0, direct.output
+    assert len(pages) == 1
+    assert (
+        pages[0].replace("\n\nq return to shell\n", "").rstrip()
+        == direct.stdout.rstrip()
+    )
 
 
 @pytest.mark.unit
@@ -552,6 +775,39 @@ def test_sync_connect_status_alias_warns_and_forwards(mock_logger: MagicMock) ->
 
 
 @pytest.mark.unit
+@patch("moneybin.cli.commands.sync.logger")
+def test_sync_connect_status_alias_forwards_presentation_flags(
+    mock_logger: MagicMock,
+) -> None:
+    """The hidden alias delegates the same finite-result controls as link-status."""
+    from moneybin.connectors.sync_client import SyncClient
+
+    client = MagicMock(spec=SyncClient)
+    client.get_link_status.return_value = MagicMock(
+        session_id="sess_x",
+        status="linked",
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    with patch("moneybin.cli.commands.sync._build_sync_client", return_value=client):
+        result = runner.invoke(
+            app,
+            [
+                "sync",
+                "connect-status",
+                "--session-id",
+                "sess_x",
+                "--quiet",
+                "--no-pager",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "Link status" in result.stdout
+    client.get_link_status.assert_called_once_with("sess_x")
+
+
+@pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
     service = MagicMock()
@@ -561,6 +817,64 @@ def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
     )
     assert result.exit_code == 0, result.output
     service.disconnect.assert_called_once_with(institution="Chase")
+    assert "Disconnected" in result.stdout
+    assert "Chase" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_yes_without_an_interactive_terminal(
+    mock_build: MagicMock,
+) -> None:
+    """Redirected text cannot silently authorize a destructive disconnect."""
+    result = runner.invoke(app, ["sync", "disconnect", "--institution", "Chase"])
+
+    assert result.exit_code == 2, result.output
+    assert "--yes" in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_json_requires_yes_without_an_interactive_terminal(
+    mock_build: MagicMock,
+) -> None:
+    """JSON mode has no prompt path, so it requires the explicit confirmation flag."""
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--institution", "Chase", "--output", "json"]
+    )
+
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "mutation_confirmation_required"
+    assert "--yes" in payload["error"]["hint"]
+    assert result.stderr == ""
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=False)
+def test_sync_disconnect_refusal_performs_no_mutation(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The disconnect confirmation refusal must happen before service construction."""
+    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+
+    assert exit_info.value.exit_code == 0
+    receipt = capsys.readouterr().out
+    assert "Disconnect cancelled" in receipt
+    assert "Institution: Chase" in receipt
+    assert "No connection was removed" in receipt
+    mock_confirm.assert_called_once()
+    mock_build.assert_not_called()
 
 
 @pytest.mark.unit
@@ -592,7 +906,312 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
     assert result.exit_code == 0, result.output
     assert "Chase" in result.stdout
     assert "Schwab" in result.stdout
-    assert "needs re-authentication" in result.stdout
+    assert "needs re-authentication" in result.stdout.replace("\n", " ")
+    assert "Connected institutions" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_empty_output_keeps_scope_and_next_action(
+    mock_build: MagicMock,
+) -> None:
+    """An empty status result still names the searched scope and recovery path."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "status", "--quiet", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "No connected institutions" in result.stdout
+    assert "moneybin sync link" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_no_pager_bypasses_shared_pager(
+    mock_build: MagicMock,
+) -> None:
+    """The explicit pager opt-out must reach the shared finite result boundary."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="active",
+            last_sync=None,
+            guidance=None,
+        )
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "status", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "Chase" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_pages_complete_answer_and_no_pager_prints_same_answer(
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The finite status answer pages once and --no-pager prints every same row."""
+    from moneybin.cli import pager
+
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id=f"u{number}",
+            provider_item_id=f"item_{number}",
+            institution_name=f"Institution {number}",
+            provider="plaid",
+            status="active",
+            last_sync=None,
+            guidance=None,
+        )
+        for number in range(12)
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    monkeypatch.setattr("moneybin.cli.commands.sync.get_terminal_policy", _pager_policy)
+    pages: list[str] = []
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr(pager, "page_text", capture_page)
+
+    paged = runner.invoke(app, ["sync", "status"])
+    direct = runner.invoke(app, ["sync", "status", "--no-pager"])
+
+    assert paged.exit_code == 0, paged.output
+    assert direct.exit_code == 0, direct.output
+    assert len(pages) == 1
+    assert "Institution 11" in pages[0]
+    assert (
+        pages[0].replace("\n\nq return to shell\n", "").rstrip()
+        == direct.stdout.rstrip()
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_auto_pull_partial_receipt_preserves_saved_and_remaining_scope(
+    mock_build: MagicMock,
+) -> None:
+    """A failed requested institution cannot be hidden behind a link success line."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    pull = _fake_pull_result()
+    pull.institutions.append(
+        InstitutionResult(
+            provider_item_id="item_schwab",
+            institution_name="Schwab",
+            status="failed",
+            error="connection timed out",
+        )
+    )
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=pull,
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 1, result.output
+    assert "Link partially completed" in result.stdout
+    assert "Linked Chase" not in result.stdout
+    assert "10 transactions loaded" in result.stdout
+    assert "Schwab was not refreshed" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync.logger")
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_partial_receipt_does_not_duplicate_terminal_warning(
+    mock_build: MagicMock,
+    mock_logger: MagicMock,
+) -> None:
+    """The receipt owns incomplete auto-pull facts; logging must not echo them to users."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    pull = _fake_pull_result(
+        transforms_applied=False,
+        transforms_error="SQLMesh apply failed",
+    )
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new", institution_name="Chase", pull_result=pull
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "Core tables and reports may still reflect data before this pull"
+        in result.stdout
+    )
+    assert not any(
+        "transforms failed" in str(call.args[0])
+        for call in mock_logger.warning.call_args_list
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_partial_receipt_has_no_duplicate_terminal_diagnostic(
+    mock_build: MagicMock,
+) -> None:
+    """The required stdout receipt is the only terminal account of an auto-pull failure."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(
+            transforms_applied=False,
+            transforms_error="SQLMesh apply failed",
+        ),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "Core tables and reports may still reflect data before this pull"
+        in result.stdout
+    )
+    assert "transforms failed" not in result.stderr.lower()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@pytest.mark.parametrize("no_pull", [False, True])
+def test_sync_link_interrupt_reports_unknown_saved_state(
+    mock_build: MagicMock,
+    no_pull: bool,
+) -> None:
+    """An interrupted hosted-link wait cannot claim that no link state was saved."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.side_effect = KeyboardInterrupt
+    mock_build.return_value.__enter__.return_value = service
+
+    args = ["sync", "link"]
+    if no_pull:
+        args.append("--no-pull")
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 130, result.output
+    assert "Link cancelled" in result.stdout
+    receipt = " ".join(result.stdout.split())
+    if no_pull:
+        assert "Saved state: Unknown — link connection may have changed" in receipt
+        assert "auto-pull data" not in result.stdout
+    else:
+        assert (
+            "Saved state: Unknown — link and any auto-pull data may have changed"
+            in receipt
+        )
+        assert "Refresh and report freshness are not confirmed" in receipt
+    assert "moneybin sync status" in result.stdout
+    assert "No connection was removed" not in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_success_uses_ascii_policy_symbol(
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The successful link receipt takes its functional symbol from TerminalPolicy."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+        pull_result=_fake_pull_result(),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    def ascii_policy(*, no_pager: bool = False) -> TerminalPolicy:
+        return _pager_policy(no_pager=no_pager, ascii=True)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.sync.get_terminal_policy",
+        ascii_policy,
+    )
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 0, result.output
+    assert "OK Link complete: Chase" in result.stdout
+    assert "✓" not in result.stdout
+
+
+@pytest.mark.unit
+def test_sync_action_receipts_never_invoke_the_pager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation receipts remain complete output even on a pager-sized terminal."""
+    from moneybin.cli import pager
+
+    monkeypatch.setattr("moneybin.cli.commands.sync.get_terminal_policy", _pager_policy)
+    page_text = MagicMock(return_value=True)
+    monkeypatch.setattr(pager, "page_text", page_text)
+    client = MagicMock()
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new", institution_name="Chase"
+    )
+    with (
+        patch("moneybin.cli.commands.sync._build_sync_client", return_value=client),
+        patch("moneybin.cli.commands.sync._build_sync_service") as mock_build,
+        patch("moneybin.connectors.sync_auth.SyncAuthService.logout"),
+    ):
+        mock_build.return_value.__enter__.return_value = service
+        login = runner.invoke(app, ["sync", "login"])
+        logout = runner.invoke(app, ["sync", "logout"])
+        disconnect = runner.invoke(
+            app, ["sync", "disconnect", "--institution", "Chase", "--yes"]
+        )
+        link = runner.invoke(app, ["sync", "link", "--no-pull"])
+
+    assert all(result.exit_code == 0 for result in (login, logout, disconnect, link))
+    page_text.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_json_returns_only_the_initiate_event(mock_build: MagicMock) -> None:
+    """JSON link stays event-driven; it cannot claim a later auto-pull outcome."""
+    from moneybin.connectors.sync_models import LinkInitiateResponse
+
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.initiate_link.return_value = LinkInitiateResponse(
+        session_id="session-1",
+        link_url="https://example.test/link",
+        link_type="widget_flow",
+        expiration=datetime(2026, 4, 7, 15, 30, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link", "--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)["data"]
+    assert payload["session_id"] == "session-1"
+    assert "transactions_loaded" not in payload
+    service.link.assert_not_called()
 
 
 @pytest.mark.unit
