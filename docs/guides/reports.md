@@ -292,6 +292,8 @@ conversion, lot, account, source, rate, and transfer lineage. Filter with
 `--from-date`, `--to-date`, `--currency`, and
 `--coverage complete|incomplete|all`; incomplete rows stay visible by default
 and carry a closed `coverage_reason` in the wide output.
+Whole-conversion leg totals remain in `core.bridge_currency_conversions` rather
+than repeating on these per-lot rows.
 
 The row is deliberately mixed-unit. `disposed_amount` is in `currency_code`;
 `proceeds`, `cost_basis`, `fee_amount`, and `gain_loss` are in `home_currency`.

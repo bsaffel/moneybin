@@ -877,7 +877,9 @@ Numbered, testable. Tagged by phase.
 
     The user-visible `core:realized_fx` report now exposes one row per consumed
     Currency lot, plus incomplete unmatched-inventory placeholders and their
-    closed coverage reason.
+    closed coverage reason. Its amounts belong to that lot row; whole-conversion
+    leg totals remain on `core.bridge_currency_conversions` instead of repeating
+    across the report.
     M1K.3 and MB-111 remain open until the deliberate EUR/USD statement tie-out
     also ships.
 

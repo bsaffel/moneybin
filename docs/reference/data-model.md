@@ -605,7 +605,7 @@ retain incomplete rows even when their lot or conversion lineage is missing.
 | `source_conversion_id`, `source_investment_transaction_id`, `source_transfer_id` | VARCHAR | Acquisition and intervening-transfer lineage for the consumed lot. |
 | `account_name` | VARCHAR | Resolved account display name. |
 | `currency_code`, `home_currency` | VARCHAR | Disposed Currency and the Home currency used for accounting amounts. |
-| `from_currency`, `to_currency`, `from_amount`, `to_amount` | VARCHAR / DECIMAL(18,2) | Actual disposal-conversion legs and positive magnitudes. |
+| `from_currency`, `to_currency` | VARCHAR | Actual disposal-conversion leg currencies. |
 | `source_shape`, `acquisition_type`, `cost_basis_method` | VARCHAR | Conversion shape, lot origin, and basis method. |
 | `valuation_source_type`, `executed_rate`, `valuation_rate`, `valuation_rate_date` | VARCHAR / DECIMAL(18,8) / DATE | Actual or stored valuation provenance. |
 | `from_source_type`, `from_source_origin`, `to_source_type`, `to_source_origin` | VARCHAR | Source lineage for each conversion leg. |

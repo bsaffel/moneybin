@@ -260,6 +260,7 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS status "
         "WHERE FALSE"
     )
+    # Load the shipped model so this wide report does not need a duplicate stub.
     realized_fx_model = (
         SQLMESH_ROOT / "models" / "reports" / "realized_fx.sql"
     ).read_text()

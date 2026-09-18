@@ -254,7 +254,7 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
 
 
 def test_realized_fx_declares_every_currency_in_its_mixed_unit_rows() -> None:
-    """The disposed, Home, and conversion-leg units are all explicit."""
+    """The disposed, Home, and conversion-leg currencies are all explicit."""
     report = next(
         item
         for item in get_report_catalog().list()
