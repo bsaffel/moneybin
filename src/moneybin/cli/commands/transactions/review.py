@@ -103,7 +103,10 @@ def review_impl(
             )
             raise typer.Exit(2)
         _review_matches_noninteractive(
-            confirm_id=confirm_id, reject_id=reject_id, confirm_all=confirm_all
+            confirm_id=confirm_id,
+            reject_id=reject_id,
+            confirm_all=confirm_all,
+            limit=limit,
         )
         return
 
@@ -166,7 +169,7 @@ def transactions_review(
 
 
 def _review_matches_noninteractive(
-    *, confirm_id: str | None, reject_id: str | None, confirm_all: bool
+    *, confirm_id: str | None, reject_id: str | None, confirm_all: bool, limit: int
 ) -> None:
     from moneybin.cli.utils import (
         handle_cli_errors,
@@ -194,8 +197,36 @@ def _review_matches_noninteractive(
         with get_database(read_only=False) as db:
             svc = MatchingService(db)
             if confirm_all:
-                bulk = svc.accept_all_pending(actor="cli")
-                logger.info(f"✅ Accepted {bulk.accepted} pending match(es)")
+                selection = svc.preview_pending(limit=limit)
+                from moneybin.cli.render import render_summary
+
+                render_summary(
+                    [
+                        ("Scope", f"{len(selection.ids)} pending match(es)"),
+                        ("Effect", "Accept the exact matches below"),
+                        *[
+                            (
+                                item.match_id,
+                                f"{item.match_type}: "
+                                f"{item.source_transaction_id_a} ↔ "
+                                f"{item.source_transaction_id_b}",
+                            )
+                            for item in selection.items
+                        ],
+                    ],
+                    title="Confirm match decisions",
+                )
+                logger.info(
+                    f"Confirming {len(selection.ids)} pending match(es) from the "
+                    f"first {selection.limit} in review order"
+                )
+                bulk = svc.accept_previewed(selection, actor="cli")
+                logger.info(f"✅ Accepted {bulk.accepted} previewed match(es)")
+                if bulk.accounting_stale:
+                    logger.warning(
+                        "! Match decisions were saved, but FX accounting is stale. "
+                        f"{bulk.accounting_hint or 'Refresh before relying on FX reports.'}"
+                    )
                 if bulk.reversed_by_reconciliation:
                     # Named separately from the retirement warning below: that
                     # one counts every transfer this call reversed, most of

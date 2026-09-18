@@ -180,7 +180,24 @@ def _bulk_outcome(*, accepted: int, reversed_: int, retired: int) -> MagicMock:
     outcome.accepted = accepted
     outcome.reversed_by_reconciliation = reversed_
     outcome.transfers_retired = retired
+    outcome.accounting_stale = False
     return outcome
+
+
+def _selection(*ids: str, limit: int = 50) -> MagicMock:
+    selection = MagicMock()
+    selection.ids = ids
+    selection.limit = limit
+    selection.items = tuple(
+        MagicMock(
+            match_id=match_id,
+            match_type="dedup",
+            source_transaction_id_a=f"{match_id}-a",
+            source_transaction_id_b=f"{match_id}-b",
+        )
+        for match_id in ids
+    )
+    return selection
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -195,7 +212,9 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
     committed as ``reversed``.
     """
     mock_get_db.return_value.__enter__.return_value = MagicMock()
-    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+    selection = _selection("match-1", "match-2", "match-3")
+    mock_service.return_value.preview_pending.return_value = selection
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
         accepted=2, reversed_=1, retired=1
     )
 
@@ -204,7 +223,7 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
     # Part of what the user asked for did not commit, so the exit code carries
     # it: --confirm-all is the surface most likely to be run unattended.
     assert result.exit_code == 1
-    assert "Accepted 2 pending match(es)" in result.output
+    assert "Accepted 2 previewed match(es)" in result.output
     assert "Accepted 3" not in result.output
     assert "1 of them did not stand" in result.output
 
@@ -312,15 +331,55 @@ def test_confirm_all_is_silent_about_reversals_when_none_happened(
     above while telling every user that part of their bulk accept was refused.
     """
     mock_get_db.return_value.__enter__.return_value = MagicMock()
-    mock_service.return_value.accept_all_pending.return_value = _bulk_outcome(
+    mock_service.return_value.preview_pending.return_value = _selection(
+        "match-1", "match-2", "match-3"
+    )
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
         accepted=3, reversed_=0, retired=0
     )
 
     result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
 
     assert result.exit_code == 0
-    assert "Accepted 3 pending match(es)" in result.output
+    assert "Accepted 3 previewed match(es)" in result.output
     assert "did not stand" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("command", "expects_deprecation"),
+    [
+        pytest.param(["review"], False, id="top-level"),
+        pytest.param(["transactions", "review"], True, id="deprecated-alias"),
+    ],
+)
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_previews_and_accepts_the_same_limited_selection(
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+    command: list[str],
+    expects_deprecation: bool,
+) -> None:
+    """Both review entry points use the service-owned bounded selection."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    selection = _selection("match-1", limit=1)
+    mock_service.return_value.preview_pending.return_value = selection
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
+        accepted=1, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(
+        app, [*command, "--type", "matches", "--confirm-all", "--limit", "1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert result.output.index("match-1") < result.output.index("Accepted 1")
+    if expects_deprecation:
+        assert "deprecated" in result.output
+    mock_service.return_value.preview_pending.assert_called_once_with(limit=1)
+    mock_service.return_value.accept_previewed.assert_called_once_with(
+        selection, actor="cli"
+    )
 
 
 @patch("moneybin.cli.commands.transactions.review.get_database")
