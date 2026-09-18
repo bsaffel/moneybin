@@ -8,11 +8,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.categories import (
     CategoryCreatePayload,
@@ -37,6 +40,7 @@ def categories_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list emits result rows only
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List all categories."""
     from moneybin.services.categorization import CategorizationService
@@ -51,10 +55,40 @@ def categories_list(
     if output == OutputFormat.JSON:
         render_or_json(envelope, output, cli_actor="categories_list")
         return
-    for row in payload.categories:
-        suffix = f" / {row.subcategory}" if row.subcategory else ""
-        state = "" if row.is_active else " (inactive)"
-        typer.echo(f"{row.category_id}  {row.category}{suffix}{state}")
+    policy = get_terminal_policy(no_pager=no_pager)
+    if not payload.categories:
+        emit_human_result(
+            build_summary(
+                [("Categories", "No categories match this scope.")],
+                title=(
+                    "Try: moneybin categories create --help"
+                    if include_inactive
+                    else "Try: moneybin categories list --include-inactive"
+                ),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
+        return
+    emit_human_result(
+        build_rows(
+            ["category_id", "category", "subcategory", "status"],
+            [
+                (
+                    row.category_id,
+                    row.category,
+                    row.subcategory or "-",
+                    "active" if row.is_active else "inactive",
+                )
+                for row in payload.categories
+            ],
+            terminal=policy,
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("create")
