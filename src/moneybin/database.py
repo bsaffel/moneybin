@@ -1289,20 +1289,33 @@ def database_key_error_hint(db_path: Path | None = None) -> str:
     )
 
 
-def _lock_error_message(db_path: "Path", max_wait: float) -> str:
+def _lock_error_message(db_path: "Path", max_wait: float, *, read_only: bool) -> str:
+    from moneybin.db_lock import live_writer
     from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
+    # A read-only open fails too while another process holds the file
+    # read-write, so name which open failed rather than always "write lock".
+    failed = (
+        f"Could not open the database for reading after {max_wait:.0f}s"
+        if read_only
+        else f"Could not acquire write lock after {max_wait:.0f}s"
+    )
+    # The lock metadata names the holder's operation, which a process name
+    # ("moneybin --profile") cannot — the difference between "another server is
+    # updating the schema" and "something is stuck".
+    writer = live_writer(db_path)
+    if writer is not None:
+        return (
+            f"{failed} (held by another MoneyBin process running "
+            f"{writer['operation_type']}). "
+            f"Run 'moneybin db ps' for details."
+        )
     blockers = find_blocking_processes(db_path)
     if blockers:
         names = ", ".join(describe_process(str(p["cmdline"])) for p in blockers)
-        return (
-            f"Could not acquire write lock after {max_wait:.0f}s "
-            f"(held by: {names}). "
-            f"Run 'moneybin db ps' for details."
-        )
+        return f"{failed} (held by: {names}). Run 'moneybin db ps' for details."
     return (
-        f"Could not acquire write lock after {max_wait:.0f}s. "
-        f"Another process may be writing to the database. "
+        f"{failed}. Another process may be writing to the database. "
         f"Run 'moneybin db ps' for details."
     )
 
@@ -1652,7 +1665,7 @@ def _open_with_attach_retry(
         except DatabaseLockError:
             if time.monotonic() >= deadline:
                 raise DatabaseLockError(
-                    _lock_error_message(db_path, max_wait)
+                    _lock_error_message(db_path, max_wait, read_only=read_only)
                 ) from None
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)
