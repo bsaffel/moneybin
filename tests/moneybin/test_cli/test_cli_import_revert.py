@@ -79,7 +79,7 @@ def _remaining(database: Database, import_id: str) -> int:
 
 def _status(database: Database, import_id: str) -> str:
     row = database.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert row is not None
     return str(row[0])

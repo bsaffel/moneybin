@@ -97,8 +97,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
-| (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
-| (app, import_previews) | import_id | RECORD_ID | Resulting `raw.import_log.import_id`; same class as the referenced import row. |
+| (app, imports) | import_id | RECORD_ID | FK to `app.import_log.import_id`, a content-hash internal identifier. |
+| (app, import_previews) | import_id | RECORD_ID | Resulting `app.import_log.import_id`; same class as the referenced import row. |
 | (app, import_previews) | preview_id | RECORD_ID | Opaque 12-char UUID4 handle for one expiring preview. |
 | (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
 | (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
@@ -162,6 +162,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
 | (app, export_destinations) | name, managed_tab_prefix | USER_NOTE | user-authored labels can reveal the export's purpose; mask them by default. |
 | (app, export_destinations) | destination_id, local_path, spreadsheet_id | RECORD_ID | opaque generated ID and storage/provider references; local paths follow `import_previews.file_path`. |
+| (app, import_log) | account_names | COMPOSITE_IDENTIFIER | JSON array of account names/numbers the batch touched (MB-255 moved this table `raw` → `app`, where an undeclared column fails closed to UNRESOLVED and whole-masks — this makes the prior `raw`-floor override an explicit declaration). A DuckDB JSON column reaches the redaction transform as `str`, so ACCOUNT_IDENTIFIER's partial `"****" + value[-4:]` mask would publish the tail of the *serialized array*, not of any value inside it — same reasoning as `account_link_decisions.match_signals` above. |
+| (app, import_log) | rejection_details | TXN_AMOUNT | JSON `[{row_number, reason}]`; `reason` can embed a raw unparseable source value verbatim (`transforms.py`'s `_extract_amounts` writes `f"Unparseable amount: {s!r}"`), so the worst case is an un-redacted amount string at an unknown position — same "classify by highest-sensitivity possible content" reasoning as `import_previews.snapshot_json` below, not the `tabular_formats.field_mapping`-style DESCRIPTION given to sibling JSON columns that only ever hold column names. |
 | (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
 | (app, import_previews) | file_path | RECORD_ID | Local source provenance, matching the existing `source_file` classification; never exposed as account identity. |
 | (app, import_previews) | snapshot_json | TXN_AMOUNT | Complete preview payload can contain exact sample amounts and descriptions; classify by its highest-sensitivity possible content. |

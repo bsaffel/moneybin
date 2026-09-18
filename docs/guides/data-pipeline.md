@@ -70,7 +70,7 @@ Configurable via the `matching.source_priority` setting; the live list is seeded
 
 ### `raw.*` — what loaders produce
 
-Owned by Python: every loader writes to a source-specific `raw` table via `Database.ingest_dataframe()` and records a row in `raw.import_log` for re-import detection and revert. Data is preserved as it arrived, including columns SQLMesh won't end up reading. Re-importing the same file is a no-op against the import log.
+Owned by Python: every loader writes to a source-specific `raw` table via `Database.ingest_dataframe()` and records a row in `app.import_log` for re-import detection and revert. Data is preserved as it arrived, including columns SQLMesh won't end up reading. Re-importing the same file is a no-op against the import log.
 
 | Table | Source | Written by |
 |---|---|---|
@@ -83,7 +83,6 @@ Owned by Python: every loader writes to a source-specific `raw` table via `Datab
 | `raw.plaid_transactions` | Plaid `/transactions/sync` | `sync pull` |
 | `raw.plaid_balances` | Plaid balance snapshots | `sync pull` |
 | `raw.manual_transactions` | Manual entries | `transactions create` |
-| `raw.import_log` | Per-file import metadata | every loader |
 
 Adding a new source = a new `raw.<source>_transactions` (and `_accounts`, `_balances` as relevant) plus the staging view below. No consumer code changes.
 
@@ -150,7 +149,7 @@ Owned by services (Python). The `app` schema holds anything you do *to* a transa
 | `app.user_categories` | User-added categories layered onto the seed taxonomy | category service |
 | `app.user_merchants` | User-asserted merchant identities and aliases | merchant service |
 | `app.audit_log` | Append-only audit trail of every state-changing operation | every write |
-| `app.imports`, `app.tabular_formats`, `app.schema_migrations`, `app.versions` | Pipeline state and migration bookkeeping | system |
+| `app.import_log`, `app.imports`, `app.tabular_formats`, `app.schema_migrations`, `app.versions` | Pipeline state and migration bookkeeping | system |
 
 **`app.*` writes are flat-relational** (one row per note, tag, split). The nesting into `LIST(STRUCT)` happens at the read boundary inside `core.fct_transactions`. That's a deliberate split: writes are simple and indexable; reads are agent-friendly.
 
@@ -192,7 +191,7 @@ One view per CLI/MCP report, with one exception: `reports.net_worth` also backs 
 Trace a single transaction end to end, starting from a CSV row.
 
 1. **The CSV lands in the inbox or you run `moneybin import files`.** The tabular importer detects delimiter, header, and sign convention; matches columns against the alias dictionary; resolves the account.
-2. **The loader writes `raw.tabular_transactions`** via `Database.ingest_dataframe()`. Each row carries a content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated to 16 hex, prefixed by source — see `.claude/rules/identifiers.md`). A row also lands in `raw.import_log` capturing the file hash, batch ID, and source path.
+2. **The loader writes `raw.tabular_transactions`** via `Database.ingest_dataframe()`. Each row carries a content-hash `transaction_id` (SHA-256 of `date|amount|description|account_id`, truncated to 16 hex, prefixed by source — see `.claude/rules/identifiers.md`). A row also lands in `app.import_log` capturing the file hash, batch ID, and source path.
 3. **`refresh` runs automatically after the import** (unless you passed `--no-refresh`). The cascade is gsheet → match → investment_match → transform → categorize → identity → rates, in that order.
 4. **`prep.stg_tabular__transactions`** projects the raw row into the canonical staging shape: casts types, trims strings, normalizes column names. Still one row per source row.
 5. **`prep.int_transactions__unioned`** unions OFX, tabular, manual, and Plaid staging views. The CSV row sits alongside any other source rows with their own source-specific `transaction_id`s.
@@ -504,7 +503,6 @@ Imported Data Summary
 ============================================================
   raw.exchange_rates: 0 rows
   raw.gsheet_seeds: 0 rows
-  raw.import_log: 0 rows
   raw.import_preview_snapshots: 0 rows
   raw.manual_investment_transactions: 0 rows
   raw.manual_transactions: 0 rows

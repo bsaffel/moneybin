@@ -597,14 +597,14 @@ Applies the confirmed mapping to produce the canonical raw schema shape.
 ### Stage 5: Load
 
 - **Create import batch** — generate a UUID `import_id` and write a record to
-  `raw.import_log` before inserting any transaction rows. This is the anchor for
+  `app.import_log` before inserting any transaction rows. This is the anchor for
   import history, reverting, and diagnostics.
 - Write to `raw.tabular_transactions` and `raw.tabular_accounts` via the `Database`
   class's new `ingest_dataframe()` method (Polars → Arrow zero-copy → DuckDB).
   Every row carries the `import_id` from this batch.
 - Dedup via primary key (`INSERT OR REPLACE`).
 - Update format usage metadata (`times_used`, `last_used_at`) in `app.tabular_formats`.
-- **Finalize import batch** — update `raw.import_log` with final row counts, status
+- **Finalize import batch** — update `app.import_log` with final row counts, status
   (`complete` or `partial` if some rows were rejected), and any diagnostic flags
   (balance validation result, rows rejected, trailing rows skipped).
 - Auto-save detected format if `save_format=True` (default). The format `name` is
@@ -659,7 +659,7 @@ CREATE TABLE raw.tabular_transactions (
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file at time of extraction
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data (e.g. "chase_credit", "tiller", Plaid item_id); scopes Tier 2b dedup
-    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in raw.import_log; enables import reverting and history
+    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
     row_number INTEGER,                         -- 1-based row/line number in the source file; invaluable for debugging import issues and deterministic hash generation
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
@@ -682,7 +682,7 @@ CREATE TABLE raw.tabular_accounts (
     source_file VARCHAR NOT NULL,               -- Absolute path to the imported file that created or updated this account record
     source_type VARCHAR NOT NULL,               -- Import pathway that produced this record: csv, tsv, excel, parquet, feather, pipe
     source_origin VARCHAR NOT NULL,             -- Institution/connection/format that produced this data; matches the format name for tabular imports
-    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in raw.import_log; enables import reverting and history
+    import_id VARCHAR NOT NULL,                 -- UUID linking this row to its import batch in app.import_log; enables import reverting and history
     extracted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Timestamp when the extraction pipeline processed this record
     loaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,    -- Timestamp when this record was written to the raw table
     PRIMARY KEY (account_id, source_file)
@@ -692,7 +692,7 @@ CREATE TABLE raw.tabular_accounts (
 ### Import log table
 
 ```sql
-CREATE TABLE raw.import_log (
+CREATE TABLE app.import_log (
     /* Audit log of every tabular file import. Each import batch gets a UUID that is
        stamped on every raw row it produces, enabling import history, reverting, and
        diagnostics. Reverting a bad import must be trivial, not catastrophic. */
@@ -1417,7 +1417,7 @@ storage. The format-agnostic boundary is a Polars DataFrame.
 - `number_format` and `skip_trailing_patterns` round-trip through YAML and DB
 
 **Import batch tracking:**
-- Import creates `raw.import_log` record with correct metadata
+- Import creates `app.import_log` record with correct metadata
 - `import_id` stamped on every raw transaction and account row
 - Import history returns batches in reverse chronological order
 - Import revert deletes all rows with matching `import_id`
@@ -1679,7 +1679,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 | `src/moneybin/sql/schema/raw_tabular_transactions.sql` | DDL for `raw.tabular_transactions` |
 | `src/moneybin/sql/schema/raw_tabular_accounts.sql` | DDL for `raw.tabular_accounts` |
 | `src/moneybin/sql/schema/app_tabular_formats.sql` | DDL for `app.tabular_formats` |
-| `src/moneybin/sql/schema/raw_import_log.sql` | DDL for `raw.import_log` |
+| `src/moneybin/sql/schema/app_import_log.sql` | DDL for `app.import_log` |
 | `src/moneybin/data/tabular_formats/chase_credit.yaml` | Built-in Chase credit format (migrated from `csv_profiles/`) |
 | `src/moneybin/data/tabular_formats/citi_credit.yaml` | Built-in Citi credit format (migrated from `csv_profiles/`) |
 | `src/moneybin/data/tabular_formats/tiller.yaml` | Built-in Tiller format |
@@ -1729,7 +1729,7 @@ is catastrophic. Fixtures are the primary defense against regression.
 | Transaction ID | Deterministic hash per layer; different identity spaces | Raw: idempotent re-import. Core: independent of source. |
 | Sign normalization | At extract time (Stage 4) | Downstream code always sees negative=expense |
 | Multi-account | Auto-detected from account columns in data | Preserves distinct account identity within a single export |
-| Import batch tracking | UUID `import_id` on every row + `raw.import_log` table | Enables import reverting (critical for user confidence), history, and diagnostics |
+| Import batch tracking | UUID `import_id` on every row + `app.import_log` table | Enables import reverting (critical for user confidence), history, and diagnostics |
 | Date disambiguation | Positional value >12 analysis + range reasonableness scoring | Deterministic and explainable; resolves DD/MM vs MM/DD ambiguity |
 | Number format detection | Four named conventions (US, European, Swiss/French, zero-decimal) | Covers common international conventions without locale guessing |
 | Running balance validation | Sequential delta check on balance column when present | Free validation signal that catches sign-convention errors |
