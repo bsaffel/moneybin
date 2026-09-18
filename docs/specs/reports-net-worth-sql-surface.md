@@ -1877,7 +1877,7 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and seven acceptance tests for
+tests named in §Testing Strategy, and ten acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V063 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
@@ -1907,7 +1907,15 @@ row to snapshot), `after_value.include_in_net_worth = FALSE`,
 `archived = TRUE`: never warns either, pinning that a `NULL` `before_value`
 settles the account the same way a stored `TRUE` does, rather than falling
 through to a warning because neither the marker nor a stored-`TRUE` snapshot
-exists to read.
+exists to read; as a fifth negative, an account whose `include_in_net_worth =
+FALSE` predates the audit log, archived today through `AccountService.archive()`
+with no other audit history, never warns — pinning that only a pre-V063 image
+(no `archived_at` key) is cascade evidence; a backfilled account settled by
+`accounts set --include` and then returned to `FALSE` by undoing that write
+warns again, pinning that an undone decision does not settle; and a backfilled
+account whose history also holds a hand-built `account_settings.set.undo` row
+with the standalone-exclusion shape still warns, pinning that an undo row never
+settles.
 
 ### Files to Modify
 
@@ -2681,7 +2689,10 @@ approved as a footnote rather than reviewed on its own terms.
   evidence of a historical archive/cascade action** — an
   `account_settings.set` row whose full-row snapshot (`after_value`) records
   `archived = TRUE` at that point in time, regardless of the account's
-  *current* `archived` value. That third clause is the scope fix: a legacy
+  *current* `archived` value, in a pre-V063 image (one whose `after_value`
+  carries no `archived_at` key). A post-V063 archive cannot be the retired
+  cascade, and every post-V063 capture carries the key, present even when
+  `NULL`. That third clause is the scope fix: a legacy
   account whose `include_in_net_worth = FALSE` never passed through the
   cascade — set directly via `--exclude`, or predating this feature and its
   audit trail entirely — carries no `archived = TRUE` audit row at all, so it
@@ -2718,7 +2729,14 @@ approved as a footnote rather than reviewed on its own terms.
   `None`, no marker is written, regardless of what the flag's stored value
   ends up being. The check's `NOT EXISTS` therefore looks for that marker,
   not for a timestamp — any account with a marked row is settled, whenever
-  it was written, and a rename or an omitted flag never produces one.
+  it was written, unless that write was later undone, and a rename or an
+  omitted flag never produces one.
+  A settling row, marked or matching the row shape below, counts only while
+  no audit row carries its `operation_id` as `undoes_operation_id`, and an
+  undo row (`account_settings.set.undo`) never settles on its own. A redo
+  carries no marker, so a decision undone and then redone warns again until
+  `accounts set` restates it: the accepted cost of reading intent only from
+  the write that named the flag.
 
   That marker only exists on writes made after this feature ships, though
   — a `--exclude` predating it leaves no `context_json` at all. Such a

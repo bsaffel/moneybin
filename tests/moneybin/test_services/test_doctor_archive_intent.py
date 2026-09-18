@@ -1,4 +1,4 @@
-"""account_archive_intent_ambiguous: the seven acceptance cases.
+"""account_archive_intent_ambiguous: the acceptance cases.
 
 See docs/specs/reports-net-worth-sql-surface.md §Implementation Plan → Tests.
 """
@@ -13,6 +13,8 @@ from moneybin.database import Database
 from moneybin.services.account_service import AccountService
 from moneybin.services.audit_service import AuditService
 from moneybin.services.doctor_service import DoctorService, InvariantResult
+from moneybin.services.mutation_context import operation
+from moneybin.services.undo_service import UndoService
 from tests.moneybin.db_helpers import create_core_tables
 
 _NAME = "account_archive_intent_ambiguous"
@@ -194,5 +196,44 @@ def test_only_ambiguous_accounts_are_named(intent_db: Database) -> None:
     _cascade_archive(intent_db, "acct_b")
     AccountService(intent_db).settings_update(
         "acct_b", include_in_net_worth=False, actor="cli"
+    )
+    assert _result(intent_db).affected_ids == ["acct_a"]
+
+
+@pytest.mark.unit
+def test_post_v063_archive_of_legacy_exclusion_never_warns(
+    intent_db: Database,
+) -> None:
+    # An exclusion that predates the audit log, archived today: the retired
+    # cascade cannot have written it, so the post-V063 image is no evidence.
+    _legacy_settings_row(intent_db, "acct_a", archived=False)
+    AccountService(intent_db).archive("acct_a", actor="cli")
+    assert _result(intent_db).status == "pass"
+
+
+@pytest.mark.unit
+def test_undone_include_decision_warns_again(intent_db: Database) -> None:
+    _cascade_archive(intent_db, "acct_a")
+    with operation() as op:
+        AccountService(intent_db).settings_update(
+            "acct_a", include_in_net_worth=True, actor="cli"
+        )
+    assert _result(intent_db).status == "pass"
+    UndoService(intent_db).undo(op, actor="cli")
+    result = _result(intent_db)
+    assert result.status == "warn"
+    assert result.affected_ids == ["acct_a"]
+
+
+@pytest.mark.unit
+def test_undo_row_never_settles(intent_db: Database) -> None:
+    # An undo row shaped like a standalone exclusion must not settle the account.
+    _cascade_archive(intent_db, "acct_a")
+    AuditService(intent_db).record_audit_event(
+        action="account_settings.set.undo",
+        target=(*_TARGET, "acct_a"),
+        before=_row(archived=False, include=True),
+        after=_row(archived=False, include=False),
+        actor="cli",
     )
     assert _result(intent_db).affected_ids == ["acct_a"]

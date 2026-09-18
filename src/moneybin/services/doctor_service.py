@@ -1189,11 +1189,14 @@ class DoctorService:
         The pre-V063 cascade forced ``include_in_net_worth = FALSE`` in the same
         write as ``archived = TRUE``, and its audit image is byte-identical to a
         caller who archived *and* excluded in one call, so V063 left the flag as
-        stored. This names every such account until an audit row proves a
-        decision: the ``confirms_include_in_net_worth`` marker, or a pre-marker
-        forward write that excluded without archiving. Reads ``app.*`` directly,
-        not ``core.dim_accounts``, so a fresh ``accounts set`` clears it without
-        a transform. See reports-net-worth-sql-surface.md §Prerequisites.
+        stored. Evidence is a pre-V063 archive image (no ``archived_at`` key),
+        since a later archive cannot be the cascade. This names every such
+        account until an audit row proves a decision: the
+        ``confirms_include_in_net_worth`` marker, or a pre-marker forward write
+        that excluded without archiving, either one not since undone. Reads
+        ``app.*`` directly, not ``core.dim_accounts``, so a fresh ``accounts
+        set`` clears it without a transform. See
+        reports-net-worth-sql-surface.md §Prerequisites.
         """
         name = "account_archive_intent_ambiguous"
         try:
@@ -1209,6 +1212,8 @@ class DoctorService:
                         AND a.target_id = s.account_id
                         AND a.action LIKE 'account_settings.set%'
                         AND json_extract_string(a.after_value, '$.archived') = 'true'
+                        -- pre-V063 image: post-V063 writes always carry the key
+                        AND NOT json_exists(a.after_value, '$.archived_at')
                   )
                   AND NOT EXISTS (
                       SELECT 1 FROM {AUDIT_LOG.full_name} AS a
@@ -1216,6 +1221,10 @@ class DoctorService:
                         AND a.target_table = 'account_settings'
                         AND a.target_id = s.account_id
                         AND a.action = 'account_settings.set'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM {AUDIT_LOG.full_name} AS u
+                            WHERE u.undoes_operation_id = a.operation_id
+                        )
                         AND (
                             json_extract_string(a.context_json, ?) = 'true'
                             OR (
@@ -1253,7 +1262,7 @@ class DoctorService:
                     f"{len(rows)} account(s) are left out of net worth by a flag "
                     "the retired archive cascade may have written, not one you "
                     "chose. Run `moneybin accounts set <account> --include` to "
-                    "count it, or `--exclude` to confirm it stays out"
+                    "count one, or `--exclude` to confirm it stays out"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
             )
