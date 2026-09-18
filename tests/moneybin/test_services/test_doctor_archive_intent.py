@@ -84,7 +84,7 @@ def test_backfilled_cascade_account_warns(intent_db: Database) -> None:
     result = _result(intent_db)
     assert result.name == _NAME
     assert result.status == "warn"
-    assert result.affected_ids == ["acct_a"]
+    assert result.affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -93,7 +93,7 @@ def test_still_warns_after_unarchive(intent_db: Database) -> None:
     AccountService(intent_db).unarchive("acct_a", actor="cli")
     result = _result(intent_db)
     assert result.status == "warn"
-    assert result.affected_ids == ["acct_a"]
+    assert result.affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -131,7 +131,7 @@ def test_unrelated_settings_write_does_not_clear_it(
     service = AccountService(intent_db)
     service.settings_update("acct_a", display_name="Renamed", actor="cli")
     service.settings_update("acct_a", currency_code="EUR", actor="cli")
-    assert _result(intent_db).affected_ids == ["acct_a"]
+    assert _result(intent_db).affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -187,7 +187,7 @@ def test_first_write_that_also_archives_is_the_cascade(intent_db: Database) -> N
     # is the cascade's signature, not a standalone exclusion.
     _legacy_settings_row(intent_db, "acct_a", archived=True)
     _legacy_audit(intent_db, "acct_a", None, _row(archived=True, include=False))
-    assert _result(intent_db).affected_ids == ["acct_a"]
+    assert _result(intent_db).affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -215,7 +215,7 @@ def test_pre_marker_exclude_superseded_by_later_cascade_warns(
         _row(archived=False, include=True),
         _row(archived=True, include=False),
     )
-    assert _result(intent_db).affected_ids == ["acct_a"]
+    assert _result(intent_db).affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -260,7 +260,7 @@ def test_only_ambiguous_accounts_are_named(intent_db: Database) -> None:
     AccountService(intent_db).settings_update(
         "acct_b", include_in_net_worth=False, actor="cli"
     )
-    assert _result(intent_db).affected_ids == ["acct_a"]
+    assert _result(intent_db).affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -285,7 +285,7 @@ def test_undone_include_decision_warns_again(intent_db: Database) -> None:
     UndoService(intent_db).undo(op, actor="cli")
     result = _result(intent_db)
     assert result.status == "warn"
-    assert result.affected_ids == ["acct_a"]
+    assert result.affected_ids == ["account:acct_a"]
 
 
 @pytest.mark.unit
@@ -299,4 +299,16 @@ def test_undo_row_never_settles(intent_db: Database) -> None:
         after=_row(archived=False, include=False),
         actor="cli",
     )
-    assert _result(intent_db).affected_ids == ["acct_a"]
+    assert _result(intent_db).affected_ids == ["account:acct_a"]
+
+
+@pytest.mark.unit
+def test_account_number_shaped_id_is_masked(intent_db: Database) -> None:
+    raw = "9876543210"  # synthetic source-native account number
+    intent_db.execute(
+        "INSERT INTO core.dim_accounts (account_id) VALUES (?)", [raw]
+    )  # test fixture
+    _cascade_archive(intent_db, raw)
+    (affected,) = _result(intent_db).affected_ids
+    assert affected.startswith("account:")
+    assert raw not in affected

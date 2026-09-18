@@ -1285,7 +1285,7 @@ class DoctorService:
                     "chose. Run `moneybin accounts set <account> --include` to "
                     "count one, or `--exclude` to confirm it stays out"
                 ),
-                affected_ids=[str(r[0]) for r in rows],
+                affected_ids=_masked_account_affected_ids(str(r[0]) for r in rows),
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
