@@ -54,6 +54,85 @@ class CategorySourceMapRepo(BaseRepo):
             str(row["source_category_code"]),
         )
 
+    def upsert(
+        self,
+        *,
+        source_type: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str,
+        code_level: str = "detailed",
+        source_taxonomy_version: str | None = None,
+        actor: str,
+        parent_audit_id: str | None = None,
+        in_outer_txn: bool = False,
+    ) -> AuditEvent:
+        """Upsert one provider/exporter category-code mapping.
+
+        ``source_category_code`` is derived, not accepted directly: an
+        imported row carries ``category`` and ``subcategory`` as independent
+        text, but the table's key is one string. Encoding both via DuckDB's
+        own ``to_json`` (see ``_shared.source_category_code_expr``) keeps the
+        code lossless and delimiter-free — the exact same expression the
+        read-side bridge lookup in
+        ``CategorizationOrchestrator._source_category_bridge_candidates``
+        uses, so the two sides can never drift apart.
+
+        ``source_type`` holds a provider's own vocabulary tag for Plaid-style
+        rows (``'plaid'``) but a ``source_origin`` value for an imported
+        mapping (``'chase_credit'``, ``'mint'``) per the owner's ruling —
+        two exporters must be free to map the same category string to two
+        different MoneyBin categories.
+        """
+        # Deferred import: ``_shared`` lives under ``services.categorization``,
+        # whose __init__ imports the applier (which imports this repo). A
+        # module-level import would form a cycle; by call time the package is
+        # initialized. Mirrors ``TransactionCategoriesRepo.upsert_guarded``'s
+        # deferred import of ``priority_case_sql`` for the same reason.
+        from moneybin.services.categorization._shared import (
+            source_category_code_expr,
+        )
+
+        code_row = self._db.execute(
+            f"SELECT {source_category_code_expr('?', '?')}",  # code-constant SQL expression; values parameterized
+            [category, subcategory],
+        ).fetchone()
+        source_category_code = str(code_row[0]) if code_row is not None else ""
+        with self._transaction(in_outer_txn=in_outer_txn):
+            before = self._fetch_row(source_type, source_category_code)
+            self._db.execute(
+                f"""
+                INSERT INTO {CATEGORY_SOURCE_MAP.full_name}
+                    (source_type, source_category_code, code_level, category_id,
+                     source_taxonomy_version, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT (source_type, source_category_code) DO UPDATE SET
+                    code_level = EXCLUDED.code_level,
+                    category_id = EXCLUDED.category_id,
+                    source_taxonomy_version = EXCLUDED.source_taxonomy_version,
+                    updated_at = EXCLUDED.updated_at
+                """,  # noqa: S608  # TableRef + parameterized values
+                [
+                    source_type,
+                    source_category_code,
+                    code_level,
+                    category_id,
+                    source_taxonomy_version,
+                ],
+            )
+            after = self._fetch_row(source_type, source_category_code)
+            return self._emit_audit(
+                action="category_source_map.upsert",
+                target=(
+                    *self._audit_target,
+                    self._target_id(source_type, source_category_code),
+                ),
+                before=self._serialize_for_audit(before),
+                after=self._serialize_for_audit(after),
+                actor=actor,
+                parent_audit_id=parent_audit_id,
+            )
+
     def delete(
         self,
         *,

@@ -654,6 +654,10 @@ class CategorizationService:
         """Apply Plaid PFC categories (via the category-source bridge) to still-uncategorized Plaid transactions."""
         return self._orchestrator.apply_plaid_categories()
 
+    def apply_source_category_map(self) -> int:
+        """Apply imported category text (via the category-source bridge) to still-uncategorized rows."""
+        return self._orchestrator.apply_source_category_map()
+
     def improve_ai_categories(self) -> int:
         """Upgrade AI-guessed categorizations to confident Plaid provider_native."""
         return self._orchestrator.improve_ai_categories()
@@ -685,16 +689,20 @@ class CategorizationService:
         # below, which runs engines in the requested order — necessary to
         # honor the order contract documented on the MCP tool.
         # categorize_pending() shares one uncategorized-rows fetch across both
-        # engines and enforces rule-priority-wins on conflicts. include_plaid=False
-        # keeps this fast path scoped to exactly the two requested engines —
-        # categorize_pending's default also runs a third (plaid) pass, which
-        # `methods: list[Literal["rules", "merchants"]]` has no way to request
-        # and this breakdown has no key to report it under.
+        # engines and enforces rule-priority-wins on conflicts.
+        # include_provider_native=False keeps this fast path scoped to
+        # exactly the two requested engines — categorize_pending's default
+        # also runs two provider_native passes (plaid, source_category_map),
+        # which `methods: list[Literal["rules", "merchants"]]` has no way to
+        # request and this breakdown has no key to report them under.
         if effective == ["rules", "merchants"]:
-            breakdown = self._orchestrator.categorize_pending(include_plaid=False)
+            breakdown = self._orchestrator.categorize_pending(
+                include_provider_native=False
+            )
             # categorize_pending returns {"rule": N, "merchant": N, "plaid": N,
-            # "total": N} — keys are singular; the public API exposes plural
-            # for symmetry with the methods=[...] parameter.
+            # "source_category_map": N, "total": N} — keys are singular; the
+            # public API exposes plural for symmetry with the methods=[...]
+            # parameter.
             result["applied_by_method"] = {
                 "rules": breakdown.get("rule", 0),
                 "merchants": breakdown.get("merchant", 0),
