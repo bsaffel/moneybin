@@ -1,4 +1,4 @@
-"""Tests for the generic import_log module."""
+"""Tests for ``ImportLogRepo`` — batch-lifecycle bookkeeping over raw.import_log."""
 
 import json
 from unittest.mock import MagicMock
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from moneybin.database import Database
-from moneybin.loaders import import_log
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.services.import_service import ImportService
 
 
@@ -15,10 +15,10 @@ def test_get_import_history_preserves_legacy_started_at_only_query() -> None:
     db = MagicMock(spec=Database)
     db.execute.return_value.fetchall.return_value = []
 
-    import_log.get_import_history(db, limit=7)
+    ImportLogRepo(db).get_import_history(limit=7)
 
     query, params = db.execute.call_args.args
-    assert "ORDER BY started_at DESC\n            LIMIT ?" in query
+    assert "ORDER BY started_at DESC\n                LIMIT ?" in query
     assert "import_id DESC" not in query
     assert "OFFSET" not in query
     assert params == [7]
@@ -28,8 +28,7 @@ class TestBeginImport:
     """begin_import creates a 'importing' status row and returns a UUID."""
 
     def test_returns_uuid_string(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/test.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
@@ -39,8 +38,7 @@ class TestBeginImport:
         assert import_id.count("-") == 4
 
     def test_writes_pending_row(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/test.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
@@ -63,15 +61,13 @@ class TestFinalizeImport:
     """finalize_import updates status, counts, and completed_at."""
 
     def test_marks_complete(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/test.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db,
+        ImportLogRepo(db).finalize_import(
             import_id,
             status="complete",
             rows_total=100,
@@ -87,57 +83,112 @@ class TestFinalizeImport:
         assert row[1] == 100
         assert row[2] is not None
 
+    def test_persists_rejection_details_as_json(self, db: Database) -> None:
+        """Per-row rejection reasons round-trip through the JSON column.
+
+        ``moneybin import history`` and ``import_status`` read this column to
+        explain why rows were rejected, so a broken encode ships silently.
+        """
+        details = [
+            {"row": "7", "reason": "unparseable date"},
+            {"row": "12", "reason": "missing amount"},
+        ]
+        import_id = ImportLogRepo(db).begin_import(
+            source_file="/tmp/rejects.csv",  # noqa: S108  # test fixture path
+            source_type="csv",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        ImportLogRepo(db).finalize_import(
+            import_id,
+            status="partial",
+            rows_total=20,
+            rows_imported=18,
+            rows_rejected=2,
+            rejection_details=details,
+        )
+        row = db.execute(
+            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        assert row is not None
+        assert json.loads(row[0]) == details
+
+    def test_omitted_rejection_details_stays_null(self, db: Database) -> None:
+        """The empty case writes NULL, not the string ``"null"`` or ``"[]"``.
+
+        Pairs with the round-trip above so a swapped ternary on the
+        ``json.dumps(...) if rejection_details else None`` branch fails one
+        test or the other rather than passing both.
+        """
+        import_id = ImportLogRepo(db).begin_import(
+            source_file="/tmp/clean.csv",  # noqa: S108  # test fixture path
+            source_type="csv",
+            source_origin="wells_fargo",
+            account_names=["checking"],
+        )
+        ImportLogRepo(db).finalize_import(
+            import_id,
+            status="complete",
+            rows_total=20,
+            rows_imported=20,
+            rejection_details=[],
+        )
+        row = db.execute(
+            "SELECT rejection_details FROM raw.import_log WHERE import_id = ?",
+            [import_id],
+        ).fetchone()
+        assert row is not None
+        assert row[0] is None
+
 
 class TestFindExistingImport:
     """find_existing_import detects prior imports of the same source_file."""
 
     def test_returns_none_for_new_file(self, db: Database) -> None:
-        result = import_log.find_existing_import(db, "/tmp/never_imported.ofx")  # noqa: S108  # test fixture path
+        result = ImportLogRepo(db).find_existing_import("/tmp/never_imported.ofx")  # noqa: S108  # test fixture path
         assert result is None
 
     def test_returns_import_id_and_status_for_imported_file(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/once.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(db, "/tmp/once.ofx")  # noqa: S108  # test fixture path
+        result = ImportLogRepo(db).find_existing_import("/tmp/once.ofx")  # noqa: S108  # test fixture path
         assert result == (import_id, "complete")
 
     def test_returns_importing_status_for_in_progress_batch(self, db: Database) -> None:
         """A crashed/in-progress batch is detectable so callers can craft a clear error."""
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/in_progress.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
         # Don't finalize — simulate a crash mid-import.
-        result = import_log.find_existing_import(db, "/tmp/in_progress.ofx")  # noqa: S108  # test fixture path
+        result = ImportLogRepo(db).find_existing_import("/tmp/in_progress.ofx")  # noqa: S108  # test fixture path
         assert result == (import_id, "importing")
 
     def test_skips_reverted_imports(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/reverted.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=0, rows_imported=0
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=0, rows_imported=0
         )
-        # Revert lives on the service, not the loader; use it as setup so the
+        # Revert lives on the service, not the repo; use it as setup so the
         # real assertion (find_existing_import skips reverted batches) stays
-        # focused on this module's behavior.
+        # focused on this repo's behavior.
         ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
-        result = import_log.find_existing_import(db, "/tmp/reverted.ofx")  # noqa: S108  # test fixture path
+        result = ImportLogRepo(db).find_existing_import("/tmp/reverted.ofx")  # noqa: S108  # test fixture path
         assert result is None
 
 
@@ -155,19 +206,17 @@ class TestFindExistingImportByContent:
     _OTHER_DIGEST = "b" * 64
 
     def test_matches_a_renamed_copy_by_content(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.pdf",  # noqa: S108  # test fixture path
             source_type="pdf",
             source_origin="chase",
             account_names=["sapphire"],
             file_sha256=self._DIGEST,
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Statements/2026-06 chase.pdf",  # noqa: S108  # test fixture path
             file_sha256=self._DIGEST,
         )
@@ -185,38 +234,34 @@ class TestFindExistingImportByContent:
         different document. Matching such a row on path alone would reject a
         genuinely new statement as "already imported".
         """
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
             file_sha256=self._DIGEST,
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/statement.ofx",  # noqa: S108  # same path...
             file_sha256=self._OTHER_DIGEST,  # ...different bytes
         )
         assert result is None
 
     def test_does_not_match_different_content_at_a_new_path(self, db: Database) -> None:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/june.pdf",  # noqa: S108  # test fixture path
             source_type="pdf",
             source_origin="chase",
             account_names=["sapphire"],
             file_sha256=self._DIGEST,
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/july.pdf",  # noqa: S108  # test fixture path
             file_sha256=self._OTHER_DIGEST,
         )
@@ -226,18 +271,16 @@ class TestFindExistingImportByContent:
         self, db: Database
     ) -> None:
         """Batches predating file_sha256 carry NULL — not a wildcard."""
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/legacy-copy.ofx",  # noqa: S108  # test fixture path
             file_sha256=self._DIGEST,
         )
@@ -247,18 +290,16 @@ class TestFindExistingImportByContent:
         self, db: Database
     ) -> None:
         """NULL == NULL must not match: a caller with no digest matches on path only."""
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/legacy.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/unrelated.ofx",  # noqa: S108  # test fixture path
             file_sha256=None,
         )
@@ -274,18 +315,16 @@ class TestFindExistingImportByContent:
         and letting ``--force`` decide is the conservative answer, and this
         pins it: only the *permanence* below is the defect.
         """
-        legacy = import_log.begin_import(
-            db,
+        legacy = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, legacy, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            legacy, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             file_sha256=self._DIGEST,
         )
@@ -304,32 +343,29 @@ class TestFindExistingImportByContent:
         imported with a real digest, content is available for that path and the
         legacy row's "something was imported here" is subsumed by it.
         """
-        legacy = import_log.begin_import(
-            db,
+        legacy = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, legacy, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            legacy, status="complete", rows_total=1, rows_imported=1
         )
-        digest_backed = import_log.begin_import(
-            db,
+        digest_backed = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
             file_sha256=self._DIGEST,
         )
-        import_log.finalize_import(
-            db, digest_backed, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            digest_backed, status="complete", rows_total=1, rows_imported=1
         )
 
         # Next month's statement, saved over the same filename: neither row
         # describes these bytes.
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             file_sha256=self._OTHER_DIGEST,
         )
@@ -339,29 +375,26 @@ class TestFindExistingImportByContent:
         self, db: Database
     ) -> None:
         """Retiring the legacy fallback must not cost real duplicate detection."""
-        legacy = import_log.begin_import(
-            db,
+        legacy = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
         )
-        import_log.finalize_import(
-            db, legacy, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            legacy, status="complete", rows_total=1, rows_imported=1
         )
-        digest_backed = import_log.begin_import(
-            db,
+        digest_backed = ImportLogRepo(db).begin_import(
             source_file="/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             source_type="ofx",
             source_origin="wells_fargo",
             account_names=["checking"],
             file_sha256=self._DIGEST,
         )
-        import_log.finalize_import(
-            db, digest_backed, status="complete", rows_total=1, rows_imported=1
+        ImportLogRepo(db).finalize_import(
+            digest_backed, status="complete", rows_total=1, rows_imported=1
         )
-        result = import_log.find_existing_import(
-            db,
+        result = ImportLogRepo(db).find_existing_import(
             "/tmp/Downloads/statement.ofx",  # noqa: S108  # test fixture path
             file_sha256=self._DIGEST,
         )
@@ -373,8 +406,7 @@ class TestBeginImportValidatesSourceType:
 
     def test_rejects_unknown_source_type(self, db: Database) -> None:
         with pytest.raises(ValueError, match="Unknown source_type"):
-            import_log.begin_import(
-                db,
+            ImportLogRepo(db).begin_import(
                 source_file="/tmp/x",  # noqa: S108  # test fixture path
                 source_type="nope",  # type: ignore[arg-type]  # intentional: testing runtime validation
                 source_origin="x",

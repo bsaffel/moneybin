@@ -2426,13 +2426,14 @@ def import_history(
     from moneybin.cli.output import render_or_json
     from moneybin.cli.utils import handle_cli_errors
     from moneybin.database import get_database
-    from moneybin.extractors.tabular import TabularExtractor
     from moneybin.protocol.envelope import build_envelope
+    from moneybin.services.import_service import ImportService
 
     with handle_cli_errors():
         with get_database(read_only=True) as db:
-            extractor = TabularExtractor(db)
-            records = extractor.get_import_history(limit=limit, import_id=import_id)
+            records = ImportService(db).get_import_history(
+                limit=limit, import_id=import_id
+            )
 
     if output == OutputFormat.JSON:
         from moneybin.privacy.payloads.imports import ImportStatusPayload

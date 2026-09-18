@@ -1327,11 +1327,11 @@ def import_status(
         limit: Maximum number of records to return (default 20).
         import_id: Filter to a specific import ID for full details.
     """
-    from moneybin.loaders import import_log
+    from moneybin.services.import_service import ImportService
 
     with get_database(read_only=True) as db:
-        records = import_log.get_import_history(
-            db, limit=min(limit, 200), import_id=import_id
+        records = ImportService(db).get_import_history(
+            limit=min(limit, 200), import_id=import_id
         )
     return build_envelope(
         data=ImportStatusPayload(records=records),
@@ -1694,20 +1694,19 @@ def import_status_coarse(
 
     for section in requested:
         if section == "imports":
-            from moneybin.loaders import import_log
+            from moneybin.services.import_service import ImportService
 
             with get_database(read_only=True) as db:
+                import_service = ImportService(db)
                 if import_id is not None:
-                    records = import_log.get_import_history(
-                        db,
+                    records = import_service.get_import_history(
                         limit=1,
                         import_id=import_id,
                     )
                     count = len(records)
                     page = None
                 else:
-                    page = import_log.get_import_history_page(
-                        db,
+                    page = import_service.get_import_history_page(
                         limit=limit,
                         snapshot_started_at=(
                             cast(str, position.snapshot[0])
