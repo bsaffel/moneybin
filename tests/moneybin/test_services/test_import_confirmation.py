@@ -21,6 +21,8 @@ from moneybin.services.import_confirmation import (
     TabularReadOptions,
     disputed_row_fields,
     header_position_ambiguous_recovery,
+    header_row_consumed_recovery,
+    header_row_consumed_recovery_mcp,
     resolve_or_confirm,
     unreadable_date_recovery,
     validate_partial_mapping,
@@ -1170,6 +1172,228 @@ class TestHeaderPositionAmbiguousRecovery:
             "--encoding",
         ):
             assert flag not in message
+
+
+class TestHeaderRowConsumedRecovery:
+    """The consumed-header recovery text, CLI and MCP.
+
+    Both must name the recoveries proven in
+    ``test_tabular_import_service.py`` (re-import without naming the stale
+    format; delete it) and must no longer send a caller to fix something
+    MoneyBin exposes no way to fix — a saved format's ``skip_rows``.
+    """
+
+    def test_cli_names_the_proven_recoveries(self) -> None:
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        # "minus --format", not "without --format": the retry cannot carry
+        # skip_trailing_patterns (TabularReadOptions has no field for it), so
+        # the message promises the same read *options* minus the format
+        # rather than claiming an identical read. See
+        # test_cli_recovery_does_not_overclaim_an_identical_read.
+        assert "minus --format" in message
+        assert "moneybin import formats delete" in message
+        assert "correct the saved format" not in message
+        assert "Add a header row" not in message
+
+    def test_cli_recovery_does_not_overclaim_an_identical_read(self) -> None:
+        """The retry cannot repeat a format's skip_trailing_patterns.
+
+        ``TabularReadOptions`` has no field for it and the CLI has no
+        corresponding flag, so dropping ``--format`` silently falls back to
+        ``DEFAULT_TRAILING_PATTERNS`` when a format supplied its own rule —
+        the retry is not the same *read*, only the same *options* minus
+        --format. The old wording ("the same read without --format")
+        promised equivalence the retry cannot deliver; this asserts the
+        promise was narrowed to what the code actually reproduces.
+        """
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        assert "the same read options minus --format" in message
+        assert "the same read without --format" not in message
+        assert "identical read" not in message
+
+    def test_cli_commands_are_pasteable_with_a_space_in_either_value(self) -> None:
+        """A pasted command must run a file, not redirect stdin from `<`.
+
+        `<file>`/`<name>` placeholders are shell input redirection, so a
+        caller who knows both values gets them rendered and shlex-quoted.
+        """
+        import re
+        import shlex
+
+        file_path = "/home/me/Bank Exports/jan stmt.csv"
+        format_name = "my custom format"
+        message = header_row_consumed_recovery(file_path, format_name=format_name)
+        tokenized = [shlex.split(cmd) for cmd in re.findall(r"`([^`]+)`", message)]
+        assert ["moneybin", "import", "files", file_path] in tokenized
+        assert [
+            "moneybin",
+            "import",
+            "formats",
+            "delete",
+            format_name,
+            "--yes",
+        ] in tokenized
+
+    def test_cli_with_no_format_name_has_no_redirection_placeholder(self) -> None:
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "<" not in message
+        assert ">" not in message
+
+    def test_cli_retry_repeats_the_read_it_replaces(self) -> None:
+        """The retry carries the failed read's options, minus the format.
+
+        Dropping ``--format`` is the recovery; dropping the sheet, delimiter
+        and encoding it was carrying is a different read. The sheet is the
+        one that fails silently — unset, the reader auto-selects the largest
+        worksheet.
+        """
+        import re
+        import shlex
+
+        message = header_row_consumed_recovery(
+            "/data/book.xlsx",
+            format_name="acme_format",
+            read_options=TabularReadOptions(
+                sheet="Statement",
+                encoding="latin-1",
+                date_format="%d/%m/%Y",
+                no_size_limit=True,
+            ),
+        )
+        retry = next(
+            shlex.split(cmd)
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import files")
+        )
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            "/data/book.xlsx",
+            "--date-format",
+            "%d/%m/%Y",
+            "--sheet",
+            "Statement",
+            "--encoding",
+            "latin-1",
+            "--no-size-limit",
+        ]
+
+    def test_cli_retry_never_repeats_the_format_that_caused_the_refusal(self) -> None:
+        """Re-naming the format would reproduce the refusal being recovered from.
+
+        Asserted on the printed command, not the prose: the surrounding text
+        says "named with --format" legitimately, so a whole-message scan would
+        fail on the explanation rather than on a defect.
+        """
+        import re
+        import shlex
+
+        message = header_row_consumed_recovery(
+            "/data/book.xlsx",
+            format_name="acme_format",
+            # A caller passing the format through anyway is the case this
+            # guards: the helper drops it rather than printing a retry that
+            # reproduces the refusal.
+            read_options=TabularReadOptions(
+                format_name="acme_format", sheet="Statement"
+            ),
+        )
+        retry = next(
+            shlex.split(cmd)
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import files")
+        )
+        assert "--format" not in retry
+        assert "acme_format" not in retry
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            "/data/book.xlsx",
+            "--sheet",
+            "Statement",
+        ]
+
+    def test_mcp_names_the_proven_recoveries(self) -> None:
+        message = header_row_consumed_recovery_mcp()
+        assert "delete_saved_format" in message
+        assert "correct the saved format" not in message
+        assert "Add a header row" not in message
+
+    def test_the_printed_delete_command_itself_carries_yes(self) -> None:
+        """The flag must be IN the command, not merely mentioned near it.
+
+        `moneybin import formats delete <name>` calls `typer.confirm(...)`
+        unless `--yes` is passed, and this text reaches an agent as a JSON
+        actions entry. So the assertion has to read the backtick-quoted
+        command rather than the prose around it: a `"--yes" in message` check
+        passes just as happily when the flag sits in a parenthetical beside a
+        command that still aborts, which is the state this replaced.
+        """
+        import re
+        import shlex
+
+        message = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        delete_cmd = next(
+            cmd
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import formats delete")
+        )
+        assert shlex.split(delete_cmd) == [
+            "moneybin",
+            "import",
+            "formats",
+            "delete",
+            "acme_format",
+            "--yes",
+        ]
+
+    def test_the_no_name_branch_still_names_yes(self) -> None:
+        """With no format name there is no runnable command to embed it in.
+
+        The caller has to supply the name, so this branch names `--yes` in
+        prose alongside the `formats list` pointer instead.
+        """
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "--yes" in message
+        assert "moneybin import formats list" in message
+
+    def test_no_message_claims_a_skip_rows_numeric_cause(self) -> None:
+        """The product cannot know a ``skip_rows`` value is too large.
+
+        No caller ever sets a saved format's ``skip_rows`` to a non-zero
+        value (see ``header_row_consumed_recovery``'s docstring), so a
+        numeric-cause claim would assert something MoneyBin cannot know. All
+        three surfaces name the condition the guard actually tests instead.
+        """
+        named = header_row_consumed_recovery(
+            "/data/plain.csv", format_name="acme_format"
+        )
+        unnamed = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        mcp = header_row_consumed_recovery_mcp()
+        for message in (named, unnamed, mcp):
+            assert "skips more leading rows" not in message
+            assert "no command edits" not in message.lower()
+
+    def test_the_no_name_branch_does_not_assert_a_named_format_is_at_fault(
+        self,
+    ) -> None:
+        """Inbox sync never names a format, so this branch must not imply one.
+
+        Unlike the named branch — which says the file "does not match the
+        layout saved as <name>" — this one has no name to blame and must not
+        borrow that framing.
+        """
+        message = header_row_consumed_recovery("/data/plain.csv", format_name=None)
+        assert "does not match the layout saved as" not in message
+        assert "no longer describes this export" not in message
 
 
 def test_import_confirmation_required_error_carries_outcome() -> None:

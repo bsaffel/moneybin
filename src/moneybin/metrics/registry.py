@@ -227,8 +227,9 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
-# Wired: ImportService._import_tabular refuses a saved layout whose skip_rows
-# now consumes a transaction as the header row, and records it here. That is
+# Wired: ImportService._import_tabular refuses a saved layout that no longer
+# fits its file — the header position it implies lands on a transaction row —
+# and records it here. That is
 # the first replay check to land; column-presence and header-drift checks on
 # the matched_format path are still trusted without verification, so a rise
 # here means a saved format stopped reading its own file, not that every kind

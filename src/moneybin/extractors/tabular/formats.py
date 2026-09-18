@@ -12,7 +12,7 @@ import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast, get_args
 
 import yaml
 from pydantic import BaseModel
@@ -64,7 +64,13 @@ class TabularFormat(BaseModel, frozen=True):
     """Character encoding for text formats."""
 
     skip_rows: int = 0
-    """Non-data rows to skip before the header row."""
+    """Non-data rows to skip before the header row.
+
+    ``0`` means "detect" — ``resolve_read_settings`` treats it as no opinion
+    and lets header detection run. No writer currently sets a non-zero value;
+    see the comment beside the auto-save's ``TabularFormat(...)`` in
+    ``import_service.py`` for why that is deliberate.
+    """
 
     sheet: str | None = None
     """Excel sheet name; None = auto-select largest."""
@@ -154,7 +160,7 @@ class TabularFormat(BaseModel, frozen=True):
 class EffectiveReadSettings:
     """What a matched format contributes to a read, resolved against CLI flags.
 
-    Every command that reads a tabular file has to resolve the same seven
+    Every command that reads a tabular file has to resolve the same eight
     values, and each one it skips is a way for a preview to disagree with the
     import it previews: a format naming an Excel sheet reads a different sheet
     when `sheet` is dropped, and a format with `skip_rows` finds a different
@@ -169,6 +175,7 @@ class EffectiveReadSettings:
     skip_rows: int | None
     skip_trailing_patterns: list[str] | None
     date_format: str | None
+    number_format: NumberFormatType | None
 
 
 def resolve_read_settings(
@@ -178,12 +185,22 @@ def resolve_read_settings(
     encoding: str | None = None,
     sheet: str | None = None,
     date_format: str | None = None,
+    number_format: str | None = None,
 ) -> EffectiveReadSettings:
     """Resolve a caller's read flags against a matched format's own settings.
 
     An explicit flag always outranks the format. A `file_type` of ``"auto"``
     and a `skip_rows` of 0 are the model's "no opinion" defaults, so both
     resolve to ``None`` and leave detection to run.
+
+    `number_format` is validated here, unlike the other flags: it is a
+    `Literal` and callers may pass a raw, unvalidated string (the tabular
+    import service accepts one ahead of its own later validation). An invalid
+    value is treated as absent — falling through to the format's own
+    (already-valid) value — rather than raised, so this resolver never turns
+    a bad flag into an exception the caller didn't ask for. A format's own
+    `number_format` is a validated Pydantic model field and needs no such
+    check.
     """
     return EffectiveReadSettings(
         format_override=(
@@ -204,6 +221,11 @@ def resolve_read_settings(
         ),
         date_format=date_format
         or (matched_format.date_format if matched_format else None),
+        number_format=(
+            cast(NumberFormatType, number_format)
+            if number_format in get_args(NumberFormatType)
+            else (matched_format.number_format if matched_format else None)
+        ),
     )
 
 

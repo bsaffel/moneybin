@@ -33,6 +33,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
 from moneybin.services.import_service import (
     BridgeApplyResult,
@@ -91,6 +92,7 @@ def _make_confirmation_error(
     field_mapping: dict[str, str] | None = None,
     unmapped: tuple[str, ...] = ("Notes",),
     reason: str = "unknown_layout",
+    retry_read_options: TabularReadOptions | None = None,
 ) -> ImportConfirmationRequiredError:
     """Build an ImportConfirmationRequiredError with testable defaults."""
     if field_mapping is None:
@@ -116,6 +118,7 @@ def _make_confirmation_error(
         proposed=proposed,
         reason=reason,  # type: ignore[arg-type]  # test fixture accepts every reason
         samples=dict(proposed.sample_values),
+        retry_read_options=retry_read_options,
     )
     return ImportConfirmationRequiredError(outcome)
 
@@ -1853,15 +1856,357 @@ class TestImportFilesConfirmFlow:
             side_effect=_make_confirmation_error(reason="header_row_consumed"),
         )
 
-        result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
+        result = runner.invoke(
+            app,
+            ["files", str(csv_file), "--format", "acme_fmt", "--output", "json"],
+        )
 
         assert result.exit_code == 0
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "header_row_consumed"
         actions = payload["actions"]
-        assert any("Add a header row" in a for a in actions), actions
+        assert any(f"moneybin import files {csv_file}" in a for a in actions), actions
+        assert any("moneybin import formats delete acme_fmt" in a for a in actions), (
+            actions
+        )
+        assert not any("correct the saved format" in a for a in actions), actions
         assert not any("--mapping <field>=<column>" in a for a in actions), actions
         assert not any("--confirm to accept" in a for a in actions), actions
+
+    def test_consumed_header_retry_keeps_the_formats_own_worksheet(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The printed retry carries the sheet the dropped format was selecting.
+
+        The caller passed no ``--sheet``, so the value can only reach the
+        command through the confirmation. Without it the retry auto-selects
+        the largest worksheet — a different import, silently.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(book), "--format", "acme_fmt", "--output", "json"],
+        )
+
+        actions = json.loads(result.output)["actions"]
+        retry = next(
+            shlex.split(cmd)
+            for action in actions
+            for cmd in re.findall(r"`([^`]+)`", action)
+            if cmd.startswith("moneybin import files")
+        )
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            str(book),
+            "--sheet",
+            "Statement",
+        ]
+
+    def test_consumed_header_preview_hint_drops_the_stale_format(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The `import preview` hint must not re-name the stale format.
+
+        `_can_preview` built `preview_args_str` from the caller's raw
+        options, so for `header_row_consumed` it carried `--format
+        <stale-name>` — contradicting the recovery text just above it
+        ("re-run without --format") and previewing with the same corrupted
+        header. It must prefer `outcome.retry_read_options`, which carries
+        the sheet the format was selecting but not the format name itself.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(book), "--format", "acme_fmt", "--output", "json"],
+        )
+
+        actions = json.loads(result.output)["actions"]
+        preview = next(
+            shlex.split(cmd)
+            for action in actions
+            for cmd in re.findall(r"`([^`]+)`", action)
+            if cmd.startswith("moneybin import preview")
+        )
+        assert "--format" not in preview
+        assert "acme_fmt" not in preview
+        assert preview == [
+            "moneybin",
+            "import",
+            "preview",
+            str(book),
+            "--sheet",
+            "Statement",
+        ]
+
+    def test_ambiguous_header_preview_hint_keeps_the_format(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A non-consumed-header reason must still preview the caller's read.
+
+        The guard on the fix above has to be the *reason*, not the presence
+        of `retry_read_options`. `_import_tabular` builds that field once and
+        attaches it at all four sites that can raise `header_row_consumed` —
+        but three take their reason from `classify_unconfirmable_plan`, which
+        also returns `header_position_ambiguous`. So this outcome carries the
+        corrected options while describing a refusal the format did not
+        cause.
+
+        `header_position_ambiguous_recovery` deliberately keeps `--format` in
+        the command it prints, and this hint renders directly beneath it. A
+        truthiness check on `retry_read_options` would drop the flag here and
+        print two adjacent lines describing two different reads.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_position_ambiguous",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(book), "--format", "acme_fmt", "--output", "json"],
+        )
+
+        actions = json.loads(result.output)["actions"]
+        preview = next(
+            shlex.split(cmd)
+            for action in actions
+            for cmd in re.findall(r"`([^`]+)`", action)
+            if cmd.startswith("moneybin import preview")
+        )
+        assert preview == [
+            "moneybin",
+            "import",
+            "preview",
+            str(book),
+            "--format",
+            "acme_fmt",
+        ]
+
+    def test_consumed_header_hint_keeps_the_worksheet_out_of_the_log(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A worksheet name is the user's own text; the log allowlist bars it.
+
+        The recovery gained read options, and ``--sheet`` carries a name out
+        of the user's workbook. It goes to stderr like every other command
+        this CLI prints; only the static diagnostic reaches the logger.
+
+        Spies on the module logger rather than reading ``caplog``: this
+        command's records do not reach that fixture (the tests above union it
+        with ``result.output`` for exactly that reason), so a ``not in
+        caplog.text`` assertion here would pass against an empty string and
+        guard nothing. Every logger call is inspected instead, which cannot.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the logger path under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+        spy = mocker.patch("moneybin.cli.commands.import_cmd.logger")
+
+        result = runner.invoke(
+            app, ["confirm", str(book), "--accept", "--format", "acme_fmt"]
+        )
+
+        logged = " ".join(
+            str(arg)
+            for call in spy.method_calls
+            for arg in call.args  # type: ignore[attr-defined]
+        )
+        # Positive control: the static diagnostic still goes to the logger, so
+        # the assertions below are read against a populated string.
+        assert "consumed as the header" in logged, logged
+        assert "Statement" not in logged, logged
+        assert "moneybin import files" not in logged, logged
+        assert "--sheet Statement" in result.output, result.output
+
+    def test_consumed_header_interactive_prompt_drops_the_format_flag(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The interactive TTY prompt must not loop the caller back into --format.
+
+        `_render_confirmation_prompt` had no `header_row_consumed` branch of
+        its own, so it fell into the generic ``else`` — which replays
+        ``read_args_str`` (still carrying ``--format``) on every suggested
+        command. An interactive user has no JSON envelope to read the real
+        recovery from, so that generic advice was a closed loop.
+        """
+        csv_file = tmp_path / "headerless.csv"
+        csv_file.write_text("2026-01-05,-4.50,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="header_row_consumed"),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the branch under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(csv_file), "--format", "acme_fmt"])
+
+        assert result.exit_code == 1
+        # Every suggested files/confirm command, whichever quoting style
+        # printed it — a naive `"--format" not in result.output` would fail
+        # for the wrong reason, since the prose legitimately explains "the
+        # same read options minus --format".
+        commands = re.findall(
+            r"moneybin import (?:files|confirm)\b[^\n`]*", result.output
+        )
+        assert commands, result.output
+        # NEGATIVE: no suggested files/confirm command still carries
+        # --format — that is exactly the command that reproduces this refusal.
+        assert not any("--format" in cmd for cmd in commands), commands
+        # POSITIVE: the real recovery — the same read options, without
+        # --format — is actually printed and is copy-pasteable as such.
+        retry = next(cmd for cmd in commands if "import files" in cmd)
+        assert shlex.split(retry) == ["moneybin", "import", "files", str(csv_file)]
+        assert "moneybin import formats delete acme_fmt" in result.output, result.output
+
+    def test_consumed_header_interactive_preview_hint_drops_the_stale_format(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The interactive preview hint must not re-name the stale format either.
+
+        The test above's regex captures only ``import files|confirm``
+        commands, which cannot see the ``import preview`` hint printed just
+        below them — that line built its flags from ``opts`` (the caller's
+        raw options) instead of ``outcome.retry_read_options``, so it kept
+        printing ``--format <stale-name>`` immediately under text telling the
+        user to drop it.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(book), "--format", "acme_fmt"])
+
+        assert result.exit_code == 1
+        preview_lines = re.findall(r"moneybin import preview\b[^\n]*", result.output)
+        assert preview_lines, result.output
+        # Strip the trailing "   (inspect proposal in detail)" parenthetical
+        # printed on the same line — it is prose, not part of the command.
+        preview_cmd = preview_lines[0].split("   (")[0]
+        preview = shlex.split(preview_cmd)
+        assert "--format" not in preview
+        assert "acme_fmt" not in preview
+        assert preview == [
+            "moneybin",
+            "import",
+            "preview",
+            str(book),
+            "--sheet",
+            "Statement",
+        ]
+
+    def test_unreadable_date_interactive_prompt_names_the_real_recovery(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The interactive TTY prompt must not loop the caller through --confirm.
+
+        `_render_confirmation_prompt` had no `unreadable_date` branch of its
+        own, so it fell into the generic ``else``, which offers a bare
+        ``--confirm`` / ``import confirm --accept`` (both ratify the same
+        unreadable mapping and re-raise this exact refusal — the date field
+        itself is what failed to parse) and a ``--mapping
+        description=<column>`` hint (the wrong destination field: the date
+        column is what needs remapping, not the description). An interactive
+        user has no JSON envelope to read the real recovery from, so that
+        generic advice was a closed loop.
+        """
+        from moneybin.services.import_confirmation import unreadable_date_recovery
+
+        csv_file = tmp_path / "compact.csv"
+        csv_file.write_text("Date,Amount,Memo\n20260105,-50.00,Coffee\n")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(reason="unreadable_date"),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the branch under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+
+        result = runner.invoke(app, ["files", str(csv_file)])
+
+        assert result.exit_code == 1
+        # POSITIVE: the same text the JSON envelope path prints for this
+        # reason — remap transaction_date, or supply --date-format — appears
+        # verbatim, so the two surfaces agree.
+        expected = unreadable_date_recovery(str(csv_file))
+        assert expected in result.output, result.output
+        # NEGATIVE: no suggested command re-raises the same refusal or names
+        # the wrong destination field.
+        commands = re.findall(
+            r"moneybin import (?:files|confirm)\b[^\n`]*", result.output
+        )
+        assert commands, result.output
+        assert not any("--mapping description=" in cmd for cmd in commands), commands
+        assert not any(
+            "confirm" in cmd and "--date-format" not in cmd for cmd in commands
+        ), commands
+        assert not any("import confirm" in cmd for cmd in commands), commands
 
     def test_unreadable_date_json_actions_name_both_recoveries(
         self,
@@ -2965,6 +3310,62 @@ class TestImportConfirmCommand:
         assert any("--account-binding" in a for a in payload["actions"])
         # Mapping/accept hints gated out for account_confirmation.
         assert not any("--mapping" in a for a in payload["actions"])
+
+    def test_confirm_command_preview_hint_drops_the_stale_format(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """`import confirm`'s own preview hint must not re-name the stale format.
+
+        Same defect as `import files`' JSON and interactive paths, at the
+        third and last call site: `import_confirm_command` built
+        `preview_args_str` from the caller's raw `read_options` instead of
+        `outcome.retry_read_options`, so re-running `import confirm --format
+        <stale-name>` on a `header_row_consumed` refusal printed a preview
+        hint that still named the format that caused it.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(book),
+                "--accept",
+                "--format",
+                "acme_fmt",
+                "--output",
+                "json",
+            ],
+        )
+
+        actions = json.loads(result.output)["actions"]
+        preview = next(
+            shlex.split(cmd)
+            for action in actions
+            for cmd in re.findall(r"`([^`]+)`", action)
+            if cmd.startswith("moneybin import preview")
+        )
+        assert "--format" not in preview
+        assert "acme_fmt" not in preview
+        assert preview == [
+            "moneybin",
+            "import",
+            "preview",
+            str(book),
+            "--sheet",
+            "Statement",
+        ]
 
     def test_account_recovery_after_sign_preserves_confirmation_inputs(
         self,
