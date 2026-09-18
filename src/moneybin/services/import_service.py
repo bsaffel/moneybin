@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast, get_args
 
 import duckdb
 
@@ -100,6 +100,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
 from moneybin.services.ledger_overlap import probe_incoming_ledger_overlap
 from moneybin.services.refresh_outcome import RefreshStepOutcome
@@ -2606,6 +2607,33 @@ class ImportService:
             date_format=date_format_override,
         )
 
+        # What a `header_row_consumed` retry has to repeat: this read, minus
+        # the format that caused the refusal. Built once, here, because that
+        # reason has four raise sites below — one explicit and three through
+        # classify_unconfirmable_plan — and a retry built at only some of them
+        # is the same silent-wrong-worksheet bug on the paths that were missed.
+        # Drawn from read_settings rather than the caller's flags: a sheet,
+        # delimiter or encoding the FORMAT supplied appears in no flag, and
+        # dropping --format drops it along with the skip_rows being escaped.
+        retry_read_options = TabularReadOptions(
+            format_name=None,
+            date_format=read_settings.date_format,
+            # This runs BEFORE the number-format validation further down, so
+            # the override is still unchecked. An invalid one is dropped
+            # rather than echoed: printing a flag value the next run would
+            # reject turns one refusal into two.
+            number_format=(
+                cast(NumberFormatType, number_format_override)
+                if number_format_override in get_args(NumberFormatType)
+                else None
+            ),
+            sheet=read_settings.sheet,
+            delimiter=read_settings.delimiter,
+            encoding=read_settings.encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
+        )
+
         if reviewed_plan is None:
             format_info = detect_format(
                 file_path,
@@ -2832,6 +2860,9 @@ class ImportService:
                             field_mapping=reviewed_plan.field_mapping,
                             flagged_fields=list(reviewed_plan.flagged_fields),
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                 )
             # The gate above already refused reviewed_plan.date_format is
@@ -3077,6 +3108,9 @@ class ImportService:
                             flagged_fields=list(mapping_result.flagged_fields),
                             header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                         samples=dict(proposed.sample_values),
                         # header_position_ambiguous outranks unreadable_date
                         # in classify_unconfirmable_plan's precedence, so this
@@ -3182,6 +3216,9 @@ class ImportService:
                             if _first_contact_ambiguous_header
                             else ()
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                     if outcome.reason == "unknown_layout"
                     else outcome
@@ -3396,6 +3433,7 @@ class ImportService:
                     ),
                     reason="header_row_consumed",
                     samples=gate_samples,
+                    retry_read_options=retry_read_options,
                 )
             )
 
@@ -3436,9 +3474,10 @@ class ImportService:
         # into the transform pipeline and surface deep inside SQLMesh,
         # leaving a dangling raw.import_log row in ``importing`` state.
         # Guard explicitly via get_args so the failure is a clean UserError
-        # at the import boundary.
-        from typing import get_args
-
+        # at the import boundary. Imported at module scope rather than here:
+        # a function-local import binds the name for the WHOLE function, so
+        # the header_row_consumed gate above — which reads it earlier — would
+        # raise UnboundLocalError instead of reaching its confirmation.
         if sign and sign not in get_args(SignConventionType):
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "

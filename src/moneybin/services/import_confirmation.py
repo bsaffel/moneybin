@@ -225,6 +225,18 @@ class ConfirmationRequired:
     # Position-aligned with header_position_ambiguous_rows; required to
     # resolve a disputed cell's column identity in disputed_row_fields().
     header_position_ambiguous_header_cells: tuple[str, ...] = ()
+    # The options a retry must repeat, as the READ that failed actually
+    # resolved them — not as the caller spelled them. Populated only for
+    # reason='header_row_consumed', whose sole recovery is to re-run without
+    # the named format: a format carries a sheet, a delimiter and an encoding
+    # alongside the skip_rows being escaped, and dropping --format drops all
+    # four together. An unset sheet makes the reader auto-select the largest
+    # worksheet, so a workbook whose largest sheet has compatible headers
+    # imports the WRONG sheet, silently and with no error to notice. Carried
+    # from the service rather than re-derived by each surface because that
+    # re-derivation is the drift resolve_read_settings exists to end. Absent
+    # from confirmation_payload_dict, like ratified_bindings above.
+    retry_read_options: TabularReadOptions | None = None
 
 
 # The only destination fields a disputed row may ever show — exactly the
@@ -556,16 +568,38 @@ def classify_unconfirmable_plan(
     return "unknown_layout"
 
 
-def header_row_consumed_recovery(file_path: str, *, format_name: str | None) -> str:
+def header_row_consumed_recovery(
+    file_path: str,
+    *,
+    format_name: str | None,
+    read_options: TabularReadOptions | None = None,
+) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
     Only an explicit saved format's ``skip_rows`` reaches this reason —
     auto-detection never reads a data row as the header, and no built-in
     format sets ``skip_rows`` (see ``test_no_builtin_format_sets_skip_rows``).
+
+    ``read_options`` is what makes the printed retry equivalent to the read it
+    replaces. Dropping ``--format`` is the whole recovery, but a format carries
+    more than the ``skip_rows`` being escaped: its sheet, delimiter and
+    encoding go with it. The sheet is the one that fails silently — unset, the
+    reader auto-selects the largest worksheet, so a workbook whose largest
+    sheet happens to carry compatible headers imports that sheet instead, with
+    no error and nothing in the output saying a different sheet was read. So
+    the caller passes the settings the failed read actually resolved, and they
+    are respelled here as explicit flags. ``format_name`` is expected to be
+    absent from them; it is the one option a retry must not repeat.
     """
     import shlex
+    from dataclasses import replace
 
     quoted_file = shlex.quote(file_path)
+    # Belt and braces: the caller builds these with format_name already
+    # dropped, but a retry that re-names the format is the one command this
+    # text must never print — it reproduces the failure it is answering.
+    retry_args = replace(read_options or TabularReadOptions(), format_name=None)
+    read_args_str = retry_args.cli_fragment()
     if format_name is not None:
         removal = f"run `moneybin import formats delete {shlex.quote(format_name)}`"
     else:
@@ -578,10 +612,10 @@ def header_row_consumed_recovery(file_path: str, *, format_name: str | None) -> 
         "transaction — a real record was consumed as the header. No --mapping "
         "or --override correction can recover it. The saved format named "
         "with --format skips more leading rows than this file has before its "
-        f"header. Re-run `moneybin import files {quoted_file}` without "
-        "--format so the header is detected fresh. No command edits a saved "
-        "format's skip_rows, so naming that format again fails the same "
-        f"way; to remove it, {removal}."
+        f"header. Re-run `moneybin import files {quoted_file}{read_args_str}` "
+        "— the same read without --format, so the header is detected fresh. "
+        "No command edits a saved format's skip_rows, so naming that format "
+        f"again fails the same way; to remove it, {removal}."
     )
 
 

@@ -33,6 +33,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
 from moneybin.services.import_service import (
     BridgeApplyResult,
@@ -91,6 +92,7 @@ def _make_confirmation_error(
     field_mapping: dict[str, str] | None = None,
     unmapped: tuple[str, ...] = ("Notes",),
     reason: str = "unknown_layout",
+    retry_read_options: TabularReadOptions | None = None,
 ) -> ImportConfirmationRequiredError:
     """Build an ImportConfirmationRequiredError with testable defaults."""
     if field_mapping is None:
@@ -116,6 +118,7 @@ def _make_confirmation_error(
         proposed=proposed,
         reason=reason,  # type: ignore[arg-type]  # test fixture accepts every reason
         samples=dict(proposed.sample_values),
+        retry_read_options=retry_read_options,
     )
     return ImportConfirmationRequiredError(outcome)
 
@@ -1869,6 +1872,98 @@ class TestImportFilesConfirmFlow:
         assert not any("correct the saved format" in a for a in actions), actions
         assert not any("--mapping <field>=<column>" in a for a in actions), actions
         assert not any("--confirm to accept" in a for a in actions), actions
+
+    def test_consumed_header_retry_keeps_the_formats_own_worksheet(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The printed retry carries the sheet the dropped format was selecting.
+
+        The caller passed no ``--sheet``, so the value can only reach the
+        command through the confirmation. Without it the retry auto-selects
+        the largest worksheet — a different import, silently.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+
+        result = runner.invoke(
+            app,
+            ["files", str(book), "--format", "acme_fmt", "--output", "json"],
+        )
+
+        actions = json.loads(result.output)["actions"]
+        retry = next(
+            shlex.split(cmd)
+            for action in actions
+            for cmd in re.findall(r"`([^`]+)`", action)
+            if cmd.startswith("moneybin import files")
+        )
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            str(book),
+            "--sheet",
+            "Statement",
+        ]
+
+    def test_consumed_header_hint_keeps_the_worksheet_out_of_the_log(
+        self,
+        mock_db: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """A worksheet name is the user's own text; the log allowlist bars it.
+
+        The recovery gained read options, and ``--sheet`` carries a name out
+        of the user's workbook. It goes to stderr like every other command
+        this CLI prints; only the static diagnostic reaches the logger.
+
+        Spies on the module logger rather than reading ``caplog``: this
+        command's records do not reach that fixture (the tests above union it
+        with ``result.output`` for exactly that reason), so a ``not in
+        caplog.text`` assertion here would pass against an empty string and
+        guard nothing. Every logger call is inspected instead, which cannot.
+        """
+        book = tmp_path / "book.xlsx"
+        book.write_bytes(b"")
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_file",
+            side_effect=_make_confirmation_error(
+                reason="header_row_consumed",
+                retry_read_options=TabularReadOptions(sheet="Statement"),
+            ),
+        )
+        # The text branch is TTY-gated; without this the command renders the
+        # JSON envelope instead and the logger path under test never runs.
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdout.isatty.return_value = True
+        spy = mocker.patch("moneybin.cli.commands.import_cmd.logger")
+
+        result = runner.invoke(
+            app, ["confirm", str(book), "--accept", "--format", "acme_fmt"]
+        )
+
+        logged = " ".join(
+            str(arg)
+            for call in spy.method_calls
+            for arg in call.args  # type: ignore[attr-defined]
+        )
+        # Positive control: the static diagnostic still goes to the logger, so
+        # the assertions below are read against a populated string.
+        assert "consumed as the header" in logged, logged
+        assert "Statement" not in logged, logged
+        assert "moneybin import files" not in logged, logged
+        assert "--sheet Statement" in result.output, result.output
 
     def test_unreadable_date_json_actions_name_both_recoveries(
         self,

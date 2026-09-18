@@ -2064,6 +2064,86 @@ class TestTabularConfirmationFlow:
 
         assert result.rows_loaded == 2
 
+    def test_the_retry_keeps_the_worksheet_the_stale_format_selected(
+        self, db: Database, tmp_path: Path
+    ) -> None:
+        """The printed retry must not silently read a different worksheet.
+
+        Dropping ``--format`` is the whole recovery, but the format carries
+        the ``sheet`` alongside the ``skip_rows`` being escaped. With the
+        sheet gone the reader auto-selects the LARGEST worksheet, so a
+        workbook whose largest sheet also has compatible headers imports that
+        sheet instead — no error, and nothing in the output saying so. The
+        larger ``Archive`` sheet here is exactly that trap.
+
+        Asserts the sheet survives onto the retry the service hands the
+        surfaces, and that the format itself does not (re-naming it would
+        reproduce the refusal being recovered from).
+        """
+        import openpyxl
+
+        from moneybin.extractors.tabular.formats import TabularFormat, save_format_to_db
+        from moneybin.services.import_confirmation import (
+            ImportConfirmationRequiredError,
+        )
+        from moneybin.services.import_service import ImportService
+
+        wb = openpyxl.Workbook()
+        statement = wb.active
+        assert statement is not None
+        statement.title = "Statement"
+        statement.append(["Date", "Amount", "Description"])
+        statement.append(["2026-01-05", -4.50, "Coffee"])
+        statement.append(["2026-01-06", 100.00, "Payroll"])
+        # Same headers, more rows — what the reader would auto-select.
+        archive = wb.create_sheet("Archive")
+        archive.append(["Date", "Amount", "Description"])
+        for day in range(10, 20):
+            archive.append([f"2025-01-{day}", -1.00, "Old"])
+        xlsx = tmp_path / "two_sheets.xlsx"
+        wb.save(xlsx)
+
+        save_format_to_db(
+            db,
+            TabularFormat(
+                name="stale_skip_sheet",
+                institution_name="Test",
+                file_type="excel",
+                header_signature=["date", "amount", "description"],
+                field_mapping={
+                    "transaction_date": "Date",
+                    "amount": "Amount",
+                    "description": "Description",
+                },
+                sign_convention="negative_is_expense",
+                date_format="%Y-%m-%d",
+                number_format="us",
+                sheet="Statement",
+                skip_rows=1,
+            ),
+            actor="test",
+        )
+
+        with pytest.raises(ImportConfirmationRequiredError) as exc_info:
+            ImportService(db).import_file(
+                xlsx,
+                account_name="test",
+                refresh=False,
+                confirm=True,
+                format_name="stale_skip_sheet",
+                save_format=False,
+            )
+
+        outcome = exc_info.value.outcome
+        assert outcome.reason == "header_row_consumed"
+        retry = outcome.retry_read_options
+        assert retry is not None
+        # The caller passed no --sheet; this value can only have come from the
+        # format. Dropping it is the defect this test exists to catch.
+        assert retry.sheet == "Statement"
+        assert retry.format_name is None
+        assert "--sheet Statement" in " ".join(retry.cli_args())
+
     def test_an_override_cannot_resolve_an_unreadable_date_column(
         self, db: Database
     ) -> None:

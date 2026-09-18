@@ -1219,6 +1219,82 @@ class TestHeaderRowConsumedRecovery:
         assert "<" not in message
         assert ">" not in message
 
+    def test_cli_retry_repeats_the_read_it_replaces(self) -> None:
+        """The retry carries the failed read's options, minus the format.
+
+        Dropping ``--format`` is the recovery; dropping the sheet, delimiter
+        and encoding it was carrying is a different read. The sheet is the
+        one that fails silently — unset, the reader auto-selects the largest
+        worksheet.
+        """
+        import re
+        import shlex
+
+        message = header_row_consumed_recovery(
+            "/data/book.xlsx",
+            format_name="acme_format",
+            read_options=TabularReadOptions(
+                sheet="Statement",
+                encoding="latin-1",
+                date_format="%d/%m/%Y",
+                no_size_limit=True,
+            ),
+        )
+        retry = next(
+            shlex.split(cmd)
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import files")
+        )
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            "/data/book.xlsx",
+            "--date-format",
+            "%d/%m/%Y",
+            "--sheet",
+            "Statement",
+            "--encoding",
+            "latin-1",
+            "--no-size-limit",
+        ]
+
+    def test_cli_retry_never_repeats_the_format_that_caused_the_refusal(self) -> None:
+        """Re-naming the format would reproduce the refusal being recovered from.
+
+        Asserted on the printed command, not the prose: the surrounding text
+        says "named with --format" legitimately, so a whole-message scan would
+        fail on the explanation rather than on a defect.
+        """
+        import re
+        import shlex
+
+        message = header_row_consumed_recovery(
+            "/data/book.xlsx",
+            format_name="acme_format",
+            # A caller passing the format through anyway is the case this
+            # guards: the helper drops it rather than printing a retry that
+            # reproduces the refusal.
+            read_options=TabularReadOptions(
+                format_name="acme_format", sheet="Statement"
+            ),
+        )
+        retry = next(
+            shlex.split(cmd)
+            for cmd in re.findall(r"`([^`]+)`", message)
+            if cmd.startswith("moneybin import files")
+        )
+        assert "--format" not in retry
+        assert "acme_format" not in retry
+        assert retry == [
+            "moneybin",
+            "import",
+            "files",
+            "/data/book.xlsx",
+            "--sheet",
+            "Statement",
+        ]
+
     def test_mcp_names_the_proven_recoveries(self) -> None:
         message = header_row_consumed_recovery_mcp()
         assert "delete_saved_format" in message

@@ -699,7 +699,13 @@ def import_files_command(
                 elif outcome.reason == "header_row_consumed":
                     confirm_actions.append(
                         header_row_consumed_recovery(
-                            file_path_str, format_name=format_name
+                            file_path_str,
+                            format_name=format_name,
+                            # The service's own resolved settings, not
+                            # `read_options` above: the sheet that must survive
+                            # dropping --format is usually the FORMAT's, and a
+                            # caller who never typed --sheet has none in theirs.
+                            read_options=outcome.retry_read_options,
                         )
                     )
                 elif outcome.reason == "header_position_ambiguous":
@@ -2309,7 +2315,13 @@ def import_confirm_command(
             )
         elif outcome.reason == "header_row_consumed":
             confirm_actions.append(
-                header_row_consumed_recovery(str(file_path), format_name=None)
+                header_row_consumed_recovery(
+                    str(file_path),
+                    format_name=format_name,
+                    # Prefer what the read actually resolved; fall back to the
+                    # caller's own flags when the confirmation carries none.
+                    read_options=outcome.retry_read_options or read_options,
+                )
             )
         elif outcome.reason == "header_position_ambiguous":
             confirm_actions.append(
@@ -2410,8 +2422,19 @@ def import_confirm_command(
             )
         elif outcome.reason == "header_row_consumed":
             logger.error("❌ A transaction row was consumed as the header.")
-            logger.info(
-                f"💡 {header_row_consumed_recovery(str(file_path), format_name=None)}"
+            # stderr, not the logger: this text now carries the read options the
+            # retry needs, and two of those are arbitrary user text — a --sheet
+            # is a worksheet name out of the user's own workbook and a --format
+            # is a name they authored. The log allowlist admits neither, and
+            # SanitizedLogFormatter matches digit shapes, not words.
+            typer.echo(
+                "💡 "
+                + header_row_consumed_recovery(
+                    str(file_path),
+                    format_name=format_name,
+                    read_options=outcome.retry_read_options or read_options,
+                ),
+                err=True,
             )
         elif outcome.reason == "header_position_ambiguous":
             logger.error(
