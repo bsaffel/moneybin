@@ -216,8 +216,11 @@ class UndoService:
         Raises ``UserError`` with a recovery action for each refusal:
         ``UNDO_OPERATION_NOT_FOUND`` (no such op), ``UNDO_ALREADY_UNDONE`` (a prior
         undo reversed it), ``RECOVERY_NO_PATH`` (the op touched a table outside the
-        undoable ``app.*`` surface, e.g. ``raw.manual_transactions``), or
-        ``UNDO_CASCADE_BLOCKED`` (a later op modified the same rows).
+        undoable ``app.*`` surface, e.g. ``raw.manual_transactions``),
+        ``UNDO_CASCADE_BLOCKED`` (a later op modified the same rows), or
+        ``UNDO_VALUE_INADMISSIBLE`` (restoring a captured row would write back a
+        value the write path no longer admits, e.g. a pre-existing blank
+        category — not retryable; recreate the entity instead).
         """
         events = self._audit.events_for_operation(operation_id)
         if not events:
@@ -301,12 +304,16 @@ class UndoService:
                 undone = self._audit.events_for_operation(undo_op)
                 self._db.commit()
             except UserError as e:
-                # _require_capture can raise RECOVERY_NO_PATH mid-loop (a legacy
-                # partial-capture row). Record the outcome like the pre-loop
-                # refusals do, rather than letting it vanish from metrics.
+                # _require_capture can raise RECOVERY_NO_PATH, and
+                # _require_admissible can raise UNDO_VALUE_INADMISSIBLE, mid-loop
+                # (a legacy partial-capture or now-inadmissible row). Record the
+                # outcome like the pre-loop refusals do, rather than letting it
+                # vanish from metrics.
                 self._db.rollback()
                 if e.code == error_codes.RECOVERY_NO_PATH:
                     audit_undo_total.labels(outcome="no_path").inc()
+                elif e.code == error_codes.UNDO_VALUE_INADMISSIBLE:
+                    audit_undo_total.labels(outcome="value_inadmissible").inc()
                 raise
             except BaseException:
                 self._db.rollback()

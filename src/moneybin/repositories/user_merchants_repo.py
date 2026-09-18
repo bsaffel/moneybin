@@ -42,6 +42,9 @@ class UserMerchantsRepo(BaseRepo):
 
     table_ref = USER_MERCHANTS
     pk_columns = ("merchant_id",)
+    # #517's blank-text rule; restore-path enforcement lives in
+    # BaseRepo._require_admissible (#547).
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, merchant_id: str) -> dict[str, Any] | None:
         return self._fetch_one(

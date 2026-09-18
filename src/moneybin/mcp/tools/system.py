@@ -545,9 +545,12 @@ def system_audit_undo(operation_id: str) -> ResponseEnvelope[SystemAuditUndoPayl
     Block-don't-cascade: if a *later* operation modified the same rows, this
     refuses with ``undo_cascade_blocked`` and lists the blocker operation ids in
     ``recovery_actions`` (newest first) — undo those first, then retry. Other
-    refusals: ``undo_operation_not_found``, ``undo_already_undone``, and
+    refusals: ``undo_operation_not_found``, ``undo_already_undone``,
     ``recovery_no_path`` (the operation touched a table outside the undoable
-    app.* surface, e.g. a manual import — re-import to recover instead).
+    app.* surface, e.g. a manual import — re-import to recover instead), and
+    ``undo_value_inadmissible`` (restoring the captured row would write back a
+    value the write path no longer admits, e.g. a pre-existing blank category —
+    not retryable; recreate the entity with a valid value instead).
 
     Writes app.audit_log plus the reversed app.* rows; revert this undo by
     calling system_audit_undo again on the returned undo_operation_id.
