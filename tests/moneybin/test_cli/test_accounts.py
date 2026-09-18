@@ -254,6 +254,78 @@ class TestAccountsList:
         # `test_list_text_names_the_account_column_for_the_key_it_holds`.
         assert "account_id" in result.stdout
 
+
+class TestAccountsHumanPresentation:
+    """Finite account reads retain their answer through the shared renderer."""
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_get_renders_named_summary_not_raw_dataclass_fields(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        """A single account remains readable when redirected or paged."""
+        from moneybin.privacy.payloads.accounts import AccountDetail
+
+        mock_get_db.return_value = MagicMock()
+        mock_svc_cls.return_value.get_account.return_value = AccountDetail(
+            account_id="acct_a",
+            display_name="Everyday Checking",
+            institution_name="Example Bank",
+            official_name=None,
+            account_type="depository",
+            account_subtype="checking",
+            holder_category="personal",
+            currency_code="USD",
+            credit_limit=None,
+            include_in_net_worth=True,
+            archived=False,
+            last_four="1234",
+            routing_number=None,
+            archived_at=None,
+            source_type="plaid",
+        )
+
+        result = runner.invoke(app, ["accounts", "get", "acct_a"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "Account" in result.stdout
+        assert "Everyday Checking" in result.stdout
+        assert "Account ID:" in result.stdout
+        assert "{" not in result.stdout
+
+    @pytest.mark.unit
+    @patch("moneybin.cli.commands.accounts.get_database")
+    @patch("moneybin.cli.commands.accounts.AccountService")
+    def test_resolve_uses_a_labeled_table(
+        self,
+        mock_svc_cls: MagicMock,
+        mock_get_db: MagicMock,
+        runner: CliRunner,
+    ) -> None:
+        mock_get_db.return_value = MagicMock()
+        mock_svc_cls.return_value.resolve.return_value = AccountResolvePayload(
+            matches=[
+                AccountResolutionItem(
+                    account_id="acct_a",
+                    display_name="Everyday Checking",
+                    account_subtype="checking",
+                    institution_name="Example Bank",
+                    confidence=0.987,
+                )
+            ],
+        )
+
+        result = runner.invoke(app, ["accounts", "resolve", "checking"])
+
+        assert result.exit_code == 0, result.stderr
+        assert "account_id" in result.stdout
+        assert "confidence" in result.stdout
+        assert "acct_a" in result.stdout
+
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
@@ -956,16 +1028,20 @@ class TestAccountsResolve:
     @pytest.mark.unit
     @patch("moneybin.cli.commands.accounts.get_database")
     @patch("moneybin.cli.commands.accounts.AccountService")
-    def test_no_matches_text_mode_writes_to_stderr(
+    def test_no_matches_text_mode_remains_visible_under_quiet_without_pager(
         self,
         mock_svc_cls: MagicMock,
         mock_get_db: MagicMock,
         runner: CliRunner,
     ) -> None:
-        """No matches in text mode emits a stderr message and exits 0."""
+        """A finite empty answer retains its scope and safe next step."""
         mock_get_db.return_value = MagicMock()
         svc = mock_svc_cls.return_value
         svc.resolve.return_value = AccountResolvePayload(matches=[])
-        result = runner.invoke(app, ["accounts", "resolve", "zzz"])
+        result = runner.invoke(
+            app, ["accounts", "resolve", "zzz", "--quiet", "--no-pager"]
+        )
         assert result.exit_code == 0
-        assert "no accounts" in result.stderr.lower() or "zzz" in result.stderr
+        assert "No accounts match 'zzz'." in result.stdout
+        assert "Try: moneybin accounts list" in result.stdout
+        assert result.stderr == ""

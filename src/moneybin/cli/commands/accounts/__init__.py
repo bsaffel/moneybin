@@ -10,7 +10,6 @@ include_in_net_worth, and is_archived fold in via flags (see
 
 from __future__ import annotations
 
-import dataclasses
 import logging
 import sys
 from collections.abc import Callable
@@ -26,7 +25,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import build_rows
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
@@ -143,6 +142,7 @@ def accounts_list(
 def accounts_summary(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Summarize account counts, lifecycle state, and recent activity."""
     with handle_cli_errors(
@@ -152,12 +152,28 @@ def accounts_summary(
             result = AccountService(db).summary()
 
     def _render_text(_: object) -> None:
-        if quiet:
-            return
-        typer.echo(f"Accounts: {result.total_accounts}")
-        typer.echo(f"Archived: {result.count_archived}")
-        typer.echo(f"Excluded from net worth: {result.count_excluded_from_net_worth}")
-        typer.echo(f"With recent activity: {result.count_with_recent_activity}")
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Accounts", str(result.total_accounts)),
+                        ("Archived", str(result.count_archived)),
+                        (
+                            "Excluded from net worth",
+                            str(result.count_excluded_from_net_worth),
+                        ),
+                        (
+                            "With recent activity",
+                            str(result.count_with_recent_activity),
+                        ),
+                    ],
+                    title="Accounts",
+                )
+            ]),
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         build_envelope(data=result),
@@ -172,6 +188,7 @@ def accounts_get(
     account_id: str = typer.Argument(..., help="Account ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show one account's full settings + dim record."""
     with handle_cli_errors(cli_actor="accounts_get", payload_type=AccountDetail):
@@ -188,8 +205,22 @@ def accounts_get(
             cli_actor="accounts_get",
         )
         return
-    for k, v in dataclasses.asdict(record).items():
-        typer.echo(f"  {k}: {v}")
+    pairs = [
+        ("Account ID", record.account_id),
+        ("Name", record.display_name or UNNAMED_ACCOUNT_LABEL),
+        ("Institution", record.institution_name or "-"),
+        ("Type", record.account_type or "-"),
+        ("Subtype", record.account_subtype or "-"),
+        ("Currency", record.currency_code or "n/a"),
+        ("Included in net worth", "yes" if record.include_in_net_worth else "no"),
+        ("Status", "archived" if record.archived else "active"),
+    ]
+    emit_human_result(
+        compose_human_result([build_summary(pairs, title="Account")]),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 def _maybe_prompt_soft_validation(
@@ -403,6 +434,7 @@ def accounts_resolve(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Resolve a free-text account reference to ranked account_id candidates.
 
@@ -429,16 +461,41 @@ def accounts_resolve(
         return
 
     if not payload.matches:
-        if not quiet:
-            typer.echo(f"No accounts matched '{query}'.", err=True)
-        return
-    for m in payload.matches:
-        subtype = m.account_subtype or "-"
-        institution = m.institution_name or "-"
-        typer.echo(
-            f"{m.account_id}\t{m.display_name}\t{subtype}\t{institution}\t"
-            f"{round(m.confidence, 3):.3f}"
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary([
+                        ("Account resolution", f"No accounts match '{query}'.")
+                    ])
+                ],
+                disclosures=["Try: moneybin accounts list"],
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
+        return
+    policy = get_terminal_policy(no_pager=no_pager)
+    emit_human_result(
+        build_rows(
+            ["account_id", "account", "subtype", "institution", "confidence"],
+            [
+                (
+                    match.account_id,
+                    match.display_name or UNNAMED_ACCOUNT_LABEL,
+                    match.account_subtype or "-",
+                    match.institution_name or "-",
+                    f"{match.confidence:.3f}",
+                )
+                for match in payload.matches
+            ],
+            terminal=policy,
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 app.add_typer(balance.app, name="balance")
