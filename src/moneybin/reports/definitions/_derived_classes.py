@@ -16,11 +16,7 @@ fails CI if this file is stale.
 from __future__ import annotations
 
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.tables import (
-    REPORTS_NET_WORTH,
-    REPORTS_NET_WORTH_ACCOUNTS,
-    REPORTS_NET_WORTH_CURRENCIES,
-)
+from moneybin.tables import REPORTS_NET_WORTH
 
 # (schema, view) -> {column: DataClass}. Excludes every view already
 # covered by an @report runner's own classes= map — see
@@ -36,36 +32,5 @@ DERIVED_REPORT_CLASSES: dict[tuple[str, str], dict[str, DataClass]] = {
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
         "net_worth": DataClass.BALANCE,
-    },
-    (REPORTS_NET_WORTH_ACCOUNTS.schema, REPORTS_NET_WORTH_ACCOUNTS.name): {
-        "account_id": DataClass.RECORD_ID,
-        "account_name": DataClass.USER_NOTE,
-        "currency_code": DataClass.CURRENCY,
-        "home_currency_code": DataClass.CURRENCY,
-        "account_type": DataClass.TXN_TYPE,
-        "is_observed": DataClass.TXN_TYPE,
-        "observation_source": DataClass.TXN_TYPE,
-        "rate_source": DataClass.TXN_TYPE,
-        "balance_date": DataClass.TXN_DATE,
-        "rate_published_date": DataClass.TXN_DATE,
-        "days_since_observed": DataClass.TXN_DATE,
-        "reconciliation_delta": DataClass.BALANCE,
-        "account_balance": DataClass.BALANCE,
-        "account_balance_home": DataClass.BALANCE,
-    },
-    (REPORTS_NET_WORTH_CURRENCIES.schema, REPORTS_NET_WORTH_CURRENCIES.name): {
-        "currency_code": DataClass.CURRENCY,
-        "home_currency_code": DataClass.CURRENCY,
-        "balance_date": DataClass.TXN_DATE,
-        "rate_published_date": DataClass.TXN_DATE,
-        "rate_source": DataClass.TXN_TYPE,
-        "account_count": DataClass.AGGREGATE,
-        "carried_forward_count": DataClass.AGGREGATE,
-        "total_assets": DataClass.BALANCE,
-        "total_liabilities": DataClass.BALANCE,
-        "net_worth": DataClass.BALANCE,
-        "total_assets_home": DataClass.BALANCE,
-        "total_liabilities_home": DataClass.BALANCE,
-        "net_worth_home": DataClass.BALANCE,
     },
 }

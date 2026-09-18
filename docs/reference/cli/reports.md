@@ -27,6 +27,8 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports large-transactions`](#moneybin-reports-large-transactions) | Top transactions by absolute amount with per-account/category z-scores. |
 | [`moneybin reports balance-drift`](#moneybin-reports-balance-drift) | Balance reconciliation drift: asserted vs computed, one row per assertion. |
 | [`moneybin reports realized-fx`](#moneybin-reports-realized-fx) | Realized FX gain/loss by disposal and lot allocation. |
+| [`moneybin reports net-worth-currencies`](#moneybin-reports-net-worth-currencies) | Net worth per currency per day: the currency-grain rung of the ladder. |
+| [`moneybin reports net-worth-accounts`](#moneybin-reports-net-worth-accounts) | Net worth per account per day: the account-grain rung of the ladder. |
 
 ## moneybin reports list
 
@@ -377,6 +379,44 @@ Usage: `moneybin reports realized-fx [OPTIONS]`
 | `--to-date` | text |  | Latest disposal date to include, as YYYY-MM-DD. |
 | `--currency` | text |  | ISO 4217 disposed Currency; case and surrounding spaces ignored. |
 | `--coverage` | text | `all` | complete \| incomplete \| all. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports net-worth-currencies
+
+Net worth per currency per day: the currency-grain rung of the ladder.
+
+One row per (currency_code, balance_date), summing every included account's balance in that currency, plus the home-currency conversion of both totals. Defaults to the latest available day when no range is given.
+
+Usage: `moneybin reports net-worth-currencies [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports net-worth-accounts
+
+Net worth per account per day: the account-grain rung of the ladder.
+
+One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given.
+
+Usage: `moneybin reports net-worth-accounts [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |

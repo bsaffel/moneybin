@@ -93,6 +93,11 @@ class ReportResult:
     #: converted. Rides the response only — never the durable log, which is why
     #: ``degraded_reason`` still names no date (see ``convert._missing_reason``).
     applied_rates: tuple[ResolvedRate, ...] = ()
+    #: The profile home currency a `currency_basis="home"` column was priced
+    #: FROM, or ``None``. Set by ``_priced_home_currency`` only when a report
+    #: declaring such a column actually had a value in it priced — see
+    #: ``contract.py``'s ``CurrencyBasis``.
+    home_currency: str | None = None
     #: Structured next steps for an agent, beside the prose ``actions`` the CLI
     #: prints — a caveat's remedy an agent can call without parsing a hint.
     recovery_actions: tuple[RecoveryAction, ...] = ()
@@ -124,6 +129,7 @@ class ReportResult:
             degraded_reason=self.degraded_reason,
             recovery_actions=list(self.recovery_actions) or None,
             applied_rates=[rate.as_provenance() for rate in self.applied_rates] or None,
+            home_currency=self.home_currency,
         )
 
 
@@ -579,6 +585,34 @@ def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
     )
 
 
+def _priced_home_currency(execution: CatalogReportExecution) -> str | None:
+    """The profile home currency actually priced into a home-basis column.
+
+    ``None`` unless conversion applied at least one real (non-identity) rate
+    to this response — ``execution.applied_rates`` is the same "a rate was
+    actually applied" signal ``ORIGINAL_CURRENCY_COLUMN`` gates on — *and* a
+    surviving row holds a value in a column whose declared ``currency_basis``
+    is ``"home"``. A home-basis column being declared is not evidence any row
+    carries a value in it (``account_balance_home`` is documented nullable),
+    so this mirrors the exact ``needs_home`` test ``convert_records`` applies
+    before it ever resolves a home rate.
+    """
+    if not execution.applied_rates or execution.home_currency is None:
+        return None
+    home_basis = {
+        column.name
+        for column in execution.output_columns
+        if column.currency_basis == "home"
+    }
+    if not home_basis:
+        return None
+    if any(
+        row.get(name) is not None for row in execution.records for name in home_basis
+    ):
+        return execution.home_currency
+    return None
+
+
 def redact_catalog_execution(
     spec: _CatalogSpec,
     execution: CatalogReportExecution,
@@ -614,6 +648,7 @@ def redact_catalog_execution(
         degraded=execution.degraded_reason is not None,
         degraded_reason=execution.degraded_reason,
         applied_rates=execution.applied_rates,
+        home_currency=_priced_home_currency(execution),
         recovery_actions=execution.recovery_actions,
     )
 

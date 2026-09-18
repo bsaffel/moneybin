@@ -57,6 +57,8 @@ _EXPECTED_CLI = {
     "large-transactions",
     "balance-drift",
     "realized-fx",
+    "net-worth-currencies",
+    "net-worth-accounts",
 }
 _EXPECTED_CATALOG_CLI = {
     "core:balance_drift": "balance-drift",
@@ -68,6 +70,8 @@ _EXPECTED_CATALOG_CLI = {
     "core:realized_fx": "realized-fx",
     "core:recurring_subscriptions": "recurring-subscriptions",
     "core:spending_trend": "spending-trend",
+    "core:net_worth_currencies": "net-worth-currencies",
+    "core:net_worth_accounts": "net-worth-accounts",
 }
 #: R5's tier-spanning catalog/runner plus the CLI-only lifecycle verbs. These
 #: share the group namespace with the generated per-report commands, so a report

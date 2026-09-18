@@ -3036,12 +3036,16 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
         table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
     }
     assert len(report_views) == 10
-    assert len(report_routes) == 9
+    assert len(report_routes) == 11
 
+    words = (
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven",
+    )  # fmt: skip
     current_surface_summary = (
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten')[len(report_views)]} "
+        f"{words[len(report_views)]} "
         "SQLMesh report views back "
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten')[len(report_routes)]} "
+        f"{words[len(report_routes)]} "
         "report routes"
     )
     queryable_schemas = QUERYABLE_INTERNAL_SCHEMAS_SPEC.read_text()

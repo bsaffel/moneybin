@@ -292,6 +292,8 @@ def test_only_reports_whose_rows_price_exactly_declare_an_fx_date() -> None:
         "core:balance_drift",
         "core:large_transactions",
         "core:networth",
+        "core:net_worth_currencies",
+        "core:net_worth_accounts",
     }
 
 

@@ -74,6 +74,8 @@
       "reports large-transactions",
       "reports balance-drift",
       "reports realized-fx",
+      "reports net-worth-currencies",
+      "reports net-worth-accounts",
       "reports run"
     ],
     "service_methods": [

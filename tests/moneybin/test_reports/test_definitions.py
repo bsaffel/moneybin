@@ -42,8 +42,18 @@ _CORE_REPORT_IDS = {
     "large_transactions": "core:large_transactions",
     "balance_drift": "core:balance_drift",
     "realized_fx": "core:realized_fx",
+    "net_worth_currencies": "core:net_worth_currencies",
+    "net_worth_accounts": "core:net_worth_accounts",
 }
-_FLOW_REPORTS = frozenset(_CORE_REPORT_IDS) - {"balance_drift"}
+#: Position reports whose comparison-window/denominator shape is balance_drift's
+#: own (asserted vs. computed as of one date) rather than a flow's.
+_POSITION_COMPARISON_REPORTS = frozenset({"balance_drift"})
+#: Position reports with no comparison baseline at all — net worth is a plain
+#: sum, not a comparison against a prior period.
+_POSITION_PLAIN_REPORTS = frozenset({"net_worth_currencies", "net_worth_accounts"})
+_FLOW_REPORTS = (
+    frozenset(_CORE_REPORT_IDS) - _POSITION_COMPARISON_REPORTS - _POSITION_PLAIN_REPORTS
+)
 #: The one promise every report's `fx_basis` makes, however it converts. What
 #: each report does with a display currency differs — three price their rows,
 #: five aggregate per currency and cannot — and which reports do which is pinned
@@ -178,7 +188,19 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert semantics.exclusions
         # Decorated reports are graph-backed; only a dynamic report has no view.
         assert spec.view is not None
-        assert semantics.provenance == (spec.view.full_name,)
+        if name in _POSITION_PLAIN_REPORTS:
+            # The net-worth ladder's own rung declares the underlying core.*
+            # tables it reads too, beside the view itself — reports-net-worth-
+            # sql-surface.md Requirement 10's deeper lineage disclosure.
+            assert semantics.provenance[0] == spec.view.full_name
+            assert semantics.provenance == (
+                spec.view.full_name,
+                "core.fct_balances_daily",
+                "core.dim_accounts",
+                "core.fct_exchange_rates_effective",
+            )
+        else:
+            assert semantics.provenance == (spec.view.full_name,)
 
         monetary_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
         assert monetary_classes.intersection(spec.classes.values())
@@ -200,6 +222,14 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         if name in _FLOW_REPORTS:
             assert semantics.kind == "flow"
             assert "inclusive" in semantics.time_basis
+        elif name in _POSITION_PLAIN_REPORTS:
+            # Net worth is a plain sum, not a comparison against a prior
+            # period, so it declares neither a comparison window nor a ratio
+            # denominator.
+            assert semantics.kind == "position"
+            assert semantics.comparison_window is None
+            assert semantics.denominator is None
+            assert "one row per" in semantics.time_basis
         else:
             assert semantics.kind == "position"
             assert semantics.comparison_window
