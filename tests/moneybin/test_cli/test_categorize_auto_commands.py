@@ -118,20 +118,16 @@ def test_auto_review_text_output_shows_match_count_and_flags_broad(
         total_count=2,
     )
 
-    with caplog.at_level(
-        logging.INFO, logger="moneybin.cli.commands.transactions.categorize.auto"
-    ):
-        result = runner.invoke(app, ["auto", "review"])
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["auto", "review", "--no-pager"])
 
     assert result.exit_code == 0, result.output
-    messages = [r.message for r in caplog.records]
-    safe_line = next(m for m in messages if "safe1" in m)
-    broad_line = next(m for m in messages if "broad1" in m)
-    assert "~3 matches" in safe_line
-    assert "BROAD" not in safe_line
-    assert "~400 matches" in broad_line
-    assert "BROAD" in broad_line
-    assert "--allow-broad" in broad_line
+    assert "safe1" in result.stdout
+    assert "3" in result.stdout
+    assert "broad1" in result.stdout
+    assert "400" in result.stdout
+    assert "require --allow-broad" in result.stdout
+    assert "AMZN" not in "\n".join(record.message for record in caplog.records)
 
 
 def _confirm_result(

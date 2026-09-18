@@ -7,11 +7,14 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.categorize import (
     AutoRuleRow,
@@ -32,6 +35,7 @@ app = typer.Typer(
 def review(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -60,37 +64,57 @@ def review(
         render_or_json(envelope, output, cli_actor="categorize_auto_review")
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not proposals:
-        if not quiet:
-            logger.info("No pending auto-rule proposals.")
-        return
-
-    if not quiet:
-        logger.info("👀 Pending auto-rule proposals:")
-    for p in proposals:
-        sub = f" / {p['subcategory']}" if p["subcategory"] else ""
-        samples = cast(list[str], p["sample_txn_ids"])
-        sample_str = f" samples: {','.join(samples)}" if samples else ""
-        estimated = p["estimated_match_count"]
-        line = (
-            f"[{p['proposed_rule_id']}] '{p['merchant_pattern']}' "
-            f"({p['match_type']}) -> {p['category']}{sub} "
-            f"(×{p['trigger_count']}, ~{estimated} matches){sample_str}"
+        parts = [build_summary([("Result", "No pending auto-rule proposals.")])]
+        disclosures = ("Next: moneybin transactions categorize auto rules",)
+    else:
+        parts = [
+            build_summary(
+                [("Pending proposals", f"{len(proposals):,}")],
+                title="Auto-rule review",
+            ),
+            build_rows(
+                [
+                    "proposal id",
+                    "pattern",
+                    "category",
+                    "triggers",
+                    "estimated matches",
+                    "review",
+                ],
+                [
+                    (
+                        p["proposed_rule_id"],
+                        p["merchant_pattern"],
+                        " / ".join(
+                            part for part in (p["category"], p["subcategory"]) if part
+                        ),
+                        p["trigger_count"],
+                        p["estimated_match_count"],
+                        "Broad — requires --allow-broad" if p["is_broad"] else "Ready",
+                    )
+                    for p in proposals
+                ],
+                numeric=("triggers", "estimated matches"),
+                terminal=policy,
+            ),
+        ]
+        disclosures = (
+            f"Showing {len(proposals):,} of {result.total_count:,} proposals."
+            if result.total_count > len(proposals)
+            else "",
+            "Broad proposals require --allow-broad to accept."
+            if any(bool(p["is_broad"]) for p in proposals)
+            else "",
+            "Next: moneybin transactions categorize auto accept --accept <proposal-id>",
         )
-        if p["is_broad"]:
-            # A broad proposal is the one the reviewer must NOT rubber-stamp —
-            # escalate to logger.warning (not .info) so it's visually
-            # unmistakable, mirroring the accept-path refusal in
-            # AutoRuleService.approve(). Matches the field names it names
-            # ("estimated_match_count", "allow_broad") to what's printed above.
-            logger.warning(f"  ⚠️  {line} — BROAD, requires --allow-broad to accept")
-        else:
-            logger.info(f"  {line}")
-    if not quiet and result.total_count > len(proposals):
-        logger.info(
-            f"💡 Showing {len(proposals)} of {result.total_count} pending proposals "
-            f"— increase --limit to see more"
-        )
+    emit_human_result(
+        compose_human_result(parts, disclosures=tuple(d for d in disclosures if d)),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("accept")
@@ -145,11 +169,28 @@ def categorize_auto_accept(
                 allow_broad=allow_broad,
             )
 
-    logger.info(
-        f"✅ Accepted {result.approved} "
-        f"(categorized {result.newly_categorized} existing); "
-        f"rejected {result.rejected}; "
-        f"skipped {result.skipped}"
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Accepted", str(result.approved)),
+                    ("Rejected", str(result.rejected)),
+                    ("Skipped", str(result.skipped)),
+                    (
+                        "Existing transactions categorized",
+                        str(result.newly_categorized),
+                    ),
+                ],
+                title=(
+                    "Auto-rule decision partially completed"
+                    if result.skipped
+                    else "Auto-rule decisions applied"
+                ),
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -157,6 +198,7 @@ def categorize_auto_accept(
 def stats(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # stats has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show auto-rule health: active rules, pending proposals, transactions categorized."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -179,16 +221,31 @@ def stats(
         )
         return
 
-    logger.info("Auto-rule health:")
-    logger.info(f"  Active auto-rules:        {result.active_auto_rules}")
-    logger.info(f"  Pending proposals:        {result.pending_proposals}")
-    logger.info(f"  Transactions auto-ruled:  {result.transactions_categorized}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Active auto-rules", f"{result.active_auto_rules:,}"),
+                    ("Pending proposals", f"{result.pending_proposals:,}"),
+                    (
+                        "Transactions categorized",
+                        f"{result.transactions_categorized:,}",
+                    ),
+                ],
+                title="Auto-rule health",
+            )
+        ]),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("rules")
 def rules(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
     limit: int | None = typer.Option(
         None,
         "--limit",
@@ -231,22 +288,46 @@ def rules(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not active_rules:
-        if not quiet:
-            logger.info("No active auto-rules.")
-        return
-
-    if not quiet:
-        logger.info("Active auto-rules:")
-    for r in active_rules:
-        sub = f" / {r['subcategory']}" if r["subcategory"] else ""
-        logger.info(
-            f"  [{r['rule_id']}] '{r['merchant_pattern']}' "
-            f"({r['match_type']}) -> {r['category']}{sub} "
-            f"(priority: {r['priority']})"
+        parts = [build_summary([("Result", "No active auto-rules.")])]
+        disclosures = ("Next: moneybin transactions categorize auto review",)
+    else:
+        rule_rows: list[tuple[object, object, object, str, object]] = [
+            (
+                r["rule_id"],
+                r["merchant_pattern"],
+                r["match_type"],
+                " / ".join(
+                    str(part)
+                    for part in (r["category"], r["subcategory"])
+                    if part is not None
+                ),
+                r["priority"],
+            )
+            for r in active_rules
+        ]
+        parts = [
+            build_summary(
+                [("Active rules", f"{len(active_rules):,}")], title="Auto-rules"
+            ),
+            build_rows(
+                ["rule id", "pattern", "match", "category", "priority"],
+                rule_rows,
+                numeric=("priority",),
+                terminal=policy,
+            ),
+        ]
+        disclosures = (
+            (
+                f"Showing {len(active_rules):,} of {total:,} active rules."
+                if total > len(active_rules)
+                else ""
+            ),
         )
-    if not quiet and total > len(active_rules):
-        logger.info(
-            f"💡 Showing {len(active_rules)} of {total} active auto-rules "
-            f"— increase --limit to see more"
-        )
+    emit_human_result(
+        compose_human_result(parts, disclosures=tuple(d for d in disclosures if d)),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )

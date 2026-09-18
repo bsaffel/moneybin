@@ -8,8 +8,9 @@ from pathlib import Path
 import typer
 
 from moneybin import error_codes
-from moneybin.cli.output import OutputFormat, output_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import OutputFormat, emit_human_result, output_option
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import ErrorDetail
 
@@ -117,13 +118,34 @@ def categorize_commit_from_file(
     from moneybin.protocol.envelope import build_envelope
 
     def _render_table(_: object) -> None:
-        logger.info(
-            f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
-        )
+        details = [
+            ("Applied", str(result.applied)),
+            ("Skipped", str(result.skipped)),
+            ("Failed", str(result.errors)),
+        ]
         if result.merchants_created:
-            logger.info(f"   Created {result.merchants_created} merchant mappings")
-        for err in result.error_details:
-            logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+            details.append(("Merchant mappings created", str(result.merchants_created)))
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        details,
+                        title=(
+                            "File commit partially completed"
+                            if result.errors or result.skipped
+                            else "File categorizations committed"
+                        ),
+                    )
+                ],
+                disclosures=tuple(
+                    f"{err['transaction_id']}: {err['reason']}"
+                    for err in result.error_details
+                ),
+            ),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     envelope = build_envelope(
         data=result.to_payload(),

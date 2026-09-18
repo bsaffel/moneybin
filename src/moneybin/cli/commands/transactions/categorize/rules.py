@@ -11,13 +11,21 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import column_view, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    column_view,
+    compose_human_result,
+    render_note,
+)
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
@@ -49,6 +57,7 @@ app = typer.Typer(
 def rules_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Display all active categorization rules."""
     from moneybin.services.categorization import CategorizationService
@@ -81,20 +90,41 @@ def rules_list(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not rows:
-        if not quiet:
-            logger.info("No active categorization rules.")
-        return
-
-    if not quiet:
-        logger.info("Active categorization rules:")
-    for row in rows:
-        sub = f" / {row.subcategory}" if row.subcategory else ""
-        logger.info(
-            f"  [{row.rule_id}] {row.name}: '{row.merchant_pattern}' "
-            f"({row.match_type}) -> {row.category}{sub} "
-            f"(priority: {row.priority})"
+        parts = [build_summary([("Result", "No active categorization rules.")])]
+        disclosures = (
+            "Next: moneybin transactions categorize rules create <name> --pattern <pattern> --category <category>",
         )
+    else:
+        parts = [
+            build_summary(
+                [("Active rules", f"{len(rows):,}")], title="Categorization rules"
+            ),
+            build_rows(
+                ["rule id", "name", "pattern", "match", "category", "priority"],
+                [
+                    (
+                        row.rule_id,
+                        row.name,
+                        row.merchant_pattern,
+                        row.match_type,
+                        _label(row.category, row.subcategory),
+                        row.priority,
+                    )
+                    for row in rows
+                ],
+                numeric=("priority",),
+                terminal=policy,
+            ),
+        ]
+        disclosures = ()
+    emit_human_result(
+        compose_human_result(parts, disclosures=disclosures),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("apply")
@@ -106,10 +136,17 @@ def rules_apply() -> None:
         with get_database(read_only=False) as db:
             result = CategorizationService(db).categorize_run(methods=["rules"])
             applied = result["total_applied"]
-            if applied > 0:
-                logger.info(f"✅ Categorized {applied} transactions by rule")
-            else:
-                logger.info("✅ No uncategorized transactions matched active rules")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Categorized", f"{applied:,}"), ("Method", "rules")],
+                title="Rule application complete",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
@@ -123,12 +160,12 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
     """
     for err in result.error_details:
         render_note(
-            f"⚠️  {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
+            f"Attention: {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
             warn=True,
         )
     for conflict in result.conflict_details:
         render_note(
-            f"👀 {conflict.name}: {conflict.reason} "
+            f"Attention: {conflict.name}: {conflict.reason} "
             f"Decide it with `moneybin transactions categorize rules resolve "
             f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
             warn=True,
@@ -297,11 +334,26 @@ def rules_create(
             actions=actions,
         )
         render_or_json(envelope, output, cli_actor="rules_create")
-    elif not quiet:
-        logger.info(
-            f"✅ Created {result.created} rule(s); "
-            f"existing {result.existing}, skipped {result.skipped}, "
-            f"conflicts {result.conflicts}"
+    else:
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Created", str(result.created)),
+                        ("Existing", str(result.existing)),
+                        ("Skipped", str(result.skipped)),
+                        ("Conflicts", str(result.conflicts)),
+                    ],
+                    title=(
+                        "Rules partially created"
+                        if result.skipped or result.conflicts
+                        else "Rules created"
+                    ),
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
         )
 
     _warn_rule_create_rows(result)
@@ -353,8 +405,16 @@ def rules_delete(
         )
         return
 
-    if not quiet:
-        logger.info(f"✅ Rule {rule_id} deactivated")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Rule ID", rule_id), ("Action", "Deactivated")], title="Rule deleted"
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 _CONFLICT_COLUMNS: tuple[
@@ -390,6 +450,7 @@ def rules_list_conflicts(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show categorization rules refused because another rule owns the matcher."""
     # defer import; CLI cold-start hygiene
@@ -425,8 +486,17 @@ def rules_list_conflicts(
         )
         return
 
+    policy = get_terminal_policy(no_pager=no_pager)
     if not conflicts:
-        render_note("No rule conflicts awaiting a decision.", quiet=quiet)
+        emit_human_result(
+            compose_human_result(
+                [build_summary([("Result", "No rule conflicts awaiting a decision.")])],
+                disclosures=("Next: moneybin transactions categorize rules list",),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
     # Rows go to stdout through `render_rows`, never through `logger`: the
@@ -436,7 +506,29 @@ def rules_list_conflicts(
     view = column_view(
         _CONFLICT_COLUMNS, conflicts, default=_CONFLICT_DEFAULT, wide=wide
     )
-    render_rows(view.names, view.rows, numeric=("priority",), total_columns=view.total)
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary(
+                    [("Conflicts", f"{len(conflicts):,}")], title="Rule conflicts"
+                ),
+                build_rows(
+                    view.names,
+                    view.rows,
+                    numeric=("priority",),
+                    total_columns=view.total,
+                    terminal=policy,
+                ),
+            ],
+            disclosures=(
+                "Next: moneybin transactions categorize rules resolve <conflict-id> --replace",
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+        wide=wide,
+    )
 
 
 def _label(category: object, subcategory: object) -> str:
@@ -653,8 +745,18 @@ def rules_resolve(
 
     activated = sum(1 for item in results if item.rule_id is not None)
     superseded = sum(len(item.superseded_rule_ids) for item in results)
-    render_note(
-        f"✅ Resolved {len(results)} conflict(s); "
-        f"activated {activated}, superseded {superseded}",
-        quiet=quiet,
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Resolved", str(len(results))),
+                    ("Activated", str(activated)),
+                    ("Superseded", str(superseded)),
+                ],
+                title="Rule conflicts resolved",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
     )
