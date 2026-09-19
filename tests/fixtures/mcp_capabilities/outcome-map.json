@@ -65,8 +65,6 @@
       "reports"
     ],
     "cli_commands": [
-      "reports networth",
-      "reports networth-history",
       "reports spending-trend",
       "reports cash-flow",
       "reports recurring-subscriptions",

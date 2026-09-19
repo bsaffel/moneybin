@@ -1,9 +1,7 @@
 """In-tree report runners — the reference set every report (incl. packages) mirrors.
 
 Each module declares one ``@report`` runner; ``ALL_REPORTS`` is the explicit
-registration list the application wires via ``register_reports``. ``networth`` /
-``networth_history`` are NetworthService-backed (not single reports.* view reads)
-and stay hand-written — a documented exception, not part of this list.
+registration list the application wires via ``register_reports``.
 """
 
 from __future__ import annotations

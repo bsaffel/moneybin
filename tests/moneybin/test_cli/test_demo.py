@@ -15,7 +15,7 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.cli.output import UNKNOWN_CURRENCY
 from moneybin.cli.render import MINUS
-from moneybin.services.demo_service import DemoResult
+from moneybin.services.demo_service import DemoCurrencySegment, DemoResult
 
 runner = CliRunner()
 
@@ -39,10 +39,8 @@ def _fake_result(**overrides: Any) -> DemoResult:
     return dataclasses.replace(base, **overrides)
 
 
-def _segment(code: str, net_worth: str) -> Any:
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
-    return NetWorthCurrencySegment(
+def _segment(code: str | None, net_worth: str) -> DemoCurrencySegment:
+    return DemoCurrencySegment(
         currency_code=code,
         net_worth=Decimal(net_worth),
         total_assets=Decimal(net_worth),
@@ -153,20 +151,13 @@ def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
 
 @pytest.mark.unit
 def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
-    """`reports.net_worth` pools unknown-currency accounts into a NULL segment.
+    """`reports.net_worth_currencies` pools unknown-currency accounts into one segment.
 
-    Both its code and its totals are nullable, so rendering them raw prints a
-    bare "None" — or raises, formatting a null Decimal — at the headline.
+    Only its currency_code is null — the summed totals over that segment's own
+    accounts are real numbers (core:net_worth_currencies.total_assets is a
+    SUM, never NULL, for a group that exists at all).
     """
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
-    unknown = NetWorthCurrencySegment(
-        currency_code=None,
-        net_worth=None,
-        total_assets=None,
-        total_liabilities=None,
-        account_count=1,
-    )
+    unknown = _segment(None, "5.00")
     _patch_service(
         mocker,
         _fake_result(
@@ -186,24 +177,16 @@ def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
 
 
 @pytest.mark.unit
-def test_demo_json_null_segment_stays_null(mocker: Any) -> None:
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
-
+def test_demo_json_unknown_segment_carries_a_null_currency_code(
+    mocker: Any,
+) -> None:
     _patch_service(
         mocker,
         _fake_result(
             net_worth=None,
             total_assets=None,
             total_liabilities=None,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code=None,
-                    net_worth=None,
-                    total_assets=None,
-                    total_liabilities=None,
-                    account_count=1,
-                )
-            ],
+            per_currency=[_segment(None, "5.00")],
         ),
     )
     result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
@@ -212,9 +195,9 @@ def test_demo_json_null_segment_stays_null(mocker: Any) -> None:
     assert envelope["data"]["per_currency"] == [
         {
             "currency_code": None,
-            "net_worth": None,
-            "total_assets": None,
-            "total_liabilities": None,
+            "net_worth": "5.00",
+            "total_assets": "5.00",
+            "total_liabilities": "0.00",
             "account_count": 1,
         }
     ]

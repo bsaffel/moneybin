@@ -1,4 +1,4 @@
-"""One internal catalog for SQL-backed and service-backed reports."""
+"""One internal catalog for SQL-backed reports."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import re
 import types
 import typing
 from collections import defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Generator, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -39,13 +39,9 @@ from moneybin.privacy.sensitivity import tier_to_sensitivity
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     USER_NAMESPACE,
-    DefaultColumns,
-    OutputColumn,
     ParamSpec,
-    RecomputeDerived,
     ReportSemantics,
     ReportSpec,
-    validate_default_columns,
 )
 from moneybin.reports._framework.derive import json_scalar, typed_value
 from moneybin.reports._framework.dynamic import DEGRADED_PENDING_DEDUP
@@ -271,42 +267,7 @@ _REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
 
 type ReportTier = Literal["builtin", "extension", "user"]
 
-
-@dataclass(frozen=True, slots=True)
-class ServiceReportSpec:
-    """Immutable catalog metadata and executor for one service-backed report."""
-
-    report_id: str
-    name: str
-    description: str
-    parameters: tuple[ParamSpec, ...]
-    columns: tuple[OutputColumn, ...]
-    semantics: ReportSemantics
-    classes: Mapping[str, DataClass]
-    examples: tuple[str, ...]
-    executor: Callable[
-        [Database, Mapping[str, JsonValue], int | None], CatalogReportExecution
-    ]
-    validator: Callable[[Mapping[str, JsonValue]], None] | None = None
-    on_converted: RecomputeDerived | None = None
-    """Same contract as ``ReportSpec.on_converted`` — see the note there."""
-    default_columns: DefaultColumns | None = None
-    """Same contract as ``ReportSpec.default_columns`` — see the note there."""
-
-    def __post_init__(self) -> None:
-        if _REPORT_ID.fullmatch(self.report_id) is None:
-            raise ValueError("report_id must use namespace:name")
-        declared = {column.name: column.data_class for column in self.columns}
-        if len(declared) != len(self.columns) or declared != dict(self.classes):
-            raise ValueError(
-                "columns and classes must declare the same output fields "
-                "with identical privacy classes"
-            )
-        validate_default_columns(self.default_columns, self.columns)
-        object.__setattr__(self, "classes", MappingProxyType(dict(self.classes)))
-
-
-type RegisteredReport = ReportSpec | ServiceReportSpec
+type RegisteredReport = ReportSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -426,11 +387,16 @@ class ReportCatalog:
         *,
         report_id: str,
         parameters: Mapping[str, JsonValue],
-        limit: int,
+        limit: int | None,
         display_currency: str | None = None,
         home_currency: str | None = None,
     ) -> CatalogReportResult:
         """Validate parameters, then dispatch through the selected report kind.
+
+        ``limit=None`` returns every row uncapped — ``execute_raw`` already
+        supports it; every public surface (CLI, MCP) still passes a real cap,
+        and an internal caller with a naturally small, unranged result (demo's
+        latest-day currency snapshot) may pass ``None`` instead of inventing one.
 
         Both currencies price every money column in one currency (Requirement 9),
         and a pair that cannot be resolved from stored rates segments instead of
@@ -451,9 +417,11 @@ class ReportCatalog:
             report_id=report_id,
             parameters=parameters,
             limit=limit,
-            # A conversion can change the row count — `core:networth` merges its
-            # per-currency totals once they share a unit — so the cap has to
-            # describe what that repair produced, not what fed it.
+            # A conversion can change the row count when a report's own
+            # `on_converted` callback reshapes rows after pricing (e.g.
+            # merging several currency totals into one headline once they
+            # share a unit) — so the cap has to describe what that repair
+            # produced, not what fed it.
             defer_truncation=target is not None,
         )
         disclosed = execution.degraded_reason
@@ -517,21 +485,13 @@ class ReportCatalog:
         )
         tier = report_tier(spec)
         try:
-            if isinstance(spec, ReportSpec):
-                execution = execute_catalog_report(
-                    spec,
-                    db,
-                    max_rows=limit,
-                    defer_truncation=defer_truncation,
-                    **validated,
-                )
-            else:
-                # A service executor builds every row it has before handing them
-                # over, so withholding the cap costs it nothing and spares the
-                # protocol a flag only one of its two implementations reads.
-                execution = spec.executor(
-                    db, validated, None if defer_truncation else limit
-                )
+            execution = execute_catalog_report(
+                spec,
+                db,
+                max_rows=limit,
+                defer_truncation=defer_truncation,
+                **validated,
+            )
         except Exception:
             USER_REPORT_RUNS_TOTAL.labels(tier=tier, outcome="error").inc()
             raise
@@ -571,8 +531,6 @@ class ReportCatalog:
             )
         spec = self.resolve(report_id)
         validated = validate_report_parameters(spec, parameters)
-        if isinstance(spec, ServiceReportSpec) and spec.validator is not None:
-            spec.validator(validated)
         return spec, validated
 
 
@@ -610,9 +568,7 @@ def report_tier(report: RegisteredReport) -> ReportTier:
 
 
 def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:
-    if isinstance(spec, ReportSpec):
-        return spec.params
-    return spec.parameters
+    return spec.params
 
 
 def validate_report_parameters(
@@ -743,14 +699,12 @@ def get_report_catalog(db: Database | None = None) -> ReportCatalog:
         spec_of,
     )
     from moneybin.reports.definitions import ALL_REPORTS
-    from moneybin.reports.service_reports import SERVICE_REPORTS
 
     core = (spec_of(runner) for runner in ALL_REPORTS)
     user = user_report_specs(db) if db is not None else ()
     return ReportCatalog(
         (
             *core,
-            *SERVICE_REPORTS,
             *extension_report_specs(),
             *(report.spec for report in user),
         ),

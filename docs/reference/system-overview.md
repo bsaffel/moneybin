@@ -114,7 +114,7 @@ moneybin import files my_export.csv
 moneybin refresh
 
 # 5. Query the result.
-moneybin reports networth          # canned report
+moneybin reports net-worth         # canned report
 moneybin db shell                  # interactive SQL against core.* / reports.*
 ```
 

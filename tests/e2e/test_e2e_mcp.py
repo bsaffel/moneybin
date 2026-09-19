@@ -194,8 +194,7 @@ class TestReportsTool:
         _, tool_names = mcp_server_tools
 
         assert "reports" in tool_names
-        assert "reports_networth" not in tool_names
-        assert "reports_networth_history" not in tool_names
+        assert "reports_net_worth" not in tool_names
 
     async def test_per_report_tools_are_not_registered(
         self, mcp_server_tools: tuple[str, set[str]]
@@ -218,6 +217,12 @@ class TestReportsTool:
             "reports_merchant_activity",
             "reports_large_transactions",
             "reports_balance_drift",
+            # The retired service-backed net-worth reports and their rename:
+            # per-report tools never existed for any of these spellings.
+            "reports_networth",
+            "reports_networth_history",
+            "reports_net_worth_currencies",
+            "reports_net_worth_accounts",
         }
         assert not removed & tool_names
 

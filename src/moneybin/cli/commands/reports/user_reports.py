@@ -261,8 +261,6 @@ def reports_explain(
         # in counts, and this path reaches it through `spec_from_row`.
         if explanation.drift_reason:
             typer.echo(f"  ⚠️  {explanation.drift_reason}")
-        if explanation.sql_unavailable:
-            typer.echo(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:
             typer.echo(
                 "Withheld from the rendered SQL (classed above the lowest tier): "
@@ -288,7 +286,6 @@ def reports_explain(
                 "tier": explanation.tier,
                 "sql": explanation.sql,
                 "sql_template": explanation.sql_template,
-                "sql_unavailable": explanation.sql_unavailable,
                 "withheld_parameters": list(explanation.withheld_parameters),
                 "sql_suppressed_by": list(explanation.sql_suppressed_by),
                 "columns": [

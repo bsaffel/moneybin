@@ -18,18 +18,18 @@
 
 Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
-The current catalog has since grown: ten SQLMesh report views back twelve
-report routes, with ten `@report` SQL runners plus the same two
-service-backed net-worth routes. The added `reports.realized_fx` view is
-specified by [`multi-currency.md`](multi-currency.md), not by this initial
-recipe-library slice. `reports.net_worth_accounts` and
-`reports.net_worth_currencies`, specified by
+The current catalog has since grown: ten SQLMesh report views back ten
+report routes, every one now a `@report` SQL runner — no service-backed
+route survives. The added `reports.realized_fx` view is specified by
+[`multi-currency.md`](multi-currency.md), not by this initial recipe-library
+slice. `reports.net_worth_accounts`, `reports.net_worth_currencies`, and
+`reports.net_worth`, specified by
 [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md), now
 back their own `@report` SQL runners (`core:net_worth_accounts` /
-`core:net_worth_currencies`), so every view is accounted for.
-`reports.net_worth` gained its own `@report` SQL runner (`core:net_worth`)
-too, reading the same view the two service-backed routes (`core:networth`,
-`core:networth_history`) still read pending their retirement.
+`core:net_worth_currencies` / `core:net_worth`), so every view is accounted
+for. That spec's §Files to Delete retired `NetworthService`, `core:networth`,
+and `core:networth_history` — the last of the service-backed routes this
+section originally shipped.
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 

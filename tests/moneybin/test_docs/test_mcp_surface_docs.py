@@ -2339,7 +2339,7 @@ def test_mcp_contract_scan_does_not_treat_contract_subjects_as_schema_details(
         "Run the CLI command `moneybin transform validate`.",
         "The internal `ImportService.import_file` method owns ingestion.",
         "The SQL model `reports.spending_trend` is queryable.",
-        "The report ID is `core:networth_history`.",
+        "The report ID is `core:net_worth_currencies`.",
         "The request discriminator is `kind='match'`.",
         "The internal `LedgerService.transactions(date_from='2026-01-01')` method is not an MCP call.",
         'The internal function `reviews(kind="match")` returns rows.',
@@ -3036,7 +3036,7 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
         table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
     }
     assert len(report_views) == 10
-    assert len(report_routes) == 12
+    assert len(report_routes) == 10
 
     words = (
         "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",

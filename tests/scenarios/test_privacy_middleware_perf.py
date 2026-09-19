@@ -53,7 +53,6 @@ from moneybin.mcp.tools.transactions import transactions_get
 from moneybin.privacy import classified_envelope
 from moneybin.privacy.payloads.accounts import AccountsCoarsePayload
 from moneybin.privacy.payloads.budget import BudgetStatusPayload
-from moneybin.privacy.payloads.networth import NetWorthHistoryPayload
 from moneybin.privacy.payloads.transactions import TransactionGetPayload
 from moneybin.privacy.redaction import redact_records, redact_typed
 from moneybin.privacy.sql_lineage import (
@@ -65,7 +64,6 @@ from moneybin.privacy.sql_lineage import (
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 from moneybin.reports._framework import execute as report_execute
 from moneybin.services.budget_service import BudgetService
-from moneybin.services.networth_service import NetworthService
 from tests.scenarios._perf_runner import FlowResult, measure_flow
 from tests.scenarios._runner.loader import Scenario, SetupSpec
 from tests.scenarios._runner.runner import scenario_env
@@ -84,8 +82,7 @@ P50_BUDGET_MS = 50.0
 P99_BUDGET_MS = 200.0
 TOTAL_REGRESSION_PCT = 20.0
 
-# 12-month window for networth_history matches the default-window used by
-# reports_networth_history when called without dates.
+# 12-month window for the net-worth currencies flow's `from_date`/`to_date`.
 _HISTORY_FROM = date.today() - timedelta(days=365)
 _HISTORY_TO = date.today()
 _PERSONA_SETUP_HINT = (
@@ -280,17 +277,33 @@ def test_privacy_middleware_within_budget() -> None:
     def _budget_protected() -> ResponseEnvelope[BudgetStatusPayload]:
         return _budget_raw()
 
-    def _networth_raw() -> ResponseEnvelope[NetWorthHistoryPayload]:
-        with get_database(read_only=True) as db:
-            return build_envelope(
-                data=NetworthService(db).history(
-                    from_date=_HISTORY_FROM, to_date=_HISTORY_TO
+    # core:net_worth_currencies is, like spending, a dynamic `reports()` route:
+    # its raw path bypasses only terminal record redaction and the decorator's
+    # audit write, and protected restores the production callables.
+    def _net_worth_call(
+        redactor: Callable[..., list[dict[str, Any]]],
+        audit_writer: Callable[..., None],
+    ) -> ResponseEnvelope[object]:
+        with (
+            patch.object(report_execute, "redact_records", redactor),
+            patch.object(mcp_decorator, "write_privacy_event", audit_writer),
+        ):
+            return asyncio.run(
+                reports(
+                    report_id="core:net_worth_currencies",
+                    parameters={
+                        "from_date": _HISTORY_FROM.isoformat(),
+                        "to_date": _HISTORY_TO.isoformat(),
+                    },
+                    limit=1000,
                 )
             )
 
-    @mcp_tool()
-    def _networth_protected() -> ResponseEnvelope[NetWorthHistoryPayload]:
-        return _networth_raw()
+    def _net_worth_raw() -> ResponseEnvelope[object]:
+        return _net_worth_call(_identity_report_redaction, _skip_privacy_audit)
+
+    def _net_worth_protected() -> ResponseEnvelope[object]:
+        return _net_worth_call(report_redact_records, write_privacy_event)
 
     def _assert_static_protection(
         raw: ResponseEnvelope[Any], protected: ResponseEnvelope[Any]
@@ -358,9 +371,15 @@ def test_privacy_middleware_within_budget() -> None:
     budget_protected = asyncio.run(_budget_protected())
     _assert_static_protection(budget_raw, budget_protected)
 
-    networth_raw = _networth_raw()
-    networth_protected = asyncio.run(_networth_protected())
-    _assert_static_protection(networth_raw, networth_protected)
+    net_worth_audit_before = _audit_event_count()
+    net_worth_raw = _net_worth_raw()
+    net_worth_protected = _net_worth_protected()
+    assert net_worth_raw.error is None
+    assert net_worth_protected.error is None
+    # core:net_worth_currencies contains no currently masked classes, so its
+    # data is equal after terminal redaction — same reasoning as spending below.
+    assert net_worth_protected.data == net_worth_raw.data
+    assert _audit_event_count() == net_worth_audit_before + 1
 
     spending_audit_before = _audit_event_count()
     spending_raw = _spending_raw()
@@ -397,9 +416,9 @@ def test_privacy_middleware_within_budget() -> None:
                 lambda: _run_static_raw(runner, _budget_raw),
                 lambda: _require_protected_success(runner.run(_budget_protected())),
             ),
-            "reports_networth_history": (
-                lambda: _run_static_raw(runner, _networth_raw),
-                lambda: _require_protected_success(runner.run(_networth_protected())),
+            "reports_net_worth_currencies": (
+                _net_worth_raw,
+                lambda: _require_protected_success(_net_worth_protected()),
             ),
         }
         for name, (raw, protected) in flows.items():

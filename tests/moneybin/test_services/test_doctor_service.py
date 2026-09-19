@@ -2862,9 +2862,10 @@ def test_currency_integrity_warn_with_home_currency_set_skips_redundant_advice(
     """A profile that already chose a home currency needs different advice.
 
     Telling the user to set what is already set is noise, and claiming every
-    combined figure is withheld is false: `networth`, `large-transactions`, and
-    `balance-drift` already convert into the home currency whenever their rates
-    are on disk. Only the five aggregating reports still sub-total regardless.
+    combined figure is withheld is false: `net-worth-currencies`,
+    `large-transactions`, and `balance-drift` already convert into the home
+    currency whenever their rates are on disk. Only the five aggregating
+    reports still sub-total regardless.
     """
     doctor_db.execute("""
         UPDATE core.fct_transactions SET currency_code = 'EUR'

@@ -198,9 +198,8 @@ def resolve_date_range(
     "stays open" rule (spec §Data Model) cannot drift between them. A one-sided
     bound never collapses to a single day: ``from_date`` alone leaves the upper
     end open, and ``to_date`` alone leaves the lower end open. Neither bound
-    given defaults to the latest available day, mirroring the retired
-    ``NetworthService.current()`` — unless ``default_latest=False``, which
-    leaves the whole history open instead. ``core:net_worth`` passes ``False``
+    given defaults to the latest available day — unless ``default_latest=False``,
+    which leaves the whole history open instead. ``core:net_worth`` passes ``False``
     when ``interval`` is given: bucketing (weekly/monthly rollups, and the
     change columns their ``LAG`` needs) wants every available day, not the
     single latest one, when the caller named no range.

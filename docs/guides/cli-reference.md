@@ -644,7 +644,7 @@ moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
 # ... categorize via review or transactions categorize rules ...
-moneybin reports networth                   # this month's net worth
+moneybin reports net-worth                  # this month's net worth
 moneybin reports cash-flow                  # this month's income vs spending
 ```
 
@@ -656,7 +656,7 @@ Each step is idempotent — re-run safely if interrupted. `import files` auto-ru
 moneybin profile create personal
 moneybin import files ~/Downloads/checking.qfx
 moneybin transactions categorize run
-moneybin reports networth
+moneybin reports net-worth
 ```
 
 `categorize run` is a no-op until you have rules or merchant mappings — the auto-rule snowball kicks in after a few LLM-assist cycles.

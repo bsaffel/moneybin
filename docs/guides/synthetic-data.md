@@ -101,17 +101,11 @@ the 995-row `basic` build in 13.35s.
 Read the reports against the fresh data:
 
 ```console
-$ moneybin --profile bob reports networth
-Using profile: bob
-USD as of 2025-12-31
-Net worth:   420,080.77
-Assets:      420,080.77
-Liabilities: 0.00
-Accounts:    4
+$ moneybin --profile bob reports net-worth-accounts
 ```
 
-The per-account balance table and three trailing hint lines are trimmed. `reports
-networth` shows balance composition across all generated accounts; `reports cash-flow`
+The output is omitted here. `reports net-worth-accounts` shows each generated account's
+latest balance; `reports cash-flow`
 rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
 `reports recurring-subscriptions` lists the detected recurring stream (rent, utilities,
 subscriptions, statement payments). These are the same commands that run against real

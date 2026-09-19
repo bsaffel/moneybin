@@ -39,7 +39,6 @@ from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import (
     RegisteredReport,
     ReportTier,
-    ServiceReportSpec,
     get_report_catalog,
     report_tier,
     validate_report_parameters,
@@ -55,21 +54,16 @@ type ColumnOrigin = Literal["upstream", "computed", "unresolved", "undetermined"
 
 ``upstream`` — a passthrough of one named column. ``computed`` — an expression,
 so no single upstream column describes it. ``unresolved`` — nothing could
-classify it, which is why it masks. ``undetermined`` — this surface has no query
-text to read a provenance from (a service-backed report), or the projection's
-name is one lineage never saw.
+classify it, which is why it masks. ``undetermined`` — the projection's name is
+one lineage never saw.
 """
 
-type GraduationState = Literal[
-    "eligible", "blocked", "already_materialized", "service_backed"
-]
+type GraduationState = Literal["eligible", "blocked", "already_materialized"]
 """Whether this report could become a SQLMesh ``reports.*`` model.
 
 ``eligible`` — a saved report that could. ``blocked`` — a saved report that
 could not, with the reason in ``graduation_blockers``. ``already_materialized``
 — a runner-backed report, which is a `reports.*` model today.
-``service_backed`` — a service report, which owns no model and never graduates
-into one, so "already materialized" would be false portability evidence.
 """
 
 
@@ -93,7 +87,6 @@ class ReportExplanation:
     tier: ReportTier
     sql: str | None
     sql_template: str | None
-    sql_unavailable: str | None
     withheld_parameters: tuple[str, ...]
     sql_suppressed_by: tuple[str, ...]
     columns: tuple[ColumnProvenance, ...]
@@ -153,8 +146,8 @@ def explain_spec(
     """
     tier = report_tier(report)
     freshness = _freshness(db, report) if tier == "user" else _Freshness()
-    forms, unavailable = _sql_forms(db, report, parameters=parameters, tier=tier)
-    query_sql = None if forms is None else forms.sql_template
+    forms = _sql_forms(db, report, parameters=parameters, tier=tier)
+    query_sql = forms.sql_template
     graduation, blockers = _graduation(report, query_sql, tier=tier)
 
     return ReportExplanation(
@@ -162,11 +155,10 @@ def explain_spec(
         name=report.name,
         description=report.description,
         tier=tier,
-        sql=None if forms is None else forms.sql,
+        sql=forms.sql,
         sql_template=query_sql,
-        sql_unavailable=unavailable,
-        withheld_parameters=() if forms is None else forms.withheld_parameters,
-        sql_suppressed_by=() if forms is None else forms.suppressed_by,
+        withheld_parameters=forms.withheld_parameters,
+        sql_suppressed_by=forms.suppressed_by,
         columns=_column_provenance(db, report, query_sql=query_sql),
         lineage=report.semantics.provenance,
         class_fingerprint=freshness.class_fingerprint,
@@ -184,27 +176,13 @@ def _sql_forms(
     *,
     parameters: Mapping[str, JsonValue],
     tier: ReportTier,
-) -> tuple[SqlForms | None, str | None]:
-    """Build the query's two forms, or say why no query exists.
-
-    A ``ServiceReportSpec`` carries an ``executor`` returning a finished result,
-    not a ``runner`` returning a ``ReportQuery``, so no SQL string exists
-    anywhere in its path. Returning its declared provenance plus this reason
-    tells the truth; fabricating a plausible ``SELECT`` to fill the slot does
-    not, and the whole point of a provenance chip is that it can be checked.
-    """
-    if isinstance(report, ServiceReportSpec):
-        return None, (
-            f"service_backed: {report.report_id} is executed by a service, not a "
-            "SELECT, so no query text exists in its path. Its lineage names the "
-            "reports.* views the service reads."
-        )
-
+) -> SqlForms:
+    """Build the query's two forms."""
     unbound = _unbound(report, parameters) if tier == "user" else ()
     validated = validate_report_parameters(
         report, {**parameters, **{name: _sentinel(report, name) for name in unbound}}
     )
-    return render_sql_forms(report.runner(db, **validated), unbound=unbound), None
+    return render_sql_forms(report.runner(db, **validated), unbound=unbound)
 
 
 def _unbound(
@@ -312,7 +290,7 @@ def _projection_sources(
 
 
 def _graduation(
-    report: RegisteredReport, query_sql: str | None, *, tier: ReportTier
+    report: RegisteredReport, query_sql: str, *, tier: ReportTier
 ) -> tuple[GraduationState, tuple[str, ...]]:
     """Whether this report could become a SQLMesh ``reports.*`` model.
 
@@ -321,14 +299,8 @@ def _graduation(
     explicitly conditional. The obligation is honesty, not restriction — so a
     report that runs correctly today and can never be materialized says so, with
     the specific reason.
-
-    Keyed on the spec's kind, not on whether a query string turned up: a
-    runner-backed report whose SQL this surface suppressed is still materialized,
-    while a service report with no SQL anywhere never was.
     """
-    if isinstance(report, ServiceReportSpec):
-        return "service_backed", ()
-    if tier != "user" or query_sql is None:
+    if tier != "user":
         return "already_materialized", ()
     report_id = report.report_id
     try:

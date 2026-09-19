@@ -142,9 +142,9 @@ def format_money(value: object, kind: MoneyKind) -> str:
     number nobody stored. It is a dash rather than a blank because that is what
     absence is already spelled as across this CLI — ``confidence_cell``, the
     review queues, ``accounts list`` — and because a blank money cell beside a
-    dashed one reads as two different facts. The first period of a
-    ``networth history`` series has no prior to difference against, so this is
-    the common case, not an edge.
+    dashed one reads as two different facts. The first bucket of a
+    ``net-worth --interval`` series has no prior to difference against, so this
+    is the common case, not an edge.
 
     A ``−`` is never dropped, whatever the kind. "Balances unsigned" exists so
     a checking balance carries no decorative ``+``; read as licence to drop the
@@ -446,10 +446,11 @@ def render_rows(
     more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
-    deduplicates, merges, or suppresses a row. `reports networth` currently
-    sums an account once per balance source, so a doubled account shows as
-    repeated rows; collapsing them here would make the output look right while
-    the total stayed wrong, removing the symptom that finds the defect.
+    deduplicates, merges, or suppresses a row. `reports net-worth-accounts`
+    currently sums an account once per balance source, so a doubled account
+    shows as repeated rows; collapsing them here would make the output look
+    right while the total stayed wrong, removing the symptom that finds the
+    defect.
     """
     from rich.console import Console  # defer heavy import
     from rich.table import Table  # defer heavy import
@@ -604,8 +605,8 @@ def render_summary(
     :func:`format_money`, so this renderer never stringifies one itself.
 
     ``title`` heads the block when a command prints more than one of them and
-    the reader needs to know which is which; `reports networth` emits one per
-    currency the profile holds.
+    the reader needs to know which is which; `stats` emits one per metric
+    domain.
     """
     if not pairs:
         return

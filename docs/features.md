@@ -60,7 +60,7 @@ All on the `app.*` layer; zero changes to the upstream pipeline. (No dedicated g
 ## Accounts and balances
 
 - **Account management** — `moneybin accounts list / get / resolve / set` with Plaid-parity metadata (subtype, holder category, currency, credit limit, last four). One unified `set` covers display name, include-in-net-worth, and archive state. Reversible account merging via bridge model. -> [CLI reference](guides/cli-reference.md)
-- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports networth / networth-history` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
+- **Net-worth and balance tracking** — Per-account balance show / history / assert / reconcile and cross-account `moneybin reports net-worth / net-worth-currencies / net-worth-accounts` with period-over-period change. Daily carry-forward of authoritative observations from OFX, Plaid sync balances, tabular running balances, and user assertions. -> [CLI reference](guides/cli-reference.md)
 - **Exchange rates and your own rate corrections** — `moneybin fx rate USD EUR 2026-03-13` answers one pair on one date and names where the number came from: your own correction first, then a rate already cached, then a live call to Frankfurter's ECB reference series (no credential, and only the pair and the date leave your machine). A weekend resolves to the last published business day and reports that day, rather than presenting it as the weekend's own rate. `fx set` records your own rate for one pair and date, outranking every provider rate for that date; `fx delete` returns that date to provider pricing; `fx list` shows the stored series newest first with the source that won each date, reading only what is already on disk. Rates are stored to 8 decimal places, and the first answer for a pair on a date is the one kept — once a date is cached MoneyBin does not ask the provider again, so a later revision to that date never arrives. Use `fx set` to change a rate you already hold. These are the rates `--display-currency` prices a report with — see [Reports](#reports). -> [CLI reference](guides/cli-reference.md)
 
 ## Investments
@@ -116,8 +116,9 @@ Nothing converted is stored. The original amount and its currency stay
 untouched in every table, and a converted figure is recomputed on each read;
 on a profile with a home currency, `moneybin sql query` over the `reports.*`
 view returns the stored, unconverted figures.
-`moneybin reports networth` prints one position per currency, and a single
-combined position once conversion has priced them into the same one.
+`moneybin reports net-worth-currencies` prints one position per currency, and
+`net-worth` prints the single combined position once conversion has priced
+them into the same one.
 
 ### Your own reports
 

@@ -45,10 +45,7 @@ def coerce_report_parameters(
     :func:`parse_report_parameters` rather than being fused into the grammar
     every surface shares.
     """
-    from moneybin.reports._framework.catalog import ServiceReportSpec
-
-    declared = spec.parameters if isinstance(spec, ServiceReportSpec) else spec.params
-    annotations = {parameter.name: parameter.annotation for parameter in declared}
+    annotations = {parameter.name: parameter.annotation for parameter in spec.params}
     supplied: dict[str, JsonValue] = {}
     for raw in raw_parameters or []:
         name, separator, value = raw.partition("=")

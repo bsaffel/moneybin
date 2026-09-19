@@ -85,5 +85,5 @@ SELECT
   net_worth, /* This currency's segment, in its own unit */
   total_assets_home, /* Assets converted at rate; NULL when this currency is unpriced on this date */
   total_liabilities_home, /* Liabilities converted at rate; NULL when this currency is unpriced on this date */
-  total_assets_home + total_liabilities_home AS net_worth_home /* Headline. Assets plus liabilities in home currency, so the row's own columns always add up; deliberately the sum of the two converted components rather than ROUND(net_worth * rate, 2) — rounding each side independently lets a row's own columns disagree by a cent (see _restate_networth_total's docstring in service_reports.py). NULL when unpriced */
+  total_assets_home + total_liabilities_home AS net_worth_home /* Headline. Assets plus liabilities in home currency, so the row's own columns always add up; deliberately the sum of the two converted components rather than ROUND(net_worth * rate, 2) — rounding each side independently lets a row's own columns disagree by a cent (the same reasoning _recompute_net_worth_and_change's docstring gives in reports/definitions/net_worth.py). NULL when unpriced */
 FROM converted

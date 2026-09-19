@@ -12,52 +12,37 @@ the `reports` MCP tool, the CLI, `export report`, `reports explain` — reads th
 spec and nothing else. What varies between report *kinds* is only where the spec
 comes from.
 
-Four kinds ship today, and one of them is on its way out. Pick the row you are
-writing, then read its section.
+Three kinds ship today. Pick the row you are writing, then read its section.
 
 | Kind | Where the spec comes from | Who declares the classes |
 |---|---|---|
 | **Materialized** SQL-backed | An `@report` runner in the repo | The author, verified against derivation in CI |
 | **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
-| **Service-backed** — ⚠️ being retired | A hand-written `ServiceReportSpec` | The author, against an independently reviewed map |
 | **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
 
-## A new report is SQL-backed — anything else needs explicit approval first
+## Every report is SQL-backed — nothing else is a kind you can reach for
 
-Three of those four kinds answer with a query the caller can read and rerun.
-Write one of them: an `@report` runner returning a `ReportQuery`, or a
-runner-less `reports.*` view. **Before adding a `ServiceReportSpec` — or
-inventing any other kind whose rows come out of Python instead of SQL — stop and
-get Brandon's explicit yes. Do not start the code and ask afterward.** With no
-user reachable (subagent, autonomous run), take the SQL path and say so.
+Every report answers with a query the caller can read and rerun. Write one of
+the two repo-authored forms: an `@report` runner returning a `ReportQuery`, or
+a runner-less `reports.*` view.
 
-What the non-SQL path costs, so the ask is a real decision:
-
-- `reports explain` returns a `sql_unavailable` reason instead of the query, and
-  inspection falls back to declared provenance (`_framework/explain.py:96,167`).
-- Graduation returns the `service_backed` verdict — the report can never
-  materialize (`explain.py:198,330`).
-- Privacy classes lose their independent derivation check. There is no SQL
-  source to derive lineage from, so the second source of truth becomes a
-  hand-written map in `test_service_report_privacy_maps_match_independent_contract`
-  — see "Service-backed reports use an independent reviewed class map" below.
-
-**Those four citations are scheduled for deletion.**
+There used to be a fourth, Python-executed kind — `ServiceReportSpec` — and a
+protocol for proposing a new one: stop, get Brandon's explicit yes, and accept
+that `reports explain` would return a `sql_unavailable` reason instead of the
+query, graduation would return the `service_backed` verdict (never
+materializable), and privacy classes would lose their independent derivation
+check in favor of a hand-written, independently reviewed map.
 [`reports-net-worth-sql-surface.md`](../../docs/specs/reports-net-worth-sql-surface.md)
-§Files to Delete removes `ServiceReportSpec`, the service executor branch in
-`_framework/catalog.py`, and the `sql_unavailable` / `service_backed` arms in
-`explain.py` — the exact primitives named above. When that lands, the
-service-backed row leaves this table and **the successor to a report that cannot
-be SQL is a new design, approved as one** — not a kind you can reach for by
-naming an API. Nothing in the repo will offer the non-SQL path; the paragraph
-above stops describing a choice and becomes a hard stop. Until then the row
-stands as written, so a report already on it stays readable.
-
-`core:networth` and `core:networth_history` are the only two, they predate the
-framework, and their arithmetic was always SQL (`reports.net_worth`) — they are
-precedent for nothing. If a report looks like it needs Python, name the thing
-SQL cannot express and bring that as the decision: an expression spliced from an
-allowlist is already sanctioned (`definitions/large_transactions.py:218-294`),
+§Files to Delete retired that whole path — `ServiceReportSpec`, the service
+executor branch in `_framework/catalog.py`, and the `sql_unavailable` /
+`service_backed` arms in `explain.py` are gone from the repo, along with its
+two exemplars, `core:networth` and `core:networth_history` (now
+`core:net_worth` and `core:net_worth_currencies`, both `@report` runners).
+**The successor to a report that cannot be SQL is a new design, approved as
+one** — not a kind you can reach for by naming an API. Nothing in the repo
+offers a non-SQL path. If a report looks like it needs Python, name the thing
+SQL cannot express and bring that as the decision: an expression spliced from
+an allowlist is already sanctioned (`definitions/large_transactions.py:218-294`),
 and a second SQLMesh view is usually cheaper than a service.
 
 ## Materialized reports need three parts, all required
@@ -77,13 +62,6 @@ them and still runs:
 3. A declared `classes={...}` map on `@report` naming every output column's
    `DataClass`, plus a `class_downgrades={...}` entry (with a real reason) for
    any column whose declared class sits below its derived floor.
-
-A service-backed report instead declares one `ServiceReportSpec` with its
-parameters, output columns, privacy classes, semantics, executor, and
-validator. The class map that stands in for the derivation it cannot have is
-not a spec field — it lives in the test named under "Service-backed reports use
-an independent reviewed class map" below, and must be updated in the same
-change.
 
 A SQL view with no runner instead gets its classes from the generated module —
 see "Runner-less views" below.
@@ -113,9 +91,10 @@ Full contract: [`reports-dynamic.md`](../../docs/specs/reports-dynamic.md).
 
 ## Classes are declared, then mechanically verified — never hand-waved
 
-Everything in this section is about the two kinds where a human writes the class
-map. The user tier inverts it — derivation *is* the author there, so there is no
-declaration to verify against, and the equivalent guard is the drift fingerprint.
+Everything in this section is about the one kind where a human writes the class
+map — materialized, SQL-backed. The user tier inverts it — derivation *is* the
+author there, so there is no declaration to verify against, and the equivalent
+guard is the drift fingerprint.
 
 The declaration is the **runtime authority** (ADR-013:
 [`013-report-classification-declared.md`](../../docs/decisions/013-report-classification-declared.md)

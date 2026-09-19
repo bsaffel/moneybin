@@ -28,10 +28,9 @@ import pytest
 
 from moneybin.database import Database, sqlmesh_context
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
-from moneybin.services.networth_service import NetworthService
 from moneybin.synthetic.engine import GeneratorEngine
 from moneybin.synthetic.models import GenerationResult
-from moneybin.tables import REPORTS_NET_WORTH_CURRENCIES
+from moneybin.tables import REPORTS_NET_WORTH, REPORTS_NET_WORTH_CURRENCIES
 from tests.scenarios._runner import load_shipped_scenario, run_scenario, scenario_env
 from tests.scenarios._runner.steps import run_step
 from tests.scenarios._tier1_backfill import tier1_backfill
@@ -253,15 +252,9 @@ def test_international_realized_fx_ground_truth() -> None:
         assert len(expected_positions) == 5
         assert _segments_hold_their_own_currency(db, expected_positions, as_of).passed
         assert _the_headline_refuses_to_blend(db, expected_positions).passed
-
-        snapshot = NetworthService(db).current()
-        aed = next(
-            segment
-            for segment in snapshot.per_currency
-            if segment.currency_code == "AED"
-        )
-        assert (aed.net_worth, aed.account_count) == expected_positions["AED"]
-        assert snapshot.net_worth is None
+        # AED's own segment (and the null day-grain headline) are proven above
+        # by the two helpers, over every currency including AED — no separate
+        # spot-check needed.
 
 
 def _seed_ground_truth_transfer_decisions(db: Database, *, expected_pairs: int) -> None:
@@ -418,38 +411,39 @@ def _segments_hold_their_own_currency(
 def _the_headline_refuses_to_blend(
     db: Database, expected: _Positions
 ) -> AssertionResult:
-    """The scalar goes null and `per_currency` carries the position instead.
+    """The day-grain scalar goes null; `net_worth_currencies` carries the position.
 
     This is the contract `moneybin demo --persona international` depends on: a
-    null headline is the correct answer for a five-currency profile, not a
-    failed refresh. Reading it as one is what broke that command.
+    null headline is the correct answer for a five-currency profile with no
+    stored rate for most of them, not a failed refresh. Reading it as one is
+    what broke that command. The per-currency breakdown itself is proven
+    independently by `_segments_hold_their_own_currency`; this checks only the
+    fail-closed aggregate `reports.net_worth` publishes over the same accounts.
     """
-    snapshot = NetworthService(db).current()
-    actual: _Positions = {
-        segment.currency_code: (segment.net_worth, segment.account_count)
-        for segment in snapshot.per_currency
-        if segment.currency_code is not None and segment.net_worth is not None
-    }
+    sql = f"""
+        SELECT net_worth, total_assets, total_liabilities, account_count,
+               unpriced_currency_count
+        FROM {REPORTS_NET_WORTH.full_name}
+        WHERE balance_date = (SELECT MAX(balance_date) FROM {REPORTS_NET_WORTH.full_name})
+        """  # noqa: S608  # TableRef constant, no user input
+    row = db.execute(sql).fetchone()
+    assert row is not None, "reports.net_worth is empty"
+    net_worth, total_assets, total_liabilities, account_count, unpriced_count = row
     scalars_null = (
-        snapshot.net_worth is None
-        and snapshot.total_assets is None
-        and snapshot.total_liabilities is None
-        and snapshot.currency_code is None
+        net_worth is None and total_assets is None and total_liabilities is None
     )
     expected_accounts = sum(count for _, count in expected.values())
 
     return AssertionResult(
         name="net_worth_headline_stays_null_across_currencies",
         passed=(
-            scalars_null
-            and actual == expected
-            and snapshot.account_count == expected_accounts
+            scalars_null and unpriced_count > 0 and account_count == expected_accounts
         ),
         details={
             "headline_scalars_null": scalars_null,
-            "net_worth": str(snapshot.net_worth),
-            "segments": sorted(str(code) for code in actual),
-            "account_count": snapshot.account_count,
+            "net_worth": str(net_worth),
+            "unpriced_currency_count": unpriced_count,
+            "account_count": account_count,
             "expected_account_count": expected_accounts,
         },
     )

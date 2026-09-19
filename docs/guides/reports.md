@@ -20,8 +20,9 @@ That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactio
 
 | Command | Report id | Answers |
 |---|---|---|
-| [`reports networth`](../reference/cli/reports.md#moneybin-reports-networth) | `core:networth` | What am I worth on one date, per account? |
-| [`reports networth-history`](../reference/cli/reports.md#moneybin-reports-networth-history) | `core:networth_history` | How has that moved, period over period? |
+| [`reports net-worth`](../reference/cli/reports.md#moneybin-reports-net-worth) | `core:net_worth` | What am I worth in my home currency, and how has it moved? |
+| [`reports net-worth-currencies`](../reference/cli/reports.md#moneybin-reports-net-worth-currencies) | `core:net_worth_currencies` | What am I worth per currency? |
+| [`reports net-worth-accounts`](../reference/cli/reports.md#moneybin-reports-net-worth-accounts) | `core:net_worth_accounts` | What is each account's balance? |
 | [`reports spending-trend`](../reference/cli/reports.md#moneybin-reports-spending-trend) | `core:spending_trend` | What goes out, by category and month, against last month, last year, and the trailing quarter? |
 | [`reports cash-flow`](../reference/cli/reports.md#moneybin-reports-cash-flow) | `core:cash_flow` | In, out, and net, by month and account or category? |
 | [`reports recurring-subscriptions`](../reference/cli/reports.md#moneybin-reports-recurring-subscriptions) | `core:recurring_subscriptions` | What recurs, how often, and what does it cost a year? |
@@ -35,54 +36,49 @@ Each command's reference page lists every flag with its type and default. The fl
 ### Net worth
 
 ```console
-$ uv run moneybin reports networth
+$ uv run moneybin reports net-worth-accounts
 Using profile: demo
-USD as of 2025-12-31
-Net worth:   420,080.77
-Assets:      420,080.77
-Liabilities: 0.00
-Accounts:    4
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Ally Bank savings …0002   │  33,000.00 │ USD      │         │
-│ Chase Bank checking …0001 │ 387,080.77 │ USD      │         │
-│ Chase Bank credit card    │       0.00 │ USD      │ tabular │
-│ Citi credit card          │       0.00 │ USD      │ tabular │
-└───────────────────────────┴────────────┴──────────┴─────────┘
-💡 Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
-💡 Run accounts_balances(view='history', reference='<account>') to drill into one account
-💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings …0002   │ USD           │       33,000.00 │                    - │
+│ Chase Bank checking …0001 │ USD           │      387,080.77 │                    - │
+│ Chase Bank credit card    │ USD           │            0.00 │                    - │
+│ Citi credit card          │ USD           │            0.00 │                    - │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
+💡 Run reports(report_id='core:net_worth') for the single home-currency total
+💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-`--as-of 2025-06-30` moves the date; the balance shown is the last one on or before it. `--account` narrows the breakdown without changing the totals' meaning. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
+With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
 
 ### Net worth over time
 
 ```console
-$ uv run moneybin reports networth-history --from 2025-01-01 --to 2025-12-31
+$ uv run moneybin profile set home_currency USD
+$ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --to-date 2025-12-31
 Using profile: demo
-┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ period              ┃ currency ┃  net_worth ┃ change_abs ┃ change_pct ┃
-┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│ 2025-01-01T00:00:00 │ USD      │ 300,133.10 │          - │ -          │
-│ 2025-02-01T00:00:00 │ USD      │ 310,383.89 │ +10,250.79 │ 3.42%      │
-│ 2025-03-01T00:00:00 │ USD      │ 320,763.38 │ +10,379.49 │ 3.34%      │
-│ 2025-04-01T00:00:00 │ USD      │ 331,318.81 │ +10,555.43 │ 3.29%      │
-│ 2025-05-01T00:00:00 │ USD      │ 342,064.37 │ +10,745.56 │ 3.24%      │
-│ 2025-06-01T00:00:00 │ USD      │ 352,756.07 │ +10,691.70 │ 3.13%      │
-│ 2025-07-01T00:00:00 │ USD      │ 362,791.60 │ +10,035.53 │ 2.84%      │
-│ 2025-08-01T00:00:00 │ USD      │ 381,166.67 │ +18,375.07 │ 5.06%      │
-│ 2025-09-01T00:00:00 │ USD      │ 390,621.39 │  +9,454.72 │ 2.48%      │
-│ 2025-10-01T00:00:00 │ USD      │ 400,767.89 │ +10,146.50 │ 2.60%      │
-│ 2025-11-01T00:00:00 │ USD      │ 410,815.53 │ +10,047.64 │ 2.51%      │
-│ 2025-12-01T00:00:00 │ USD      │ 420,080.77 │  +9,265.24 │ 2.26%      │
-└─────────────────────┴──────────┴────────────┴────────────┴────────────┘
-💡 Run reports(report_id='core:networth') for a single-date account breakdown
-💡 Rerun reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD', 'interval': 'weekly'}) for finer resolution
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ 2025-01-31   │ 0                       │ 300,133.10 │          - │
+│ 2025-02-28   │ 0                       │ 310,383.89 │ +10,250.79 │
+│ 2025-03-31   │ 0                       │ 320,763.38 │ +10,379.49 │
+│ 2025-04-30   │ 0                       │ 331,318.81 │ +10,555.43 │
+│ 2025-05-31   │ 0                       │ 342,064.37 │ +10,745.56 │
+│ 2025-06-30   │ 0                       │ 352,756.07 │ +10,691.70 │
+│ 2025-07-31   │ 0                       │ 362,791.60 │ +10,035.53 │
+│ 2025-08-31   │ 0                       │ 381,166.67 │ +18,375.07 │
+│ 2025-09-30   │ 0                       │ 390,658.51 │  +9,491.84 │
+│ 2025-10-31   │ 0                       │ 400,767.89 │ +10,109.38 │
+│ 2025-11-30   │ 0                       │ 410,775.08 │ +10,007.19 │
+│ 2025-12-31   │ 0                       │ 420,080.77 │  +9,305.69 │
+└──────────────┴─────────────────────────┴────────────┴────────────┘
+4 of 11 columns shown — --wide for all
 ```
 
-Both bounds are required. `--interval` is `monthly` by default, or `weekly` or `daily`; each row is labelled by the first day of its period, holds the position at the period's end — or at the bound itself when `--from` or `--to` falls inside a period, which makes that first or last row a partial one — and shows the change from the previous period in the same currency, which on a multi-currency profile is not always the row printed above it — the December row here is the 2025-12-31 figure from the snapshot above.
+`net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
 
 ### Spending
 
@@ -301,7 +297,7 @@ same report is available to an agent as
 
 ## Reading the output
 
-- **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on the seven framework commands and on `reports run`; `networth` and `networth-history` have a fixed layout of their own and no `--wide`. JSON always carries all of them.
+- **Default columns.** A text table shows the columns that answer the question; the footer (`5 of 12 columns shown — --wide for all`) counts the rest. `--wide` renders all of them on every report command and on `reports run`. JSON always carries all of them.
 - **Signs.** `spending-trend`, `merchant-activity`, and `recurring-subscriptions` report outflow as positive absolute amounts. `cash-flow`, `large-transactions`, and every transaction listing are signed: negative is money out.
 - **Currency.** Every ordinary built-in row carries a `currency_code`, and a built-in never blends two known currencies into one figure; `realized_fx` additionally names `home_currency` because its row is deliberately mixed-unit. A saved report inherits whatever its own SQL does. Rows with no currency at all pool into one unknown segment and are summed together, because nothing can tell two unknowns apart; `system doctor` fails on any such account and `accounts set --currency` followed by `moneybin refresh` or `moneybin transform apply` is the fix, because the account table is rebuilt rather than read live; set them before trusting a total. A multi-currency profile gets its rows interleaved per currency, best-ranked first within each, so a capped result holds every currency that fits inside the cap — a `--limit` smaller than the number of currencies still drops some, and `summary.has_more` says the cap cut the result — a report has no page after the first, so raise the limit to see the rest. See [One display currency](#one-display-currency).
 - **The `💡` lines.** Each one is the MCP tool call an assistant would make next, written out so you can read it as the CLI's own next move — with one exception: a report that masked one of its columns adds a `Run moneybin reports explain <id>` hint, which names the CLI command by design. The parameter a tool-call hint names maps to a flag on the dedicated command, not always under the same name (`from_date` is `--from`), and the [reference page](../reference/cli/reports.md) lists each command's flags.
@@ -310,29 +306,27 @@ same report is available to an agent as
 
 ## Any report by id: list, run, explain
 
-`reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the nine above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
+`reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the ten above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
 
-`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `networth`'s headline block or `spending-trend`'s chosen comparison column, so the dedicated command is the better read when one exists:
+`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `spending-trend`'s chosen comparison column, so the dedicated command is the better read when one exists:
 
 ```console
-$ uv run moneybin reports run core:networth
+$ uv run moneybin reports run core:net_worth_accounts
 Using profile: demo
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
-┃ account_name              ┃ currency_code ┃ account_balance ┃  net_worth ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
-│                           │ USD           │               - │ 420,080.77 │
-│ Ally Bank savings …0002   │ USD           │       33,000.00 │          - │
-│ Chase Bank checking …0001 │ USD           │      387,080.77 │          - │
-│ Chase Bank credit card    │ USD           │            0.00 │          - │
-│ Citi credit card          │ USD           │            0.00 │          - │
-└───────────────────────────┴───────────────┴─────────────────┴────────────┘
-4 of 10 columns shown — --wide for all
-💡 Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
-💡 Run accounts_balances(view='history', reference='<account>') to drill into one account
-💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings …0002   │ USD           │       33,000.00 │                    - │
+│ Chase Bank checking …0001 │ USD           │      387,080.77 │                    - │
+│ Chase Bank credit card    │ USD           │            0.00 │                    - │
+│ Citi credit card          │ USD           │            0.00 │                    - │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
+💡 Run reports(report_id='core:net_worth') for the single home-currency total
+💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-`reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form. `core:networth` and `core:networth_history` are executed by a service rather than a query, so for those two it prints the lineage and a `service_backed` line where the SQL would be:
+`reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form:
 
 ```console
 $ uv run moneybin reports explain core:spending_trend
@@ -507,24 +501,19 @@ See the [multi-currency guide](multi-currency.md) for where a row's currency com
 `--display-currency EUR` — `display_currency` on the MCP tool — prices a report into one currency at read time. Omit the flag and the target is the profile's home currency (`profile set home_currency EUR`): a profile that has set one gets the three converting reports named below priced into it whenever the rates are on disk, and falls back quietly when they are not. A profile with no home currency, which is how every profile starts, reads each row in its own currency, and so does any report that cannot convert: the five that aggregate per currency always, the mixed-unit realized-FX report always, and the three converting ones whenever a rate is missing. Nothing converted is ever stored — the original amount and currency stay in every table — and because `home_currency` takes an ISO code and has no unset, the unconverted read on a home-currency profile is `moneybin sql query` over the view: `reports.net_worth`, `reports.large_transactions`, or `reports.balance_drift`. Rates come from `moneybin refresh`, which caches the direct provider pairs your own rows imply for the home currency and declared display targets (`profile set display_currency_targets EUR,GBP`); a target with no stored rates falls back, and the report says so instead of guessing:
 
 ```console
-$ uv run moneybin reports networth --display-currency EUR
+$ uv run moneybin reports net-worth-accounts --display-currency EUR
 Using profile: demo
-USD as of 2025-12-31
-Net worth:   420,080.77
-Assets:      420,080.77
-Liabilities: 0.00
-Accounts:    4
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Ally Bank savings …0002   │  33,000.00 │ USD      │         │
-│ Chase Bank checking …0001 │ 387,080.77 │ USD      │         │
-│ Chase Bank credit card    │       0.00 │ USD      │ tabular │
-│ Citi credit card          │       0.00 │ USD      │ tabular │
-└───────────────────────────┴────────────┴──────────┴─────────┘
-💡 Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
-💡 Run accounts_balances(view='history', reference='<account>') to drill into one account
-💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings …0002   │ USD           │       33,000.00 │            33,000.00 │
+│ Chase Bank checking …0001 │ USD           │      387,080.77 │           387,080.77 │
+│ Chase Bank credit card    │ USD           │            0.00 │                 0.00 │
+│ Citi credit card          │ USD           │            0.00 │                 0.00 │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
+💡 Run reports(report_id='core:net_worth') for the single home-currency total
+💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
 Between the table and the hints the command prints the reason, trimmed from the transcript above: `⚠️  no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`. On this profile, declare the target before refreshing (`profile set display_currency_targets EUR`); refresh then gathers the direct USD→EUR pair for currencies your rows hold. You can also make EUR the home currency (`profile set home_currency EUR`, then `moneybin refresh`) or record the pair yourself with `moneybin fx set`.
@@ -537,7 +526,7 @@ The `reports` MCP tool is the same catalog. Called with no `report_id` it return
 
 ## Export
 
-`moneybin export report REPORT_ID` writes any catalog report — built-in or saved, `--param` bound the same way — to a named local destination as CSV, Parquet, or XLSX, or to a Google Sheet in the sheet's own format. Masking applies on the way out; `--unredacted` is an explicit per-run choice. A redacted export of a saved report also withholds what you authored: its columns become `redacted_column_1`, `redacted_column_2`, and so on, its parameters `redacted_parameter_*`, and its SQL is left out of the receipt, while a built-in's export keeps its real names, and its SQL when it has one — the two service-backed net-worth reports have none to keep. The [export section of the CLI reference](cli-reference.md#export) and the [Google Sheets guide](connect-gsheet.md) cover destinations.
+`moneybin export report REPORT_ID` writes any catalog report — built-in or saved, `--param` bound the same way — to a named local destination as CSV, Parquet, or XLSX, or to a Google Sheet in the sheet's own format. Masking applies on the way out; `--unredacted` is an explicit per-run choice. A redacted export of a saved report also withholds what you authored: its columns become `redacted_column_1`, `redacted_column_2`, and so on, its parameters `redacted_parameter_*`, and its SQL is left out of the receipt, while a built-in's export keeps its real names, and its SQL. The [export section of the CLI reference](cli-reference.md#export) and the [Google Sheets guide](connect-gsheet.md) cover destinations.
 
 ## What is not built yet
 

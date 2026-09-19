@@ -228,10 +228,10 @@ SELECT
 WHERE FALSE;
 """
 
-# NetworthService reads this rung, not reports.net_worth (the day-grain
-# total) — stubbed here so any fixture built on create_core_tables() /
-# create_core_tables_raw() can exercise core:networth / core:networth_history
-# without a full SQLMesh build.
+# core:net_worth_currencies reads this rung, not reports.net_worth (the
+# day-grain total) — stubbed here so any fixture built on
+# create_core_tables() / create_core_tables_raw() can exercise
+# core:net_worth_currencies without a full SQLMesh build.
 REPORTS_NET_WORTH_CURRENCIES_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth_currencies AS
 SELECT

@@ -8,6 +8,7 @@ and the enum-allowlist ValueError branches the surfaces rely on.
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -948,3 +949,18 @@ def test_returned_columns_mirror_the_declared_order(
     assert returned == [name for name in declared if name in rows[0]], (
         f"{spec_of(runner).report_id} returns {returned}, but declares {declared}"
     )
+
+
+_RETIRED_NETWORTH_LITERALS = ("core:networth", '"networth"', '"networth-history"')
+
+
+def test_no_retired_net_worth_id_or_command_survives_in_src() -> None:
+    """Spec Tier 3: the service-backed ids and the hand-written command are gone."""
+    src = Path(__file__).resolve().parents[3] / "src" / "moneybin"
+    hits = [
+        f"{path.relative_to(src)}: {literal}"
+        for path in sorted(src.rglob("*.py"))
+        for literal in _RETIRED_NETWORTH_LITERALS
+        if literal in path.read_text(encoding="utf-8")
+    ]
+    assert not hits, hits

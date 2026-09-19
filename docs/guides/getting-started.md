@@ -155,24 +155,10 @@ The one warning is expected on a first import and is step 7. The `💡` lines un
 ## 6. First reports
 
 ```console
-$ uv run moneybin reports networth
-Using profile: personal
-USD as of 2026-01-31
-Net worth:   4,317.87
-Assets:      4,317.87
-Liabilities: 0.00
-Accounts:    1
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┓
-┃ account                     ┃  balance ┃ currency ┃ source ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━┩
-│ Example Bank checking …7890 │ 4,317.87 │ USD      │ ofx    │
-└─────────────────────────────┴──────────┴──────────┴────────┘
-💡 Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
-💡 Run accounts_balances(view='history', reference='<account>') to drill into one account
-💡 Run accounts(include_closed=True) to inspect closed or excluded accounts
+$ uv run moneybin reports net-worth-accounts
 ```
 
-The as-of date is the latest balance the file carried, and `source` names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
+Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
 
 ```console
 $ uv run moneybin transactions list --limit 5
@@ -226,7 +212,7 @@ Restart the client fully, then ask in your own words:
 - *"What did I spend at Whole Foods in January?"*
 - *"Show me the SQL behind that number."*
 
-The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a SQL-backed report, with `?` where a withheld value goes, and the two service-backed net-worth reports have no SQL to print. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
+The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a report, with `?` where a withheld value goes. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
 
 ## Next
 

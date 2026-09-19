@@ -42,7 +42,6 @@ from rich.console import Console
 from rich.table import Table
 
 import moneybin.reports.definitions as definitions
-import moneybin.reports.service_reports as service_reports
 
 # Ahead of `cli_register` deliberately: `moneybin.cli.__init__` imports the
 # whole command tree, which reaches back into `cli_register`, so importing that
@@ -130,9 +129,8 @@ _COLUMN_BEARING_PARAMETERS: Mapping[str, Mapping[str, Sequence[object]]] = {
 
 
 def _in_tree_reports() -> list[RegisteredReport]:
-    """Every report defined in this repository, both kinds."""
-    runner_backed = [spec_of(runner) for runner in discover_reports(definitions)]
-    return [*runner_backed, *service_reports.SERVICE_REPORTS]
+    """Every report defined in this repository."""
+    return [spec_of(runner) for runner in discover_reports(definitions)]
 
 
 def _sample(report_id: str, column: OutputColumn) -> str:

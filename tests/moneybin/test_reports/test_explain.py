@@ -586,12 +586,7 @@ def test_graduation_is_blocked_by_a_star_projection(
 
 
 def test_a_runner_backed_built_in_is_already_materialized(saved_db: Database) -> None:
-    """A runner-backed built-in really is a ``reports.*`` model already.
-
-    The exemplar has to be runner-backed. This test named ``core:networth``
-    before, which is service-backed and has no model at all — so it pinned the
-    wrong verdict in place instead of proving this one.
-    """
+    """A runner-backed built-in really is a ``reports.*`` model already."""
     explanation = explain_report(
         saved_db, handle="core:merchant_activity", parameters={}
     )
@@ -600,58 +595,26 @@ def test_a_runner_backed_built_in_is_already_materialized(saved_db: Database) ->
     assert explanation.graduation_blockers == ()
 
 
-def test_a_service_backed_report_is_not_called_materialized(
-    saved_db: Database,
-) -> None:
-    """A service report has no model of its own, so it never "already" is one.
+def test_net_worth_explain_returns_sql_and_a_real_verdict(saved_db: Database) -> None:
+    """The migrated net-worth report is SQL-backed, like every other report now.
 
-    ``already_materialized`` is portability evidence: it tells the reader this
-    report is a relation in the graph, so it is schedulable, exportable, and
-    dependable. A ``ServiceReportSpec`` runs an executor and owns no
-    ``reports.*`` model, so that is the one answer this field must not give —
-    the distinction ``sql_unavailable`` and ``ColumnOrigin.undetermined``
-    already draw one field over.
+    ``core:networth`` used to be the exemplar for "no query, no real verdict" —
+    ``sql_unavailable`` and the ``service_backed`` graduation state. Its
+    SQL-backed successor must return neither: a real query and a real verdict,
+    per the spec's §MCP Interface ("`reports explain` returns the actual query
+    for all three, in place of today's `sql_unavailable` reason").
     """
-    explanation = explain_report(saved_db, handle="core:networth", parameters={})
+    explanation = explain_report(saved_db, handle="core:net_worth", parameters={})
 
-    assert explanation.graduation == "service_backed"
+    assert explanation.sql is not None
+    assert explanation.sql_template is not None
+    assert explanation.graduation == "already_materialized"
     assert explanation.graduation_blockers == ()
 
 
 # ---------------------------------------------------------------------------
 # R6 — the three kinds, and handle resolution
 # ---------------------------------------------------------------------------
-
-
-def test_a_service_backed_report_names_why_it_has_no_sql(
-    saved_db: Database,
-) -> None:
-    """R9's bound, stated plainly: no query exists anywhere in that path.
-
-    A chip that renders "derived by NetworthService from
-    reports.net_worth_currencies" tells the truth; one that fabricates a
-    plausible SELECT does not.
-    """
-    explanation = explain_report(saved_db, handle="core:networth", parameters={})
-
-    assert explanation.sql is None
-    assert explanation.sql_template is None
-    assert explanation.sql_unavailable is not None
-    assert "service" in explanation.sql_unavailable
-    # The declared read set, which is what stands in for a query here. Three
-    # entries, not one: `reports-dynamic.md` R6 says `("reports.net_worth",)`,
-    # which is the *history* report's provenance — pre-existing spec drift,
-    # unrelated to this assertion's own report. It is now drift in a second
-    # sense too: the day rung (`reports.net_worth`) stopped being what either
-    # service report reads once Task 4 moved both onto
-    # `reports.net_worth_currencies`, so R6's quoted tuple no longer names a
-    # table `core:networth_history`'s query touches at all. Fixed in the doc
-    # pass rather than by weakening this assertion.
-    assert explanation.lineage == (
-        "reports.net_worth_currencies",
-        "core.fct_balances_daily",
-        "core.dim_accounts",
-    )
 
 
 def test_a_runner_backed_report_requires_every_required_parameter(

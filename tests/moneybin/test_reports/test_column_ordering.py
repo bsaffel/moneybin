@@ -21,7 +21,6 @@ from moneybin.reports._framework.catalog import RegisteredReport
 from moneybin.reports._framework.cli_register import resolve_default_columns
 from moneybin.reports._framework.contract import OutputColumn
 from moneybin.reports._framework.registry import discover_reports, spec_of
-from moneybin.reports.service_reports import SERVICE_REPORTS
 
 pytestmark = pytest.mark.unit
 
@@ -71,8 +70,7 @@ def _ranked(columns: Sequence[OutputColumn]) -> list[tuple[str, int]]:
 
 
 def _in_tree_reports() -> list[RegisteredReport]:
-    runner_backed = [spec_of(runner) for runner in discover_reports(definitions)]
-    return [*runner_backed, *SERVICE_REPORTS]
+    return [spec_of(runner) for runner in discover_reports(definitions)]
 
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)

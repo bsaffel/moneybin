@@ -5,7 +5,6 @@ mocked here so these stay fast and focused on the orchestration *logic*; the
 real end-to-end pipeline is proven by the `moneybin demo` e2e test.
 """
 
-import datetime
 from collections.abc import Generator
 from decimal import Decimal
 from pathlib import Path
@@ -92,15 +91,13 @@ def _mock_pipeline(
 ) -> None:
     """Patch the heavy collaborators DemoService.run imports lazily.
 
-    ``segments`` builds a multi-currency snapshot: the headline scalars go None
-    (no single total is meaningful) while ``per_currency`` carries each
-    currency's own figure — the real shape NetworthService returns.
+    ``segments`` builds a multi-currency result: several currency rows, the
+    real shape ``core:net_worth_currencies`` returns for a profile holding
+    more than one currency. Both branches patch the report catalog's
+    ``execute`` with a plain ``records`` list of dicts — the same shape
+    ``CatalogReportResult.records`` carries.
     """
     from moneybin.orchestration.refresh import RefreshResult
-    from moneybin.privacy.payloads.networth import (
-        NetWorthCurrencySegment,
-        NetWorthSnapshotPayload,
-    )
     from moneybin.services.doctor_service import DoctorReport, InvariantResult
 
     engine = mocker.patch("moneybin.synthetic.engine.GeneratorEngine")
@@ -122,48 +119,33 @@ def _mock_pipeline(
     doctor.return_value.run_all.return_value = DoctorReport(
         invariants=invariants, transaction_count=5
     )
-    net = mocker.patch("moneybin.services.networth_service.NetworthService")
+
     if segments is not None:
-        net.return_value.current.return_value = NetWorthSnapshotPayload(
-            balance_date=datetime.date(2025, 1, 1),
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=len(segments),
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code=code,
-                    net_worth=Decimal(value),
-                    total_assets=Decimal(value),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=1,
-                )
-                for code, value in segments
-            ],
-            per_account=[],
-        )
-        return
-    net.return_value.current.return_value = NetWorthSnapshotPayload(
-        balance_date=datetime.date(2025, 1, 1) if net_worth is not None else None,
-        currency_code="USD" if net_worth is not None else None,
-        net_worth=Decimal(net_worth) if net_worth is not None else None,
-        total_assets=Decimal("150.00") if net_worth is not None else None,
-        total_liabilities=Decimal("50.00") if net_worth is not None else None,
-        account_count=2 if net_worth is not None else 0,
-        per_currency=[
-            NetWorthCurrencySegment(
-                currency_code="USD",
-                net_worth=Decimal(net_worth),
-                total_assets=Decimal("150.00"),
-                total_liabilities=Decimal("50.00"),
-                account_count=2,
-            )
+        rows = [
+            {
+                "currency_code": code,
+                "account_count": 1,
+                "total_assets": Decimal(value),
+                "total_liabilities": Decimal("0.00"),
+                "net_worth": Decimal(value),
+            }
+            for code, value in segments
         ]
-        if net_worth is not None
-        else [],
-        per_account=[],
-    )
+    elif net_worth is not None:
+        rows = [
+            {
+                "currency_code": "USD",
+                "account_count": 2,
+                "total_assets": Decimal("150.00"),
+                "total_liabilities": Decimal("50.00"),
+                "net_worth": Decimal(net_worth),
+            }
+        ]
+    else:
+        rows = []
+
+    catalog = mocker.patch("moneybin.reports._framework.catalog.get_report_catalog")
+    catalog.return_value.execute.return_value = SimpleNamespace(records=rows)
 
 
 def _make_demo_profile(

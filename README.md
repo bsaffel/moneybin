@@ -85,18 +85,14 @@ Generated 995 transactions for persona 'basic' (seed=42, 2023-01-01 to 2025-12-3
 SQLMesh transforms completed in 4.00s
 ✅ Demo profile 'demo' ready (2 accounts, 995 transactions, 859 categorized).
 
-$ uv run moneybin reports networth
-USD as of 2025-12-27
-Net worth:   211,413.05
-Assets:      211,413.05
-Liabilities: 0.00
-Accounts:    2
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Capital One credit card   │       0.00 │ USD      │ tabular │
-│ Chase Bank checking …0001 │ 211,413.05 │ USD      │         │
-└───────────────────────────┴────────────┴──────────┴─────────┘
+$ uv run moneybin reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Capital One credit card   │ USD           │            0.00 │                    - │
+│ Chase Bank checking …0001 │ USD           │      211,413.05 │                    - │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
 
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total

@@ -18,8 +18,6 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports set`](#moneybin-reports-set) | Update one saved report: rename, re-describe, re-query, archive, restore. |
 | [`moneybin reports delete`](#moneybin-reports-delete) | Delete one saved report permanently. |
 | [`moneybin reports reclassify`](#moneybin-reports-reclassify) | Lower one column's masking floor, permanently, for this report. |
-| [`moneybin reports networth`](#moneybin-reports-networth) | Show current or as-of net worth + per-account breakdown. |
-| [`moneybin reports networth-history`](#moneybin-reports-networth-history) | Net worth time series with period-over-period change. |
 | [`moneybin reports spending-trend`](#moneybin-reports-spending-trend) | Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. |
 | [`moneybin reports cash-flow`](#moneybin-reports-cash-flow) | Monthly cash flow rollup: inflow/outflow/net per account x category. |
 | [`moneybin reports recurring-subscriptions`](#moneybin-reports-recurring-subscriptions) | Likely-recurring subscription candidates with confidence scores. |
@@ -201,39 +199,6 @@ Usage: `moneybin reports reclassify [OPTIONS] HANDLE`
 | `--reason` | text |  | Required. Why this column reveals less than its derived class. |
 | `--yes, -y` | flag |  | Confirm the downgrade without the prompt. This is a human decision: an assistant driving this command must not supply it unasked. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-
-## moneybin reports networth
-
-Show current or as-of net worth + per-account breakdown.
-
-Usage: `moneybin reports networth [OPTIONS]`
-
-**Options**
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--as-of` | text |  | ISO date (YYYY-MM-DD); shows networth on or before |
-| `--account` | text, repeatable |  | Filter per-account breakdown to specific account_id(s); repeatable |
-| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
-| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
-
-## moneybin reports networth-history
-
-Net worth time series with period-over-period change.
-
-Usage: `moneybin reports networth-history [OPTIONS]`
-
-**Options**
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--from` | text |  | Required. ISO date (YYYY-MM-DD) |
-| `--to` | text |  | Required. ISO date (YYYY-MM-DD) |
-| `--interval` | text | `monthly` | daily \| weekly \| monthly |
-| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
-| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 
 ## moneybin reports spending-trend
 

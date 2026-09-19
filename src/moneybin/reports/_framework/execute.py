@@ -310,11 +310,12 @@ def convert_execution(
         columns=columns,
         column_types=column_types,
         output_classes=output_classes,
-        # `total_count` was fixed before conversion ran, so a callback that
-        # collapses rows — `core:networth` merging its per-currency totals —
-        # would leave the envelope deriving `has_more` from rows that no longer
-        # exist, reporting an untruncated result as truncated. Floored at what
-        # is actually being returned, since a total below that is never true.
+        # `total_count` was fixed before conversion ran, so a report whose own
+        # `on_converted` callback collapses rows (e.g. merging several
+        # per-currency totals into one once they share a unit) would leave the
+        # envelope deriving `has_more` from rows that no longer exist,
+        # reporting an untruncated result as truncated. Floored at what is
+        # actually being returned, since a total below that is never true.
         total_count=max(execution.total_count - removed, len(outcome.records)),
         applied_rates=outcome.applied_rates,
         # A fallback leaves the rows in their own currencies, so the currency
@@ -331,13 +332,14 @@ def convert_execution(
 def truncate_execution(execution: CatalogReportExecution) -> CatalogReportExecution:
     """Apply the row cap an execution deferred, once conversion has finished.
 
-    The cap describes the answer, not conversion's inputs. ``core:networth``
-    emits one totals row per currency held and merges them only after pricing
-    has put them in one unit, so cutting first hands that merge a subset: a
-    two-currency profile read at ``limit=1`` would publish one currency's
-    subtotal as the whole position. Blend by omission is the same defect as
-    blend by summation, and it is what the per-currency row split exists to
-    prevent.
+    The cap describes the answer, not conversion's inputs. A report whose own
+    ``on_converted`` callback emits one totals row per currency held and
+    merges them only after pricing has put them in one unit needs the cap
+    applied after that merge, not before: cutting first hands the merge a
+    subset — a two-currency profile read at ``limit=1`` would publish one
+    currency's subtotal as the whole position. Blend by omission is the same
+    defect as blend by summation, and it is what a per-currency row split
+    exists to prevent.
 
     A no-op for an execution that already applied its own cap, which is every
     execution that never converted.
@@ -383,7 +385,7 @@ def _resolve_display_currency(
 
 
 class _CatalogSpec(Protocol):
-    """The result-building fields shared by SQL and service report specs."""
+    """The result-building fields a catalog report spec exposes."""
 
     @property
     def report_id(self) -> str: ...
@@ -493,9 +495,10 @@ def build_catalog_execution(
     )
     limited = records if max_rows is None or defer_truncation else records[:max_rows]
 
-    # ServiceReportSpec intentionally matches the classification-facing subset
-    # of ReportSpec. The cast keeps classify_columns' existing public signature
-    # stable while both kinds use its fail-closed undeclared-column behavior.
+    # `spec` is typed as the structural `_CatalogSpec` Protocol here, not the
+    # nominal `ReportSpec`; the cast keeps `classify_columns`' existing public
+    # signature (which takes `ReportSpec`) stable while this function's
+    # fail-closed undeclared-column behavior stays reachable from either type.
     col_classes = classify_columns(cast(ReportSpec, spec), columns)
     # A report that declares one currency field is authoritative about its own
     # denomination, including when the answer is "no single one". A mixed-unit

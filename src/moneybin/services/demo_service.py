@@ -28,12 +28,22 @@ from moneybin.tables import OFX_TRANSACTIONS, TABULAR_TRANSACTIONS
 if TYPE_CHECKING:
     from moneybin.database import Database
     from moneybin.orchestration.refresh import RefreshResult
-    from moneybin.privacy.payloads.networth import NetWorthCurrencySegment
 
 logger = logging.getLogger(__name__)
 
 DEMO_PROFILE = "demo"
 DEMO_DEFAULT_SEED = 42
+
+
+@dataclass(frozen=True, slots=True)
+class DemoCurrencySegment:
+    """One currency's own-unit totals from ``core:net_worth_currencies``."""
+
+    currency_code: str | None
+    account_count: int
+    total_assets: Decimal
+    total_liabilities: Decimal
+    net_worth: Decimal
 
 
 @dataclass(frozen=True)
@@ -58,7 +68,7 @@ class DemoResult:
     net_worth: Decimal | None
     total_assets: Decimal | None
     total_liabilities: Decimal | None
-    per_currency: list[NetWorthCurrencySegment]
+    per_currency: list[DemoCurrencySegment]
     # The default profile demo displaced, so the CLI can name the way back.
     # None when no default was set (or it was already `demo`).
     previous_default: str | None
@@ -279,8 +289,8 @@ class DemoService:
         from moneybin.database import get_database
         from moneybin.metrics.registry import DEMO_RUN_TOTAL
         from moneybin.orchestration.refresh import refresh
+        from moneybin.reports._framework.catalog import get_report_catalog
         from moneybin.services.doctor_service import DoctorService
-        from moneybin.services.networth_service import NetworthService
         from moneybin.services.profile_service import ProfileService
         from moneybin.synthetic.engine import GeneratorEngine
         from moneybin.synthetic.merchant_seed import seed_merchant_catalog
@@ -351,13 +361,34 @@ class DemoService:
             #    (the default sampling would under-cover a 3-year `family` run).
             report = DoctorService(db).run_all(full=True)
             failing_names = [r.name for r in report.invariants if r.status == "fail"]
-            snapshot = NetworthService(db).current()
+            # Unranged (no from_date/to_date) resolves to the latest available
+            # day. No display or home currency: demo wants each currency's own
+            # totals, not a converted one (multi-currency.md Requirement 5).
+            net_worth_result = get_report_catalog().execute(
+                db,
+                report_id="core:net_worth_currencies",
+                parameters={},
+                limit=None,
+                display_currency=None,
+                home_currency=None,
+            )
+            per_currency = [
+                DemoCurrencySegment(
+                    currency_code=row["currency_code"],
+                    account_count=row["account_count"],
+                    total_assets=row["total_assets"],
+                    total_liabilities=row["total_liabilities"],
+                    net_worth=row["net_worth"],
+                )
+                for row in net_worth_result.records
+            ]
 
         # Test the segments, not the scalars: a multi-currency profile nulls the
         # scalars by design, so testing those would refuse a perfectly good run.
         # No segments at all is the real failure — the refresh produced nothing.
-        if not snapshot.per_currency:
+        if not per_currency:
             raise DemoRefreshFailedError("net worth unavailable after refresh")
+        single = per_currency[0] if len(per_currency) == 1 else None
 
         # 9. Only now — a complete, successful run — make demo the persisted
         #    default so the next command lands on it. Report the profile we
@@ -385,9 +416,9 @@ class DemoService:
             categorized_count=categorized_count,
             doctor_failing=report.failing,
             doctor_failing_names=failing_names,
-            net_worth=snapshot.net_worth,
-            total_assets=snapshot.total_assets,
-            total_liabilities=snapshot.total_liabilities,
-            per_currency=list(snapshot.per_currency),
+            net_worth=single.net_worth if single else None,
+            total_assets=single.total_assets if single else None,
+            total_liabilities=single.total_liabilities if single else None,
+            per_currency=per_currency,
             previous_default=previous_default,
         )

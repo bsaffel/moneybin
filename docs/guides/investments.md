@@ -283,25 +283,10 @@ $ uv run moneybin accounts balance assert f2b870002664 2025-12-31 17125.00 --not
 Using profile: demo
 Asserted balance for account f2b****...2664 on 2025-12-31
 ✅ Asserted balance for f2b870002664 on 2025-12-31: 17125.00 USD
-$ uv run moneybin reports networth
-Using profile: demo
-USD as of 2025-12-31
-Net worth:   437,205.77
-Assets:      437,205.77
-Liabilities: 0.00
-Accounts:    5
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source    ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
-│ Ally Bank savings …0002   │  33,000.00 │ USD      │           │
-│ Brokerage                 │  17,125.00 │ USD      │ assertion │
-│ Chase Bank checking …0001 │ 387,080.77 │ USD      │           │
-│ Chase Bank credit card    │       0.00 │ USD      │ tabular   │
-│ Citi credit card          │       0.00 │ USD      │ tabular   │
-└───────────────────────────┴────────────┴──────────┴───────────┘
+$ uv run moneybin reports net-worth-accounts
 ```
 
-The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
+The report's output is omitted here; on and after 2025-12-31 the brokerage row carries the asserted 17,125.00. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
 
 ## From an AI client
 

@@ -141,7 +141,7 @@ def demo_command(
                     err=True,
                 )
             # The one obvious answer (stdout), through the same renderer and
-            # money formatter the sibling `reports networth` command uses
+            # money formatter the sibling `reports net-worth` command uses
             # (coherence). Holding more than one currency, there is no one
             # answer to give — print each currency's own rather than a total
             # that would mean nothing.
@@ -150,12 +150,9 @@ def demo_command(
                     ("Net worth", format_money(result.net_worth, "balance"))
                 ])
             else:
-                # Both fields are nullable: reports.net_worth pools every
-                # account whose currency is unknown into one NULL-coded
-                # segment. `currency_label` names that slot; `format_money`
-                # spells the absent amount `-`, which is the token this CLI
-                # already prints for a missing figure — `UNKNOWN_CURRENCY`
-                # belongs to the currency slot it is named for.
+                # currency_code is the nullable field here: reports.net_worth
+                # pools every account whose currency is unknown into one
+                # NULL-coded segment. `currency_label` names that slot.
                 render_summary(
                     [
                         (

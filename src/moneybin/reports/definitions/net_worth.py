@@ -67,7 +67,7 @@ def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -> None:
-    """Repair after independent conversion (see `_restate_networth_total`).
+    """Repair after independent conversion.
 
     Conversion prices every home-basis money column independently, so two
     things drift on a converted read: `net_worth` no longer equals
@@ -184,8 +184,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "net_worth is null.",
             DataClass.BALANCE,
             # A change in a position rather than a spend magnitude, and net
-            # worth rising is the good news — matches _HISTORY_COLUMNS'
-            # change_abs (service_reports.py), the rung this one replaces.
+            # worth rising is the good news.
             money_kind="delta",
             polarity="income",
             currency_basis="home",

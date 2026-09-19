@@ -613,8 +613,8 @@ def _money_result() -> ReportResult:
 def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
     """The generated command is the only path carrying requirement 12.
 
-    Every built-in report but ``networth`` renders through this command, and
-    the kinds they declare are inert unless ``money_columns`` is wired into
+    Every built-in report renders through this command, and the kinds they
+    declare are inert unless ``money_columns`` is wired into
     ``render_report_result``. Asserting the rendered string rather than the
     dict is what makes that wiring load-bearing: a ``money_columns`` returning
     ``{}`` leaves every column reaching the table through ``str()``, which no

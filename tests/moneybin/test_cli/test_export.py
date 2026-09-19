@@ -196,14 +196,14 @@ def test_export_report_parses_optional_string_parameters(tmp_path: Path) -> None
             [
                 "export",
                 "report",
-                "core:networth",
+                "core:net_worth",
                 "--param",
-                "as_of=2026-07-01",
+                "from_date=2026-07-01",
             ],
         )
 
     assert result.exit_code == 0, result.output
-    assert run.call_args.args[0].report_parameters["as_of"] == "2026-07-01"
+    assert run.call_args.args[0].report_parameters["from_date"] == "2026-07-01"
 
 
 @pytest.mark.parametrize(

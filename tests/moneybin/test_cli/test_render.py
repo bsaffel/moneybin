@@ -144,9 +144,9 @@ def test_format_money_renders_a_missing_amount_as_a_dash() -> None:
     """A NULL money cell is absent, not zero — rendering 0.00 would invent data.
 
     A dash rather than a blank so one table spells absence one way: the first
-    period of a ``networth history`` series has no prior to difference against,
-    and its `change_abs` sits beside a `change_pct` that has always printed
-    ``-``.
+    bucket of a ``net-worth --interval`` series has no prior to difference
+    against, and its `change_abs` sits beside a `change_pct` that has always
+    printed ``-``.
     """
     assert format_money(None, "balance") == "-"
     assert format_money(None, "delta") == "-"
@@ -292,10 +292,9 @@ def test_every_money_column_in_the_catalog_declares_a_money_kind() -> None:
     from moneybin.privacy.taxonomy import DataClass
     from moneybin.reports._framework.registry import spec_of
     from moneybin.reports.definitions import ALL_REPORTS
-    from moneybin.reports.service_reports import SERVICE_REPORTS
 
     money_classes = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
-    specs = [spec_of(runner) for runner in ALL_REPORTS] + list(SERVICE_REPORTS)
+    specs = [spec_of(runner) for runner in ALL_REPORTS]
     assert specs, "the catalog came back empty, so this guard checked nothing"
     undeclared = [
         f"{spec.report_id}.{column.name}"
@@ -318,9 +317,8 @@ def test_every_declared_delta_column_names_its_polarity() -> None:
     """
     from moneybin.reports._framework.registry import spec_of
     from moneybin.reports.definitions import ALL_REPORTS
-    from moneybin.reports.service_reports import SERVICE_REPORTS
 
-    specs = [spec_of(runner) for runner in ALL_REPORTS] + list(SERVICE_REPORTS)
+    specs = [spec_of(runner) for runner in ALL_REPORTS]
     declared_deltas = [
         column
         for spec in specs
@@ -418,10 +416,10 @@ def test_render_rows_never_collapses_identical_rows(
 ) -> None:
     """Requirement 35: two rows in, two rows out.
 
-    `reports networth` sums an account once per balance source, so a duplicated
-    account shows as repeated rows. Collapsing them here would make the output
-    look right while the total stayed wrong — removing the symptom that finds
-    the defect.
+    `reports net-worth-accounts` sums an account once per balance source, so a
+    duplicated account shows as repeated rows. Collapsing them here would make
+    the output look right while the total stayed wrong — removing the symptom
+    that finds the defect.
     """
     render_rows(
         ["account", "balance"],
@@ -1248,8 +1246,8 @@ def test_render_summary_prints_its_title_above_the_block(
 ) -> None:
     """A scalar block often answers a question the heading asks.
 
-    `reports networth` prints one block per currency the profile holds; without
-    a heading the second block's figures read as a continuation of the first.
+    `stats` prints one block per metric domain; without a heading the second
+    block's figures read as a continuation of the first.
     """
     render_summary([("Net worth", "12,480.22")], title="USD")
 

@@ -109,11 +109,10 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
 
     ``render_or_json`` renders the envelope on the JSON path only, so every
     text renderer of a report result has to say these three things itself.
-    Shared rather than copied: the report commands with hand-written renderers
-    (``reports networth`` and ``networth-history``) printed none of them, so a
-    conversion that fell back to per-currency segmentation showed segmented
-    positions and never said why — the silent masking these echoes exist to
-    prevent, reappearing on the surface that skipped them.
+    Shared rather than copied: a hand-written report renderer that skips them
+    would let a conversion that fell back to per-currency segmentation show
+    segmented positions and never say why — the silent masking these echoes
+    exist to prevent, reappearing on the surface that skipped them.
 
     All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
     diagnostics about the answer, not the answer, and redirecting a report to a

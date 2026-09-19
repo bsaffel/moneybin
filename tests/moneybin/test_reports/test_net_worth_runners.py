@@ -537,9 +537,9 @@ def test_net_worth_runner_converted_read_keeps_its_identity(
     """Converting into a third currency keeps net_worth == assets + liabilities.
 
     Every money column here is home-basis and converts independently, so
-    without `on_converted` restating `net_worth` the two sides would drift by
-    a rounding cent — the same defect `_restate_networth_total` exists to fix
-    on the retired service-backed report.
+    without `on_converted` restating `net_worth`
+    (`_recompute_net_worth_and_change`) the two sides would drift by a
+    rounding cent.
     """
     _install_net_worth_sources(model_db)
     _account(model_db, "acct-usd", "Checking", "USD")
