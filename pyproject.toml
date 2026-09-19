@@ -84,8 +84,10 @@ dependencies = [
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
-    # Modern CLI framework
-    "typer>=0.25.1",
+    # Modern CLI framework. Capped below 0.26, which vendors its own click
+    # (typer._click): the click.Context cli/output.py reads via
+    # click.get_current_context() would no longer be typer's.
+    "typer>=0.25.1,<0.26",
     # Observability: metrics registry
     "prometheus_client>=0.26.0",
     # Security: transitive dependency version overrides to address CVEs.
@@ -118,14 +120,18 @@ dependencies = [
     "lxml>=6.1.3",
     "openpyxl>=3.1.5",
     "fastexcel>=0.21.0",
-    # MCP server — primary AI assistant interface
-    "fastmcp>=3.4.7,<5",
+    # MCP server — primary AI assistant interface. Capped below 4 with mcp below.
+    "fastmcp>=3.4.7,<4",
     # Also a transitive dep of fastmcp, but declared directly because _registration.py,
     # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
     # a future fastmcp pin change must not silently break those importers.
     # Floor is CVE-2026-52869/52870 (unverified principal on HTTP transports; cross-client
     # task access) and CVE-2026-59950 (no WebSocket Host/Origin validation), all fixed by 1.28.1.
-    "mcp>=1.30.0",
+    # Capped below 2: mcp 2 renames every protocol model field to snake_case
+    # (Tool.inputSchema, CallToolResult.structuredContent, ToolAnnotations.*Hint)
+    # and moves McpError and RequestContext — a migration of its own. fastmcp 4
+    # requires mcp 2.
+    "mcp>=1.30.0,<2",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.15.1",
     "httpx>=0.28.1",
@@ -249,19 +255,11 @@ constraint-dependencies = [
     # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
     # regression. Drop once typer ships click-8.4-compatible stubs.
     "click<8.4",
-    # Held-back majors, each a migration of its own rather than a lock refresh.
-    # mcp 2.x renames every protocol model field to snake_case (Tool.inputSchema,
-    # CallToolResult.structuredContent, ToolAnnotations.*Hint) and moves McpError
-    # and RequestContext — ~230 call sites on the public MCP surface. fastmcp 4
-    # requires mcp 2, so it is held with it.
-    "mcp<2",
-    "fastmcp<4",
     # pyarrow 25's typing surface leaves Table/Schema/array unknown to pyright
     # strict mode (~300 errors across the SQLMesh Python models and renderers).
+    # A type-check hold, not a runtime one, so it caps the lock only. The runtime
+    # holds (mcp, fastmcp, typer) are upper bounds in [project] dependencies.
     "pyarrow<25",
-    # typer 0.26 vendors its own click (typer._click), so the click.Context our
-    # CLI reads via click.get_current_context() is no longer typer's context.
-    "typer<0.26",
 ]
 
 [tool.ruff]
