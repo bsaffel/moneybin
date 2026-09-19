@@ -229,7 +229,7 @@ def test_run_accepts_a_multi_currency_position(
 ) -> None:
     """A profile holding two currencies has no single total — that is not a failure.
 
-    NetworthService nulls the headline scalars once a second currency appears
+    Demo nulls the headline scalars once a second currency appears
     (multi-currency.md Requirement 5) and reports each currency in
     `per_currency`. Demo used to read that null as a broken refresh, which made
     every multi-currency persona unrunnable.
@@ -331,7 +331,7 @@ def test_demo_net_worth_covers_every_account(
 ) -> None:
     # Demo's one headline answer. It used to print "Net worth: 0.00": every account
     # is carried in `core.fct_balances_daily` only to its OWN last observation, so on
-    # the latest date — the one `NetworthService.current()` reports — accounts with
+    # the latest date — the one demo's net-worth summary reads — accounts with
     # older statements had already dropped out. The OFX accounts carry a single
     # opening-day balance, so they vanished entirely, and `basic`'s remaining account
     # happened to sit at zero.

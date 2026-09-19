@@ -20,27 +20,23 @@ Three kinds ship today. Pick the row you are writing, then read its section.
 | **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
 | **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
 
-## Every report is SQL-backed — nothing else is a kind you can reach for
+## A new report is SQL-backed — anything else needs explicit approval first
 
-Every report answers with a query the caller can read and rerun. Write one of
-the two repo-authored forms: an `@report` runner returning a `ReportQuery`, or
-a runner-less `reports.*` view.
+Every kind above answers with a query the caller can read and rerun. Write one
+of the two repo-authored forms: an `@report` runner returning a `ReportQuery`,
+or a runner-less `reports.*` view. **Before inventing any kind whose rows come
+out of Python instead of SQL, stop and get Brandon's explicit yes. Do not start
+the code and ask afterward.** With no user reachable (subagent, autonomous run),
+take the SQL path and say so.
 
-There used to be a fourth, Python-executed kind — `ServiceReportSpec` — and a
-protocol for proposing a new one: stop, get Brandon's explicit yes, and accept
-that `reports explain` would return a `sql_unavailable` reason instead of the
-query, graduation would return the `service_backed` verdict (never
-materializable), and privacy classes would lose their independent derivation
-check in favor of a hand-written, independently reviewed map.
+Nothing in the repo offers the non-SQL path any more.
 [`reports-net-worth-sql-surface.md`](../../docs/specs/reports-net-worth-sql-surface.md)
-§Files to Delete retired that whole path — `ServiceReportSpec`, the service
-executor branch in `_framework/catalog.py`, and the `sql_unavailable` /
-`service_backed` arms in `explain.py` are gone from the repo, along with its
-two exemplars, `core:networth` and `core:networth_history` (now
-`core:net_worth` and `core:net_worth_currencies`, both `@report` runners).
-**The successor to a report that cannot be SQL is a new design, approved as
-one** — not a kind you can reach for by naming an API. Nothing in the repo
-offers a non-SQL path. If a report looks like it needs Python, name the thing
+§Files to Delete retired `ServiceReportSpec`, the service executor branch in
+`_framework/catalog.py`, and the `sql_unavailable` / `service_backed` arms in
+`explain.py`, along with the kind's two exemplars: `core:networth` split
+across the three `core:net_worth*` runners, and `core:networth_history` became
+`core:net_worth` with an `interval`. The successor to a report that cannot be SQL is a new
+design, approved as one. If a report looks like it needs Python, name the thing
 SQL cannot express and bring that as the decision: an expression spliced from
 an allowlist is already sanctioned (`definitions/large_transactions.py:218-294`),
 and a second SQLMesh view is usually cheaper than a service.
@@ -209,21 +205,10 @@ CRITICAL class for it over-declares across tiers, which the comparison above
 allows) but masks a column that is safe to expose and is not the pattern to
 copy into a new report.
 
-This applies to `ServiceReportSpec` parameters as well as output columns: exact
-`account_id` / `account_ids` parameters are `RECORD_ID`, declared in the
-reviewed map described below. The registry-wide
+This applies to report parameters as well as output columns: exact
+`account_id` / `account_ids` parameters are `RECORD_ID`. The registry-wide
 `test_registered_account_id_metadata_uses_opaque_record_id_class` separately
-checks the opaque-ID naming invariant across both report kinds.
-
-## Service-backed reports use an independent reviewed class map
-
-`ServiceReportSpec.__post_init__` checks internal consistency, but its columns
-and runtime class map can share the same mistaken declaration. Because there
-is no SQL source for independent lineage derivation,
-`test_service_report_privacy_maps_match_independent_contract` is the second
-source of truth: it names every service report and every parameter/output
-class explicitly. Additions or classification changes require updating that
-reviewed map in the same change.
+checks the opaque-ID naming invariant across every registered report.
 
 ## This rule documents a contract CI already enforces
 

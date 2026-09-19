@@ -2862,7 +2862,7 @@ def test_currency_integrity_warn_with_home_currency_set_skips_redundant_advice(
     """A profile that already chose a home currency needs different advice.
 
     Telling the user to set what is already set is noise, and claiming every
-    combined figure is withheld is false: `net-worth-currencies`,
+    combined figure is withheld is false: the three net-worth reports,
     `large-transactions`, and `balance-drift` already convert into the home
     currency whenever their rates are on disk. Only the five aggregating
     reports still sub-total regardless.

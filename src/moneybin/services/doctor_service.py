@@ -4274,8 +4274,8 @@ class DoctorService:
             # the five aggregating reports still sub-total regardless — but it
             # does mean two of this detail's claims are: telling the user to
             # set what is already set, and asserting every combined figure is
-            # withheld when the three converting reports (net-worth-currencies,
-            # large-transactions, balance-drift) already produce one whenever
+            # withheld when the five converting reports (the three net-worth
+            # reports, large-transactions, balance-drift) already produce one whenever
             # their rates are on disk. Read the setting rather than guessing.
             home_currency = (
                 ProfileSettingsService(self._db).get_settings().home_currency
@@ -4302,8 +4302,9 @@ class DoctorService:
             else:
                 remedy = (
                     f"The five reports that aggregate per currency still "
-                    f"sub-total separately; `net-worth-currencies`, `large-transactions`, "
-                    f"and `balance-drift` price into {home_currency} whenever "
+                    f"sub-total separately; the three net-worth reports, "
+                    f"`large-transactions`, and `balance-drift` price into "
+                    f"{home_currency} whenever "
                     "every rate they need is on disk. A transaction "
                     "denominated differently from its account is also left "
                     "out of that account's carried daily balance — it cannot "

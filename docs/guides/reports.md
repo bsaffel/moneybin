@@ -316,10 +316,10 @@ Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
-│ Ally Bank savings …0002   │ USD           │       33,000.00 │                    - │
-│ Chase Bank checking …0001 │ USD           │      387,080.77 │                    - │
-│ Chase Bank credit card    │ USD           │            0.00 │                    - │
-│ Citi credit card          │ USD           │            0.00 │                    - │
+│ Ally Bank savings …0002   │ USD           │       33,000.00 │            33,000.00 │
+│ Chase Bank checking …0001 │ USD           │      387,080.77 │           387,080.77 │
+│ Chase Bank credit card    │ USD           │            0.00 │                 0.00 │
+│ Citi credit card          │ USD           │            0.00 │                 0.00 │
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 💡 Run reports(report_id='core:net_worth') for the single home-currency total
