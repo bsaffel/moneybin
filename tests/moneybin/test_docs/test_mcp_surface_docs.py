@@ -2988,6 +2988,10 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     assert privacy.count("| high |") >= 2
     assert "Eight registered report routes" in index
     assert "seven `reports.*` SQLMesh views" in index
+    assert "As shipped by M2A" in index
+    assert "Superseded by M2B.2" in index
+    assert "10 registered routes, all `@report`-backed over 10" in index
+    assert "no service-backed route remains" in index
     assert "Report rows use `reports(report_id=..., parameters=...)`" in extensions
 
 
@@ -3023,6 +3027,10 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     assert default_sequence in recovery
     assert default_sequence in features
     assert "8 registered report routes" in roadmap
+    assert "As shipped:" in roadmap
+    assert "Superseded by M2B.2" in roadmap
+    assert "10 registered routes, all `@report`-backed over 10" in roadmap
+    assert "no service-backed route remains" in roadmap
     assert "seven `reports.*` SQLMesh views" in reports
     assert "six `@report` SQL runners" in reports
     assert "two service-backed net-worth routes" in reports
