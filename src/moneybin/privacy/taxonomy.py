@@ -98,7 +98,7 @@ class DataClass(StrEnum):
 
     @property
     def tier(self) -> Tier:
-        """Return the privacy ``Tier`` this class belongs to."""
+        """The privacy ``Tier`` this class belongs to."""
         return _TIER_BY_CLASS[self]
 
 

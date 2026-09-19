@@ -385,7 +385,7 @@ class SavedFormatDeletePlan:
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the one-row destructive impact for confirmation metadata."""
+        """The one-row destructive impact for confirmation metadata."""
         return {"saved_formats": 1}
 
 
@@ -416,17 +416,17 @@ class ImportRevertPlan:
 
     @property
     def revertable(self) -> bool:
-        """Return whether this plan would actually delete or flip anything."""
+        """Whether this plan would actually delete or flip anything."""
         return self.outcome == "revertable"
 
     @property
     def rows_to_delete(self) -> int:
-        """Return the total raw rows this reversion would destroy."""
+        """The total raw rows this reversion would destroy."""
         return sum(count for _, count in self.table_counts)
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the per-table destructive impact for confirmation metadata."""
+        """The per-table destructive impact for confirmation metadata."""
         radius = dict(self.table_counts)
         radius["total_rows"] = self.rows_to_delete
         if self.security_link_ids:

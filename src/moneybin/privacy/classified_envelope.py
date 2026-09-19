@@ -78,7 +78,7 @@ class Classification:
 
     @property
     def tier(self) -> Tier:
-        """Return the max tier across the classes. Fails closed when empty."""
+        """The max tier across the classes. Fails closed when empty."""
         if not self.classes:
             named = (
                 ", ".join(getattr(t, "__name__", repr(t)) for t in self.contract_types)
@@ -92,7 +92,7 @@ class Classification:
 
     @property
     def sensitivity(self) -> SensitivityLiteral:
-        """Return the envelope ``sensitivity`` string for the derived tier."""
+        """The envelope ``sensitivity`` string for the derived tier."""
         return tier_sensitivity(self.tier)
 
 
