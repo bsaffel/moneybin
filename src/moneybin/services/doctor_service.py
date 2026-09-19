@@ -24,6 +24,8 @@ from moneybin.extractors.pdf.fingerprint import PAGE_BUCKETS, serialize_fingerpr
 from moneybin.investments.source_overlap import investment_source_overlap
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
+    FX_RATE_SPINE_ROWS,
+    NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
@@ -52,6 +54,7 @@ from moneybin.tables import (
     DIM_SECURITIES,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
+    FCT_EXCHANGE_RATES_DAILY,
     FCT_INVESTMENT_TRANSACTIONS,
     FCT_TRANSACTIONS,
     GSHEET_CONNECTIONS,
@@ -67,6 +70,7 @@ from moneybin.tables import (
     PLAID_SECURITIES,
     PROFILE_SETTINGS,
     PROPOSED_RULES,
+    REPORTS_NET_WORTH,
     RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
@@ -3795,6 +3799,31 @@ class DoctorService:
             unknown_transaction_count
         )
         UNKNOWN_CURRENCY_ROWS.labels(grain="balances").set(unknown_balances)
+
+        # Guarded independently from the block above: an install whose core
+        # layer predates the rate spine or the net-worth rung must not turn
+        # this whole check "skipped" over two gauges it never had.
+        try:
+            spine_rows = self._scalar_int(
+                f"SELECT COUNT(*) FROM {FCT_EXCHANGE_RATES_DAILY.full_name}"
+            )  # TableRef constant, not user input
+        except Exception as e:  # degrade gracefully; see comment above
+            logger.debug(f"fx_rate_spine_rows skipped: {e}", exc_info=True)
+        else:
+            FX_RATE_SPINE_ROWS.set(spine_rows)
+
+        try:
+            unpriced_dates = self._scalar_int(
+                f"""
+                SELECT COUNT(DISTINCT balance_date)
+                FROM {REPORTS_NET_WORTH.full_name}
+                WHERE unpriced_currency_count > 0
+                """  # TableRef constant, not user input
+            )
+        except Exception as e:  # degrade gracefully; see comment above
+            logger.debug(f"net_worth_unpriced_dates skipped: {e}", exc_info=True)
+        else:
+            NET_WORTH_UNPRICED_DATES.set(unpriced_dates)
 
         unknown_total = (
             unknown_transaction_count + unknown_account_count + unknown_balances

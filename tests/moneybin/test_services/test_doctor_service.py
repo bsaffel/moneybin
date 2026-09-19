@@ -19,6 +19,8 @@ from moneybin.config import get_settings
 from moneybin.database import SQLMESH_ROOT, Database
 from moneybin.metrics.registry import (
     DUPLICATE_ACCOUNT_PAIRS,
+    FX_RATE_SPINE_ROWS,
+    NET_WORTH_UNPRICED_DATES,
     PROFILE_CURRENCIES,
     UNKNOWN_CURRENCY_ROWS,
 )
@@ -35,7 +37,10 @@ from moneybin.services.doctor_service import (
     _orient_overlap_pair,  # pyright: ignore[reportPrivateUsage]  # pure ordering helper, pinned directly
 )
 from moneybin.services.transform_service import TransformService
-from tests.moneybin.db_helpers import create_core_tables
+from tests.moneybin.db_helpers import (
+    CORE_FCT_EXCHANGE_RATES_DAILY_DDL,
+    create_core_tables,
+)
 
 _COVERAGE_PREFIX: Final = "app_audit_coverage_"
 """Name prefix `_run_app_audit_coverage` builds from a table's bare name."""
@@ -3118,6 +3123,42 @@ def test_currency_integrity_records_what_it_observed(
         UNKNOWN_CURRENCY_ROWS.labels(grain="transactions")._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
     )
     assert UNKNOWN_CURRENCY_ROWS.labels(grain="accounts")._value.get() == 0  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
+def test_currency_integrity_sets_fx_spine_and_unpriced_gauges(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rate-spine row count and net-worth unpriced-date count ride the same read."""
+    doctor_db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)
+    doctor_db.execute("""
+        INSERT INTO core.fct_exchange_rates_daily (
+            from_currency, to_currency, rate_source, rate_vendor, rate,
+            days_since_published, effective_date, published_date
+        ) VALUES
+            ('EUR', 'USD', 'ecb', 'ecb', 1.10, 0, DATE '2026-01-01', DATE '2026-01-01'),
+            ('EUR', 'USD', 'ecb', 'ecb', 1.11, 0, DATE '2026-01-02', DATE '2026-01-02'),
+            ('EUR', 'USD', 'ecb', 'ecb', 1.12, 0, DATE '2026-01-03', DATE '2026-01-03'),
+            ('EUR', 'USD', 'ecb', 'ecb', 1.13, 0, DATE '2026-01-04', DATE '2026-01-04'),
+            ('EUR', 'USD', 'ecb', 'ecb', 1.14, 0, DATE '2026-01-05', DATE '2026-01-05')
+    """)  # test input, not user data
+    doctor_db.execute("""
+        CREATE OR REPLACE VIEW reports.net_worth AS
+        SELECT * FROM (
+            VALUES
+                ('USD', DATE '2026-01-01', 1, 0, 1, 0,
+                 100.00::DECIMAL(18, 2), 0.00::DECIMAL(18, 2), 100.00::DECIMAL(18, 2)),
+                ('USD', DATE '2026-01-02', 1, 0, 2, 1,
+                 NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2))
+        ) AS t(home_currency_code, balance_date, account_count,
+               carried_forward_count, currency_count, unpriced_currency_count,
+               total_assets, total_liabilities, net_worth)
+    """)  # test input, not user data
+
+    _currency_result(doctor_db, monkeypatch)
+
+    assert FX_RATE_SPINE_ROWS._value.get() == 5  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_UNPRICED_DATES._value.get() == 1  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
 
 
 @pytest.mark.unit

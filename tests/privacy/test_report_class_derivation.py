@@ -146,6 +146,27 @@ def test_derivation_rejects_an_unqualified_upstream_read(tmp_path: Path) -> None
         _derive_one(model, tmp_path)
 
 
+def test_derivation_rejects_a_model_stacked_on_net_worth_currencies(
+    tmp_path: Path,
+) -> None:
+    """A reports.* model may not read another reports.* view (Requirement 2).
+
+    reports.net_worth_currencies has no independently authored ground truth
+    of its own — it IS derivation's own output — so a model built by reading
+    it would make the derived class map self-referential. Net worth ships
+    three independent rungs (net_worth, net_worth_currencies,
+    net_worth_accounts) precisely so none has to stack on another; this pins
+    that a stacked variant is rejected, not merely unbuilt.
+    """
+    model = """
+        MODEL (name reports.net_worth_stacked_probe, kind VIEW);
+        SELECT c.currency_code AS currency_code
+        FROM reports.net_worth_currencies AS c
+    """
+    with pytest.raises(ReportDerivationError, match="net_worth_currencies"):
+        _derive_one(model, tmp_path)
+
+
 def test_derivation_accepts_a_cte_reference_with_no_schema(tmp_path: Path) -> None:
     """The benign twin: the empty-schema case the skip was written for.
 
