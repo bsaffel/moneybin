@@ -3802,7 +3802,11 @@ class DoctorService:
 
         # Guarded independently from the block above: an install whose core
         # layer predates the rate spine or the net-worth rung must not turn
-        # this whole check "skipped" over two gauges it never had.
+        # this whole check "skipped" over two gauges it never had. A tripped
+        # guard leaves the gauge's last reading in place rather than zeroing
+        # it — the same behavior PROFILE_CURRENCIES gets from the outer
+        # try/except above, so a scrape during a transient failure reads as
+        # stale, not as a false "currently zero".
         try:
             spine_rows = self._scalar_int(
                 f"SELECT COUNT(*) FROM {FCT_EXCHANGE_RATES_DAILY.full_name}"

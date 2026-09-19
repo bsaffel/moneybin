@@ -163,7 +163,7 @@ def test_derivation_rejects_a_model_stacked_on_net_worth_currencies(
         SELECT c.currency_code AS currency_code
         FROM reports.net_worth_currencies AS c
     """
-    with pytest.raises(ReportDerivationError, match="net_worth_currencies"):
+    with pytest.raises(ReportDerivationError, match="self-referential"):
         _derive_one(model, tmp_path)
 
 

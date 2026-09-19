@@ -2536,6 +2536,15 @@ multi-currency, and thirteen for `M2B.3`:
 - A rate-observation gap of more than one non-publication day inside a pair's
   window, so `days_since_published` takes a value greater than 1.
 
+Both additions ship as scenario-level fixtures in
+`tests/scenarios/test_net_worth_rungs.py`, not as persona YAML or generator
+changes: the generator (`src/moneybin/synthetic/`) has no rate-fetch or
+archival channel of its own, so the rate gap is a direct
+`raw.exchange_rates` INSERT and the archive goes through
+`AccountService.settings_update` (per Requirement 9's own contract — archival
+must go through the service, never a direct column write) with the wall
+clock frozen to a date inside the account's balance span.
+
 - For `M2B.3`: a persona account holding priced securities with no balance
   observation of any kind, added to an existing balance-backed persona, so
   the unanchored guard's holdings arm is exercised against a shipped fixture
@@ -2623,6 +2632,13 @@ general rule in §Data Model, never hard-coded to `to_date` or `CURRENT_DATE`:
 a fixture whose range straddles an eligible candidate's `archived_at` must
 derive the expected date from that same rule (which can instead resolve to
 `archived_at_floor`), matching the acceptance case above.
+
+The expected NULL-date set is exact in both directions, derived from the
+fixture rather than sampled: every held balance date through the archive
+boundary is NULL (with `unpriced_currency_count >= 1` on each), and none
+after it through the last priced or carried date, with the boundary itself
+(the archive date, and the day immediately after it) asserted explicitly
+rather than left implicit in a range check.
 
 ## Dependencies
 

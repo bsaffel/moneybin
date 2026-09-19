@@ -33,7 +33,7 @@ import asyncio
 import json
 import os
 import subprocess  # noqa: S404  # explicit command list, never shell=True
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 import pytest
@@ -66,10 +66,14 @@ _EUR_USD = Decimal("1.10")
 _GBP_USD = Decimal("1.25")
 _CAD_USD = Decimal("0.75")
 
-# The fixture window: five business weeks, comfortably inside the persona's
-# 2024-01-01..2025-12-31 span (years=2, per international-multi-currency.yaml).
+# The fixture window starts well before archival, comfortably inside the
+# persona's 2024-01-01..2025-12-31 span (years=2, per
+# international-multi-currency.yaml). Its end is extended at runtime (see
+# test body) to the report's own last balance date, so EUR/GBP/CAD/USD stay
+# priced all the way to the end of the persona's history -- otherwise the
+# exact NULL-set assertion below would see a second, spurious NULL band
+# reappear past a fixed end date for reasons unrelated to archival.
 _RATE_WINDOW_START = date(2025, 11, 1)
-_RATE_WINDOW_END = date(2025, 12, 5)
 # GBP's Thursday-last-quote, four-day gap (Fri 21st, weekend, Mon 24th),
 # resuming Tuesday the 25th -- the shape spec Tier 1 names as the regression
 # case for days_since_published, distinct from the ordinary weekend carry.
@@ -79,8 +83,7 @@ _GBP_GAP_WEEKDAY = date(2025, 11, 24)  # Monday; days_since_published = 4 there.
 # Inside the account's own balance span (2024-2025), so the date-scoped
 # exclusion has real history on both sides, not the account's own edge.
 _ARCHIVED_AT = date(2025, 11, 15)
-# Before archival: AED is still held and never priced -> fails closed.
-_NULL_DATE = date(2025, 11, 10)
+_DAY_AFTER_ARCHIVED_AT = _ARCHIVED_AT + timedelta(days=1)
 # After archival: AED is excluded; EUR/GBP/CAD/USD are all priced.
 _PRICED_DATE = date(2025, 12, 1)
 
@@ -122,12 +125,16 @@ def _converted(amount: Decimal, rate: Decimal) -> Decimal:
     return (amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
-def _insert_rate_fixture(db: Database) -> None:
+def _insert_rate_fixture(db: Database, *, window_end: date) -> None:
     """Weekday-only provider rates for EUR/GBP/CAD, GBP alone carrying the gap.
 
     raw.exchange_rates is append-only and not SQLMesh-managed -- a direct
     INSERT is the same shape a real fetch would write, without the network
-    call scenario tests must not make.
+    call scenario tests must not make. ``window_end`` is the report's own
+    last balance date (queried at runtime, not a fixed literal), so pricing
+    holds all the way to the end of the persona's history -- an exact
+    NULL-set assertion cannot tolerate a fixture that goes unpriced again
+    for reasons unrelated to archival.
     """
     for currency, rate in (("EUR", _EUR_USD), ("CAD", _CAD_USD)):
         db.execute(
@@ -138,7 +145,7 @@ def _insert_rate_fixture(db: Database) -> None:
             FROM GENERATE_SERIES(?::DATE, ?::DATE, INTERVAL '1' DAY) AS t(d)
             WHERE ISODOW(d::DATE) NOT IN (6, 7)
             """,  # weekday spine; GENERATE_SERIES bounds are scenario-fixed dates
-            [currency, rate, _RATE_WINDOW_START, _RATE_WINDOW_END],
+            [currency, rate, _RATE_WINDOW_START, window_end],
         )
     db.execute(
         """
@@ -149,7 +156,7 @@ def _insert_rate_fixture(db: Database) -> None:
         WHERE ISODOW(d::DATE) NOT IN (6, 7)
           AND d::DATE NOT IN (?, ?)
         """,  # same spine, minus the deliberate gap dates
-        [_GBP_USD, _RATE_WINDOW_START, _RATE_WINDOW_END, *_GBP_GAP_DATES],
+        [_GBP_USD, _RATE_WINDOW_START, window_end, *_GBP_GAP_DATES],
     )
 
 
@@ -237,7 +244,24 @@ def test_net_worth_rungs() -> None:
         run_step("transform", setup, db, env=_env)
 
         ProfileSettingsRepo(db).set_home_currency("USD", actor="system")
-        _insert_rate_fixture(db)
+
+        # The report's own balance-date domain, queried rather than assumed:
+        # core.fct_balances_daily's spine is dense from each account's own
+        # first observation through the profile's global last one. Sanity-
+        # checked against _ARCHIVED_AT so a persona-span drift (the persona's
+        # window is years-relative to "today") fails loudly here rather than
+        # silently narrowing the exact-set assertion below to nothing.
+        spine_bounds = db.execute(
+            "SELECT MIN(balance_date), MAX(balance_date) FROM core.fct_balances_daily"
+        ).fetchone()
+        assert spine_bounds is not None and spine_bounds[0] is not None
+        report_first_date, report_last_date = spine_bounds
+        assert report_first_date <= _ARCHIVED_AT < report_last_date, (
+            "the persona's balance span must straddle _ARCHIVED_AT on both "
+            f"sides, got [{report_first_date}, {report_last_date}]"
+        )
+
+        _insert_rate_fixture(db, window_end=report_last_date)
 
         uae_row = db.execute(
             "SELECT account_id FROM core.dim_accounts WHERE currency_code = 'AED'"
@@ -271,15 +295,51 @@ def test_net_worth_rungs() -> None:
         with sqlmesh_context(db) as ctx:
             ctx.plan(restate_models=_RESTATE_MODELS, auto_apply=True, no_prompts=True)
 
-        # --- fail-closed before archival: AED still held, never priced ---
-        row = db.execute(
-            f"SELECT net_worth, unpriced_currency_count "  # noqa: S608  # TableRef constant
-            f"FROM {REPORTS_NET_WORTH.full_name} WHERE balance_date = ?",
-            [_NULL_DATE],
-        ).fetchone()
-        assert row is not None, f"no net_worth row for {_NULL_DATE}"
-        assert row[0] is None, f"expected NULL net_worth on {_NULL_DATE}, got {row[0]}"
-        assert row[1] == 1, f"expected exactly one unpriced currency, got {row[1]}"
+        # --- NULL dates are an exact set in both directions, derived from
+        # the fixture: every held balance date through the archive boundary
+        # is NULL (AED is held and never priced over that whole span), and
+        # none after it through the last priced/carried date (AED excluded,
+        # EUR/GBP/CAD/USD priced through report_last_date by construction). ---
+        expected_null_dates = {
+            report_first_date + timedelta(days=i)
+            for i in range((_ARCHIVED_AT - report_first_date).days + 1)
+        }
+        null_rows = db.execute(
+            f"SELECT balance_date, unpriced_currency_count "  # noqa: S608  # TableRef constant
+            f"FROM {REPORTS_NET_WORTH.full_name} WHERE net_worth IS NULL"
+        ).fetchall()
+        actual_null_dates = {row[0] for row in null_rows}
+        assert actual_null_dates == expected_null_dates, (
+            f"NULL date set mismatch: missing "
+            f"{sorted(expected_null_dates - actual_null_dates)}, extra "
+            f"{sorted(actual_null_dates - expected_null_dates)}"
+        )
+        assert all(row[1] >= 1 for row in null_rows), (
+            "every NULL net_worth row must report unpriced_currency_count >= 1"
+        )
+
+        # --- the boundary, explicit: archived_at itself is NULL, the very
+        # next day is fully priced ---
+        boundary = {
+            row[0]: (row[1], row[2])
+            for row in db.execute(
+                f"SELECT balance_date, net_worth, unpriced_currency_count "  # noqa: S608  # TableRef constant
+                f"FROM {REPORTS_NET_WORTH.full_name} WHERE balance_date IN (?, ?)",
+                [_ARCHIVED_AT, _DAY_AFTER_ARCHIVED_AT],
+            ).fetchall()
+        }
+        archived_at_net_worth, archived_at_unpriced = boundary[_ARCHIVED_AT]
+        assert archived_at_net_worth is None and archived_at_unpriced == 1, (
+            f"archived_at ({_ARCHIVED_AT}) must be NULL with exactly one "
+            f"unpriced currency, got net_worth={archived_at_net_worth!r}, "
+            f"unpriced_currency_count={archived_at_unpriced}"
+        )
+        day_after_net_worth, day_after_unpriced = boundary[_DAY_AFTER_ARCHIVED_AT]
+        assert day_after_net_worth is not None and day_after_unpriced == 0, (
+            f"the day after archived_at ({_DAY_AFTER_ARCHIVED_AT}) must be "
+            f"fully priced, got net_worth={day_after_net_worth!r}, "
+            f"unpriced_currency_count={day_after_unpriced}"
+        )
 
         # --- fully priced after archival: matches hand-derived ground truth ---
         expected_total = (
@@ -322,7 +382,18 @@ def test_net_worth_rungs() -> None:
         assert currencies_sum is not None and currencies_sum[0] is not None
         assert Decimal(str(currencies_sum[0])) == actual_total
 
-        # --- the archived account contributes on/before archived_at, not after ---
+        # Captured now (pre-override) so the override section below can
+        # assert the exact delta rather than just "it changed".
+        eur_home_before_row = db.execute(
+            f"SELECT net_worth_home FROM {REPORTS_NET_WORTH_CURRENCIES.full_name} "  # noqa: S608  # TableRef constant
+            "WHERE currency_code = 'EUR' AND balance_date = ?",
+            [_PRICED_DATE],
+        ).fetchone()
+        assert eur_home_before_row is not None and eur_home_before_row[0] is not None
+        eur_home_before = Decimal(str(eur_home_before_row[0]))
+
+        # --- the archived account contributes on/before archived_at, not
+        # after, on both the accounts rung and the currencies rung ---
         uae_bounds = db.execute(
             f"SELECT MIN(balance_date), MAX(balance_date) "  # noqa: S608  # TableRef constant
             f"FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name} WHERE account_id = ?",
@@ -344,6 +415,26 @@ def test_net_worth_rungs() -> None:
         assert after_count == (0,), (
             "the archived account must not contribute after archived_at"
         )
+        aed_bounds = db.execute(
+            f"SELECT MIN(balance_date), MAX(balance_date) "  # noqa: S608  # TableRef constant
+            f"FROM {REPORTS_NET_WORTH_CURRENCIES.full_name} WHERE currency_code = 'AED'"
+        ).fetchone()
+        assert aed_bounds is not None and aed_bounds[0] is not None, (
+            "the AED segment must still contribute before archived_at"
+        )
+        assert aed_bounds[1] == _ARCHIVED_AT, (
+            "the AED segment's last currency-rung row must be exactly "
+            f"archived_at ({_ARCHIVED_AT}), got {aed_bounds[1]}"
+        )
+        aed_after_count = db.execute(
+            f"SELECT COUNT(*) "  # noqa: S608  # TableRef constant
+            f"FROM {REPORTS_NET_WORTH_CURRENCIES.full_name} "
+            "WHERE currency_code = 'AED' AND balance_date > ?",
+            [_ARCHIVED_AT],
+        ).fetchone()
+        assert aed_after_count == (0,), (
+            "the AED segment must not appear on the currencies rung after archived_at"
+        )
 
         # --- the multi-day gap is visible in the effective rate view ---
         gap = db.execute(
@@ -358,10 +449,11 @@ def test_net_worth_rungs() -> None:
             f"(a weekday), got {gap[0]}"
         )
 
-        # --- CLI/MCP parity, before the override mutates the priced date ---
+        # --- CLI/MCP parity ---
         # DuckDB's single-writer file lock means the CLI subprocess below
         # can't open the encrypted file while this connection holds it
-        # attached; close, run both parity legs, then reopen to continue.
+        # attached; close it for the parity check, which needs no further
+        # writes of its own.
         db.close()
         cli_rows = _run_cli_json(_env, from_date=_PRICED_DATE, to_date=_PRICED_DATE)
         mcp_rows = asyncio.run(
@@ -369,26 +461,66 @@ def test_net_worth_rungs() -> None:
         )
         assert mcp_rows, "expected at least one row on the priced date"
         assert mcp_rows == cli_rows
-        db = get_database(read_only=False)
 
-        # --- override precedence is live: no transform run in between ---
-        eur_balance = _account_balance(generated, "Eurozone Checking", _PRICED_DATE)
-        override_rate = Decimal("1.50")
-        CurrencyService(db, actor="system").set_override(
-            "EUR", "USD", _PRICED_DATE, override_rate, note="scenario test override"
-        )
-        overridden = db.execute(
-            f"SELECT rate_source, account_balance_home "  # noqa: S608  # TableRef constant
-            f"FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name} "
-            "WHERE account_id = ? AND balance_date = ?",
-            [eur_account_id, _PRICED_DATE],
-        ).fetchone()
-        assert overridden is not None, "no net_worth_accounts row for EUR post-override"
-        assert overridden[0] == "override", (
-            f"expected rate_source='override', got {overridden[0]!r}"
-        )
-        assert Decimal(str(overridden[1])) == _converted(eur_balance, override_rate), (
-            "the overridden EUR balance must reflect the new rate, not the "
-            "provider's 1.10"
-        )
-        db.close()
+        # --- override precedence is live: no transform run in between,
+        # and the delta is exact across both the accounts and currencies
+        # rungs, not merely "it changed" ---
+        # A context manager, not a bare reopen/close pair: any assertion
+        # below raising must not leak this connection or its write lock.
+        with get_database(read_only=False) as override_db:
+            eur_balance = _account_balance(generated, "Eurozone Checking", _PRICED_DATE)
+            override_rate = Decimal("1.50")
+            expected_delta = _converted(eur_balance, override_rate) - _converted(
+                eur_balance, _EUR_USD
+            )
+            CurrencyService(override_db, actor="system").set_override(
+                "EUR",
+                "USD",
+                _PRICED_DATE,
+                override_rate,
+                note="scenario test override",
+            )
+            overridden = override_db.execute(
+                f"SELECT rate_source, account_balance_home "  # noqa: S608  # TableRef constant
+                f"FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name} "
+                "WHERE account_id = ? AND balance_date = ?",
+                [eur_account_id, _PRICED_DATE],
+            ).fetchone()
+            assert overridden is not None, (
+                "no net_worth_accounts row for EUR post-override"
+            )
+            assert overridden[0] == "override", (
+                f"expected rate_source='override', got {overridden[0]!r}"
+            )
+            assert Decimal(str(overridden[1])) == _converted(
+                eur_balance, override_rate
+            ), (
+                "the overridden EUR balance must reflect the new rate, not "
+                "the provider's 1.10"
+            )
+
+            eur_home_after_row = override_db.execute(
+                f"SELECT net_worth_home "  # noqa: S608  # TableRef constant
+                f"FROM {REPORTS_NET_WORTH_CURRENCIES.full_name} "
+                "WHERE currency_code = 'EUR' AND balance_date = ?",
+                [_PRICED_DATE],
+            ).fetchone()
+            assert eur_home_after_row is not None and eur_home_after_row[0] is not None
+            eur_home_after = Decimal(str(eur_home_after_row[0]))
+            assert eur_home_after - eur_home_before == expected_delta, (
+                "net_worth_currencies' EUR segment must move by exactly the "
+                f"override delta ({expected_delta}), got "
+                f"{eur_home_after - eur_home_before}"
+            )
+
+            headline_after_row = override_db.execute(
+                f"SELECT net_worth "  # noqa: S608  # TableRef constant
+                f"FROM {REPORTS_NET_WORTH.full_name} WHERE balance_date = ?",
+                [_PRICED_DATE],
+            ).fetchone()
+            assert headline_after_row is not None and headline_after_row[0] is not None
+            headline_after = Decimal(str(headline_after_row[0]))
+            assert headline_after - actual_total == expected_delta, (
+                "net_worth's headline must move by exactly the same override "
+                f"delta ({expected_delta}), got {headline_after - actual_total}"
+            )

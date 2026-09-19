@@ -3162,6 +3162,35 @@ def test_currency_integrity_sets_fx_spine_and_unpriced_gauges(
 
 
 @pytest.mark.unit
+def test_currency_integrity_survives_a_core_layer_predating_the_net_worth_rung(
+    doctor_db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An install missing the two new tables/views still gets a real verdict.
+
+    core.fct_exchange_rates_daily is absent from doctor_db by default (only
+    create_core_dim_stub_views adds it, not create_core_tables); dropping
+    reports.net_worth here too reproduces an install that predates the
+    net-worth SQL rung entirely. Each gauge's own try/except must swallow
+    that independently of the outer currency_integrity try/except, so the
+    check itself still runs to a real pass/fail/warn -- never "skipped" --
+    and the gauges are left exactly where they were, per the guard comment
+    in doctor_service.py.
+    """
+    doctor_db.execute("DROP VIEW IF EXISTS reports.net_worth")
+
+    FX_RATE_SPINE_ROWS.set(4242)
+    NET_WORTH_UNPRICED_DATES.set(4242)
+
+    result = _currency_result(doctor_db, monkeypatch)
+
+    assert result.status != "skipped", (
+        f"currency_integrity must not skip over two gauges it never had, got {result}"
+    )
+    assert FX_RATE_SPINE_ROWS._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+    assert NET_WORTH_UNPRICED_DATES._value.get() == 4242  # type: ignore[reportPrivateUsage,reportUnknownMemberType]  # testing prometheus internals
+
+
+@pytest.mark.unit
 def test_currency_integrity_counts_past_the_reported_id_cap(
     doctor_db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
