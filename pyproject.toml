@@ -50,25 +50,25 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     # Data transforms (SQLMesh manages raw → staging → core pipeline)
-    "sqlmesh[duckdb]>=0.200.0",
+    "sqlmesh[duckdb]>=0.236.2",
     # SQL AST parsing for schema introspection and package-write validation.
     # Also a transitive dep of sqlmesh, but declared directly because schema.py,
     # privacy/comment_sync.py, and the package framework import it independently —
     # a future sqlmesh pin change must not silently break those importers.
-    "sqlglot>=30.4.3",
+    "sqlglot>=30.8.0",
     # Database and data manipulation
-    "duckdb>=1.3.2",
-    "polars>=1.32.3",
-    "pyarrow>=23.0.0",
+    "duckdb>=1.5.5",
+    "polars>=1.44.2",
+    "pyarrow>=24.0.0",
     # API integrations
-    "plaid-python>=40.0.0",
+    "plaid-python>=44.0.0",
     "ofxparse>=0.21",
-    "requests>=2.33.1",
-    "python-dotenv>=1.2.2",
+    "requests>=2.34.2",
+    "python-dotenv>=1.2.3",
     # Google Sheets connector (gsheet domain)
-    "google-api-python-client>=2.0",
-    "google-auth>=2.0",
-    "google-auth-oauthlib>=1.0",
+    "google-api-python-client>=2.200.0",
+    "google-auth>=2.58.0",
+    "google-auth-oauthlib>=1.4.1",
     # Also a transitive dep of google-api-python-client, but declared directly
     # because sheets_api.py imports it to build the timeout-bearing Http client —
     # a future google-api-python-client pin change must not silently break that.
@@ -79,15 +79,15 @@ dependencies = [
     # and reports/user_reports.py import it to read the active command context —
     # a future typer pin change must not silently break those importers. Upper
     # bound lives in [tool.uv] constraint-dependencies with its own reason.
-    "click>=8.2.1",
-    "pydantic>=2.11.7",
-    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
+    "click>=8.3.3",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
     # Modern CLI framework
-    "typer>=0.24.1",
+    "typer>=0.25.1",
     # Observability: metrics registry
-    "prometheus_client>=0.22.0",
+    "prometheus_client>=0.26.0",
     # Security: transitive dependency version overrides to address CVEs.
     # These packages are not imported directly by moneybin; pins are here solely to
     # force safe versions that uv would otherwise resolve from transitive constraints.
@@ -100,34 +100,40 @@ dependencies = [
     #   joserfc:      CVE-2026-48990 (via authlib → fastmcp)           — fixed in 1.6.7
     #   pillow:       PYSEC-2026-2253/2254/2255/2256/2257, 3451/3452/3453
     #                 (via pdfplumber)                                 — fixed in 12.3.0
-    "cryptography>=50.0.0",
-    "pygments>=2.20.0",
-    "pyjwt>=2.12.0",
-    "joserfc>=1.6.7",
+    #   anyio:        CVE-2026-63374/64847 (via httpx, mcp)            — fixed in 4.14.2
+    #   soupsieve:    CVE-2026-85999/86000 (via beautifulsoup4 → ofxparse) — fixed in 2.9.0
+    #   starlette:    PYSEC-2026-161/248/249, CVE-2026-48817/48818 (via mcp) — fixed in 1.3.1
+    "cryptography>=50.0.1",
+    "pygments>=2.21.0",
+    "pyjwt>=2.14.0",
+    "joserfc>=1.7.5",
     "pillow>=12.3.0",
+    "anyio>=4.15.1",
+    "soupsieve>=2.9.2",
+    "starlette>=1.6.0",
     # Secret management and key derivation
-    "keyring>=25.6.0",
-    "argon2-cffi>=23.1.0",
-    "python-multipart>=0.0.31",  # CVE-2026-42561/53538/53539/53540 — fixed in 0.0.31
-    "lxml>=6.1.0",
+    "keyring>=25.7.0",
+    "argon2-cffi>=25.1.0",
+    "python-multipart>=0.0.32",  # CVE-2026-42561/53538/53539/53540 — fixed in 0.0.31
+    "lxml>=6.1.3",
     "openpyxl>=3.1.5",
-    "fastexcel>=0.19.0",
+    "fastexcel>=0.21.0",
     # MCP server — primary AI assistant interface
-    "fastmcp>=3.1,<5",
+    "fastmcp>=3.4.7,<5",
     # Also a transitive dep of fastmcp, but declared directly because _registration.py,
     # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
     # a future fastmcp pin change must not silently break those importers.
     # Floor is CVE-2026-52869/52870 (unverified principal on HTTP transports; cross-client
     # task access) and CVE-2026-59950 (no WebSocket Host/Origin validation), all fixed by 1.28.1.
-    "mcp>=1.28.1",
+    "mcp>=1.30.0",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
-    "tomlkit>=0.13.2",
-    "httpx>=0.27",
-    "pdfplumber>=0.11.9",
+    "tomlkit>=0.15.1",
+    "httpx>=0.28.1",
+    "pdfplumber>=0.11.10",
     # Used instead of stdlib `re` because stdlib has no `timeout=` parameter.
     # The `regex` package's timeout= enforces a wall-clock bound per match,
     # preventing ReDoS against untrusted document text. (Req 9b dynamic bound)
-    "regex>=2023.6.3",
+    "regex>=2026.9.10",
 ]
 
 [project.urls]
@@ -198,40 +204,40 @@ moneybin = "moneybin.cli.main:main"
 dev = [
     "towncrier>=26.9.0,<27",
     # Code quality and formatting
-    "ruff>=0.15.10",
-    "pyright>=1.1.408",
-    "pre-commit>=4.4.0",
-    "sqlmesh[lsp]>=0.200.0",
+    "ruff>=0.16.8",
+    "pyright>=1.1.414",
+    "pre-commit>=4.6.2",
+    "sqlmesh[lsp]>=0.236.2",
     # Security auditing
-    "pip-audit>=2.10.0",
+    "pip-audit>=2.10.1",
     # Security floor for pip (transitive via pip-audit → pip-api): bump as new
     # CVEs land. CVE-2026-6357 (pip 26.0.1) fixed in 26.1; CVE-2026-8643 /
     # PYSEC-2026-196 (entry points installed outside the install dir) fixed in 26.1.2;
     # PYSEC-2026-3721 fixed in 26.2.
-    "pip>=26.2",
+    "pip>=26.2.1",
     # Security floor for msgpack (transitive via pip-audit → cachecontrol):
     # GHSA-6v7p-g79w-8964 — fixed in 1.2.1.
-    "msgpack>=1.2.1",
+    "msgpack>=1.2.2",
     # Testing framework and tools
-    "pytest>=9.0.3",
+    "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "pytest-json-report>=1.5.0",
     "pytest-mock>=3.15.1",
-    "pytest-asyncio>=1.3.0",
+    "pytest-asyncio>=1.4.0",
     "pytest-xdist>=3.8.0",
-    "respx>=0.21",
-    "pytest-memray>=1.8.0",
+    "respx>=0.23.1",
+    "pytest-memray>=1.11.0",
     "pytest-split>=0.11.0",
     # Property-based testing. Named by multi-currency.md's testing strategy for
     # the conversion and lot-conservation properties, where the claim quantifies
     # over all amounts and rates and examples cannot establish it.
-    "hypothesis>=6.100",
+    "hypothesis>=6.168.0",
 ]
 
 server = [
     # Server-side API framework (for future hosted MoneyBin Sync)
-    "fastapi>=0.115.0",
-    "uvicorn>=0.34.0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.53.0",
     # plaid-python already in main dependencies
 ]
 
@@ -243,6 +249,19 @@ constraint-dependencies = [
     # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
     # regression. Drop once typer ships click-8.4-compatible stubs.
     "click<8.4",
+    # Held-back majors, each a migration of its own rather than a lock refresh.
+    # mcp 2.x renames every protocol model field to snake_case (Tool.inputSchema,
+    # CallToolResult.structuredContent, ToolAnnotations.*Hint) and moves McpError
+    # and RequestContext — ~230 call sites on the public MCP surface. fastmcp 4
+    # requires mcp 2, so it is held with it.
+    "mcp<2",
+    "fastmcp<4",
+    # pyarrow 25's typing surface leaves Table/Schema/array unknown to pyright
+    # strict mode (~300 errors across the SQLMesh Python models and renderers).
+    "pyarrow<25",
+    # typer 0.26 vendors its own click (typer._click), so the click.Context our
+    # CLI reads via click.get_current_context() is no longer typer's context.
+    "typer<0.26",
 ]
 
 [tool.ruff]

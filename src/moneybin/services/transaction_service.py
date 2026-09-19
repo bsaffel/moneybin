@@ -367,17 +367,17 @@ class AnnotationPlan:
 
     @property
     def destructive(self) -> bool:
-        """Return whether any changed item removes or replaces live state."""
+        """Whether any changed item removes or replaces live state."""
         return any(item.destructive for item in self.items if item.changed)
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material annotation changes."""
+        """The number of material annotation changes."""
         return sum(item.changed for item in self.items)
 
     @property
     def resolved_ids(self) -> tuple[str, ...]:
-        """Return exact resolved targets and opaque live-state fingerprints."""
+        """Exact resolved targets and opaque live-state fingerprints."""
         targets = tuple(
             sorted({
                 f"{item.request.kind}:{target_id}"
