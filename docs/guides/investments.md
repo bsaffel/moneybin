@@ -276,7 +276,7 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 
 ## Net worth
 
-`reports networth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
+`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
 
 ```console
 $ uv run moneybin accounts balance assert f2b870002664 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
@@ -314,7 +314,7 @@ One read tool and three write tools cover the surface. `investments(view=...)` r
 ## What is not built yet
 
 - **No real-broker 1099-B tie-out.** The four methods reconcile against a hand-labeled full-tax-year fixture. Until they tie to a real broker's 1099-B, treat `investments gains` as a number to check against the form, not a replacement for it.
-- **Positions do not fold into net worth.** `reports networth` reads balances; a brokerage counts at its reported or asserted balance, and `investments holdings` is the only place market value appears. There is no daily series of what a position was worth on a past date.
+- **Positions do not fold into net worth.** `reports net-worth` reads balances; a brokerage counts at its reported or asserted balance, and `investments holdings` is the only place market value appears. There is no daily series of what a position was worth on a past date.
 - **No wash-sale detection, Schedule D, or Form 8949.** Lot selection is the tax-loss-harvesting primitive; the workflow around it is planned as a reference package on top of this ledger.
 - **Options, margin, short positions, and derivatives** are outside the ledger. A merger or spin-off is recorded as a `transfer_out` and `transfer_in` pair carrying the basis; there is no single command for either.
 - **A recorded event has no edit or delete.** `import revert` on the event's batch is the undo — including a wrong `--currency`: revert the batch, re-record with the correct value, then `moneybin refresh`. Revert only deletes the batch's rows from the raw layer; events, lots, gains, and holdings read from materialized `core.*` tables, so the reverted event stays visible until refresh rebuilds them.

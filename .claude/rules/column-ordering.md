@@ -165,6 +165,9 @@ Two reports already satisfy this and are the models to copy:
 - `core:balance_drift` — `asserted_balance`, `computed_balance`, `drift`. The
   two positions being reconciled, then the discrepancy.
 
+`core:net_worth` now ends on `net_worth` too — the service-backed report this
+replaced was the counter-example this section used to name.
+
 One inverted it before this rule, and is why it is written down:
 
 - `core:merchant_activity` — `total_spend` precedes `total_inflow` and `total_outflow`.

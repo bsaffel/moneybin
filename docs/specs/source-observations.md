@@ -130,8 +130,8 @@ The Web UI surfaced in `web-ui-prototype.md` is expected to render a two-ledger 
 | Bank-only rows (matcher saw nothing to collapse into; survived as their own canonical) | `core.fct_transactions WHERE source_count = 1 AND source_type != 'manual'` — the `source_type != 'manual'` predicate is required because manual entries never participate in matching and so always have `source_count = 1`; without it, user-entered transactions would appear in the bank-ledger pane. Optionally filter further by `source_type` (the public column, aliased from `canonical_source_type` in the underlying SQLMesh model). |
 | Per-source balance observations | `core.fct_balances` filtered by `account_id`, ordered by `balance_date`. Source attribution via `source_type` and `source_ref`. |
 | Reconciliation drift (anchor vs. derived running balance) | `accounts_balances(view="reconcile", ...)` MCP or `moneybin accounts balance reconcile` CLI. Underlying view is `core.fct_balances_daily.reconciliation_delta`. |
-| Current cross-account net worth (point-in-time) | `reports(report_id="core:networth", parameters={...})` MCP or `moneybin reports networth` CLI. |
-| Cross-account net worth over time | `reports(report_id="core:networth_history", parameters={...})` MCP or `moneybin reports networth-history` CLI. |
+| Current cross-account net worth (latest day) | `reports(report_id="core:net_worth", parameters={...})` MCP or `moneybin reports net-worth` CLI. |
+| Cross-account net worth over time | `reports(report_id="core:net_worth", parameters={"from_date": ..., "to_date": ..., "interval": ...})` MCP or `moneybin reports net-worth --from-date ... --to-date ... --interval ...` CLI. |
 
 Writes (accepting a match, rejecting a match, asserting a balance) MUST go through the existing MCP write tools (`reviews_decide(decisions=[...])`, `accounts_balance_assert`), which route through Repos and emit audit rows per Invariant 10. A balance-assertion deletion is an audited target-state change through the balance assertion contract. The Web UI does not write directly to `app.*` tables.
 

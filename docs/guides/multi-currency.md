@@ -247,7 +247,7 @@ The cache resolves a weekend back to the preceding Friday, but it never hops a w
 
 ### Reports that stay per currency
 
-The other five reports aggregate with the currency in their grouping key, so a row is already a sub-total for one currency and stays one whatever the home currency is. Net worth over time is not one of them: `net-worth --interval` buckets the single home-currency total only, so a bucket whose last day holds an unpriced currency reports no figure — on this profile, AED on every date but the one override:
+The other four reports aggregate with the currency in their grouping key, so a row is already a sub-total for one currency and stays one whatever the home currency is. Net worth over time is not one of them: `net-worth --interval` buckets the single home-currency total only, so a bucket whose last day holds an unpriced currency reports no figure — on this profile, AED on every date but the one override:
 
 ```console
 $ uv run moneybin reports net-worth --interval monthly --from-date 2025-10-01 --to-date 2025-12-31

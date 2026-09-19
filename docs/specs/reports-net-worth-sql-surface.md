@@ -2139,6 +2139,52 @@ now makes two calls. That buys a relation per question, each with one grain and
 no null-branching, which is the trade `.claude/rules/surface-design.md` and
 AGENTS.md's AX bias both point at.
 
+### Deviations recorded during implementation
+
+Decisions the plan above left implicit, made concrete while building M2B.2:
+
+- **`interval` with no range buckets the whole history, not the latest day.**
+  `resolve_date_range` (`src/moneybin/reports/definitions/_shared.py:186-259`)
+  defaults an unranged call to `WHERE balance_date = MAX(balance_date)` —
+  the same "now" default every rung shares — unless the caller passes
+  `default_latest=False`. `core:net_worth`'s runner passes `False` exactly
+  when `interval` is given: a bucketed read (weekly/monthly rollups, and the
+  `LAG`-driven `change_abs`/`change_pct`) needs every available day to bucket,
+  not the single latest one, so `reports(report_id="core:net_worth",
+  parameters={"interval": "monthly"})` with no `from_date`/`to_date` returns
+  the whole history bucketed, not one row.
+- **`net_worth_home` (and `core:net_worth`'s own `net_worth`) is the sum of
+  the converted components, not a converted sum.** Both views compute
+  `total_assets_home + total_liabilities_home` rather than
+  `ROUND(net_worth * rate, 2)`: rounding each side independently before
+  summing keeps a row's own columns from disagreeing by a cent, the same
+  reasoning `_recompute_net_worth_and_change`'s docstring gives in
+  `src/moneybin/reports/definitions/net_worth.py`.
+- **A converted envelope's `summary` carries `home_currency`.** `execute.py`'s
+  `_priced_home_currency` publishes the priced currency on every report
+  envelope, not only the three net-worth rungs; `ReportResult.to_envelope`
+  and `mcp/tools/reports.py` both surface it, so a caller reads the
+  denominating currency without re-deriving it from `display_currency` or a
+  row's own `home_currency_code` column.
+- **`days_since_observed` is `DataClass.AGGREGATE`.** Declared on
+  `core:net_worth_accounts` (`net_worth_accounts.py`), matching the same
+  concept's declaration in `investments-price-feeds.md`.
+- **`reconciliation_delta` uses `DataClass.BALANCE` (`money_kind="balance"`).**
+  Stated in §Data Model above: it is a measure, not provenance, because its
+  `money_kind` is what Rule B ranks on.
+- **The bucketed default columns are `(balance_date, unpriced_currency_count,
+  net_worth, change_abs)`.** `core:net_worth`'s `_default_columns`
+  (`net_worth.py:47-65`) switches on whether `interval` was given:
+  unbucketed keeps the ordinary day-grain set, bucketed narrows to these four
+  so a text-table read shows the headline and its period-over-period change
+  without the coverage-count columns crowding it out.
+- **`_derived_classes.py` is unaffected.** All three net-worth rungs are
+  `@report`-decorated runners, so their classes live in the `classes={...}`
+  map on each `@report` call (`.claude/rules/reports.md` §"Materialized
+  reports need three parts") and are verified against derivation in CI, the
+  same as every other runner-backed report. `_derived_classes.py` covers
+  runner-less views only; none of the three rungs is one.
+
 ## Testing Strategy
 
 ### Tier 1 — Unit

@@ -62,7 +62,7 @@ Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-
 
 Concretely:
 
-- `accounts` owns its per-account workflows (`balance`) and its aggregation (`networth`)
+- `accounts` owns its per-account workflows (`balance`) and its aggregation (`net-worth`)
 - `transactions` owns its per-transaction workflows (`matches`, `categorize`) and entity ops (`list`, `show`, `search`)
 - `reports` holds analytical lenses on transaction-level data (spending, cashflow, budget vs actual) — cross-cutting, read-only
 
@@ -70,7 +70,7 @@ The rule replaces v1's "domain commands are top-level" principle, which produced
 
 ### Sub-group naming
 
-Sub-group names are the natural English name for the workflow or concept. Usually a noun (`balance`, `networth`, `matches`); a verb-form is fine when it names the workflow more clearly than the equivalent noun (`categorize` rather than `categorization`). Action verbs at the leaf are always imperative single-word: `list`, `show`, `assert`, `accept`, `reject`, `apply`, `delete`.
+Sub-group names are the natural English name for the workflow or concept. Usually a noun (`balance`, `net-worth`, `matches`); a verb-form is fine when it names the workflow more clearly than the equivalent noun (`categorize` rather than `categorization`). Action verbs at the leaf are always imperative single-word: `list`, `show`, `assert`, `accept`, `reject`, `apply`, `delete`.
 
 ### Universal flags
 
@@ -273,7 +273,7 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 +-- assets                         -- (future spec) Physical assets (real estate, vehicles, valuables)
 |                                     Workflows defined in asset-tracking.md.
-|                                     Contributes to reports networth alongside accounts.
+|                                     Contributes to reports net-worth alongside accounts.
 |
 +-- investments                    -- Investment ledger, positions, tax lots, realized gains, and
 |                                     the manually-maintained securities catalog. Defined in
@@ -453,13 +453,13 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |
 |
 +-- reports                        -- Cross-domain analytical and aggregation views (read-only)
-|   |   # The seven view-backed reports below (cash-flow, spending-trend, recurring-subscriptions,
-|   |   # merchant-activity, large-transactions, balance-drift, realized-fx) are framework-generated
-|   |   # from `@report` runners in src/moneybin/reports/definitions/. Command
-|   |   # names and result shapes are unchanged; each flag is auto-derived from
-|   |   # the runner's parameter name (e.g. `from_month` -> `--from-month`), and
-|   |   # every generated command also carries `--output` / `--quiet`. `networth`
-|   |   # and `networth-history` stay hand-written.
+|   |   # Every report below — net-worth, net-worth-currencies, net-worth-accounts,
+|   |   # cash-flow, spending-trend, recurring-subscriptions, merchant-activity,
+|   |   # large-transactions, balance-drift, realized-fx — is framework-generated
+|   |   # from `@report` runners in src/moneybin/reports/definitions/. Each flag
+|   |   # is auto-derived from the runner's parameter name (e.g. `from_month` ->
+|   |   # `--from-month`), and every generated command also carries `--output` /
+|   |   # `--quiet`.
 |   |
 |   |   # The seven verbs below span every report tier — built-in, extension, and
 |   |   # user-created (reports-dynamic.md). `list` / `run` / `explain` serve all
@@ -518,8 +518,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   |     # writes nothing, so the revision guard alone cannot see it.
 |   |     # A blank or whitespace `--reason` is a usage error — it is the only
 |   |     # durable record of why the floor was lowered.
-|   +-- networth                   -- Cross-domain net worth aggregation (accounts + assets) [--as-of DATE]
-|   +-- networth-history           -- Net worth time series [--from DATE] [--to DATE]
+|   +-- net-worth                  -- Day-grain, home-currency total [--from-date DATE] [--to-date DATE] [--interval daily|weekly|monthly]
+|   +-- net-worth-currencies       -- Day x currency breakdown [--from-date DATE] [--to-date DATE]
+|   +-- net-worth-accounts         -- Day x account breakdown [--from-date DATE] [--to-date DATE]
 |   +-- cash-flow                  -- Inflow / outflow over a window [--from-month YYYY-MM] [--to-month YYYY-MM] [--by]
 |   +-- spending-trend             -- Spending by category [--from-month YYYY-MM] [--to-month YYYY-MM] [--category] [--compare]
 |   +-- recurring-subscriptions    -- Recurring transactions [--min-confidence] [--status] [--cadence] via `reports(report_id="core:recurring_subscriptions")`
@@ -698,8 +699,10 @@ format and reject `--format` and `--compress`; ZIP is limited to local CSV and
 Parquet bundles.
 
 **Exports carry original currency, deliberately — there is no
-`--display-currency` here.** `moneybin reports run`, `reports networth`, and
-`reports networth-history` all take one; `export report` does not, and
+`--display-currency` here.** `moneybin reports run` and every converting
+report command (`reports net-worth`, `reports net-worth-currencies`,
+`reports net-worth-accounts`, `reports large-transactions`,
+`reports balance-drift`) all take one; `export report` does not, and
 `ExportService.prepare_report` reads through `execute_raw` so no conversion can
 reach a written artifact. Display conversion is presentation-time by
 construction: nothing converted is ever stored, because a converted figure is
@@ -726,7 +729,7 @@ Naming follows [`extension-contracts.md`](extension-contracts.md) §"Naming and 
 ```
 Entity groups:  accounts (+ balance), transactions (+ matches, categorize, notes, tags, splits), assets
 Reference data: categories, merchants (taxonomies that transactions reference)
-Reports:        reports — per-report commands (networth, networth-history, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift, realized-fx; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
+Reports:        reports — per-report commands (net-worth, net-worth-currencies, net-worth-accounts, spending-trend, cash-flow, recurring-subscriptions, merchant-activity, uncategorized, large-transactions, balance-drift, realized-fx; budget read command de-registered pending the reports.budget view) plus seven verbs: list, run, explain span all three tiers; create, set, delete, reclassify own the user tier
 System:         system (status, doctor, audit)
 Privacy:        privacy (redaction testing); synthetic (testing data generation)
 Data in:        import, sync
@@ -780,7 +783,7 @@ selectors to preserve bounded agent context.
 | Show current balances | `accounts balance show` | `accounts_balances(view="latest")` | `GET /accounts/balances` |
 | Assert a balance | `accounts balance assert ...` | `accounts_balance_assert` | `POST /accounts/{id}/balances` |
 | Balance history | `accounts balance history` | `accounts_balances(view="history", reference=...)` | `GET /accounts/{id}/balances/history` |
-| Net worth now | `reports networth` | `reports(report_id="core:networth")` | `GET /reports/networth` |
+| Net worth now | `reports net-worth` | `reports(report_id="core:net_worth")` | `GET /reports/net-worth` |
 | Pending matches | `transactions matches pending` | `reviews(kind="matches", status="pending")` | `GET /transactions/matches/pending` |
 | Match history | `transactions matches history` | `reviews(kind="matches", status="history")` | `GET /transactions/matches` |
 | Locate an accepted match operation | `transactions matches history` | `system_audit(view="history", ...)` or `system_audit(view="events", ...)` | `GET /transactions/matches` |
@@ -795,7 +798,7 @@ Each protocol uses its own idiom:
 
 | Protocol | Convention |
 |---|---|
-| CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `networth`; plural for relationship collections: `matches`); verbs always singular |
+| CLI | Top-level groups plural (`accounts`, `transactions`, `reports`); sub-resource nouns named for the *concept* (singular for types: `balance`, `net-worth`; plural for relationship collections: `matches`); verbs always singular |
 | MCP | Uses admitted domain nouns and operation verbs; compatible CLI leaves map through typed selectors |
 | HTTP | Standard REST: plural for collections (`/accounts/{id}/balances`), singular for single instances (`/accounts/{id}/balances/{date}`) |
 

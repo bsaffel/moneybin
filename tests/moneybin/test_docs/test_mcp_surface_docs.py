@@ -1529,7 +1529,7 @@ def test_cli_mcp_examples_use_coarse_operations_with_selectors() -> None:
     for mapping in (
         '`accounts get <id>` | `accounts(view="detail", reference=<id>)`',
         '`accounts balance history` | `accounts_balances(view="history", reference=...)`',
-        '`reports networth` | `reports(report_id="core:networth")`',
+        '`reports net-worth` | `reports(report_id="core:net_worth")`',
         '`transactions matches pending` | `reviews(kind="matches", status="pending")`',
         '`transactions matches run` | `refresh_run(steps=["match"])`',
     ):
@@ -2984,7 +2984,7 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     assert "include_closed is a read filter" in account_management
     assert "data.warnings" in account_management
     assert 'reports(report_id="core:spending_trend")' in privacy
-    assert 'reports(report_id="core:networth_history"' in privacy
+    assert 'reports(report_id="core:net_worth_currencies")' in privacy
     assert privacy.count("| high |") >= 2
     assert "Eight registered report routes" in index
     assert "seven `reports.*` SQLMesh views" in index
