@@ -429,7 +429,9 @@ Net worth per day in the home currency: the day-grain rung of the ladder.
 
 One row per balance_date, fail-closed to null measures on any date where a held currency has no rate. Defaults to the latest available day when no range or interval is given.
 
-With interval, one row per bucket instead — the row whose balance_date is the bucket's last available date — plus change_abs and change_pct against the immediately preceding returned bucket. Passing interval with no range buckets the whole history rather than defaulting to the latest day: unlike the unbucketed read, a rollup with only its latest bucket would have no prior bucket to compare against.
+With interval, one row per bucket instead — the row whose balance_date is the bucket's last available date — plus change_abs and change_pct against the immediately preceding returned bucket. Weekly buckets are ISO weeks starting Monday (DuckDB's date_trunc('week', ...)), not Sunday-start. Passing interval with no range buckets the whole history rather than defaulting to the latest day: unlike the unbucketed read, a rollup with only its latest bucket would have no prior bucket to compare against.
+
+Rows are returned oldest-first (ORDER BY balance_date), on both the bucketed and unbucketed reads, so a row cap keeps the earliest dates in the requested range rather than the most recent — bound a recent window with from_date instead of relying on a limit.
 
 Usage: `moneybin reports net-worth [OPTIONS]`
 
@@ -439,7 +441,7 @@ Usage: `moneybin reports net-worth [OPTIONS]`
 |---|---|---|---|
 | `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
 | `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
-| `--interval` | one of `daily`, `weekly`, `monthly` |  | daily \| weekly \| monthly — buckets the range into one row per bucket with change_abs/change_pct. Omitted returns the plain day-grain rows with no change columns. |
+| `--interval` | one of `daily`, `weekly`, `monthly` |  | daily \| weekly \| monthly — buckets the range into one row per bucket with change_abs/change_pct. Weekly buckets are ISO weeks starting Monday. Omitted returns the plain day-grain rows with no change columns. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |

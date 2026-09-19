@@ -6,7 +6,9 @@ from collections.abc import Mapping
 from decimal import Decimal
 from typing import Any, Literal
 
+from moneybin import error_codes
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
@@ -45,18 +47,22 @@ _BUCKET_EXPR: Mapping[str, str] = {
 def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     """Requirement 6: the date, the fail-closed guard, and the headline.
 
-    `change_abs`/`change_pct` only exist in the projection when `interval` was
-    given (see the runner), so a static tuple would either name a column an
-    unbucketed read never returns or hide the change columns a bucketed one
-    always does. `unpriced_currency_count` sits ahead of `net_worth` on the
-    unbucketed set — without it a reader sees only a blank cell on an unpriced
-    day and no reason for it — but drops out once `change_abs`/`change_pct`
-    join the row: five columns overflow requirement 9's 80 characters, and
-    the two change columns already say plainly that something is missing
-    when they read null.
+    `unpriced_currency_count` stays in the set whether or not `interval` is
+    given — it is not redundant with the change columns once they join the
+    row. `change_abs`/`change_pct` go null on exactly the same unpriced
+    dates `net_worth` does, *and* on the first returned bucket (no prior to
+    compare against) and after any other unpriced bucket, so a null change
+    column alone does not tell a reader which of those it is. Only
+    `unpriced_currency_count` answers that.
+
+    `change_pct` drops out of the bucketed default set: `balance_date`,
+    `unpriced_currency_count`, `net_worth`, `change_abs` already measures 74
+    characters, and a fifth column crosses requirement 9's 80-character
+    bound. It stays one `--wide` away rather than pushed onto a reader who
+    only asked for the trend.
     """
     if parameters.get("interval") is not None:
-        return ("balance_date", "net_worth", "change_abs", "change_pct")
+        return ("balance_date", "unpriced_currency_count", "net_worth", "change_abs")
     return ("balance_date", "unpriced_currency_count", "net_worth")
 
 
@@ -173,7 +179,9 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn(
             "change_abs",
             "Current bucket's net worth minus the immediately preceding "
-            "returned bucket's; present only when interval is given.",
+            "returned bucket's; present only when interval is given. Null "
+            "on the first returned bucket and whenever either bucket's "
+            "net_worth is null.",
             DataClass.BALANCE,
             # A change in a position rather than a spend magnitude, and net
             # worth rising is the good news — matches _HISTORY_COLUMNS'
@@ -184,8 +192,9 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         ),
         OutputColumn(
             "change_pct",
-            "change_abs divided by the preceding bucket's net worth; null "
-            "when the prior value is null or zero.",
+            "change_abs divided by the preceding bucket's net worth. Null "
+            "on the first returned bucket, whenever either bucket's "
+            "net_worth is null, or when the preceding value is zero.",
             DataClass.AGGREGATE,
         ),
     ),
@@ -211,10 +220,13 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         time_basis=(
             "one row per day; latest available day when interval is omitted "
             "and no range is given. With interval, one row per bucket "
-            "(date_trunc('week'|'month', balance_date); daily is every day) "
+            "(weekly buckets are ISO weeks starting Monday, via "
+            "date_trunc('week', balance_date); monthly via "
+            "date_trunc('month', balance_date); daily is every day) "
             "holding the bucket's last available date, and the latest-day "
             "default does not apply — an unranged bucketed read buckets the "
-            "whole history"
+            "whole history. Rows are returned oldest-first, so a row cap "
+            "keeps the earliest buckets, not the most recent"
         ),
         denominator="prior period-end net worth for change_pct",
         comparison_window="immediately preceding returned bucket",
@@ -248,10 +260,16 @@ def net_worth(
 
     With interval, one row per bucket instead — the row whose balance_date is
     the bucket's last available date — plus change_abs and change_pct against
-    the immediately preceding returned bucket. Passing interval with no range
-    buckets the whole history rather than defaulting to the latest day:
-    unlike the unbucketed read, a rollup with only its latest bucket would
-    have no prior bucket to compare against.
+    the immediately preceding returned bucket. Weekly buckets are ISO weeks
+    starting Monday (DuckDB's date_trunc('week', ...)), not Sunday-start.
+    Passing interval with no range buckets the whole history rather than
+    defaulting to the latest day: unlike the unbucketed read, a rollup with
+    only its latest bucket would have no prior bucket to compare against.
+
+    Rows are returned oldest-first (ORDER BY balance_date), on both the
+    bucketed and unbucketed reads, so a row cap keeps the earliest dates in
+    the requested range rather than the most recent — bound a recent window
+    with from_date instead of relying on a limit.
 
     Args:
         db: Open read-only database connection.
@@ -260,15 +278,24 @@ def net_worth(
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
             end open when given alone.
         interval: daily | weekly | monthly — buckets the range into one row
-            per bucket with change_abs/change_pct. Omitted returns the plain
-            day-grain rows with no change columns.
+            per bucket with change_abs/change_pct. Weekly buckets are ISO
+            weeks starting Monday. Omitted returns the plain day-grain rows
+            with no change columns.
 
     Examples:
         reports(report_id="core:net_worth")
         reports(report_id="core:net_worth", parameters={"interval": "monthly", "from_date": "2026-01-01"})
     """
     if interval is not None and interval not in _BUCKET_EXPR:
-        raise ValueError(f"Unknown interval: {interval}")
+        raise UserError(
+            "Report parameter has an invalid value.",
+            code=error_codes.REPORT_PARAMETER_INVALID_VALUE,
+            details={
+                "report_id": _REPORT_ID,
+                "parameter": "interval",
+                "expected": "one of daily, weekly, monthly",
+            },
+        )
 
     view_cols = ", ".join(_VIEW_COLUMNS)
 
@@ -322,5 +349,7 @@ def net_worth(
     actions = [
         "Run reports(report_id='core:net_worth') for the single latest-day total",
         "Run reports(report_id='core:net_worth_accounts') for the account-level breakdown",
+        "Set from_date to bound a recent window — rows return oldest-first, "
+        "so a row limit keeps the earliest buckets, not the most recent",
     ]
     return ReportQuery(sql, rng.params, actions=actions, period=rng.period)

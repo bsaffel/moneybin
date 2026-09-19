@@ -431,6 +431,71 @@ def test_net_worth_runner_change_pct_is_null_when_prior_is_zero(
     assert rows[1]["change_pct"] is None
 
 
+def test_net_worth_runner_weekly_buckets_start_on_monday(model_db: Database) -> None:
+    """DuckDB's date_trunc('week', ...) is ISO-week Monday-start, not Sunday-start.
+
+    A Sunday and the following Monday fall in different buckets under
+    Monday-start (each is its own week's only day, so each survives as its
+    own row); under Sunday-start they would share a bucket and only the
+    later date would survive.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Checking", "USD")
+    _home(model_db, "USD")
+    for day in ("2026-01-04", "2026-01-05"):  # a Sunday, then the next Monday
+        _balance(model_db, "acct-a", day, "100.00", "USD")
+        _rate(model_db, "USD", "USD", day, "1.0", source="identity")
+    _install_report(model_db, "net_worth")
+
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    rows = _run(model_db, net_worth(model_db, interval="weekly"))
+
+    assert [row["balance_date"] for row in rows] == [
+        date(2026, 1, 4),
+        date(2026, 1, 5),
+    ]
+
+
+def test_net_worth_default_columns_pin_the_fail_closed_guard_both_ways() -> None:
+    """`unpriced_currency_count` survives in both the plain and bucketed sets.
+
+    A null `change_abs`/`change_pct` reads the same whether the date itself
+    is unpriced or it is merely the first returned bucket — only
+    `unpriced_currency_count` tells the two apart, so it is never dropped.
+    """
+    from moneybin.reports.definitions.net_worth import (
+        _default_columns,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    assert _default_columns({}) == (
+        "balance_date",
+        "unpriced_currency_count",
+        "net_worth",
+    )
+    assert _default_columns({"interval": "monthly"}) == (
+        "balance_date",
+        "unpriced_currency_count",
+        "net_worth",
+        "change_abs",
+    )
+
+
+def test_net_worth_runner_rejects_an_unknown_interval() -> None:
+    """A bad `interval` is a `UserError`.
+
+    Matching every other report parameter validation failure — not a bare
+    `ValueError`.
+    """
+    from moneybin.reports.definitions.net_worth import net_worth
+
+    with pytest.raises(UserError) as excinfo:
+        net_worth(None, interval="yearly")  # type: ignore[arg-type,call-overload]  # validation precedes db use
+    assert excinfo.value.code == "report_parameter_invalid_value"
+    assert excinfo.value.details is not None
+    assert excinfo.value.details["parameter"] == "interval"
+
+
 def test_net_worth_runner_rejects_an_inverted_range(model_db: Database) -> None:
     """On a profile that has data.
 

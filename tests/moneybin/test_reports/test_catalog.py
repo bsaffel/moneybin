@@ -232,14 +232,6 @@ def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
     assert problems == []
 
 
-#: `core:net_worth` is the one report whose money is already blended into a
-#: single home-currency total — the per-currency segmentation happened one
-#: rung down (`core:net_worth_currencies`), so there is no `currency_code` to
-#: segment by here. It names its own currency as `home_currency_code`
-#: instead, asserted below rather than by this generic guard.
-_HOME_BLENDED_REPORTS = frozenset({"core:net_worth"})
-
-
 def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in() -> (
     None
 ):
@@ -249,14 +241,24 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
     violate Requirement 5" is one that sums money and cannot tell two
     currencies apart. Enumerating the live catalog (rather than a hand-kept
     list) is what makes a future report unable to ship unsegmented.
+
+    Keyed on the report's *own* declared currency column
+    (`semantics.currency`, falling back to `currency_code` for a report that
+    declares none — `realized_fx`'s mixed-unit rows already declare
+    `currency_code` itself) rather than a literal `"currency_code"`:
+    `core:net_worth` is already blended into one home-currency total by the
+    time this rung reads it, so its rows carry no per-row `currency_code` at
+    all — it names its own currency as `home_currency_code` instead, and this
+    check follows that declaration rather than needing a hand-kept exemption
+    for it.
     """
     monetary = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
     unsegmented = [
         report.report_id
         for report in get_report_catalog().list()
-        if report.report_id not in _HOME_BLENDED_REPORTS
-        and monetary.intersection(report.classes.values())
-        and report.classes.get("currency_code") is not DataClass.CURRENCY
+        if monetary.intersection(report.classes.values())
+        and report.classes.get(report.semantics.currency or "currency_code")
+        is not DataClass.CURRENCY
     ]
 
     assert unsegmented == []
