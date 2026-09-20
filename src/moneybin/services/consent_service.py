@@ -208,7 +208,9 @@ class ConsentService:
             )
         return RevokeResult(backend=resolved_backend, count=count)
 
-    def revoke_all(self, *, actor: str) -> int:
+    def revoke_all(
+        self, *, actor: str, expected_grant_ids: set[str] | None = None
+    ) -> int:
         """Revoke every active grant. Returns count revoked.
 
         Emits one ``privacy.log`` event per revoked grant (mirroring single
@@ -217,7 +219,9 @@ class ConsentService:
         detail the audit log already records. A single wildcard event would
         lose that granularity.
         """
-        revoked = self._repo.revoke_all(actor=actor)
+        revoked = self._repo.revoke_all(
+            actor=actor, expected_grant_ids=expected_grant_ids
+        )
         for grant in revoked:
             write_privacy_event(
                 build_consent_event(
