@@ -1144,9 +1144,19 @@ class CategorizationOrchestrator:
             Number of transactions categorized.
         """
         rows = self._source_category_bridge_candidates()
+        # Resolve through the curation seam here rather than relying on
+        # write_categorizations' own internal resolution: that method returns
+        # *resolved* ids, so a superseded id (an account-merge or dedup event
+        # remapped it) would never match this leg's pre-resolution ids and the
+        # per-source_type metric below would silently skip that row. The write
+        # itself is unaffected either way, and the applier's repeat resolution
+        # of already-live ids is one bulk query, not a per-row walk.
+        resolved_ids = resolve_curation_transaction_ids(
+            self._db, (transaction_id for transaction_id, *_rest in rows)
+        )
         categorizations: list[dict[str, object]] = [
             {
-                "transaction_id": transaction_id,
+                "transaction_id": resolved_ids.get(transaction_id, transaction_id),
                 "category": category,
                 "subcategory": subcategory,
                 "categorized_by": "provider_native",
@@ -1157,17 +1167,21 @@ class CategorizationOrchestrator:
             }
             for transaction_id, category, subcategory, source_type in rows
         ]
-        written_ids = self._applier.write_categorizations(categorizations)
         # Label per row's own source_type (tabular/manual/...), not a single
         # fixed value like Plaid's 'plaid' — this leg's candidates can mix
-        # sources. Filtered to written_ids: a row can lose the write-time
-        # precedence guard (a higher-priority write landed between the read
-        # above and this write), and only a landed write should count.
-        for transaction_id, _category, _subcategory, source_type in rows:
-            if transaction_id in written_ids:
-                CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
-                    source_type=source_type, trigger="sweep"
-                ).inc()
+        # sources. Keyed by resolved id so it shares written_ids' id space.
+        source_type_by_id = {
+            resolved_ids.get(transaction_id, transaction_id): source_type
+            for transaction_id, _category, _subcategory, source_type in rows
+        }
+        written_ids = self._applier.write_categorizations(categorizations)
+        # Only a landed write counts: a row can lose the write-time precedence
+        # guard when a higher-priority write arrives between the read above
+        # and this write, and write_categorizations omits it from written_ids.
+        for transaction_id in written_ids:
+            CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+                source_type=source_type_by_id[transaction_id], trigger="sweep"
+            ).inc()
 
         count = len(written_ids)
         if count:

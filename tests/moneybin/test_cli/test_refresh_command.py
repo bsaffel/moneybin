@@ -643,6 +643,7 @@ def test_refresh_stage_notes_are_silenced_by_quiet(runner: CliRunner) -> None:
                     "merchant": 0,
                     "rule": 0,
                     "plaid": 0,
+                    "source_category_map": 400,
                 }),
             )
         ),
@@ -672,6 +673,7 @@ def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
                 "merchant": 250,
                 "rule": 120,
                 "plaid": 30,
+                "source_category_map": 0,
             }),
         )
     )
@@ -689,7 +691,13 @@ def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
         {
             "step": "categorize",
             "ran": True,
-            "counts": {"total": 400, "merchant": 250, "rule": 120, "plaid": 30},
+            "counts": {
+                "total": 400,
+                "merchant": 250,
+                "rule": 120,
+                "plaid": 30,
+                "source_category_map": 0,
+            },
             "error": None,
         }
     ]

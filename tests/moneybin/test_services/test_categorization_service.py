@@ -3659,6 +3659,62 @@ class TestApplySourceCategoryMap:
         ).fetchone()
         assert row == ("cat-utilities",)
 
+    @pytest.mark.unit
+    def test_superseded_id_still_counts_toward_the_provider_native_metric(
+        self, db: Database
+    ) -> None:
+        """A remapped id must not silently drop its metric increment.
+
+        ``write_categorizations`` returns *resolved* ids. Matching those
+        against this leg's own pre-resolution ids compared two different id
+        spaces: the write landed and ``count`` stayed right, but the per-
+        ``source_type`` counter skipped any row an account-merge or dedup
+        event had superseded — a silent observability hole rather than a
+        visible failure.
+        """
+        from moneybin.metrics.registry import CATEGORIZE_PROVIDER_NATIVE_TOTAL
+
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Gas",
+            code_level="detailed",
+            category_id="cat-gas",
+            category="Auto",
+            subcategory="Gas",
+            source_type="chase_credit",
+        )
+        _insert_matched_txn(
+            db,
+            "t_superseded",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Gas",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t_live")
+        db.execute(
+            "INSERT INTO app.transaction_id_aliases "
+            "(old_transaction_id, new_transaction_id, created_at) "
+            "VALUES ('t_superseded', 't_live', CURRENT_TIMESTAMP)"
+        )
+        before = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="tabular", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage] — prometheus internals
+
+        n = apply_source_category_map(db)
+
+        after = CATEGORIZE_PROVIDER_NATIVE_TOTAL.labels(
+            source_type="tabular", trigger="sweep"
+        )._value.get()  # type: ignore[reportPrivateUsage]
+        assert n == 1
+        assert after == before + 1, "a superseded id dropped its metric increment"
+        row = db.execute(
+            "SELECT category_id FROM app.transaction_categories "
+            "WHERE transaction_id='t_live'"
+        ).fetchone()
+        assert row == ("cat-gas",)
+
 
 class TestCategorizePendingSourceCategoryMapPass:
     """Proves the source-category-map pass is wired into categorize_pending."""
