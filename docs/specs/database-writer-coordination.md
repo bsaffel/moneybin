@@ -680,12 +680,17 @@ def write_lock(
   temp-file-then-rename. A rename would swap the lock file's inode and
   strand the `fcntl` lock on the old, unlinked inode — a second writer
   opening the path would then bind a fresh inode and acquire its own lock.
-  A diagnostic reader (`system_status`) may observe the brief partial-write
-  window between the `ftruncate(0)` and the following `write(payload)` (an
-  empty or truncated read); that is acceptable because lock authority is the
-  held `fcntl`, not the file contents, and the reader re-reads a few times to
-  ride out that window (`_read_writer_metadata`). The file is created once at
-  `0o600` and never replaced, so its mode is not downgraded by a rename.
+  Two readers share that payload through `live_writer()`: `system_status`
+  reports it, and `check_schema_at_boot` asks it whether a peer's heal is in
+  flight before waiting the heal out. Either may observe the brief
+  partial-write window between the `ftruncate(0)` and the following
+  `write(payload)` (an empty or truncated read); that is acceptable because
+  lock authority is the held `fcntl`, not the file contents, and the reader
+  re-reads a few times to ride out that window (`_read_writer_metadata`). An
+  unreadable payload reads as "no writer", so a misread costs the boot check
+  its wait and drops it back to the ordinary write-lock wait — it never grants
+  one. The file is created once at `0o600` and never replaced, so its mode is
+  not downgraded by a rename.
 - **Lifetime bound to the returned Database, not to ATTACH.**
   `get_database()` enters the `write_lock` context via an
   `ExitStack` and stashes the stack's `close` on the returned

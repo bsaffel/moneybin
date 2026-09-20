@@ -58,7 +58,11 @@ _tools_registered = False
 
 # Longest a starting server waits for another server's schema heal on the same
 # profile. Must stay under the MCP host's initialize timeout: the MCP TypeScript
-# SDK's default request timeout, which Claude Desktop uses, is 60 s.
+# SDK's default request timeout, which Claude Desktop uses, is 60 s. Deliberately
+# not a setting, for the reason the 10 s write-lock ceiling isn't one
+# (database-writer-coordination.md): the bound comes from the host's protocol
+# timeout rather than from anything a user tunes, so a host shipping a shorter
+# one is a change to this line, not a knob to turn.
 _PEER_HEAL_WAIT_SECONDS = 45.0
 _PEER_HEAL_POLL_SECONDS = 0.5
 
