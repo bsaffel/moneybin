@@ -597,16 +597,22 @@ def render_export_receipt(
     )
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
         if payload.artifact_path is not None:
-            typer.echo(f"Exported artifact: {payload.artifact_path}")
+            lines = [f"Exported artifact: {payload.artifact_path}"]
             if payload.compressed_artifact_path is not None:
-                typer.echo(f"Compressed artifact: {payload.compressed_artifact_path}")
+                lines.append(f"Compressed artifact: {payload.compressed_artifact_path}")
         else:
-            typer.echo(
+            lines = [
                 f"Exported to sheets:{payload.destination.name} "
                 f"(identity={payload.sheets_identity})"
-            )
-        typer.echo("✅ Export complete.")
+            ]
+        lines.append(f"{terminal.symbols.success} Export complete.")
+        emit_human_result(
+            "\n".join(lines), policy=terminal, finite_read=False, receipt=True
+        )
 
     render_or_json(
         build_envelope(

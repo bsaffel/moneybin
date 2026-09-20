@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING
 
 import typer
@@ -23,11 +22,17 @@ from moneybin.adapters.gsheet_adapters import (
 )
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
+from moneybin.cli.progress import operation_progress
+from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import (
+    emit_json_failure,
+    get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
     warn_transfers_retired,
@@ -50,6 +55,7 @@ from moneybin.privacy.payloads.gsheet import (
     GsheetDisconnectPayload,
     GsheetPullPayload,
 )
+from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import ResponseEnvelope, build_envelope
 
 if TYPE_CHECKING:
@@ -59,6 +65,16 @@ if TYPE_CHECKING:
     from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_receipt(lines: list[str]) -> None:
+    """Render a stateful Sheets receipt through the shared terminal policy."""
+    emit_human_result(
+        "\n".join(lines),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
 
 
 def _connections_envelope(
@@ -99,7 +115,7 @@ def _echo_detection_notes(notes: list[str]) -> None:
     or pipeline as though it were part of the data the command was asked for.
     """
     for note in notes:
-        typer.echo(f"⚠️  {note}", err=True)
+        typer.echo(f"{get_terminal_policy().symbols.attention} {note}", err=True)
 
 
 def _parse_column_mapping(raw: str | None) -> dict[str, str] | None:
@@ -174,9 +190,14 @@ def gsheet_auth(
             cli_actor="gsheet_auth",
         )
     elif status == "already_authorized":
-        typer.echo("✅ Already authorized. Pass --force to re-authenticate.")
+        _emit_receipt([
+            f"{get_terminal_policy().symbols.success} Already authorized. "
+            "Pass --force to re-authenticate."
+        ])
     else:
-        typer.echo("✅ Google Sheets authorized.")
+        _emit_receipt([
+            f"{get_terminal_policy().symbols.success} Google Sheets authorized."
+        ])
 
 
 @app.command("connect")
@@ -285,24 +306,26 @@ def gsheet_connect(
         return
 
     conn = result.connection
-    typer.echo(
-        f"✅ Connected {conn.workbook_name}/{conn.sheet_name} "
+    receipt_lines = [
+        f"{get_terminal_policy().symbols.success} Connected "
+        f"{conn.workbook_name}/{conn.sheet_name} "
         f"(adapter={conn.adapter}, connection_id={conn.connection_id})"
-    )
+    ]
     _echo_detection_notes(result.detection.notes)
     if result.initial_pull is not None:
         p = result.initial_pull
-        typer.echo(
+        receipt_lines.append(
             f"   Pulled {p.rows_inserted + p.rows_upserted} rows "
             f"({p.rows_inserted} new, {p.rows_upserted} updated, "
             f"{p.rows_soft_deleted} soft-deleted)"
         )
     elif result.initial_pull_status not in (None, "complete"):
-        typer.echo(
-            f"⚠️  Initial pull returned status={result.initial_pull_status}"
+        receipt_lines.append(
+            f"{get_terminal_policy().symbols.attention} Initial pull returned status={result.initial_pull_status}"
             + (f" — {result.initial_pull_error}" if result.initial_pull_error else "")
             + ". Run 'moneybin gsheet status' for detail."
         )
+    _emit_receipt(receipt_lines)
 
 
 @app.command("pull")
@@ -324,58 +347,148 @@ def gsheet_pull(
     from moneybin.adapters.refresh_adapters import (
         refresh_steps_fields,
     )
+    from moneybin.connectors.gsheet.pull_service import PullResult
     from moneybin.orchestration.refresh import refresh as run_refresh
     from moneybin.orchestration.refresh import step_outcome
 
     refresh_error: str | None = None
     transfers_retired = 0
     steps_outcome: RefreshStepOutcome | None = None
-    with handle_cli_errors():
-        with _build_pull_service() as (service, db):
-            if not quiet and output == OutputFormat.TEXT:
-                typer.echo("⚙️  Pulling Google Sheets…")
-            if connection_id is None:
-                results = service.pull_all_healthy()
-            else:
-                results = [service.pull_connection(connection_id)]
+    results: list[PullResult] | None = None
+    terminal = get_terminal_policy()
+    try:
+        with handle_cli_errors():
+            with _build_pull_service() as (service, db):
+                with operation_progress(terminal, quiet=quiet) as report:
+                    report(ProgressEvent("Pulling Google Sheets"))
+                    if connection_id is None:
+                        results = service.pull_all_healthy()
+                    else:
+                        results = [service.pull_connection(connection_id)]
 
-            if refresh:
-                # Skip the "gsheet" step — we just ran the pull directly.
-                # run_refresh soft-fails by returning a RefreshResult with
-                # applied=False + error set, instead of raising. Capture
-                # the error so the CLI can surface a non-zero exit + a
-                # warning line; agents parsing --output json see it on the
-                # envelope too.
-                # An explicit list is never widened by a later canonical step,
-                # so every stage a pulled row needs is named here. `rates` is
-                # named because a sheet can carry foreign-currency rows: without
-                # it the pull rebuilds core.* against an empty rate cache and
-                # reports cannot convert offline until some unrelated refresh
-                # happens to fill it.
-                refresh_result = run_refresh(
-                    db, steps=["match", "transform", "categorize", "rates"]
-                )
-                if not refresh_result.applied and refresh_result.error is not None:
-                    refresh_error = refresh_result.error
-                # The `match` step above reconciles, so a pull can reverse a
-                # transfer the user accepted — reported even when the apply
-                # failed, because the retirement commits before it.
-                transfers_retired = refresh_result.transfers_retired
-                # Read for the same reason, and outside the `applied` check
-                # above for a sharper one: every step named above except the
-                # apply is best-effort, so any of them can crash or come back
-                # short while SQLMesh applies cleanly. Neither `applied` nor
-                # `error` moves in that case, and without this the work this
-                # command just did on the user's behalf would report nothing.
-                steps_outcome = step_outcome(refresh_result)
+                    if refresh:
+                        report(ProgressEvent("Refreshing derived data"))
+                        # Skip the "gsheet" step — we just ran the pull directly.
+                        # run_refresh soft-fails by returning a RefreshResult with
+                        # applied=False + error set, instead of raising. Capture
+                        # the error so the CLI can surface a non-zero exit + a
+                        # warning line; agents parsing --output json see it on the
+                        # envelope too.
+                        # An explicit list is never widened by a later canonical step,
+                        # so every stage a pulled row needs is named here. `rates` is
+                        # named because a sheet can carry foreign-currency rows: without
+                        # it the pull rebuilds core.* against an empty rate cache and
+                        # reports cannot convert offline until some unrelated refresh
+                        # happens to fill it.
+                        refresh_result = run_refresh(
+                            db,
+                            steps=["match", "transform", "categorize", "rates"],
+                            progress=report,
+                        )
+                        if (
+                            not refresh_result.applied
+                            and refresh_result.error is not None
+                        ):
+                            refresh_error = refresh_result.error
+                        # The `match` step above reconciles, so a pull can reverse a
+                        # transfer the user accepted — reported even when the apply
+                        # failed, because the retirement commits before it.
+                        transfers_retired = refresh_result.transfers_retired
+                        # Read for the same reason, and outside the `applied` check
+                        # above for a sharper one: every step named above except the
+                        # apply is best-effort, so any of them can crash or come back
+                        # short while SQLMesh applies cleanly. Neither `applied` nor
+                        # `error` moves in that case, and without this the work this
+                        # command just did on the user's behalf would report nothing.
+                        steps_outcome = step_outcome(refresh_result)
+    except KeyboardInterrupt:
+        known_pulls = (
+            []
+            if results is None
+            else [
+                {
+                    "connection_id": row.connection_id,
+                    "status": row.status,
+                    "rows_inserted": row.load_result.rows_inserted
+                    if row.load_result is not None
+                    else 0,
+                    "rows_upserted": row.load_result.rows_upserted
+                    if row.load_result is not None
+                    else 0,
+                    "rows_soft_deleted": row.load_result.rows_soft_deleted
+                    if row.load_result is not None
+                    else 0,
+                }
+                for row in results
+            ]
+        )
+        if output == OutputFormat.JSON:
+            details = (
+                {"saved_scope": "unknown", "outcome": "cancelled"}
+                if results is None
+                else {
+                    "pulls": known_pulls,
+                    "freshness": "unknown",
+                    "outcome": "cancelled",
+                }
+            )
+            emit_json_failure(
+                UserError(
+                    "Google Sheets pull cancelled; saved scope is unknown"
+                    if results is None
+                    else "Google Sheets pull cancelled after saved pull results",
+                    code=error_codes.REFRESH_MODEL_FAILED,
+                    hint="Run 'moneybin gsheet status' to inspect connections.",
+                    details=details,
+                ),
+                cli_actor="gsheet_pull",
+                payload_type=GsheetPullPayload,
+            )
+        else:
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        (
+                            [
+                                ("Saved state", "Saved scope is unknown"),
+                                ("Next step", "`moneybin gsheet status`"),
+                            ]
+                            if results is None
+                            else [
+                                (
+                                    "Saved pulls",
+                                    "; ".join(
+                                        f"{row['connection_id']}: "
+                                        f"{row['rows_inserted']} new, "
+                                        f"{row['rows_upserted']} updated, "
+                                        f"{row['rows_soft_deleted']} soft-deleted"
+                                        for row in known_pulls
+                                    ),
+                                ),
+                                ("Freshness", "Refresh completion is unknown"),
+                                ("Next step", "`moneybin gsheet status`"),
+                            ]
+                        ),
+                        title="! Google Sheets pull cancelled",
+                    )
+                ]),
+                policy=terminal,
+                finite_read=False,
+                receipt=True,
+            )
+        raise typer.Exit(130) from None
 
-    # Hard-failure statuses (auth_expired, unreachable, rate_limited, failed)
-    # exit non-zero so CI/agents detect them without parsing output. drift_detected
-    # is surfaced as a ⚠️ warning, not a ❌ error — the command ran and reported a
-    # recoverable state (reconnect), so it stays exit 0, matching the ⚠️/❌ split
-    # in the text output below.
-    failure_statuses = {"auth_expired", "unreachable", "rate_limited", "failed"}
+    # Requested work that cannot load due to a recoverable drift still exits
+    # non-zero: reconnect is the recovery action, but no import took place.
+    failure_statuses = {
+        "auth_expired",
+        "unreachable",
+        "rate_limited",
+        "failed",
+        "drift_detected",
+    }
     pull_failed = any(r.status in failure_statuses for r in results)
+    refresh_partial = steps_outcome is not None and steps_outcome.has_failure
 
     # Ahead of both output branches, like `moneybin refresh`: a reversal of the
     # user's own decision is not informational output, so it survives --quiet
@@ -396,7 +509,7 @@ def gsheet_pull(
             output,
             cli_actor="gsheet_pull",
         )
-        if refresh_error is not None or pull_failed:
+        if refresh_error is not None or pull_failed or refresh_partial:
             raise typer.Exit(1)
         return
 
@@ -404,30 +517,38 @@ def gsheet_pull(
         if r.status == "complete" and r.load_result is not None:
             lr = r.load_result
             typer.echo(
-                f"✅ {r.connection_id}: "
+                f"{terminal.symbols.success} {r.connection_id}: "
                 f"{lr.rows_inserted} new, {lr.rows_upserted} updated, "
                 f"{lr.rows_soft_deleted} soft-deleted"
             )
         elif r.status == "drift_detected":
-            typer.echo(f"⚠️  {r.connection_id}: drift detected — {r.drift_reason}")
+            typer.echo(
+                f"{terminal.symbols.attention} {r.connection_id}: drift detected — {r.drift_reason}"
+            )
         else:
             typer.echo(
-                f"❌ {r.connection_id}: {r.status}"
+                f"{terminal.symbols.failure} {r.connection_id}: {r.status}"
                 + (f" — {r.error_message}" if r.error_message else "")
             )
 
     if refresh_error is not None:
         typer.echo(
-            f"❌ Pull completed but refresh pipeline failed: {refresh_error}",
+            f"{terminal.symbols.failure} Pull completed but refresh pipeline failed: {refresh_error}",
             err=True,
         )
-    if refresh_error is not None or pull_failed:
+    if refresh_partial:
+        typer.echo(
+            "! Pull partially completed; requested refresh results may be incomplete.",
+            err=True,
+        )
+    if refresh_error is not None or pull_failed or refresh_partial:
         raise typer.Exit(1)
 
 
 @app.command("list")
 def gsheet_list(
     output: OutputFormat = output_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List every Google Sheets connection."""
     with handle_cli_errors():
@@ -448,12 +569,19 @@ def gsheet_list(
             "to add one."
         )
         return
+    lines: list[str] = []
     for c in connections:
         last = c.last_success_at or "never"
-        typer.echo(
+        lines.append(
             f"{c.connection_id}  {c.workbook_name}/{c.sheet_name}  "
             f"adapter={c.adapter}  status={c.status}  last_success={last}"
         )
+    emit_human_result(
+        "\n".join(lines),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("status")
@@ -463,6 +591,7 @@ def gsheet_status(
         help="Connection ID to inspect. Omit for a full summary.",
     ),
     output: OutputFormat = output_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show status for one connection, or a summary of all of them."""
     with handle_cli_errors(
@@ -475,7 +604,7 @@ def gsheet_status(
                 conn = service.get(connection_id)
                 if conn is None:
                     # Raised, not echoed: `handle_cli_errors` owns both the
-                    # JSON error envelope and the text ❌, so the branches
+                    # JSON error envelope and the text failure marker, so the branches
                     # cannot drift and the failure gets its audit row.
                     raise UserError(
                         f"Unknown connection: {connection_id}",
@@ -495,15 +624,25 @@ def gsheet_status(
     if not connections:
         typer.echo("No Google Sheets connections.")
         return
+    lines: list[str] = []
     for c in connections:
         last = c.last_success_at or "never"
-        typer.echo(
+        lines.append(
             f"{c.connection_id}  status={c.status}  "
             f"adapter={c.adapter}  last_success={last}  "
             f"failures={c.consecutive_failure_count}"
         )
         if c.last_status_reason:
-            typer.echo(f"   ⚠️  {c.last_status_reason}")
+            lines.append(
+                f"   {get_terminal_policy(no_pager=no_pager).symbols.attention} "
+                f"{c.last_status_reason}"
+            )
+    emit_human_result(
+        "\n".join(lines),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("reconnect")
@@ -546,15 +685,19 @@ def gsheet_reconnect(
         )
         return
 
-    typer.echo(f"✅ Reconnected {connection_id} (status={result.connection.status})")
+    receipt_lines = [
+        f"{get_terminal_policy().symbols.success} Reconnected {connection_id} "
+        f"(status={result.connection.status})"
+    ]
     _echo_detection_notes(result.detection.notes)
     if result.initial_pull is not None:
         p = result.initial_pull
-        typer.echo(
+        receipt_lines.append(
             f"   Pulled {p.rows_inserted + p.rows_upserted} rows "
             f"({p.rows_inserted} new, {p.rows_upserted} updated, "
             f"{p.rows_soft_deleted} soft-deleted)"
         )
+    _emit_receipt(receipt_lines)
 
 
 @app.command("disconnect")
@@ -576,24 +719,37 @@ def gsheet_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Soft-disconnect (default) or purge a Google Sheets connection."""
-    if purge and not yes:
-        if not sys.stdin.isatty():
-            typer.echo(
-                "❌ --purge requires --yes when stdin is not a TTY "
-                "(non-interactive contexts cannot show the confirmation prompt).",
-                err=True,
-            )
-            raise typer.Exit(2)
-        if not typer.confirm(
-            f"Purge {connection_id} (drops raw rows + view)?",
-            default=False,
-        ):
-            typer.echo("Cancelled.", err=True)
-            raise typer.Exit(0)
-
     with handle_cli_errors():
         with _build_connection_service() as service:
-            service.disconnect(connection_id, purge=purge, actor="cli")
+            if not purge:
+                service.disconnect(connection_id, purge=False, actor="cli")
+            else:
+                planned = service.plan_purge(connection_id)
+                typer.echo(
+                    f"Purge {planned.connection_id}: {planned.rows_to_delete} raw row(s), "
+                    f"{planned.blast_radius['views']} view(s), and the saved connection.",
+                    err=True,
+                )
+                if not yes:
+                    if not get_terminal_policy().interactive:
+                        raise UserError(
+                            "--purge requires --yes outside an interactive terminal.",
+                            code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                            hint="Re-run with --yes after reviewing the purge preview.",
+                        )
+                    if not typer.confirm("Apply this purge?", default=False, err=True):
+                        typer.echo("Cancelled. No purge was applied.", err=True)
+                        raise typer.Exit(0)
+
+                def verify(live: object) -> None:
+                    if live != planned:
+                        raise UserError(
+                            "Purge target changed after the preview; no rows were deleted.",
+                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                            hint="Review the new purge preview and confirm again.",
+                        )
+
+                service.purge_confirmed(connection_id, verify=verify, actor="cli")
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -609,4 +765,6 @@ def gsheet_disconnect(
         )
     else:
         verb = "Purged" if purge else "Disconnected"
-        typer.echo(f"✅ {verb} {connection_id}")
+        _emit_receipt([
+            f"{get_terminal_policy().symbols.success} {verb} {connection_id}"
+        ])
