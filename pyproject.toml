@@ -87,7 +87,7 @@ dependencies = [
     # Modern CLI framework. Capped below 0.26, which vendors its own click
     # (typer._click): the click.Context cli/output.py reads via
     # click.get_current_context() would no longer be typer's.
-    "typer>=0.25.1,<0.26",
+    "typer>=0.25.1,<0.28",
     # Observability: metrics registry
     "prometheus_client>=0.26.0",
     # Security: transitive dependency version overrides to address CVEs.
