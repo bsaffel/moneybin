@@ -740,6 +740,12 @@ class TestMetrics:
             UndoService(db).undo(delete_op, actor="user")
         assert exc.value.code == error_codes.UNDO_VALUE_INADMISSIBLE
         assert self._outcome("value_inadmissible") - before == 1.0
+        # Populated recovery_actions, not an empty list beside a non-no_path
+        # code (data-recovery-contract.md Resolved Design Decision 6).
+        assert exc.value.recovery_actions is not None
+        action = exc.value.recovery_actions[0]
+        assert action.tool == "system_audit"
+        assert action.arguments == {"view": "detail", "operation_id": delete_op}
 
 
 class TestGet:

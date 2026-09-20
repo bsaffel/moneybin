@@ -65,6 +65,17 @@ class TestUserCategoriesRefusesInadmissibleRestore:
             "SELECT 1 FROM app.user_categories WHERE category_id = ?", [cid]
         ).fetchone()
         assert row is None
+        # The refusal is not a dead end: recovery_actions names the concrete
+        # next step (inspect the operation, recreate through the normal write
+        # path) rather than leaving an empty list beside a non-recovery_no_path
+        # code (data-recovery-contract.md Resolved Design Decision 6).
+        assert exc_info.value.recovery_actions is not None
+        action = exc_info.value.recovery_actions[0]
+        assert action.tool == "system_audit"
+        assert action.arguments == {
+            "view": "detail",
+            "operation_id": delete_event.operation_id,
+        }
 
     def test_update_undo_refuses_blank_category(self, db: Database) -> None:
         """The UPDATE-restore branch shares the same guard as DELETE-restore.

@@ -29,7 +29,7 @@ from sqlglot import exp
 
 from moneybin import error_codes
 from moneybin.database import Database
-from moneybin.errors import UserError
+from moneybin.errors import RecoveryAction, UserError
 from moneybin.metrics.registry import app_mutation_audit_emitted_total
 from moneybin.services._validators import validate_category_text
 from moneybin.services.audit_service import AuditEvent, AuditService
@@ -458,7 +458,12 @@ class BaseRepo:
         the exact field and offending value so the row is not a dead end: the
         other captured fields stay visible via ``system_audit(view="detail")``
         and the entity can be recreated with a valid value through the table's
-        normal write tool.
+        normal write tool. That inspection step is a real, structured
+        ``recovery_actions`` entry, not just prose — an empty list paired with
+        a code other than ``RECOVERY_NO_PATH`` is the exact anti-pattern
+        data-recovery-contract.md's Resolved Design Decision 6 rules out (a
+        caller reading an empty list has no way to distinguish "nothing can be
+        done" from "the actionable step just isn't wired up").
 
         Checks only ``_CATEGORY_TEXT_COLUMNS`` — empty by default, so this is a
         no-op for every table that doesn't declare it.
@@ -477,6 +482,22 @@ class BaseRepo:
                     "refuse — create a corrected row through the normal write "
                     "path instead.",
                     code=error_codes.UNDO_VALUE_INADMISSIBLE,
+                    recovery_actions=[
+                        RecoveryAction(
+                            tool="system_audit",
+                            arguments={
+                                "view": "detail",
+                                "operation_id": event.operation_id,
+                            },
+                            rationale=(
+                                "Inspect this operation's other captured "
+                                "fields, then recreate the entity with a "
+                                "valid value through its normal write tool."
+                            ),
+                            confidence="certain",
+                            idempotent=True,
+                        )
+                    ],
                 ) from exc
 
     def _row_target_id(self, row: dict[str, Any]) -> str:
