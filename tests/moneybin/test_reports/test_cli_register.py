@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -18,12 +20,14 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
 from moneybin.cli.render import Money
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
     money_columns,
     register_report_cli,
+    report_note_lines,
     visible_columns,
 )
 from moneybin.reports._framework.contract import (
@@ -32,12 +36,17 @@ from moneybin.reports._framework.contract import (
     OutputColumn,
     ReportQuery,
 )
-from moneybin.reports._framework.execute import ReportResult, inspection_hint
+from moneybin.reports._framework.execute import (
+    CatalogReportResult,
+    ReportResult,
+    inspection_hint,
+)
 from moneybin.reports._framework.introspect import (
     _RESERVED_CLI_PARAMS,  # pyright: ignore[reportPrivateUsage]  # the guard's subject
     build_spec,
 )
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
+from moneybin.services.currency_service import ResolvedRate
 from moneybin.tables import TableRef
 from tests.database_mocks import no_profile_database
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
@@ -95,6 +104,60 @@ def _result() -> ReportResult:
         total_count=1,
         truncated=False,
     )
+
+
+def _ascii_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def test_report_disclosures_follow_ascii_policy_and_keep_essential_facts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Quiet mode removes next steps but retains ASCII-safe fidelity disclosures."""
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        _ascii_policy,
+    )
+    result = replace(
+        _result(),
+        applied_rates=(
+            ResolvedRate(
+                "EUR",
+                "USD",
+                date(2026, 5, 1),
+                date(2026, 5, 1),
+                Decimal("1.13"),
+                "ecb",
+            ),
+        ),
+        degraded=True,
+        degraded_reason="Some source data is stale.",
+        truncated=True,
+        actions=["moneybin reports explain test:balance_drift"],
+    )
+
+    lines = report_note_lines(cast(CatalogReportResult, result), quiet=True)
+
+    assert lines[0].startswith("Converted from EUR at 1.13")
+    assert lines[1].startswith("! Some source data is stale.")
+    assert lines[2].startswith("! Showing the first 1 rows")
+    assert all(
+        "💱" not in line and "⚠️" not in line and "💡" not in line for line in lines
+    )
+    assert all("reports explain" not in line for line in lines)
 
 
 def _windowed_runner(
@@ -368,7 +431,7 @@ def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert hint in result.output
+    assert hint in re.sub(r"\s+", " ", result.output)
 
 
 def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
@@ -392,15 +455,8 @@ def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
     assert "💡" not in result.output
 
 
-def test_the_text_path_sends_every_note_to_stderr() -> None:
-    """Diagnostics take fd 2 so a redirected report carries only its rows.
-
-    Asserted against ``stdout``/``stderr`` separately because ``result.output``
-    structurally cannot see it: Click 8.2 turned that into a mix of both streams
-    in write order, so an assertion against it passes whichever stream the note
-    took. Every other note test here reads ``.output``, which is why the routing
-    needs its own case rather than a stricter assertion in one of them.
-    """
+def test_the_text_path_keeps_consequential_notes_with_the_report() -> None:
+    """A redirected report retains warnings and recovery guidance with its rows."""
     app = _multi_command_app()
     noted = replace(
         _result(),
@@ -420,13 +476,11 @@ def test_the_text_path_sends_every_note_to_stderr() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert "no stored EUR->USD rates at all" in result.stderr
-    assert "more exist" in result.stderr
-    assert "💡" in result.stderr
-    # The other half: routing the notes away must not take the answer with them.
+    assert "no stored EUR->USD rates at all" in result.stdout
+    assert "more exist" in result.stdout
+    assert "› Run moneybin reports explain test:balance_drift" in result.stdout
     assert "****2222" in result.stdout
-    assert "⚠️" not in result.stdout
-    assert "💡" not in result.stdout
+    assert result.stderr == ""
 
 
 def test_the_text_path_stays_silent_when_no_drift_occurred() -> None:

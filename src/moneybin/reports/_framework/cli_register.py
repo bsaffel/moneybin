@@ -22,6 +22,7 @@ import typer
 from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
+    applied_rates_note,
     display_currency_option,
     emit_human_result,
     no_pager_option,
@@ -40,6 +41,8 @@ from moneybin.reports._framework.contract import (
 )
 
 if TYPE_CHECKING:
+    from moneybin.cli.terminal import TerminalSymbols
+
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear. `catalog`
     # is deferred for the same reason — it reaches `execute`.
@@ -104,39 +107,28 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
 
 
 def report_note_lines(
-    result: CatalogReportResult, *, quiet: bool = False
+    result: CatalogReportResult,
+    *,
+    quiet: bool = False,
+    symbols: TerminalSymbols | None = None,
 ) -> tuple[str, ...]:
     """Build report fidelity disclosures for one complete terminal answer."""
+    if symbols is None:
+        symbols = get_terminal_policy().symbols
     lines: list[str] = []
-    if result.applied_rates:
-        if len(result.applied_rates) == 1:
-            rate = result.applied_rates[0]
-            priced_on = (
-                f"{rate.rate_date}"
-                if rate.rate_date == rate.requested_date
-                else f"{rate.rate_date}, for {rate.requested_date}"
-            )
-            lines.append(
-                f"💱 Converted from {rate.from_currency} at {rate.rate} "
-                f"({priced_on}, {rate.source})"
-            )
-        else:
-            sources = sorted({rate.from_currency for rate in result.applied_rates})
-            lines.append(
-                f"💱 Converted from {', '.join(sources)} using "
-                f"{len(result.applied_rates)} stored rates; run "
-                f"'moneybin fx rate <from> {result.display_currency or 'n/a'} <date>' "
-                "for one of them, or --output json for all"
-            )
+    if conversion_note := applied_rates_note(
+        result.applied_rates, result.display_currency
+    ):
+        lines.append(conversion_note)
     if result.degraded and result.degraded_reason:
-        lines.append(f"⚠️  {result.degraded_reason}")
+        lines.append(f"{symbols.attention} {result.degraded_reason}")
     if result.truncated:
         lines.append(
-            f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
+            f"{symbols.attention} Showing the first {len(result.records):,} rows; more exist. "
             "Raise --limit or narrow the report to see the rest."
         )
     if not quiet:
-        lines.extend(f"💡 {action}" for action in result.actions)
+        lines.extend(f"{symbols.action} {action}" for action in result.actions)
     return tuple(lines)
 
 
@@ -164,8 +156,9 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
     diagnostics about the answer, not the answer, and redirecting a report to a
     file or a downstream parser must not append prose to the data stream.
     """
-    for line in report_note_lines(result, quiet=quiet):
-        render_note(line, warn=line.startswith("⚠️"))
+    symbols = get_terminal_policy().symbols
+    for line in report_note_lines(result, quiet=quiet, symbols=symbols):
+        render_note(line, warn=line.startswith(f"{symbols.attention} "))
 
 
 class ColumnView(NamedTuple):
@@ -364,12 +357,12 @@ def render_report_result(
             classes_returned=result.classes_returned,
         )
         return
-    disclosures = report_note_lines(result, quiet=quiet)
+    policy = get_terminal_policy(no_pager=no_pager)
+    disclosures = report_note_lines(result, quiet=quiet, symbols=policy.symbols)
     if result.records:
         from rich.console import Group
         from rich.text import Text
 
-        policy = get_terminal_policy(no_pager=no_pager)
         human = build_rows(
             visible,
             [
@@ -394,7 +387,7 @@ def render_report_result(
 
         emit_human_result(
             Text("\n".join(disclosures)),
-            policy=get_terminal_policy(no_pager=no_pager),
+            policy=policy,
             finite_read=True,
             no_pager=no_pager,
         )

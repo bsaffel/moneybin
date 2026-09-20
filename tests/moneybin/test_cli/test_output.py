@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
+from decimal import Decimal
 from typing import Annotated, Any
 
 import pytest
@@ -12,6 +14,7 @@ from moneybin import error_codes
 from moneybin.cli import pager
 from moneybin.cli.output import (
     OutputFormat,
+    applied_rates_note,
     emit_human_result,
     emit_json_error,
     render_or_json,
@@ -23,6 +26,7 @@ from moneybin.privacy.payloads.sync import SyncPullInstitutionRow, SyncPullPaylo
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import ResponseEnvelope, SummaryMeta, build_envelope
 from moneybin.protocol.row_set import NO_ROW_SET, row_set
+from moneybin.services.currency_service import ResolvedRate
 
 
 def _tty_policy(*, height: int = 20, page: bool = True) -> TerminalPolicy:
@@ -44,6 +48,26 @@ def _tty_policy(*, height: int = 20, page: bool = True) -> TerminalPolicy:
 
 def _unexpected_page(text: str, *, color: bool, wide: bool) -> bool:
     raise AssertionError("paged")
+
+
+def test_multiple_applied_rates_offer_one_known_executable_command() -> None:
+    """A multi-rate disclosure must not leave a reader to fill in placeholders."""
+    rates = (
+        ResolvedRate(
+            "EUR", "USD", date(2026, 5, 2), date(2026, 5, 2), Decimal("1.13"), "ecb"
+        ),
+        ResolvedRate(
+            "GBP", "USD", date(2026, 5, 1), date(2026, 5, 1), Decimal("1.31"), "ecb"
+        ),
+    )
+
+    note = applied_rates_note(rates, "USD")
+
+    assert note is not None
+    assert "moneybin fx rate EUR USD 2026-05-02" in note
+    assert "<from>" not in note
+    assert "<date>" not in note
+    assert applied_rates_note(tuple(reversed(rates)), "USD") == note
 
 
 def test_human_result_pages_only_after_its_rendered_height_exceeds_terminal(

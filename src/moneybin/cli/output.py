@@ -187,10 +187,22 @@ def applied_rates_note(
             f"({priced_on}, {rate.source})"
         )
     sources = sorted({rate.from_currency for rate in applied_rates})
+    example = min(
+        applied_rates,
+        key=lambda rate: (
+            rate.from_currency,
+            rate.to_currency,
+            rate.requested_date,
+            rate.rate_date,
+            rate.source,
+            str(rate.rate),
+        ),
+    )
     return (
         f"Converted from {', '.join(sources)} using "
         f"{len(applied_rates)} stored rates; run "
-        f"'moneybin fx rate <from> {currency_label(target_currency)} <date>' "
+        f"'moneybin fx rate {example.from_currency} {example.to_currency} "
+        f"{example.requested_date}' "
         "for one of them, or --output json for all"
     )
 
