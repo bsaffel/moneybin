@@ -736,10 +736,17 @@ def build_summary(
     if not pairs:
         return Text()
     width = max(len(label) for label, _ in pairs) + 1
-    lines = ([] if title is None else [title]) + [
-        f"{label + ':':<{width}} {value}" for label, value in pairs
-    ]
-    return Text("\n".join(lines))
+    summary = Text()
+    if title is not None:
+        summary.append(title, style=str(Style.HIERARCHY))
+        summary.append("\n")
+    for index, (label, value) in enumerate(pairs):
+        summary.append(f"{label}:", style=str(Style.CONTEXT))
+        summary.append(" " * (width - len(label) - 1))
+        summary.append(f" {value}")
+        if index != len(pairs) - 1:
+            summary.append("\n")
+    return summary
 
 
 def compose_human_result(

@@ -35,8 +35,10 @@ from moneybin.cli.render import (
     Style,
     _fit_columns,  # pyright: ignore[reportPrivateUsage]  # the fit is a property, not a rendering
     _table_width,  # pyright: ignore[reportPrivateUsage]  # so the check agrees with it on "fits"
+    build_summary,
     color_enabled,
     format_money,
+    render_human_text,
     render_note,
     render_rows,
     render_summary,
@@ -1280,6 +1282,84 @@ def test_render_summary_aligns_values_under_each_other(
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[0].index("1.00") == lines[1].index("2.00")
+
+
+def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -> None:
+    """Receipt hierarchy must survive shared-summary composition.
+
+    Removing either semantic style makes a dense multi-section receipt flat;
+    styling the value would instead colour caller-provided text such as an
+    institution name or a recovery command.
+    """
+    from rich.text import Span, Text
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+
+    assert isinstance(summary, Text)
+    assert summary.spans == [
+        Span(0, len("Sync complete"), Style.HIERARCHY),
+        Span(len("Sync complete\n"), len("Sync complete\nLoaded:"), Style.CONTEXT),
+        Span(
+            len("Sync complete\nLoaded: 28 transactions\n"),
+            len("Sync complete\nLoaded: 28 transactions\nNext:"),
+            Style.CONTEXT,
+        ),
+    ]
+
+
+def test_summary_styles_are_visible_on_a_terminal_and_absent_from_plain_output() -> (
+    None
+):
+    """The shared receipt hierarchy must obey the terminal's one style decision."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    summary = build_summary(
+        [("Loaded", "28 transactions"), ("Next", "moneybin sync status")],
+        title="Sync complete",
+    )
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=True,
+        style=True,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=TerminalSymbols(success="✓", attention="!", failure="×", action="›"),
+        minus="−",
+    )
+    plain = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=False,
+        width=120,
+        height=24,
+        symbols=terminal.symbols,
+        minus="−",
+    )
+
+    styled = render_human_text(summary, terminal=terminal)
+    redirected = render_human_text(summary, terminal=plain)
+
+    assert "\x1b[1mSync complete" in styled
+    assert "\x1b[2mLoaded:" in styled
+    assert "moneybin sync status" in styled
+    assert (
+        redirected
+        == "Sync complete\nLoaded: 28 transactions\nNext:   moneybin sync status\n"
+    )
+    assert "\x1b" not in redirected
 
 
 # --- render_note (requirements 4, 5) ---

@@ -548,6 +548,7 @@ def gsheet_pull(
 @app.command("list")
 def gsheet_list(
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """List every Google Sheets connection."""
@@ -591,6 +592,7 @@ def gsheet_status(
         help="Connection ID to inspect. Omit for a full summary.",
     ),
     output: OutputFormat = output_option,
+    quiet: bool = quiet_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """Show status for one connection, or a summary of all of them."""

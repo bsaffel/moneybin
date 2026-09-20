@@ -5,10 +5,21 @@ from __future__ import annotations
 import os
 import re
 import subprocess  # noqa: S404  # fixed executable and argv below
+from typing import Literal
 
 _ANSI_SGR = re.compile(r"\x1b\[[0-9;]*m")
 _OSC = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+
+def _record_fallback(reason: Literal["unavailable", "start_failed"]) -> None:
+    """Record only the bounded pager-start outcome for an active CLI command."""
+    from moneybin.cli.output import derive_cli_actor
+    from moneybin.metrics.registry import CLI_PAGER_FALLBACK_TOTAL
+
+    command = derive_cli_actor()
+    if command is not None:
+        CLI_PAGER_FALLBACK_TOTAL.labels(command=command, reason=reason).inc()
 
 
 def _safe_text(text: str, *, color: bool) -> str:
@@ -49,7 +60,11 @@ def page_text(text: str, *, color: bool, wide: bool) -> bool:
             text=True,
             env=environment,
         )
+    except FileNotFoundError:
+        _record_fallback("unavailable")
+        return False
     except OSError:
+        _record_fallback("start_failed")
         return False
     try:
         process.communicate(_safe_text(text, color=color))

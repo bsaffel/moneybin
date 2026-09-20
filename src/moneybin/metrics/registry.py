@@ -1004,7 +1004,7 @@ USER_REPORT_RECLASSIFY_TOTAL = Counter(
 
 # ── CLI text rendering ───────────────────────────────────────────────────────
 
-# These three persist only on sessions that also write business data:
+# These five persist only on sessions that also write business data:
 # `flush_metrics()` returns without flushing when `database_was_written()` is
 # false (`observability.py`), so a read-only `reports` run or a stub invocation
 # discards its observations at exit. That is deliberate — turning a read-only
@@ -1036,6 +1036,18 @@ CLI_COLUMNS_OMITTED_TOTAL = Counter(
     "moneybin_cli_columns_omitted_total",
     "Times a text render omitted columns from the full projection, by command",
     ["command"],
+)
+
+CLI_PAGER_FALLBACK_TOTAL = Counter(
+    "moneybin_cli_pager_fallback_total",
+    "Pager start fallbacks by command and fixed failure reason",
+    ["command", "reason"],  # unavailable | start_failed
+)
+
+CLI_PROMPT_OUTCOMES_TOTAL = Counter(
+    "moneybin_cli_prompt_outcomes_total",
+    "Interactive prompt outcomes by command",
+    ["command", "outcome"],  # selected | cancelled | refused
 )
 
 CLI_STUB_INVOKED_TOTAL = Counter(
@@ -1271,5 +1283,7 @@ METRIC_DOMAINS: dict[str, str] = {
     # CLI text rendering
     "moneybin_cli_wide_requested": "CLI text rendering",
     "moneybin_cli_columns_omitted": "CLI text rendering",
+    "moneybin_cli_pager_fallback": "CLI text rendering",
+    "moneybin_cli_prompt_outcomes": "CLI text rendering",
     "moneybin_cli_stub_invoked": "CLI text rendering",
 }

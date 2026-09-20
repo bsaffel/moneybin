@@ -137,6 +137,42 @@ def _pull_result(*, partial: bool = False) -> PullResult:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("partial", "expected_title"),
+    [(False, "OK Sync complete"), (True, "! Sync partially completed")],
+)
+def test_sync_pull_receipt_uses_terminal_symbols_for_ascii_titles(
+    partial: bool,
+    expected_title: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Changing the title glyph must follow the terminal policy, not literals."""
+    from moneybin.cli.commands.sync import (
+        _render_sync_pull_receipt,  # pyright: ignore[reportPrivateUsage]  # pins the shared receipt title policy
+    )
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    _render_sync_pull_receipt(_pull_result(partial=partial), terminal=terminal)
+
+    assert capsys.readouterr().out.splitlines()[0] == expected_title
+
+
+@pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_receipt_keeps_requested_result_when_quiet(mock_build: MagicMock) -> None:
     """Removing the receipt from quiet output would hide saved sync work."""

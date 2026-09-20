@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import typer
 
@@ -16,6 +17,16 @@ class Choice:
 
     value: str
     label: str
+
+
+def _record_outcome(outcome: Literal["selected", "cancelled", "refused"]) -> None:
+    """Record a fixed interactive result only when a command invoked the prompt."""
+    from moneybin.cli.output import derive_cli_actor
+    from moneybin.metrics.registry import CLI_PROMPT_OUTCOMES_TOTAL
+
+    command = derive_cli_actor()
+    if command is not None:
+        CLI_PROMPT_OUTCOMES_TOTAL.labels(command=command, outcome=outcome).inc()
 
 
 def choose_required(
@@ -37,11 +48,13 @@ def choose_required(
     if provided is not None:
         return validate(provided)
     if not choices:
+        _record_outcome("refused")
         raise typer.BadParameter(
             f"No choices are available; pass {flag} when a target exists.",
             param_hint=flag,
         )
     if not policy.interactive:
+        _record_outcome("refused")
         raise typer.BadParameter(
             f"{flag} is required when input is not an interactive terminal.",
             param_hint=flag,
@@ -53,13 +66,21 @@ def choose_required(
     try:
         selected_label = prompt_input(f"Choose {flag}: ")
     except (EOFError, KeyboardInterrupt):
+        _record_outcome("cancelled")
         raise typer.Abort() from None
     matches = [choice.value for choice in choices if choice.label == selected_label]
     if len(matches) != 1:
+        _record_outcome("refused")
         raise typer.BadParameter(
             f"Choose one unique displayed value for {flag}.", param_hint=flag
         )
-    return validate(matches[0])
+    try:
+        value = validate(matches[0])
+    except typer.BadParameter:
+        _record_outcome("refused")
+        raise
+    _record_outcome("selected")
+    return value
 
 
 def _identity(value: str) -> str:

@@ -73,11 +73,11 @@ def _render_sync_pull_receipt(
     incomplete = _sync_pull_has_incomplete_work(result)
     if title is None:
         if incomplete and completed:
-            title = "! Sync partially completed"
+            title = f"{terminal.symbols.attention} Sync partially completed"
         elif incomplete:
-            title = "× Sync failed"
+            title = f"{terminal.symbols.failure} Sync failed"
         else:
-            title = "✓ Sync complete"
+            title = f"{terminal.symbols.success} Sync complete"
     typer.echo(title)
 
     institution_word = "institution" if len(completed) == 1 else "institutions"

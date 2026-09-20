@@ -968,10 +968,11 @@ def test_gsheet_list_text_output(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = [_make_connection()]
     mock_build.return_value.__enter__.return_value = service
-    result = runner.invoke(app, ["gsheet", "list"])
-    assert result.exit_code == 0, result.output
-    assert "conn_abc123" in result.stdout
-    assert "My Budget" in result.stdout
+    for args in ([], ["--quiet"]):
+        result = runner.invoke(app, ["gsheet", "list", *args])
+        assert result.exit_code == 0, result.output
+        assert "conn_abc123" in result.stdout
+        assert "My Budget" in result.stdout
 
 
 @pytest.mark.unit

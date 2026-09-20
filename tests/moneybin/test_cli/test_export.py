@@ -1067,7 +1067,7 @@ def test_local_export_oserror_discloses_destination_without_logging_filename(
     assert result.stdout == ""
     assert f"Exporting to {destination_path}" in result.stderr
     assert "Local export could not be published." in result.stderr
-    log_error.assert_called_once_with("❌ Local export could not be published.")
+    log_error.assert_called_once_with("× Local export could not be published.")
     assert str(failed_filename) not in result.stderr
     assert str(failed_filename) not in str(log_error.call_args)
     assert "Permission denied" not in str(log_error.call_args)
