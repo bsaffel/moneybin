@@ -905,7 +905,7 @@ def _filter_predicate_is_pure_columns(filt: exp.Filter) -> bool:
     an existence oracle a caller can walk across the whole value space, the
     exact reconstruction #562 fenced FILTER predicates against (see
     ``_only_null_tested``'s docstring). This gate is what lets
-    ``_only_within_pure_counting_filter_predicate`` stop suppressing a pure
+    ``_counting_filter_predicate_is_exemptable`` stop suppressing a pure
     column-to-column predicate (#440) without reopening that fence for a
     literal or bound one.
     """
@@ -1300,7 +1300,7 @@ def _resolves_to_a_classified_catalog_column(
     """True if ``col``'s occurrence names a real catalog column with a known class.
 
     The IDENTITY half shared by every position-only exemption in this module
-    (``_only_null_tested`` for a NULL test, ``_only_within_pure_counting_filter_predicate``
+    (``_only_null_tested`` for a NULL test, ``_enclosing_counting_filter``
     for a pure-columns ``Count`` FILTER predicate, #440): a name that merely
     *looks* like a catalog column is not safe to drop just because of where it
     sits. Extracted from ``_capped_null_test`` — which keeps its own name and

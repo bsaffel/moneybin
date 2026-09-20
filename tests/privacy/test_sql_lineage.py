@@ -1412,8 +1412,8 @@ def test_a_pure_column_predicate_on_a_derived_table_alias_is_not_exempt(
     """Position passes; identity declines — the CTE/derived-table half.
 
     `d1 = d2` is positionally pure (no literal, no placeholder) and wraps a
-    `Count`, so `_only_within_pure_counting_filter_predicate` says yes. But
-    both names are aliases from a derived table, so
+    `Count`, so `_enclosing_counting_filter` finds it. But both names are
+    aliases from a derived table, so
     `_resolves_to_a_classified_catalog_column` says no (`_source_scope_of` is
     non-None) — exactly mirroring
     `test_a_null_test_on_a_derived_table_alias_is_not_exempt`, but for the
