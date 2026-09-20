@@ -131,7 +131,7 @@ dependencies = [
     # (Tool.inputSchema, CallToolResult.structuredContent, ToolAnnotations.*Hint)
     # and moves McpError and RequestContext — a migration of its own. fastmcp 4
     # requires mcp 2.
-    "mcp>=1.30.0,<2",
+    "mcp>=1.30.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.15.1",
     "httpx>=0.28.1",
