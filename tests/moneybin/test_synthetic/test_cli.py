@@ -11,6 +11,25 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.synthetic import app
+from moneybin.cli.main import app as main_app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+
+def _terminal(*, interactive: bool) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=interactive,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 class TestGenerateCommand:
@@ -19,8 +38,11 @@ class TestGenerateCommand:
     @pytest.fixture(autouse=True)
     def mock_profile(self, mocker: Any) -> None:
         """Prevent generate/reset from mutating process-wide profile state."""
-        mocker.patch("moneybin.config.get_current_profile", return_value="default")
+        self.mock_get_profile = mocker.patch(
+            "moneybin.config.get_current_profile", return_value="default"
+        )
         self.mock_set_profile = mocker.patch("moneybin.config.set_current_profile")
+        self.mock_clear_profile = mocker.patch("moneybin.config.clear_current_profile")
 
     @pytest.fixture
     def runner(self) -> CliRunner:
@@ -77,6 +99,23 @@ class TestGenerateCommand:
         result = runner.invoke(app, ["generate"])
         assert result.exit_code != 0
 
+    def test_registered_cli_rejects_json_before_prompt_or_mutation(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """Synthetic is text-only; Click rejects JSON at the real command boundary."""
+        confirm = mocker.patch("typer.confirm")
+        get_database = mocker.patch("moneybin.database.get_database")
+
+        result = runner.invoke(
+            main_app,
+            ["synthetic", "generate", "--persona", "basic", "--output", "json"],
+        )
+
+        assert result.exit_code == 2, result.output
+        assert "No such option: --output" in result.output
+        confirm.assert_not_called()
+        get_database.assert_not_called()
+
     def test_generate_success(
         self,
         runner: CliRunner,
@@ -120,6 +159,106 @@ class TestGenerateCommand:
         assert result.exit_code == 1
         self.mock_set_profile.assert_called_with("default")
 
+    def test_generate_transform_failure_reports_partial_saved_counts_and_exits_one(
+        self,
+        runner: CliRunner,
+        mock_get_database: MagicMock,
+        mock_engine: MagicMock,
+        mock_writer: MagicMock,
+        mock_run_transforms: MagicMock,
+    ) -> None:
+        """A requested transform is part of the operation, even after raw writes."""
+        mock_run_transforms.side_effect = RuntimeError("SQLMesh is unavailable")
+
+        result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
+
+        assert result.exit_code == 1, result.output
+        assert "Generation partially completed" in result.stdout
+        assert "Transactions saved:  100" in result.stdout
+        assert "Reports are stale" in result.stdout
+
+    def test_generate_skip_transform_is_an_intentional_complete_mode(
+        self,
+        runner: CliRunner,
+        mock_get_database: MagicMock,
+        mock_engine: MagicMock,
+        mock_writer: MagicMock,
+        mock_run_transforms: MagicMock,
+    ) -> None:
+        result = runner.invoke(
+            app,
+            ["generate", "--persona", "basic", "--seed", "42", "--skip-transform"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Generation complete" in result.stdout
+        assert "Transforms:          Skipped by request" in result.stdout
+        mock_run_transforms.assert_not_called()
+
+    def test_generate_partial_receipt_is_ascii_safe(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        mock_get_database: MagicMock,
+        mock_engine: MagicMock,
+        mock_writer: MagicMock,
+        mock_run_transforms: MagicMock,
+    ) -> None:
+        mock_run_transforms.side_effect = RuntimeError("failed")
+        mocker.patch(
+            "moneybin.cli.commands.synthetic.get_terminal_policy",
+            return_value=_terminal(interactive=False),
+        )
+        result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
+        assert result.exit_code == 1, result.output
+        assert "✓" not in result.stdout
+        assert "×" not in result.stdout
+
+    def test_generate_interrupt_restores_profile_and_reports_unknown_scope(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        mocker.patch("moneybin.database.get_database", side_effect=KeyboardInterrupt)
+        result = runner.invoke(app, ["generate", "--persona", "basic"])
+        assert result.exit_code == 130, result.output
+        assert "Saved scope is unknown." in result.stdout
+        self.mock_set_profile.assert_called_with("default")
+
+    @pytest.mark.parametrize(
+        ("outcome", "exit_code"),
+        [("success", 0), ("classified_error", 1), ("interrupt", 130)],
+    )
+    def test_generate_clears_an_initially_unset_runtime_profile(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        request: pytest.FixtureRequest,
+        outcome: str,
+        exit_code: int,
+    ) -> None:
+        """Temporary synthetic generation must not leak its target profile."""
+        from moneybin.database import DatabaseKeyError
+
+        self.mock_get_profile.side_effect = RuntimeError("no runtime profile")
+        if outcome == "success":
+            request.getfixturevalue("mock_get_database")
+            request.getfixturevalue("mock_engine")
+            request.getfixturevalue("mock_writer")
+            request.getfixturevalue("mock_run_transforms")
+        elif outcome == "classified_error":
+            mocker.patch(
+                "moneybin.database.get_database", side_effect=DatabaseKeyError("no key")
+            )
+        else:
+            mocker.patch(
+                "moneybin.database.get_database", side_effect=KeyboardInterrupt
+            )
+
+        result = runner.invoke(app, ["generate", "--persona", "basic"])
+
+        assert result.exit_code == exit_code, result.output
+        self.mock_set_profile.assert_called_once_with("alice")
+        self.mock_clear_profile.assert_called_once_with()
+
 
 class TestResetCommand:
     """Test the 'synthetic reset' CLI command."""
@@ -127,8 +266,11 @@ class TestResetCommand:
     @pytest.fixture(autouse=True)
     def mock_profile(self, mocker: Any) -> None:
         """Prevent reset from mutating process-wide profile state."""
-        mocker.patch("moneybin.config.get_current_profile", return_value="default")
+        self.mock_get_profile = mocker.patch(
+            "moneybin.config.get_current_profile", return_value="default"
+        )
         self.mock_set_profile = mocker.patch("moneybin.config.set_current_profile")
+        self.mock_clear_profile = mocker.patch("moneybin.config.clear_current_profile")
 
     @pytest.fixture
     def runner(self) -> CliRunner:
@@ -161,18 +303,22 @@ class TestResetCommand:
         mock_run = mocker.patch(
             "moneybin.cli.commands.synthetic._run_generate",
         )
+        mock_run.return_value = MagicMock(partial=False)
+        mocker.patch("moneybin.cli.commands.synthetic._render_generation_receipt")
 
         result = runner.invoke(
             app, ["reset", "--persona", "basic", "--yes", "--seed", "42"]
         )
         assert result.exit_code == 0
-        mock_run.assert_called_once_with(
-            persona="basic",
-            profile="alice",
-            years=None,
-            seed=42,
-            skip_transform=False,
-        )
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs | {"terminal": None} == {
+            "persona": "basic",
+            "profile": "alice",
+            "years": None,
+            "seed": 42,
+            "skip_transform": False,
+            "terminal": None,
+        }
         # Profile must be restored after successful reset
         self.mock_set_profile.assert_called_with("default")
 
@@ -198,6 +344,90 @@ class TestResetCommand:
             assert result.exit_code != 0 or "Aborted" in (result.output or "")
         # Profile must be restored even after user declines
         self.mock_set_profile.assert_called_with("default")
+
+    def test_reset_noninteractive_refuses_before_opening_the_target_database(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """An unanswerable destructive prompt must not begin a reset preflight."""
+        get_database = mocker.patch("moneybin.database.get_database")
+        mocker.patch(
+            "moneybin.cli.commands.synthetic.get_terminal_policy",
+            return_value=_terminal(interactive=False),
+        )
+
+        result = runner.invoke(app, ["reset", "--persona", "basic"])
+
+        assert result.exit_code == 1, result.output
+        get_database.assert_not_called()
+
+    def test_reset_decline_names_the_exact_target_and_says_no_reset_started(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        mock_db.execute.return_value.fetchone.return_value = (1,)
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch(
+            "moneybin.synthetic.reset.has_non_synthetic_data", return_value=False
+        )
+        mocker.patch(
+            "moneybin.cli.commands.synthetic.get_terminal_policy",
+            return_value=_terminal(interactive=True),
+        )
+        reset_rows = mocker.patch("moneybin.synthetic.reset.reset_synthetic_rows")
+
+        result = runner.invoke(app, ["reset", "--persona", "basic"], input="n\n")
+
+        assert result.exit_code == 1, result.output
+        assert "profile 'alice'" in result.output
+        assert "No reset was started." in result.output
+        reset_rows.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("outcome", "exit_code"),
+        [("success", 0), ("classified_error", 1), ("interrupt", 130)],
+    )
+    def test_reset_clears_an_initially_unset_runtime_profile(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        outcome: str,
+        exit_code: int,
+    ) -> None:
+        """Reset must restore the unset runtime state on every exit path."""
+        from moneybin.database import DatabaseKeyError
+
+        self.mock_get_profile.side_effect = RuntimeError("no runtime profile")
+        if outcome == "classified_error":
+            mocker.patch(
+                "moneybin.database.get_database", side_effect=DatabaseKeyError("no key")
+            )
+        else:
+            mock_db = MagicMock()
+            mock_db.__enter__ = MagicMock(return_value=mock_db)
+            mock_db.__exit__ = MagicMock(return_value=False)
+            mock_db.execute.return_value.fetchone.return_value = (1,)
+            mock_db.path = Path("/tmp/test.duckdb")
+            mocker.patch("moneybin.database.get_database", return_value=mock_db)
+            mocker.patch(
+                "moneybin.synthetic.reset.has_non_synthetic_data", return_value=False
+            )
+            mocker.patch("moneybin.synthetic.reset.reset_synthetic_rows")
+            run_generate = mocker.patch("moneybin.cli.commands.synthetic._run_generate")
+            if outcome == "success":
+                run_generate.return_value = MagicMock(partial=False)
+                mocker.patch(
+                    "moneybin.cli.commands.synthetic._render_generation_receipt"
+                )
+            else:
+                run_generate.side_effect = KeyboardInterrupt
+
+        result = runner.invoke(app, ["reset", "--persona", "basic", "--yes"])
+
+        assert result.exit_code == exit_code, result.output
+        self.mock_set_profile.assert_called_once_with("alice")
+        self.mock_clear_profile.assert_called_once_with()
 
 
 class TestPersonaEnumerationSites:

@@ -141,7 +141,9 @@ def handle_cli_errors(
                     user_error, cli_actor=cli_actor, payload_type=payload_type
                 )
             else:
-                logger.error(f"❌ {user_error.message}")
+                logger.error(
+                    f"{get_terminal_policy().symbols.failure} {user_error.message}"
+                )
                 if user_error.hint:
                     # NOT logger.info: the root logger runs at INFO and the
                     # file handler is unfiltered (`_ConsoleNoiseFilter` only

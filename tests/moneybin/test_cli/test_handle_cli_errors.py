@@ -1,10 +1,13 @@
 """Tests for the shared CLI error handler."""
 
+from typing import Any
+
 import pytest
 import typer
 from _pytest.logging import LogCaptureFixture
 
 from moneybin import error_codes
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import DatabaseKeyError
 
 
@@ -27,6 +30,40 @@ def test_handle_cli_errors_translates_key_error_to_exit(
             raise DatabaseKeyError("locked")
     assert exc_info.value.exit_code == 1
     assert "locked" in caplog.text
+
+
+def test_handle_cli_errors_uses_ascii_failure_marker_when_requested(
+    caplog: LogCaptureFixture, mocker: Any
+) -> None:
+    """Text-mode errors must respect an ASCII-only terminal policy."""
+    from moneybin.cli.utils import handle_cli_errors
+
+    mocker.patch(
+        "moneybin.cli.utils.get_terminal_policy",
+        return_value=TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        ),
+    )
+
+    with caplog.at_level("ERROR"), pytest.raises(typer.Exit):
+        with handle_cli_errors():
+            raise DatabaseKeyError("locked")
+
+    assert "X locked" in caplog.text
+    assert "❌" not in caplog.text
 
 
 def test_handle_cli_errors_hint_reaches_console_not_log(
