@@ -42,10 +42,8 @@ jobs:
       - name: Install dependencies
         run: uv sync
 
-      # The pip-audit invocation and its accepted-vuln ignore list now live in
-      # one place — the `audit` target in the Makefile — so this workflow and
-      # the Release pipeline call the exact same command and cannot drift. See
-      # that target's comment for the starlette ignore rationale and the
-      # condition for removing it.
+      # The pip-audit invocation and any accepted-vuln ignore list live in one
+      # place — the `audit` target in the Makefile — so this workflow and the
+      # Release pipeline call the exact same command and cannot drift.
       - name: Audit dependencies for CVEs
         run: make audit
