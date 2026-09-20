@@ -933,8 +933,8 @@ def _within_counting_agg(node: exp.Expr, stop: exp.Expr) -> bool:
     return False
 
 
-def _only_within_pure_counting_filter_predicate(node: exp.Expr, stop: exp.Expr) -> bool:
-    """True if ``node`` reaches ``stop`` only through a pure-columns ``Count`` FILTER predicate.
+def _enclosing_counting_filter(node: exp.Expr, stop: exp.Expr) -> exp.Filter | None:
+    """The ``Filter`` node whose predicate ``node`` sits in, if its ``this`` is a counting agg.
 
     ``FILTER (WHERE …)``'s predicate is a syntactic SIBLING of the aggregate it
     modifies — sqlglot parses ``COUNT(*) FILTER (WHERE c = x)`` as
@@ -944,31 +944,26 @@ def _only_within_pure_counting_filter_predicate(node: exp.Expr, stop: exp.Expr) 
     `COUNT(*) FILTER (WHERE ref_value = account_id)` mask the row count itself
     instead of returning it (#440), the same way a bare NULL test used to
     (MB-102) before ``_only_null_tested`` gave it a position-only exemption.
-    This is that exemption's sibling for the Filter/Count shape, mirroring its
-    split: this function answers POSITION only, and the caller pairs it with
-    an IDENTITY check (``_resolves_to_a_classified_catalog_column`` — the same
-    one the null-test path uses) before dropping the occurrence, exactly as
-    ``_only_null_tested`` is paired with ``_capped_null_test``. Skipping that
-    pairing reopened the pivot/derived-table leak the null-test path already
-    closed: an UNPIVOT-generated column named after a catalog column, or one
-    read through a CTE, is not "capped" just because of where it sits.
 
-    Two conditions gate the exemption:
+    POSITION only: returns the enclosing ``Filter`` (or ``None``) without
+    judging whether that Filter's predicate is actually safe to drop. Scope
+    stays ``_COUNTING_AGGS`` (``Count``-only) deliberately — a FILTER
+    predicate never reaches the output for ANY aggregate, so `SUM(x) FILTER
+    (WHERE critical)` is arguably the same shape, but widening this to every
+    `Filter` would ALSO stop masking that case, which `_COUNTING_AGGS` was
+    deliberately scoped to keep masking (see its module comment). That
+    broader change is a decision to make explicitly, not a side effect of
+    fixing #440 — do not widen this without taking it.
 
-      * ``Filter.this`` is itself a counting agg. Scope stays
-        ``_COUNTING_AGGS`` (``Count``-only) deliberately: a FILTER predicate
-        never reaches the output for ANY aggregate, so `SUM(x) FILTER (WHERE
-        critical)` is arguably the same shape, but widening this to every
-        `Filter` would ALSO stop masking that case, which `_COUNTING_AGGS`
-        was deliberately scoped to keep masking (see its module comment).
-        That broader change is a decision to make explicitly, not a side
-        effect of fixing #440 — do not widen this without taking it.
-      * The predicate is pure columns (``_filter_predicate_is_pure_columns``).
-        A predicate comparing two catalog columns can only report a fact
-        about the data; one comparing a column to a literal or a bound
-        placeholder lets the CALLER choose the comparand and vary it call to
-        call — the reconstruction oracle #562 already fenced off for this
-        exact clause. Dropping this half would silently re-open that fence.
+    The caller pairs this with ``_counting_filter_predicate_is_exemptable``,
+    which judges the WHOLE predicate this Filter names — not this occurrence
+    alone. Judging per occurrence let one side's identity rescue an unrelated
+    side that had none: `last_four = t.g`, where `t.g` reads a derived
+    table's `'1234' AS g`, dropped `last_four` alone (it resolves; `t.g`
+    doesn't) and left `t.g` to resolve to `AGGREGATE` through its own
+    projection — a caller's literal, hoisted one hop into a derived table,
+    reaching the output as an unmasked count. The whole-predicate answer is
+    what closes that: ``t.g`` failing means NEITHER side drops.
     """
     child = node
     parent = node.parent
@@ -977,14 +972,13 @@ def _only_within_pure_counting_filter_predicate(node: exp.Expr, stop: exp.Expr) 
             isinstance(parent, exp.Filter)
             and parent.args.get("expression") is child
             and isinstance(parent.args.get("this"), _COUNTING_AGGS)
-            and _filter_predicate_is_pure_columns(parent)
         ):
-            return True
+            return parent
         if parent is stop:
-            return False
+            return None
         child = parent
         parent = parent.parent
-    return False
+    return None
 
 
 # Depth bound for CTE / derived-table recursion. The deepest reports model
@@ -1391,6 +1385,48 @@ def _capped_null_test(
     )
 
 
+def _counting_filter_predicate_is_exemptable(
+    filt: exp.Filter,
+    inner: exp.Expr,
+    scope: Scope | None,
+    subscopes: dict[int, Scope],
+    alias_map: dict[str, tuple[str, str]],
+    ctx: _ResolveCtx,
+) -> bool:
+    """True if EVERY column in ``filt``'s predicate is safe to drop from ``cols``.
+
+    Answered ONCE for the WHOLE predicate, not per occurrence — the follow-up
+    fix to #440's own follow-up fix. Judging identity per column let one side
+    passing rescue an unrelated side that had none: `last_four = t.g`, where
+    `t.g` reads a derived table's `'1234' AS g`, dropped `last_four` alone (it
+    resolves via ``_resolves_to_a_classified_catalog_column``; `t.g` doesn't)
+    and left `t.g` to resolve to `AGGREGATE` through its own projection — a
+    caller's literal, hoisted one hop into a derived table instead of written
+    inline or bound, reaching the output as an unmasked count. That is the
+    reconstruction oracle #562 fenced off, reopened through this path.
+
+    Two conditions, both whole-predicate, both required:
+
+      * ``_filter_predicate_is_pure_columns`` — no literal, no bound
+        placeholder ANYWHERE in the predicate.
+      * Every ``exp.Column`` the predicate contains independently resolves to
+        a classified catalog column (``_resolves_to_a_classified_catalog_column``,
+        the same identity check the null-test path uses). One column failing
+        means the predicate answers False for ALL of its columns — nothing in
+        it drops, exactly as a plain WHERE column would not have been exempt
+        from anything to begin with.
+    """
+    predicate = filt.args.get("expression")
+    if predicate is None or not _filter_predicate_is_pure_columns(filt):
+        return False
+    return all(
+        _resolves_to_a_classified_catalog_column(
+            col, inner, scope, subscopes, alias_map, ctx
+        )
+        for col in predicate.find_all(exp.Column)
+    )
+
+
 def _resolve_projection(
     proj: exp.Expr,
     scope: Scope | None,
@@ -1487,15 +1523,18 @@ def _resolve_projection(
     # test in spelling only, and dropping it reopened the reconstruction this
     # whole rule exists to prevent.
     #
-    # The second clause is #440's fix, built the same way: a column reaching
+    # The second clause is #440's fix, built the same way but answered ONCE
+    # for the WHOLE predicate rather than per column: a column reaching
     # `inner` only through a pure-columns `Count` FILTER predicate is dropped
-    # here too, by the same POSITION-then-IDENTITY pairing (position:
-    # `_only_within_pure_counting_filter_predicate`; identity:
-    # `_resolves_to_a_classified_catalog_column`, the check `_capped_null_test`
-    # itself delegates to). Skipping the identity half here would reopen the
-    # exact pivot/derived-table leak the null-test pairing above already closed
-    # — an UNPIVOT-generated column named after a catalog column is not "pure"
-    # just because it sits inside the FILTER predicate.
+    # here too, but only when `_counting_filter_predicate_is_exemptable` finds
+    # EVERY column in that predicate resolves to a classified catalog column.
+    # Answering per occurrence — the first cut of this fix — let one side
+    # passing identity rescue an unrelated side that had none: `last_four =
+    # t.g`, where `t.g` reads a derived table's `'1234' AS g`, dropped
+    # `last_four` alone and left `t.g` to resolve to `AGGREGATE` through its
+    # own projection, publishing the caller's literal comparand as an
+    # unmasked count. The whole-predicate answer closes that: `t.g` failing
+    # identity means NEITHER side of `last_four = t.g` drops.
     cols = [
         c
         for c in inner.find_all(exp.Column)
@@ -1504,9 +1543,9 @@ def _resolve_projection(
             and _capped_null_test(c, inner, scope, subscopes, alias_map, ctx)
         )
         and not (
-            _only_within_pure_counting_filter_predicate(c, inner)
-            and _resolves_to_a_classified_catalog_column(
-                c, inner, scope, subscopes, alias_map, ctx
+            (enclosing_filter := _enclosing_counting_filter(c, inner)) is not None
+            and _counting_filter_predicate_is_exemptable(
+                enclosing_filter, inner, scope, subscopes, alias_map, ctx
             )
         )
     ]

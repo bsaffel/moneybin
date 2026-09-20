@@ -1449,6 +1449,42 @@ def test_a_pure_column_predicate_on_an_unpivot_value_column_is_not_exempt(
     assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
 
 
+def test_a_pure_column_predicate_against_a_hoisted_literal_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """One side passing identity must not rescue the other side.
+
+    `last_four` resolves to a classified catalog column on its own; `t.g`
+    does not (it reads a derived table). Deciding each occurrence
+    independently drops `last_four` alone, leaves `t.g` to resolve through
+    `t`'s own projection — a bare literal, i.e. `AGGREGATE` — and the
+    combined class is `AGGREGATE`: the caller's literal comparand, hoisted
+    one hop into a derived table instead of written inline, reaches the
+    output as an unmasked count. That is the existence oracle #562 fenced
+    off, reopened through this path. The predicate must be judged as a
+    whole: `t.g` failing identity means NEITHER side is dropped.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = t.g) AS n "
+        "FROM core.dim_accounts, (SELECT '1234' AS g) AS t",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_pure_column_predicate_against_a_cte_hoisted_literal_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """The CTE spelling of the laundering above — the fix must not be shaped to one syntax."""
+    out = _classes(
+        "WITH t AS (SELECT '1234' AS g) "
+        "SELECT COUNT(*) FILTER (WHERE last_four = t.g) AS n "
+        "FROM core.dim_accounts, t",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
 # ---------------------------------------------------------------------------
 # A branch can map a predicate's answer back to the value
 #
