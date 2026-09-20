@@ -664,6 +664,10 @@ class TestDbInitCommand:
     def runner(self) -> CliRunner:
         return CliRunner()
 
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
+
     def _mock_deps(self, mocker: Any, tmp_path: Path) -> tuple[MagicMock, MagicMock]:
         """Return (mock_store, mock_db_class) with settings patched."""
         from moneybin.secrets import SecretNotFoundError
@@ -758,6 +762,10 @@ class TestDbUnlockCommand:
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
+
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
 
     def test_unlock_no_salt_exits_1(self, runner: CliRunner, mocker: Any) -> None:
         """Unlock fails when no passphrase salt is found in keychain."""
@@ -861,6 +869,29 @@ class TestDbUnlockCommand:
 
         assert result.exit_code == 1
         mock_store.delete_key.assert_called_once_with("DATABASE__ENCRYPTION_KEY")
+        assert "derived key was removed" in result.output
+
+    def test_unlock_reports_uncertain_cleanup_without_claiming_locked(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A failed keychain cleanup leaves the lock state unknown."""
+        import base64
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.touch()
+        mock_store = MagicMock()
+        mock_store.get_key.return_value = base64.b64encode(b"\x00" * 16).decode()
+        mock_store.delete_key.side_effect = Exception("keychain unavailable")
+        mocker.patch("moneybin.secrets.SecretStore", return_value=mock_store)
+        mocker.patch("argon2.low_level.hash_secret_raw", return_value=b"\x00" * 32)
+        _make_settings_mock(db_path, mocker)
+        mocker.patch("moneybin.database.Database", side_effect=Exception("bad key"))
+
+        result = runner.invoke(app, ["unlock"], input="wrongpass\n")
+
+        assert result.exit_code == 1
+        assert "could not confirm removal" in result.output
+        assert "remains locked" not in result.output
 
     def test_unlock_correct_passphrase_exits_0(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -894,6 +925,10 @@ class TestDbRotateKeyCommand:
     @pytest.fixture
     def runner(self) -> CliRunner:
         return CliRunner()
+
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
 
     def _mock_rotate_deps(
         self, mocker: Any, tmp_path: Path
@@ -969,6 +1004,35 @@ class TestDbRotateKeyCommand:
         # Recovery key is printed via typer.echo(err=True), which CliRunner
         # captures in result.output (stderr is mixed in by default)
         assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+
+    def test_rotate_key_interrupt_after_swap_keeps_recovery_channel(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupted keychain update has the same recovery boundary."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        mock_store.set_key.side_effect = KeyboardInterrupt
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert "keychain update is unconfirmed" in result.output
+
+    def test_rotate_key_second_move_failure_reports_archived_original(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The swap's first completed move is a partial outcome, not a silent error."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        move = mocker.patch("moneybin.cli.commands.db.shutil.move")
+        move.side_effect = [None, OSError("synthetic replacement move failure")]
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 1
+        assert "original database was archived" in result.output.lower()
+        assert "replacement state is unknown" in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in result.output
+        mock_store.set_key.assert_not_called()
 
     def test_rotate_key_confirmation_prompt_declined_exits_0(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
@@ -1157,6 +1221,54 @@ class TestDbInfoCommand:
         # Database should not be opened when locked
         mock_database_cls.assert_not_called()
 
+    def test_info_pages_long_unlocked_metadata(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The composed metadata/table answer is eligible for the shared pager."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"data")
+        _make_settings_mock(db_path, mocker)
+        store = MagicMock()
+        store.get_key.return_value = "synthetic"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=store)
+        database = MagicMock()
+        database.__enter__ = lambda self: self  # type: ignore[assignment]
+        database.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct_transactions")])),
+            MagicMock(
+                fetchall=MagicMock(return_value=[("core", "fct_transactions", 1)])
+            ),
+        ]
+        database.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=database)
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["info"])
+
+        assert result.exit_code == 0
+        page.assert_called_once()
+
     def test_info_fails_when_database_not_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
@@ -1255,6 +1367,39 @@ class TestDbRestoreCommand:
 
         result = runner.invoke(app, ["restore", "--from", str(backup), "--yes"])
         assert result.exit_code == 1
+        assert test_db.read_bytes() == b"backup"
+        assert "Database was replaced" in result.output
+        assert "Pre-restore backup saved" in result.output
+
+    def test_restore_copy_failure_does_not_claim_replacement(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A normal replacement-copy error leaves the target state unconfirmed."""
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"current")
+        source = tmp_path / "backup.duckdb"
+        source.write_bytes(b"restore")
+        _make_settings_mock(db_path, mocker)
+        original_copy = shutil.copy2
+        calls = 0
+
+        def fail_replacement(source_path: str, target_path: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise OSError("synthetic replacement failure")
+            return str(original_copy(source_path, target_path))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=fail_replacement
+        )
+
+        result = runner.invoke(app, ["restore", "--from", str(source), "--yes"])
+
+        assert result.exit_code == 1
+        assert "Pre-restore backup saved" in result.output
+        assert "replacement may be incomplete" in result.output.lower()
+        assert "Database was replaced" not in result.output
 
 
 class TestDatabaseCommandsIntegration:
@@ -1291,14 +1436,23 @@ class TestDbPsCommand:
     def runner(self) -> CliRunner:
         return CliRunner()
 
+    @pytest.fixture(autouse=True)
+    def interactive_prompt(self, mocker: Any) -> None:
+        mocker.patch("moneybin.cli.commands.db._require_interactive_prompt")
+
     @pytest.fixture
     def two_processes(self, mocker: Any) -> MagicMock:
+        processes = [
+            {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
+            {"pid": 202, "command": "python", "cmdline": "python -m etl"},
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            return_value={101: MagicMock(), 202: MagicMock()},
+        )
         return mocker.patch(
             "moneybin.cli.commands.db._find_db_processes",
-            return_value=[
-                {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
-                {"pid": 202, "command": "python", "cmdline": "python -m etl"},
-            ],
+            return_value=processes,
         )
 
     def test_ps_renders_the_process_roll_through_the_shared_renderer(
@@ -1339,6 +1493,83 @@ class TestDbPsCommand:
         for cell in ("101", "duckdb moneybin.duckdb", "202", "python -m etl"):
             assert cell in result.output
 
+    def test_ps_pages_a_long_finite_roll(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        two_processes: MagicMock,
+    ) -> None:
+        """Finite process results use the shared pager only when they exceed height."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file)])
+
+        assert result.exit_code == 0
+        page.assert_called_once()
+
+    def test_ps_no_pager_prints_the_same_finite_roll(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        tmp_path: Path,
+        two_processes: MagicMock,
+    ) -> None:
+        """The explicit flag overrides automatic paging without changing rows."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=1,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+        page = mocker.patch("moneybin.cli.pager.page_text", return_value=True)
+
+        result = runner.invoke(app, ["ps", "--database", str(db_file), "--no-pager"])
+
+        assert result.exit_code == 0
+        page.assert_not_called()
+        assert "101" in result.output
+
     def test_kill_lists_the_same_table_before_asking(
         self,
         runner: CliRunner,
@@ -1358,3 +1589,218 @@ class TestDbPsCommand:
 
         assert "┃" in result.output
         assert "101" in result.output
+
+
+class TestDbKillProcessIdentity:
+    """`db kill` binds the confirmed roll to psutil process identities."""
+
+    @pytest.fixture
+    def runner(self) -> CliRunner:
+        return CliRunner()
+
+    @staticmethod
+    def _processes() -> list[dict[str, str | int]]:
+        return [
+            {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
+            {"pid": 202, "command": "python", "cmdline": "python -m etl"},
+        ]
+
+    def test_kill_rescans_and_uses_original_identity_bound_processes(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """The post-confirmation signal goes through the original snapshots."""
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = self._processes()
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        first = {101: MagicMock(), 202: MagicMock()}
+        second = {101: MagicMock(), 202: MagicMock()}
+        for process in first.values():
+            process.is_running.return_value = True
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 0
+        first[101].terminate.assert_called_once_with()
+        first[202].terminate.assert_called_once_with()
+        second[101].terminate.assert_not_called()
+        assert "Sent SIGTERM to 2 processes" in result.output
+
+    def test_kill_refuses_changed_selection_without_signaling(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A changed second scan is stale even when `--yes` waived the prompt."""
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        preview = self._processes()
+        changed = [preview[0]]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[preview, changed],
+        )
+        first = {101: MagicMock(), 202: MagicMock()}
+        second = {101: MagicMock()}
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=False
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        first[101].terminate.assert_not_called()
+        assert "scope changed" in result.output.lower()
+        assert "rerun" in result.output.lower()
+
+    def test_kill_reports_sent_exited_and_denied_without_claiming_termination(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A SIGTERM dispatch is not presented as a completed process kill."""
+        import psutil
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = self._processes() + [
+            {"pid": 303, "command": "other", "cmdline": "other"}
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        sent = MagicMock()
+        exited = MagicMock()
+        denied = MagicMock()
+        sent.is_running.return_value = True
+        exited.is_running.return_value = False
+        denied.is_running.return_value = True
+        denied.terminate.side_effect = psutil.AccessDenied(pid=303)
+        first = {101: sent, 202: exited, 303: denied}
+        second = {101: MagicMock(), 202: MagicMock(), 303: MagicMock()}
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[first, second],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        assert "Sent SIGTERM to 1 process" in result.output
+        assert "1 already exited or was reused" in result.output
+        assert "1 permission denied" in result.output
+        assert "killed" not in result.output.lower()
+
+    def test_kill_guarded_terminate_no_such_process_is_not_counted_as_sent(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Psutil can detect PID reuse at the final guarded terminate call."""
+        import psutil
+
+        db_file = tmp_path / "moneybin.duckdb"
+        db_file.touch()
+        processes = [{"pid": 101, "command": "duckdb", "cmdline": "duckdb db"}]
+        mocker.patch(
+            "moneybin.cli.commands.db._find_db_processes",
+            side_effect=[processes, processes],
+        )
+        captured = MagicMock()
+        captured.is_running.return_value = True
+        captured.terminate.side_effect = psutil.NoSuchProcess(pid=101)
+        mocker.patch(
+            "moneybin.cli.commands.db._capture_process_snapshot",
+            side_effect=[{101: captured}, {101: MagicMock()}],
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db._same_process_selection", return_value=True
+        )
+
+        result = runner.invoke(app, ["kill", "--database", str(db_file), "--yes"])
+
+        assert result.exit_code == 1
+        assert "already exited or was reused" in result.output
+        assert "Sent SIGTERM" not in result.output
+
+
+class TestDbPromptPolicy:
+    """Maintenance prompts do not consume redirected stdin."""
+
+    def test_init_passphrase_refuses_redirected_input_even_with_yes(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        _make_settings_mock(tmp_path / "moneybin.duckdb", mocker)
+        mocker.patch("moneybin.cli.commands.db.sys.stdin.isatty", return_value=False)
+        mocker.patch("moneybin.cli.commands.db.sys.stdout.isatty", return_value=False)
+
+        result = CliRunner().invoke(
+            app,
+            ["init", "--passphrase", "--yes"],
+            input="not-a-passphrase-prompt\n",
+        )
+
+        assert result.exit_code == 1
+        assert "never reads passphrases from redirected input" in result.output
+
+
+class TestDbMaintenanceInterrupts:
+    """Long maintenance operations state only their known interrupted facts."""
+
+    def test_backup_interrupt_does_not_claim_a_created_backup(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"source")
+        _make_settings_mock(db_path, mocker)
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=KeyboardInterrupt
+        )
+
+        result = CliRunner().invoke(
+            app, ["backup", "--output", str(tmp_path / "copy.duckdb")]
+        )
+
+        assert result.exit_code == 130
+        assert "interrupted" in result.output.lower()
+        assert "Backup created" not in result.output
+
+    def test_restore_interrupt_after_auto_backup_names_saved_backup(
+        self, mocker: Any, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"current")
+        source = tmp_path / "backup.duckdb"
+        source.write_bytes(b"restore")
+        _make_settings_mock(db_path, mocker)
+        original_copy = shutil.copy2
+        calls = 0
+
+        def interrupt_replacement(source_path: str, target_path: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise KeyboardInterrupt
+            return str(original_copy(source_path, target_path))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.copy2", side_effect=interrupt_replacement
+        )
+
+        result = CliRunner().invoke(app, ["restore", "--from", str(source), "--yes"])
+
+        assert result.exit_code == 130
+        assert "Pre-restore backup saved" in result.output
+        assert "replacement may be incomplete" in result.output.lower()

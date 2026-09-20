@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess  # noqa: S404  # subprocess used with static args for DuckDB CLI invocation and lsof/ps process inspection
 import sys
 import tempfile
@@ -21,11 +20,21 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
+from moneybin.cli.progress import operation_progress
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    compose_human_result,
+    render_rows,
+)
+from moneybin.cli.utils import get_terminal_policy
+from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import build_envelope
 
 from .stubs import _not_implemented
@@ -50,6 +59,14 @@ _DIRECT_DB_BANNER = (
     '     moneybin sql query "<your SQL>"'
 )
 _CLI_ENCRYPTION_KEY_ENV_VAR = "MONEYBIN_DATABASE__ENCRYPTION_KEY"
+
+
+def _require_interactive_prompt(*, action: str, guidance: str) -> None:
+    """Refuse prompts when redirected streams cannot express a real choice."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        return
+    typer.echo(f"{action} requires an interactive terminal. {guidance}")
+    raise typer.Exit(1)
 
 
 @contextmanager
@@ -194,6 +211,10 @@ def db_init(
     db_path = database or settings.database.path
 
     if db_path.exists() and not yes:
+        _require_interactive_prompt(
+            action="Database reinitialization confirmation",
+            guidance="Use --yes only after reviewing the database path.",
+        )
         overwrite = typer.confirm(
             f"Database already exists at {db_path}. Reinitialize?"
         )
@@ -202,6 +223,10 @@ def db_init(
 
     pp: str | None = None
     if passphrase:
+        _require_interactive_prompt(
+            action="Passphrase entry",
+            guidance="MoneyBin never reads passphrases from redirected input.",
+        )
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
         if pp != pp_confirm:
@@ -227,7 +252,7 @@ def db_init(
                 "Delete the file or restore the original key, then retry."
             )
         raise typer.Exit(1) from e
-    logger.info(f"✅ Encrypted database created: {db_path}")
+    typer.echo(f"Encrypted database created: {db_path}")
 
 
 def _run_duckdb_cli(
@@ -405,13 +430,6 @@ def db_query(
     )
 
 
-def _render_db_info_header(payload: dict[str, object]) -> None:
-    logger.info(f"Database: {payload['database']}")
-    logger.info(f"  File size: {_format_bytes(cast(int, payload['file_size_bytes']))}")
-    logger.info("  Encryption: AES-256-GCM (always on)")
-    logger.info(f"  Key mode: {payload['key_mode']}")
-
-
 @app.command("info")
 def db_info(
     database: Path | None = typer.Option(
@@ -422,6 +440,7 @@ def db_info(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # db info has no info-only chatter; only data lines
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
     from moneybin.config import get_settings
@@ -458,8 +477,20 @@ def db_info(
             # the typed-payload path cannot read anything in.
             typer.echo(json.dumps(payload, indent=2, default=str))
             return
-        _render_db_info_header(payload)
-        logger.info("  Lock state: locked (no key in keychain or env)")
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_summary([
+                ("Database", str(payload["database"])),
+                ("File size", _format_bytes(cast(int, payload["file_size_bytes"]))),
+                ("Encryption", "AES-256-GCM (always on)"),
+                ("Key mode", str(payload["key_mode"])),
+                ("Lock state", "locked (no key in keychain or env)"),
+                ("Tables", "unavailable while locked"),
+            ]),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
     # Open database to get table info
@@ -510,13 +541,37 @@ def db_info(
                 typer.echo(json.dumps(payload, indent=2, default=str))
                 return
 
-            _render_db_info_header(payload)
-            logger.info("  Lock state: unlocked")
-            logger.info(f"  Tables: {len(table_rows)}")
-            for row in table_rows:
-                logger.info(f"    {row['schema']}.{row['table']}: {row['rows']} rows")
+            pairs = [
+                ("Database", str(payload["database"])),
+                ("File size", _format_bytes(cast(int, payload["file_size_bytes"]))),
+                ("Encryption", "AES-256-GCM (always on)"),
+                ("Key mode", str(payload["key_mode"])),
+                ("Lock state", "unlocked"),
+                ("Tables", str(len(table_rows))),
+            ]
             if "duckdb_version" in payload:
-                logger.info(f"  DuckDB version: {payload['duckdb_version']}")
+                pairs.append(("DuckDB version", str(payload["duckdb_version"])))
+            policy = get_terminal_policy(no_pager=no_pager)
+            parts: list[object] = [build_summary(pairs)]
+            if table_rows:
+                parts.append(
+                    build_rows(
+                        ["schema", "table", "rows"],
+                        [
+                            (row["schema"], row["table"], row["rows"])
+                            for row in table_rows
+                        ],
+                        terminal=policy,
+                    )
+                )
+            else:
+                parts.append(build_summary([("Tables", "No user tables found.")]))
+            emit_human_result(
+                compose_human_result(parts),
+                policy=policy,
+                finite_read=True,
+                no_pager=no_pager,
+            )
     except (
         Exception
     ) as e:  # duckdb raises untyped errors on connection/encryption failure
@@ -553,17 +608,28 @@ def db_backup(
         timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         backup_path = backup_dir / f"moneybin_{timestamp}.duckdb"
 
-    shutil.copy2(str(db_path), str(backup_path))
+    try:
+        with operation_progress(get_terminal_policy()) as report:
+            report(ProgressEvent("Copying database backup"))
+            shutil.copy2(str(db_path), str(backup_path))
+            report(ProgressEvent("Securing database backup"))
+            # Set restrictive permissions
+            if sys.platform != "win32":
+                try:
+                    backup_path.chmod(0o600)
+                except OSError:
+                    pass
+    except KeyboardInterrupt:
+        if backup_path.exists():
+            typer.echo(
+                f"Backup interrupted; {backup_path} may be incomplete and was not confirmed."
+            )
+        else:
+            typer.echo("Backup interrupted before a backup file was confirmed.")
+        raise typer.Exit(130) from None
 
-    # Set restrictive permissions
-    if sys.platform != "win32":
-        try:
-            backup_path.chmod(0o600)
-        except OSError:
-            pass
-
-    logger.info(
-        f"✅ Backup created: {backup_path} ({_format_bytes(backup_path.stat().st_size)})"
+    typer.echo(
+        f"Backup created: {backup_path} ({_format_bytes(backup_path.stat().st_size)})"
     )
 
 
@@ -605,6 +671,10 @@ def db_restore(
         if latest:
             from_path = backups[0]
         else:
+            _require_interactive_prompt(
+                action="Backup selection",
+                guidance="Use --from or --latest in noninteractive runs.",
+            )
             logger.info("Available backups:")
             for i, b in enumerate(backups, 1):
                 logger.info(f"  {i}. {b.name} ({_format_bytes(b.stat().st_size)})")
@@ -623,6 +693,10 @@ def db_restore(
         raise typer.Exit(1)
 
     if not yes:
+        _require_interactive_prompt(
+            action="Database restore confirmation",
+            guidance="Use --yes only after reviewing the selected backup.",
+        )
         confirm = typer.confirm(
             f"Restore from {selected_path.name}? Current database will be backed up first."
         )
@@ -630,42 +704,85 @@ def db_restore(
             raise typer.Exit(0)
 
     # Auto-backup current database
-    if db_path.exists():
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
-        shutil.copy2(str(db_path), str(auto_backup))
-        logger.info(f"Auto-backed up current database: {auto_backup.name}")
-
-    shutil.copy2(str(selected_path), str(db_path))
-    if sys.platform != "win32":
-        try:
-            db_path.chmod(0o600)
-        except OSError:
-            pass
-
-    store = SecretStore()
+    auto_backup: Path | None = None
+    replacement_started = False
+    database_replaced = False
     try:
-        with Database(db_path, secret_store=store, read_only=True):
-            pass
-        logger.info(f"✅ Database restored from {selected_path.name}")
-    except DatabaseKeyError:
-        logger.warning(
-            "⚠️  Could not open restored database with current key. "
-            "The backup may be from before a key rotation."
+        with operation_progress(get_terminal_policy()) as report:
+            if db_path.exists():
+                backup_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+                auto_backup = backup_dir / f"moneybin_{timestamp}_pre_restore.duckdb"
+                report(ProgressEvent("Saving pre-restore backup"))
+                shutil.copy2(str(db_path), str(auto_backup))
+
+            replacement_started = True
+            report(ProgressEvent("Replacing database from backup"))
+            shutil.copy2(str(selected_path), str(db_path))
+            database_replaced = True
+            if sys.platform != "win32":
+                try:
+                    db_path.chmod(0o600)
+                except OSError:
+                    pass
+
+            report(ProgressEvent("Validating restored database"))
+            store = SecretStore()
+            with Database(db_path, secret_store=store, read_only=True):
+                pass
+        typer.echo(f"Database restored from {selected_path.name}")
+    except KeyboardInterrupt:
+        saved_state = (
+            f"Pre-restore backup saved at {auto_backup}. "
+            if auto_backup is not None and auto_backup.exists()
+            else "No pre-restore backup was confirmed. "
         )
-        logger.info(
-            "💡 Set the original key via MONEYBIN_DATABASE__ENCRYPTION_KEY "
-            "and run 'moneybin db key rotate' to re-encrypt."
+        replacement_state = (
+            "Database replacement completed before interruption. "
+            if database_replaced
+            else (
+                "Database replacement may be incomplete. "
+                if replacement_started
+                else "Database replacement did not begin. "
+            )
+        )
+        typer.echo(f"Restore interrupted. {saved_state}{replacement_state}")
+        raise typer.Exit(130) from None
+    except DatabaseKeyError:
+        saved_state = (
+            f"Pre-restore backup saved at {auto_backup}. "
+            if auto_backup is not None
+            else "No pre-restore backup was needed because no database existed. "
+        )
+        typer.echo(
+            f"Database was replaced from {selected_path}. {saved_state}"
+            "Validation could not open it with the current key; it may predate a key "
+            "rotation. Set MONEYBIN_DATABASE__ENCRYPTION_KEY to the original key and "
+            "run 'moneybin db key rotate' to re-encrypt."
         )
         raise typer.Exit(1) from None
     except (
         Exception
     ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
-        logger.debug("Restore validation failed", exc_info=True)
-        logger.warning(
-            "⚠️  Could not open restored database. The backup may be corrupted."
+        saved_state = (
+            f"Pre-restore backup saved at {auto_backup}. "
+            if auto_backup is not None
+            else "No pre-restore backup was needed because no database existed. "
         )
+        if database_replaced:
+            typer.echo(
+                f"Database was replaced from {selected_path}. {saved_state}"
+                "Validation could not open it; the backup may be corrupted."
+            )
+        elif replacement_started:
+            typer.echo(
+                f"Restore failed. {saved_state}Database replacement may be incomplete; "
+                "validation did not run."
+            )
+        else:
+            typer.echo(
+                f"Restore failed. {saved_state}Database replacement did not begin."
+            )
         raise typer.Exit(1) from None
 
 
@@ -682,9 +799,9 @@ def db_lock() -> None:
         )
 
         invalidate_encryption_key_cache()
-        logger.info("✅ Database locked — key cleared from keychain")
+        typer.echo("Database locked — key cleared from keychain")
     except SecretNotFoundError:
-        logger.info("Database is already locked (no key in keychain)")
+        typer.echo("Database is already locked (no key in keychain)")
     except Exception as e:  # keyring backends may raise non-specific errors
         logger.error(f"❌ Failed to lock: {e}")
         raise typer.Exit(1) from e
@@ -740,6 +857,10 @@ def db_unlock() -> None:
             e,
         )
         raise typer.Exit(1) from e
+    _require_interactive_prompt(
+        action="Passphrase entry",
+        guidance="MoneyBin never reads passphrases from redirected input.",
+    )
     pp = typer.prompt("Enter passphrase", hide_input=True)
 
     # Re-derive key using same params and stored salt via shared helper.
@@ -768,18 +889,28 @@ def db_unlock() -> None:
         )
 
         invalidate_encryption_key_cache()
-        logger.info("✅ Database unlocked")
+        typer.echo("Database unlocked")
     except (
         Exception
     ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
+        cleanup_confirmed = True
         try:
             store.delete_key("DATABASE__ENCRYPTION_KEY")
         except Exception:  # keyring backends may raise beyond SecretNotFoundError
+            cleanup_confirmed = False
             logger.debug(
                 "Could not remove key from keychain during unlock failure",
                 exc_info=True,
             )
-        logger.error("❌ Wrong passphrase — database remains locked")
+        if cleanup_confirmed:
+            typer.echo(
+                "Wrong passphrase; the derived key was removed from the keychain"
+            )
+        else:
+            typer.echo(
+                "Wrong passphrase; MoneyBin could not confirm removal of the derived "
+                "key from the keychain. Run 'moneybin db lock' before retrying."
+            )
         raise typer.Exit(1) from None
 
 
@@ -832,6 +963,10 @@ def db_key_rotate(
 
     if not yes:
         logger.warning("⚠️  Existing backups will remain encrypted with the old key.")
+        _require_interactive_prompt(
+            action="Key rotation confirmation",
+            guidance="Use --yes only after reviewing the backup warning.",
+        )
         confirm = typer.confirm("Proceed with key rotation?")
         if not confirm:
             raise typer.Exit(0)
@@ -841,49 +976,99 @@ def db_key_rotate(
     from moneybin.database import build_attach_sql, scrub_key_material
 
     rotated_path = db_path.with_suffix(".rotated.duckdb")
-    with _load_encryption_key() as old_key:
-        # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
-        # simultaneous open connections; the Database class wraps a single one.
-        conn = duckdb_mod.connect()
-        try:
-            conn.execute("LOAD httpfs;")
-            conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
-            conn.execute(build_attach_sql(rotated_path, new_key, alias="new_db"))
-            conn.execute("COPY FROM DATABASE old_db TO new_db")
-        except Exception as e:  # duckdb raises untyped errors on ATTACH/COPY failure
-            # Both ATTACHes carry a plaintext key, and DuckDB echoes the failing
-            # statement back in parser errors. This message goes to logger.error,
-            # which the unfiltered file handler persists to cli_YYYY-MM-DD.log —
-            # and SanitizedLogFormatter masks digit runs, never a hex key.
-            scrub_key_material(e, old_key, new_key)
-            logger.error(f"❌ Key rotation failed: {e}")
-            rotated_path.unlink(missing_ok=True)
-            raise typer.Exit(1) from e
-        finally:
-            conn.close()
-
     old_backup = db_path.with_suffix(".old.duckdb")
-    shutil.move(str(db_path), str(old_backup))
-    shutil.move(str(rotated_path), str(db_path))
-
-    if sys.platform != "win32":
-        try:
-            db_path.chmod(0o600)
-        except OSError:
-            pass
-
+    original_move_started = False
+    original_archived = False
+    replacement_move_started = False
+    database_rotated = False
     try:
-        store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
+        with operation_progress(get_terminal_policy()) as report:
+            with _load_encryption_key() as old_key:
+                # Direct duckdb.connect() required here: COPY FROM DATABASE needs two
+                # simultaneous open connections; the Database class wraps a single one.
+                conn = duckdb_mod.connect()
+                try:
+                    report(ProgressEvent("Copying encrypted database"))
+                    conn.execute("LOAD httpfs;")
+                    conn.execute(build_attach_sql(db_path, old_key, alias="old_db"))
+                    conn.execute(
+                        build_attach_sql(rotated_path, new_key, alias="new_db")
+                    )
+                    conn.execute("COPY FROM DATABASE old_db TO new_db")
+                except (
+                    Exception
+                ) as e:  # duckdb raises untyped errors on ATTACH/COPY failure
+                    scrub_key_material(e, old_key, new_key)
+                    logger.error(f"❌ Key rotation failed: {e}")
+                    rotated_path.unlink(missing_ok=True)
+                    raise typer.Exit(1) from e
+                finally:
+                    conn.close()
+
+            report(ProgressEvent("Swapping encrypted database files"))
+            original_move_started = True
+            shutil.move(str(db_path), str(old_backup))
+            original_archived = True
+            replacement_move_started = True
+            shutil.move(str(rotated_path), str(db_path))
+            database_rotated = True
+            if sys.platform != "win32":
+                try:
+                    db_path.chmod(0o600)
+                except OSError:
+                    pass
+
+            report(ProgressEvent("Updating encryption keychain entry"))
+            store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
     except Exception as e:  # keyring backends may raise non-specific errors
+        if not database_rotated:
+            if original_archived:
+                typer.echo(
+                    "Key rotation could not replace the database. The original database "
+                    f"was archived at {old_backup}; replacement state is unknown. Inspect "
+                    "both files before retrying.",
+                    err=True,
+                )
+                raise typer.Exit(1) from e
+            raise
         # The DB file now holds new_key but the keychain still has old_key.
         # old_backup is intact — recovery is possible.
         # Print the new key to stderr directly (not via logger) so it does
         # not appear in log files or get processed by SanitizedLogFormatter.
-        logger.error(f"❌ Key rotation failed to update keychain: {e}")
+        typer.echo(
+            "Database re-encrypted, but the keychain update failed. Keep the old "
+            "database backup until access is restored.",
+            err=True,
+        )
         typer.echo("Recovery: set the following env var to regain access:", err=True)
         typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
         typer.echo(f"  (old database backup: {old_backup})", err=True)
         raise typer.Exit(1) from e
+    except KeyboardInterrupt:
+        if database_rotated or original_archived:
+            typer.echo(
+                "Key rotation interrupted after the database swap began; the keychain "
+                "update is unconfirmed. Keep the old database backup until access is restored.",
+                err=True,
+            )
+            typer.echo(
+                "Recovery: set the following env var to regain access:", err=True
+            )
+            typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+            typer.echo(f"  (old database backup: {old_backup})", err=True)
+        elif original_move_started or replacement_move_started:
+            typer.echo(
+                "Key rotation interrupted during the database swap; file state is "
+                "unknown. Inspect the database and retained backup before retrying.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                "Key rotation interrupted before the database swap; the rotated candidate "
+                "may be incomplete.",
+                err=True,
+            )
+        raise typer.Exit(130) from None
     old_backup.unlink(missing_ok=True)
 
     # Rotation changes the encryption key, so the in-process cache is stale.
@@ -894,8 +1079,8 @@ def db_key_rotate(
 
     invalidate_encryption_key_cache()
 
-    logger.info("✅ Database re-encrypted with new key")
-    logger.info("💡 Existing backups are still encrypted with the old key")
+    typer.echo("Database re-encrypted with new key")
+    typer.echo("Existing backups are still encrypted with the old key")
 
 
 @key_app.command("export", hidden=True)
@@ -952,6 +1137,40 @@ def _find_db_processes(db_path: Path) -> list[dict[str, str | int]]:
     return find_blocking_processes(db_path)
 
 
+def _capture_process_snapshot(
+    processes: list[dict[str, str | int]],
+) -> dict[int, object] | None:
+    """Capture psutil identities for a selected process roll.
+
+    The shared lsof/ps dictionaries remain the public discovery contract. This
+    private snapshot is only the `db kill` guard against PID reuse between the
+    preview and SIGTERM.
+    """
+    import psutil
+
+    snapshot: dict[int, object] = {}
+    for process_row in processes:
+        pid = int(process_row["pid"])
+        try:
+            process = psutil.Process(pid)
+            # Force psutil to retain the creation-time identity before showing
+            # the selection. Its signal methods recheck that identity later.
+            process.create_time()
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            return None
+        snapshot[pid] = process
+    return snapshot
+
+
+def _same_process_selection(
+    preview: dict[int, object], current: dict[int, object]
+) -> bool:
+    """Return whether both scans name the same psutil process instances."""
+    return preview.keys() == current.keys() and all(
+        preview[pid] == current[pid] for pid in preview
+    )
+
+
 def _render_db_processes(db_path: Path, processes: list[dict[str, str | int]]) -> None:
     """Render the roll of processes holding `db_path` open (requirement 1).
 
@@ -966,22 +1185,6 @@ def _render_db_processes(db_path: Path, processes: list[dict[str, str | int]]) -
     )
 
 
-def _list_db_processes(db_path: Path) -> list[dict[str, str | int]]:
-    """Print the table of processes holding `db_path` open and return them.
-
-    Returns an empty list when the file is missing or no other process holds it.
-    """
-    if not db_path.exists():
-        logger.info(f"Database file does not exist yet: {db_path}")
-        return []
-    processes = _find_db_processes(db_path)
-    if not processes:
-        logger.info(f"No other processes have {db_path.name} open")
-        return []
-    _render_db_processes(db_path, processes)
-    return processes
-
-
 @app.command("ps")
 def db_ps(
     database: Path | None = typer.Option(
@@ -989,6 +1192,7 @@ def db_ps(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show processes holding the MoneyBin database file open."""
     from moneybin.config import get_settings
@@ -1011,15 +1215,42 @@ def db_ps(
         return
 
     if not db_path.exists():
-        if not quiet:
-            logger.info(f"Database file does not exist yet: {db_path}")
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_summary([
+                ("Processes", f"Database file does not exist yet: {db_path}")
+            ]),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
     procs = _find_db_processes(db_path)
+    policy = get_terminal_policy(no_pager=no_pager)
     if not procs:
-        if not quiet:
-            logger.info(f"No other processes have {db_path.name} open")
+        emit_human_result(
+            build_summary([
+                ("Processes", f"No other processes have {db_path.name} open")
+            ]),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
-    _render_db_processes(db_path, procs)
+    emit_human_result(
+        compose_human_result([
+            build_summary([("Database", str(db_path))]),
+            build_rows(
+                ["pid", "command", "args"],
+                [(proc["pid"], proc["command"], proc["cmdline"]) for proc in procs],
+                numeric=("pid",),
+                terminal=policy,
+            ),
+        ]),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("kill")
@@ -1030,29 +1261,76 @@ def db_kill(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Kill processes holding the MoneyBin database file open."""
+    import psutil
+
     from moneybin.config import get_settings
 
     db_path = database or get_settings().database.path
-    processes = _list_db_processes(db_path)
-    if not processes:
+    if not db_path.exists():
+        logger.info(f"Database file does not exist yet: {db_path}")
         return
+    processes = _find_db_processes(db_path)
+    if not processes:
+        logger.info(f"No other processes have {db_path.name} open")
+        return
+    preview_snapshot = _capture_process_snapshot(processes)
+    if preview_snapshot is None:
+        typer.echo(
+            "Could not verify the selected process identities; no SIGTERM was sent."
+        )
+        raise typer.Exit(1)
+    _render_db_processes(db_path, processes)
     typer.echo()
 
     count = len(processes)
     noun = "process" if count == 1 else "processes"
-    if not yes and not typer.confirm(f"Send SIGTERM to {count} {noun}?"):
-        raise typer.Exit(0)
+    if not yes:
+        _require_interactive_prompt(
+            action="Process signal confirmation",
+            guidance="Use --yes only after reviewing the displayed process selection.",
+        )
+        if not typer.confirm(f"Send SIGTERM to {count} {noun}?"):
+            raise typer.Exit(0)
 
-    killed = 0
+    current_processes = _find_db_processes(db_path)
+    current_snapshot = _capture_process_snapshot(current_processes)
+    if current_snapshot is None or not _same_process_selection(
+        preview_snapshot, current_snapshot
+    ):
+        typer.echo(
+            "Process scope changed after the preview; no SIGTERM was sent. Rerun "
+            "'moneybin db kill' to review the current selection."
+        )
+        if current_processes:
+            _render_db_processes(db_path, current_processes)
+        raise typer.Exit(1)
+
+    sent = 0
+    exited_or_reused = 0
+    denied = 0
     for proc in processes:
         pid = int(proc["pid"])
+        process = preview_snapshot[pid]
         try:
-            os.kill(pid, signal.SIGTERM)
+            if not process.is_running():  # type: ignore[union-attr]  # private psutil snapshot
+                exited_or_reused += 1
+                typer.echo(f"PID {pid} already exited or was reused; no signal sent")
+                continue
+            process.terminate()  # type: ignore[union-attr]  # SIGTERM guarded by psutil identity
             logger.info(f"Sent SIGTERM to PID {pid} ({proc['command']})")
-            killed += 1
-        except ProcessLookupError:
-            logger.warning(f"⚠️  PID {pid} already exited")
-        except PermissionError:
-            logger.error(f"❌ No permission to kill PID {pid} ({proc['command']})")
-    if killed:
-        logger.info(f"✅ Sent SIGTERM to {killed} {noun}")
+            sent += 1
+        except psutil.NoSuchProcess:
+            exited_or_reused += 1
+            typer.echo(f"PID {pid} already exited or was reused; no signal sent")
+        except psutil.AccessDenied:
+            denied += 1
+            typer.echo(f"No permission to signal PID {pid} ({proc['command']})")
+    if sent:
+        sent_noun = "process" if sent == 1 else "processes"
+        typer.echo(f"Sent SIGTERM to {sent} {sent_noun}")
+    if exited_or_reused:
+        typer.echo(f"{exited_or_reused} already exited or was reused; no signal sent")
+    if denied:
+        typer.echo(f"{denied} permission denied")
+    if exited_or_reused or denied:
+        raise typer.Exit(1)
