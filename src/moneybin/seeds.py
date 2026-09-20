@@ -208,17 +208,31 @@ def refresh_views(db: Database) -> None:
     # Build the two-tier category-source bridge. Mirrors
     # src/moneybin/sqlmesh/models/core/bridge_category_source_map.sql — a user row for
     # (source_type, source_category_code, source_subcategory_code) always
-    # wins over the seed default. COALESCE(..., '') on the seed side guards
-    # against a blank CSV cell round-tripping through pandas as NaN/NULL
-    # instead of the '' "no subcategory" sentinel app.category_source_map's
-    # NOT NULL DEFAULT '' always holds.
+    # wins over the seed default.
+    #
+    # The seed table is SQLMesh-managed, so _ensure_seed_tables_exist's CREATE
+    # TABLE IF NOT EXISTS is a no-op on an existing database and the column
+    # only lands once `transform apply` runs. Database.__init__ calls
+    # refresh_views() on every open, well before that — so referencing the
+    # column unconditionally would raise BinderException on the first open
+    # after upgrading, bricking every entry point with no self-heal path
+    # (opening the database is itself a prerequisite for running
+    # `transform apply`). Guarded the same way the `class` column above is.
+    # COALESCE(..., '') additionally guards a blank CSV cell round-tripping
+    # as NULL rather than the '' "no subcategory" sentinel that
+    # app.category_source_map's NOT NULL DEFAULT '' always holds.
+    seed_subcategory_expr = (
+        "COALESCE(s.source_subcategory_code, '')"
+        if has_column(db, SEED_CATEGORY_SOURCE_MAP, "source_subcategory_code")
+        else "''"
+    )
     db.execute(
         f"""
         CREATE OR REPLACE VIEW {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS
         SELECT
             s.source_type,
             s.source_category_code,
-            COALESCE(s.source_subcategory_code, '') AS source_subcategory_code,
+            {seed_subcategory_expr} AS source_subcategory_code,
             s.code_level,
             s.category_id,
             s.source_taxonomy_version,
@@ -228,7 +242,7 @@ def refresh_views(db: Database) -> None:
             SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name} a
             WHERE a.source_type = s.source_type
             AND a.source_category_code = s.source_category_code
-            AND a.source_subcategory_code = COALESCE(s.source_subcategory_code, '')
+            AND a.source_subcategory_code = {seed_subcategory_expr}
         )
         UNION ALL
         SELECT

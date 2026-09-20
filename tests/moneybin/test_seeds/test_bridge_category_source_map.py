@@ -89,3 +89,40 @@ def test_user_override_wins(db: Database) -> None:
     ).fetchall()
 
     assert rows == [("u_custom0001", False)]
+
+
+def test_refresh_views_survives_a_seed_table_without_the_subcategory_column(
+    db: Database,
+) -> None:
+    """A SQLMesh-managed seed table can predate source_subcategory_code.
+
+    ``_ensure_seed_tables_exist``'s CREATE TABLE IF NOT EXISTS is a no-op on a
+    database SQLMesh has already built, so the new column only lands once
+    ``transform apply`` runs. ``Database.__init__`` calls ``refresh_views`` on
+    every open, long before that — so referencing the column unconditionally
+    raised BinderException on the first open after upgrading and bricked every
+    entry point, with no self-heal path (opening the database is itself a
+    prerequisite for running ``transform apply``).
+    """
+    refresh_views(db)  # ensures seeds.category_source_map exists
+    db.execute("DROP TABLE seeds.category_source_map")
+    db.execute(
+        "CREATE TABLE seeds.category_source_map ("
+        "source_type VARCHAR, source_category_code VARCHAR, "
+        "code_level VARCHAR, category_id VARCHAR, "
+        "source_taxonomy_version VARCHAR)"
+    )
+    db.execute(
+        "INSERT INTO seeds.category_source_map VALUES "
+        "('plaid', 'INCOME', 'primary', 'INC', 'plaid_pfc_v2')"
+    )
+
+    refresh_views(db)
+
+    rows = db.execute(
+        "SELECT source_subcategory_code, category_id "
+        "FROM core.bridge_category_source_map "
+        "WHERE source_type = 'plaid' AND source_category_code = 'INCOME'"
+    ).fetchall()
+
+    assert rows == [("", "INC")]
