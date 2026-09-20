@@ -272,6 +272,8 @@ def test_rules_resolve_declined_confirmation_changes_nothing(
     )
 
     assert result.exit_code == 0, result.output
+    assert "Rule conflict resolution cancelled" in result.stdout
+    assert "No rule conflicts were changed" in result.stdout
     mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
 
 

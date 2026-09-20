@@ -67,6 +67,20 @@ def test_notes_delete_with_yes(runner: CliRunner, db: Database) -> None:
     assert rows is not None and rows[0] == 0
 
 
+def test_notes_delete_cancellation_is_a_visible_receipt(
+    runner: CliRunner, db: Database
+) -> None:
+    note = TransactionService(db).add_note("T1", "keep", actor="cli")
+
+    result = runner.invoke(
+        app, ["transactions", "notes", "delete", note.note_id], input="n\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Note deletion cancelled" in result.stdout
+    assert "Note was not deleted" in result.stdout
+
+
 def test_notes_edit_unknown_id_exits_1(runner: CliRunner, db: Database) -> None:
     result = runner.invoke(
         app, ["transactions", "notes", "edit", "deadbeef", "anything"]

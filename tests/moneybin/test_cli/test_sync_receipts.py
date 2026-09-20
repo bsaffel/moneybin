@@ -3,16 +3,101 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.connectors.sync_models import InstitutionResult, PullResult
+from moneybin.logging.config import setup_logging
 
 runner = CliRunner()
+
+
+def _sync_app_with_real_logging(*, verbose: bool, log_path: Path | None) -> typer.Typer:
+    """Invoke the real ``sync pull`` command beneath real CLI handlers."""
+    from moneybin.cli.commands import sync
+
+    wrapper = typer.Typer(no_args_is_help=False)
+
+    @wrapper.callback()
+    def configure_logging() -> None:
+        setup_logging(
+            stream="cli",
+            verbose=verbose,
+            log_to_file=log_path is not None,
+            log_file_path=log_path,
+        )
+
+    _ = configure_logging
+    wrapper.add_typer(sync.app, name="sync")
+    return wrapper
+
+
+def _pull_with_diagnostics(*_args: object, **_kwargs: object) -> PullResult:
+    """Synthetic upstream seam that retains representative service records."""
+    logging.getLogger("moneybin.services.synthetic_sync").info("sync diagnostic")
+    logging.getLogger("moneybin.services.synthetic_refresh").info("refresh diagnostic")
+    logging.getLogger("moneybin.services.synthetic_refresh").warning("refresh warning")
+    return _pull_result()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_real_sync_command_normal_and_quiet_keep_receipt_warning_without_info_wall(
+    mock_build: MagicMock,
+) -> None:
+    """The command path, handler setup, and synthetic service seam stay coherent."""
+    service = MagicMock()
+    service.pull.side_effect = _pull_with_diagnostics
+    mock_build.return_value.__enter__.return_value = service
+
+    for args in ([], ["--quiet"]):
+        result = runner.invoke(
+            _sync_app_with_real_logging(verbose=False, log_path=None),
+            ["sync", "pull", *args],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Sync complete" in result.stdout
+        assert "refresh warning" in result.stderr
+        assert "sync diagnostic" not in result.stderr
+        assert "refresh diagnostic" not in result.stderr
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_real_sync_command_verbose_and_file_keep_diagnostics_and_json_clean(
+    mock_build: MagicMock, tmp_path: Path
+) -> None:
+    """Verbose exposes diagnostics; JSON stdout remains one structured document."""
+    service = MagicMock()
+    service.pull.side_effect = _pull_with_diagnostics
+    mock_build.return_value.__enter__.return_value = service
+    path = tmp_path / "moneybin.log"
+
+    verbose = runner.invoke(
+        _sync_app_with_real_logging(verbose=True, log_path=path), ["sync", "pull"]
+    )
+    assert verbose.exit_code == 0, verbose.output
+    assert "sync diagnostic" in verbose.stderr
+    assert "refresh diagnostic" in verbose.stderr
+    log_path = next(tmp_path.glob("cli_*.log"))
+    log_text = log_path.read_text()
+    assert "sync diagnostic" in log_text
+    assert "refresh diagnostic" in log_text
+
+    service.pull.side_effect = _pull_with_diagnostics
+    json_result = runner.invoke(
+        _sync_app_with_real_logging(verbose=False, log_path=path),
+        ["sync", "pull", "--output", "json"],
+    )
+    assert json_result.exit_code == 0, json_result.output
+    assert json.loads(json_result.stdout)["status"] == "ok"
+    assert "sync diagnostic" not in json_result.stderr
 
 
 def _normalize_prose(text: str) -> str:

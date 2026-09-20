@@ -183,7 +183,7 @@ def transactions_splits_remove(
 
     if not yes:
         if not typer.confirm(f"Remove split {split_id}?"):
-            logger.info("Cancelled")
+            _emit_split_cancellation("Split removal cancelled", "No split was removed")
             raise typer.Exit(0)
 
     try:
@@ -229,7 +229,7 @@ def transactions_splits_clear(
 
     if not yes:
         if not typer.confirm(f"Clear all splits on {transaction_id}?"):
-            logger.info("Cancelled")
+            _emit_split_cancellation("Split clear cancelled", "No splits were removed")
             raise typer.Exit(0)
 
     with handle_cli_errors():
@@ -289,6 +289,18 @@ def _emit_split_receipt(
             ),
         ),
         policy=policy,
+        finite_read=False,
+        receipt=True,
+    )
+
+
+def _emit_split_cancellation(title: str, saved_state: str) -> None:
+    """Present a declined split mutation as a terminal outcome."""
+    emit_human_result(
+        compose_human_result([
+            build_summary([("Saved state", saved_state)], title=title)
+        ]),
+        policy=get_terminal_policy(),
         finite_read=False,
         receipt=True,
     )

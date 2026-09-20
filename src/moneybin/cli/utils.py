@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -23,6 +24,7 @@ from moneybin.utils.user_config import ensure_default_profile, get_default_profi
 
 if TYPE_CHECKING:
     from moneybin.cli.terminal import TerminalPolicy
+    from moneybin.config import CLISettings
     from moneybin.database import Database
     from moneybin.matching.engine import MatchResult
     from moneybin.services.refresh_outcome import RefreshStepOutcome
@@ -32,10 +34,32 @@ logger = logging.getLogger(__name__)
 # DEPRECATED: direct-human-output — migrate this text path through the shared
 # terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
 
-# Profile-resolution provenance: kept in the log file, kept off the console.
-# Named so `_CONSOLE_SUPPRESSED_PREFIXES` can target it without silencing the
-# rest of `moneybin.cli`, which is ordinary user-facing output.
+# Profile-resolution provenance: retained in logs and shown only with --verbose.
 _profile_source_logger = logger.getChild("profile_source")
+
+_TERMINAL_ESCAPE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|.)"
+)
+_TERMINAL_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+
+def terminal_safe_text(value: object) -> str:
+    """Return terminal-safe text without control sequences from external errors."""
+    return _TERMINAL_CONTROL.sub("", _TERMINAL_ESCAPE.sub("", str(value)))
+
+
+def format_cli_failure(message: object, *, policy: TerminalPolicy | None = None) -> str:
+    """Prefix a terminal-safe error with the active policy's failure marker."""
+    terminal = policy or get_terminal_policy()
+    return f"{terminal.symbols.failure} {terminal_safe_text(message)}"
+
+
+def format_cli_attention(
+    message: object, *, policy: TerminalPolicy | None = None
+) -> str:
+    """Prefix a terminal-safe warning with the active policy's attention marker."""
+    terminal = policy or get_terminal_policy()
+    return f"{terminal.symbols.attention} {terminal_safe_text(message)}"
 
 
 def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
@@ -94,7 +118,7 @@ def handle_cli_errors(
     DatabaseLockError, DatabaseNotInitializedError, etc.) and exits with
     code 1. When the active output format is JSON (set via ``output_option``
     callback), emits a structured error envelope to stdout; otherwise logs
-    the message with the standard ❌ prefix and prints any hint straight to
+    the message with the terminal-policy failure marker and prints any hint straight to
     stderr (never through the logger — see the text-mode branch below).
     Unrecognized exceptions propagate unchanged.
 
@@ -141,9 +165,7 @@ def handle_cli_errors(
                     user_error, cli_actor=cli_actor, payload_type=payload_type
                 )
             else:
-                logger.error(
-                    f"{get_terminal_policy().symbols.failure} {user_error.message}"
-                )
+                logger.error(format_cli_failure(user_error.message))
                 if user_error.hint:
                     # NOT logger.info: the root logger runs at INFO and the
                     # file handler is unfiltered (`_ConsoleNoiseFilter` only
@@ -191,9 +213,11 @@ def warn_transfers_retired(
         else ""
     )
     logger.warning(
-        f"⚠️  Retired {count} previously accepted transfer(s) — {cause}; "
-        "inspect with 'moneybin system audit list' and restore with "
-        f"'moneybin system audit undo <operation-id>' if that was wrong{follow_up}"
+        format_cli_attention(
+            f"Retired {count} previously accepted transfer(s) - {cause}; "
+            "inspect with 'moneybin system audit list' and restore with "
+            f"'moneybin system audit undo <operation-id>' if that was wrong{follow_up}"
+        )
     )
 
 
@@ -226,26 +250,34 @@ def warn_refresh_steps(outcome: RefreshStepOutcome | None) -> None:
     ):
         stage = outcome.stage(step)
         if stage is not None and stage.error is not None:
-            logger.warning(f"⚠️  {label}: {stage.error}")
+            logger.warning(format_cli_attention(f"{label}: {stage.error}"))
     for domain in outcome.identity_errors:
-        logger.warning(f"⚠️  {domain.title()} identity backfill failed")
+        logger.warning(
+            format_cli_attention(f"{domain.title()} identity backfill failed")
+        )
     rates = outcome.stage("rates")
     if rates is not None and rates.error is not None:
         # Ahead of the three pair warnings below, and never instead of them: a
         # crash names no pair, so those lines stay silent and this is the only
         # signal the step failed at all.
-        logger.warning(f"⚠️  Exchange rate backfill failed: {rates.error}")
+        logger.warning(
+            format_cli_attention(f"Exchange rate backfill failed: {rates.error}")
+        )
     if outcome.rate_pairs_failed:
         logger.warning(
-            f"⚠️  Exchange rates unavailable for {', '.join(outcome.rate_pairs_failed)}"
+            format_cli_attention(
+                f"Exchange rates unavailable for {', '.join(outcome.rate_pairs_failed)}"
+            )
         )
     if outcome.rate_pairs_unsupported:
         # Separate line from the one above because the remedy is different, and
         # the remedy is the whole reason to print it: retrying never fills this.
         logger.warning(
-            f"⚠️  No exchange rate series is published for "
-            f"{', '.join(outcome.rate_pairs_unsupported)}. "
-            "Record these rates yourself with `moneybin fx set`."
+            format_cli_attention(
+                "No exchange rate series is published for "
+                f"{', '.join(outcome.rate_pairs_unsupported)}. "
+                "Record these rates yourself with `moneybin fx set`."
+            )
         )
     if outcome.rate_pairs_discarded:
         # Hedged, unlike the two above: this pair may have stored most of its
@@ -255,9 +287,11 @@ def warn_refresh_steps(outcome: RefreshStepOutcome | None) -> None:
         # answer's span — a series starting after the window or stopping before
         # it — never sent one to drop.
         logger.warning(
-            f"⚠️  Exchange rate coverage is short for "
-            f"{', '.join(outcome.rate_pairs_discarded)}. "
-            "Conversion may be incomplete on those dates."
+            format_cli_attention(
+                "Exchange rate coverage is short for "
+                f"{', '.join(outcome.rate_pairs_discarded)}. "
+                "Conversion may be incomplete on those dates."
+            )
         )
 
 
@@ -277,9 +311,11 @@ def warn_match_decisions_committed(partial: MatchResult) -> None:
     if not partial.has_matches:
         return
     logger.warning(
-        f"⚠️  Committed {partial.summary().lower()} before matching failed — "
-        "those decisions are durable; review them with "
-        "'moneybin transactions matches pending'"
+        format_cli_attention(
+            f"Committed {partial.summary().lower()} before matching failed - "
+            "those decisions are durable; review them with "
+            "'moneybin transactions matches pending'"
+        )
     )
 
 
@@ -403,7 +439,7 @@ def sqlmesh_command(
     except Exception as e:
         user_error = classify_user_error(e)
         if user_error is not None:
-            logger.error(f"❌ {user_error.message}")
+            logger.error(format_cli_failure(user_error.message))
             if user_error.hint:
                 # See handle_cli_errors above: never logger.info — the file
                 # handler has no level filter, so a logged hint would persist
@@ -411,7 +447,7 @@ def sqlmesh_command(
                 # this path doesn't quietly reacquire the retired pattern.
                 typer.echo(user_error.hint, err=True)
         else:
-            logger.error(f"❌ {label} failed: {e}")
+            logger.error(format_cli_failure(f"{label} failed: {e}"))
         raise typer.Exit(1) from e
 
 
@@ -426,6 +462,18 @@ class _CLIFlags:
 
 
 _flags = _CLIFlags()
+
+
+def emit_cli_commentary(message: str) -> None:
+    """Write optional terminal commentary to stderr without using INFO logging."""
+    if not _flags.quiet and _flags.output == OutputFormat.TEXT:
+        typer.echo(terminal_safe_text(message), err=True)
+
+
+def emit_cli_outcome(message: str) -> None:
+    """Write an essential terminal outcome that quiet mode must not hide."""
+    if _flags.output == OutputFormat.TEXT:
+        typer.echo(terminal_safe_text(message), err=True)
 
 
 def stash_cli_flags(profile: str | None, verbose: bool) -> None:
@@ -453,17 +501,20 @@ def set_quiet_flag(value: bool) -> bool:
     return value
 
 
-def get_terminal_policy(*, no_pager: bool = False) -> TerminalPolicy:
+def get_terminal_policy(
+    *, no_pager: bool = False, settings: CLISettings | None = None
+) -> TerminalPolicy:
     """Resolve terminal presentation without triggering profile setup or a DB open."""
     from moneybin.cli.terminal import resolve_terminal_policy
     from moneybin.config import CLISettings, get_current_profile, get_settings
 
-    try:
-        get_current_profile(auto_resolve=False)
-    except RuntimeError:
-        settings = CLISettings()
-    else:
-        settings = get_settings().cli
+    if settings is None:
+        try:
+            get_current_profile(auto_resolve=False)
+        except RuntimeError:
+            settings = CLISettings()
+        else:
+            settings = get_settings().cli
     return resolve_terminal_policy(
         stdin=sys.stdin,
         stdout=sys.stdout,
@@ -519,17 +570,16 @@ def resolve_profile() -> None:
     normalized = normalize_profile_name(profile_name)
     profile_dir = get_base_dir() / "profiles" / normalized
     if not profile_dir.exists():
-        logger.error(f"❌ Profile '{normalized}' does not exist")
-        logger.info("💡 Run 'moneybin profile list' to see available profiles")
-        logger.info(f"💡 Run 'moneybin profile create {normalized}' to create it")
+        logger.error(format_cli_failure(f"Profile '{normalized}' does not exist"))
+        # Recovery remains visible even when normal CLI diagnostics are hidden.
+        typer.echo("Run 'moneybin profile list' to see available profiles", err=True)
+        typer.echo(f"Run 'moneybin profile create {normalized}' to create it", err=True)
         raise typer.Exit(1)
 
     setup_observability(stream="cli", verbose=_flags.verbose, profile=profile_name)
     logger.info(f"Using profile: {profile_name}")
     if source:
-        # INFO, on a child logger the console denylist covers: which of
-        # --profile, MONEYBIN_PROFILE, or config.yaml chose this profile is
-        # trivia on every command but the only evidence when an unexpected one
-        # is selected. `logger.debug` would drop it from the log file too —
-        # the root logger sits at INFO and never emits DEBUG records.
+        # INFO keeps the selection provenance in configured file logs; it is
+        # terminal-visible only under --verbose. DEBUG would drop it from the
+        # file while the root logger is at INFO.
         _profile_source_logger.info(f"Profile resolved from {source}")

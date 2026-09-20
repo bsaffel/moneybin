@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from moneybin.cli.main import app
 from moneybin.cli.prompts import Choice
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.services.matching_service import PENDING_MATCHES_HINT
 
 runner = CliRunner()
@@ -87,6 +88,20 @@ def test_missing_decision_queue_requires_an_explicit_choice(
 ) -> None:
     """A decision never silently changes the first review queue."""
     choose.return_value = "matches"
+    _policy.return_value = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     from moneybin.services.matching_service import MatchDecisionOutcome
 
@@ -223,7 +238,8 @@ def test_confirm_all_reports_only_the_rows_that_stayed_accepted(
     # Part of what the user asked for did not commit, so the exit code carries
     # it: --confirm-all is the surface most likely to be run unattended.
     assert result.exit_code == 1
-    assert "Accepted 2 previewed match(es)" in result.output
+    assert "Match decisions saved" in result.output
+    assert "Accepted:     2" in result.output
     assert "Accepted 3" not in result.output
     assert "1 of them did not stand" in result.output
 
@@ -272,7 +288,8 @@ def test_targeted_confirm_exits_zero_when_the_accept_stood(
     )
 
     assert result.exit_code == 0
-    assert "Accepted match" in result.output
+    assert "Match decision saved" in result.output
+    assert "Decision: accepted" in result.output
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -317,7 +334,8 @@ def test_a_refused_confirm_still_performs_the_reject_asked_for_beside_it(
     ]
     assert len(rejected) == 1
     assert rejected[0].args[0] == "tx_other00002"
-    assert "Rejected match" in result.output
+    assert "Match decision saved" in result.output
+    assert "Decision: rejected" in result.output
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -341,7 +359,8 @@ def test_confirm_all_is_silent_about_reversals_when_none_happened(
     result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
 
     assert result.exit_code == 0
-    assert "Accepted 3 previewed match(es)" in result.output
+    assert "Match decisions saved" in result.output
+    assert "Accepted:     3" in result.output
     assert "did not stand" not in result.output
 
 
@@ -373,7 +392,7 @@ def test_confirm_all_previews_and_accepts_the_same_limited_selection(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.output.index("match-1") < result.output.index("Accepted 1")
+    assert result.output.index("match-1") < result.output.index("Accepted:     1")
     if expects_deprecation:
         assert "deprecated" in result.output
     mock_service.return_value.preview_pending.assert_called_once_with(limit=1)

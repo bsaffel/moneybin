@@ -190,7 +190,17 @@ def transactions_notes_delete(
 
     if not yes:
         if not typer.confirm(f"Delete note {note_id}?"):
-            logger.info("Cancelled")
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [("Saved state", "Note was not deleted")],
+                        title="Note deletion cancelled",
+                    )
+                ]),
+                policy=get_terminal_policy(),
+                finite_read=False,
+                receipt=True,
+            )
             raise typer.Exit(0)
 
     try:

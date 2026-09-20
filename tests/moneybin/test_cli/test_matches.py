@@ -12,6 +12,22 @@ from moneybin.cli.commands.transactions.matches import app
 runner = CliRunner()
 
 
+@patch("moneybin.cli.commands.transactions.matches.get_database")
+@patch("moneybin.services.matching_service.MatchingService.undo")
+def test_undo_declined_confirmation_has_a_visible_receipt(
+    mock_undo: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A declined match reversal must not disappear with INFO suppression."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(app, ["undo", "match_123"], input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Undo cancelled" in result.stdout
+    assert "No match decision changed" in result.stdout
+    mock_undo.assert_not_called()
+
+
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
     """The WARNING-level records only — the surface's disclosure channel.
 
@@ -240,7 +256,7 @@ class TestMatchesRun:
         )
         assert result.exit_code == 1
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(m.startswith("❌") for m in errors), errors
+        assert any(m.startswith(("×", "X")) for m in errors), errors
         assert not any("Binder Error" in m for m in errors), errors
 
 
@@ -366,7 +382,7 @@ class TestMatchesBackfill:
         )
         assert result.exit_code == 1
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(m.startswith("❌") for m in errors), errors
+        assert any(m.startswith(("×", "X")) for m in errors), errors
         assert not any("Binder Error" in m for m in errors), errors
 
 
@@ -829,7 +845,6 @@ class TestMatchesSet:
         self,
         mock_set_status: MagicMock,
         mock_get_db: MagicMock,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         from moneybin.services.matching_service import MatchDecisionOutcome
 
@@ -838,11 +853,10 @@ class TestMatchesSet:
             match_status="accepted", transfers_retired=0
         )
 
-        with caplog.at_level(logging.INFO):
-            result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
+        result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
 
         assert result.exit_code == 0
-        assert any("Set match dd_100000001 to accepted" in m for m in caplog.messages)
+        assert "Set match dd_100000001 to accepted" in result.stdout
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.set_status")

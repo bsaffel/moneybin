@@ -66,6 +66,37 @@ def test_handle_cli_errors_uses_ascii_failure_marker_when_requested(
     assert "❌" not in caplog.text
 
 
+def test_cli_failure_marker_uses_terminal_policy_and_strips_controls(
+    mocker: Any,
+) -> None:
+    """Shared failure text stays readable in ASCII terminals without escapes."""
+    from moneybin.cli.utils import format_cli_failure
+
+    mocker.patch(
+        "moneybin.cli.utils.get_terminal_policy",
+        return_value=TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        ),
+    )
+
+    message = format_cli_failure("DuckDB failed: bad" + chr(27) + "[31m input")
+
+    assert message == "X DuckDB failed: bad input"
+
+
 def test_handle_cli_errors_hint_reaches_console_not_log(
     capsys: pytest.CaptureFixture[str],
     caplog: LogCaptureFixture,

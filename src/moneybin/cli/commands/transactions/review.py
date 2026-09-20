@@ -222,12 +222,25 @@ def _review_matches_noninteractive(
                     ],
                     title="Confirm match decisions",
                 )
-                logger.info(
-                    f"Confirming {len(selection.ids)} pending match(es) from the "
-                    f"first {selection.limit} in review order"
-                )
                 bulk = svc.accept_previewed(selection, actor="cli")
-                logger.info(f"Accepted {bulk.accepted} previewed match(es)")
+                emit_human_result(
+                    compose_human_result([
+                        build_summary(
+                            [
+                                ("Requested", str(len(selection.ids))),
+                                ("Accepted", str(bulk.accepted)),
+                                (
+                                    "Review scope",
+                                    f"First {selection.limit} in review order",
+                                ),
+                            ],
+                            title="Match decisions saved",
+                        )
+                    ]),
+                    policy=get_terminal_policy(),
+                    finite_read=False,
+                    receipt=True,
+                )
                 if bulk.accounting_stale:
                     logger.warning(
                         "! Match decisions were saved, but FX accounting is stale. "
@@ -261,7 +274,17 @@ def _review_matches_noninteractive(
             if confirm_id:
                 outcome = svc.set_status(confirm_id, status="accepted", actor="cli")
                 if outcome.match_status == "accepted":
-                    logger.info(f"Accepted match {confirm_id}")
+                    emit_human_result(
+                        compose_human_result([
+                            build_summary(
+                                [("Match", confirm_id), ("Decision", "accepted")],
+                                title="Match decision saved",
+                            )
+                        ]),
+                        policy=get_terminal_policy(),
+                        finite_read=False,
+                        receipt=True,
+                    )
                 else:
                     # Same refusal `matches set` can hit: the reconciliation this
                     # accept triggers walks every accepted transfer, this row
@@ -279,7 +302,17 @@ def _review_matches_noninteractive(
                 )
             if reject_id:
                 svc.set_status(reject_id, status="rejected", actor="cli")
-                logger.info(f"Rejected match {reject_id}")
+                emit_human_result(
+                    compose_human_result([
+                        build_summary(
+                            [("Match", reject_id), ("Decision", "rejected")],
+                            title="Match decision saved",
+                        )
+                    ]),
+                    policy=get_terminal_policy(),
+                    finite_read=False,
+                    receipt=True,
+                )
             # After both, for the same reason they are independent ifs: a
             # refused confirm must not skip the reject the caller also asked
             # for. Same exit code as `matches set` on the identical refusal.

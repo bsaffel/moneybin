@@ -167,6 +167,34 @@ def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
     assert rows is not None and rows[0] == 0
 
 
+def test_splits_remove_cancellation_is_a_visible_receipt(
+    runner: CliRunner, db: Database
+) -> None:
+    split = TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+
+    result = runner.invoke(
+        app, ["transactions", "splits", "remove", split.split_id], input="n\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Split removal cancelled" in result.stdout
+    assert "No split was removed" in result.stdout
+
+
+def test_splits_clear_cancellation_is_a_visible_receipt(
+    runner: CliRunner, db: Database
+) -> None:
+    """A declined clear reports that the existing splits remain saved."""
+    TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+
+    result = runner.invoke(app, ["transactions", "splits", "clear", "T1"], input="n\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Split clear cancelled" in result.stdout
+    assert "No splits were removed" in result.stdout
+    assert len(TransactionService(db).list_splits("T1")) == 1
+
+
 def test_splits_remove_missing_exits_1(runner: CliRunner, db: Database) -> None:
     result = runner.invoke(
         app, ["transactions", "splits", "remove", "doesnotexist", "--yes"]

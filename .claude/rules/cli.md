@@ -153,23 +153,16 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 ### Keeping the console readable
 
-WARNING and above always reach the console. Below that, a record is hidden only
-if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`;
-everything else prints.
+WARNING and above always reach the console. Normal CLI invocations suppress
+routine INFO and DEBUG records; `--verbose` restores diagnostics. File handlers
+remain unfiltered, and non-CLI streams retain their own console behavior.
 
-**`logger.debug` is not "hide from console" — it is "drop everywhere."** The
-root logger sits at INFO, so a DEBUG record never reaches the log file either.
-Before demoting a line, name the other place the information survives — and
-note that `typer.echo` is not that place, because it writes to stderr and never
-reaches the log file. Reach for `logger.debug` only when a surviving
-`typer.echo` or INFO line already says it; when the detail belongs in the file
-but not the terminal, add a denylist prefix instead. Getting this backwards is
-easy and quiet: demoting the per-tier match counts looked like console cleanup,
-but `MatchResult.summary()` reports only run-wide totals, so the per-tier split
-left the log file entirely. Why the denylist is deliberate rather than an
-allowlist, and what `log_to_file: false` changes:
-[`.claude/references/console-log-routing.md`](../references/console-log-routing.md).
-Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
+**`logger.debug` is not "hide from console" — it is "drop everywhere" unless
+`--verbose` enables it.** Before demoting a line, name the result or recovery
+presenter that preserves the user-facing fact. `typer.echo` is not a durable
+log record, so use INFO when the detail belongs in configured file logs and
+make it visible with `--verbose`. Command results never depend on either INFO
+or DEBUG. Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
 
 ## Standard Flags on Read-Only Commands
 
@@ -329,18 +322,15 @@ Every interactive prompt (confirmation, selection, wizard step) must have a flag
 
 Combined with `--output json` (see `mcp-architecture.md` §7), this makes every CLI command fully automatable by AI agents (Claude Code, Codex) and shell scripts.
 
-## Icon Usage
+## Terminal symbols and logging
 
-Use icons **sparingly** — only where they add scanability, not decoration.
+Normal CLI logging shows warnings and errors only; `--verbose` adds routine
+diagnostics. Command results belong to their stdout presenter and progress to
+stderr, so a result must never depend on `logger.info`. This stays true when
+file logging is unavailable. File handlers retain their configured records.
 
-| Signal | Icon | When to use |
-|--------|------|-------------|
-| Success | `✅` | Final line of a successful action command |
-| Error | `❌` | `logger.error(...)` messages |
-| Warning | `⚠️` | `logger.warning(...)` messages |
-| Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
-| Hint | `💡` | Optional follow-up tips after an error |
-| Bug report | `🐛` | Link to issue tracker after an unexpected error |
-| Review | `👀` | Items that need user attention or review |
-
-Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data. No decorative icons (📈📊📁) — only the semantic icons in the table above.
+Use the active `TerminalPolicy` symbols for shared error and progress helpers:
+`OK`/`X`/`>` in ASCII mode and their functional Unicode counterparts otherwise.
+Do not hard-code pictographic prefixes in new terminal output. Essential
+recovery text goes directly to stderr and JSON commands keep stdout exclusively
+for their structured document or envelope.

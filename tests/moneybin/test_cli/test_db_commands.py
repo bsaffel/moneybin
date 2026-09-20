@@ -158,6 +158,110 @@ class TestDuckDBCLIInitialization:
 
         assert not init_script.exists()
 
+    def test_launcher_presents_start_and_cancelled_outcome_on_stderr(
+        self, mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Native child commentary must not depend on filtered INFO logging."""
+        database = tmp_path / "test.duckdb"
+        database.touch()
+        mocker.patch("moneybin.cli.commands.db.shutil.which", return_value="duckdb")
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment", return_value={}
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.subprocess.run", side_effect=KeyboardInterrupt
+        )
+
+        with pytest.raises(typer.Exit) as exit_info:
+            db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                database, start_msg="Opening DuckDB shell", hint_msg="Type .help"
+            )
+
+        assert exit_info.value.exit_code == 130
+        stderr = capsys.readouterr().err
+        assert "Opening DuckDB shell" in stderr
+        assert "Type .help" in stderr
+        assert "cancelled" in stderr.lower()
+
+    def test_launcher_keeps_cancelled_outcome_when_quiet(
+        self, mocker: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Quiet hides launch chatter but not the child's interrupted outcome."""
+        from moneybin.cli.output import OutputFormat
+        from moneybin.cli.utils import set_output_flag, set_quiet_flag
+
+        database = tmp_path / "test.duckdb"
+        database.touch()
+        mocker.patch("moneybin.cli.commands.db.shutil.which", return_value="duckdb")
+        mocker.patch(
+            "moneybin.cli.commands.db._duckdb_cli_environment", return_value={}
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.subprocess.run", side_effect=KeyboardInterrupt
+        )
+        set_output_flag(OutputFormat.TEXT)
+        set_quiet_flag(True)
+        try:
+            with pytest.raises(typer.Exit) as exit_info:
+                db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                    database, start_msg="Opening DuckDB shell", hint_msg="Type .help"
+                )
+        finally:
+            set_quiet_flag(False)
+
+        assert exit_info.value.exit_code == 130
+        stderr = capsys.readouterr().err
+        assert "Opening DuckDB shell" not in stderr
+        assert "Type .help" not in stderr
+        assert "DuckDB shell cancelled" in stderr
+
+    def test_direct_db_banner_uses_the_active_attention_marker(
+        self, mocker: Any
+    ) -> None:
+        """The direct-DB safety disclosure follows ASCII terminal policy."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch("moneybin.cli.utils.get_terminal_policy", return_value=policy)
+
+        banner = db_commands._direct_db_banner()  # pyright: ignore[reportPrivateUsage]
+
+        assert banner.startswith("! Direct DB access")
+        assert "⚠️" not in banner
+
+    def test_launcher_missing_database_keeps_recovery_on_stderr(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A launcher refusal keeps its recovery command outside filtered INFO."""
+        database = tmp_path / "missing.duckdb"
+
+        with caplog.at_level("ERROR"), pytest.raises(typer.Exit) as exit_info:
+            db_commands._run_duckdb_cli(  # pyright: ignore[reportPrivateUsage]
+                database, start_msg="", hint_msg=""
+            )
+
+        assert exit_info.value.exit_code == 1
+        assert "Database file not found" in caplog.text
+        assert "moneybin db init" in capsys.readouterr().err
+
 
 class TestShellCommand:
     """Tests for 'moneybin db shell'."""
@@ -299,7 +403,7 @@ class TestShellCommand:
         mock_subprocess_run.side_effect = KeyboardInterrupt()
 
         result = runner.invoke(app, ["shell"])
-        assert result.exit_code == 0
+        assert result.exit_code == 130
 
 
 class TestUiCommand:
@@ -441,7 +545,7 @@ class TestUiCommand:
         mock_subprocess_run.side_effect = KeyboardInterrupt()
 
         result = runner.invoke(app, ["ui"])
-        assert result.exit_code == 0
+        assert result.exit_code == 130
 
 
 class TestQueryCommand:
@@ -1604,6 +1708,25 @@ class TestDbKillProcessIdentity:
             {"pid": 101, "command": "duckdb", "cmdline": "duckdb moneybin.duckdb"},
             {"pid": 202, "command": "python", "cmdline": "python -m etl"},
         ]
+
+    def test_kill_noop_receipts_name_absent_database_and_no_processes(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """Successful no-op kills are visible answers, not filtered INFO."""
+        missing = tmp_path / "missing.duckdb"
+        missing_result = runner.invoke(app, ["kill", "--database", str(missing)])
+
+        present = tmp_path / "present.duckdb"
+        present.touch()
+        mocker.patch("moneybin.cli.commands.db._find_db_processes", return_value=[])
+        no_processes_result = runner.invoke(app, ["kill", "--database", str(present)])
+
+        assert missing_result.exit_code == 0, missing_result.output
+        assert "Database file does not exist yet" in missing_result.stdout
+        assert no_processes_result.exit_code == 0, no_processes_result.output
+        assert (
+            "No other processes have present.duckdb open" in no_processes_result.stdout
+        )
 
     def test_kill_rescans_and_uses_original_identity_bound_processes(
         self, runner: CliRunner, mocker: Any, tmp_path: Path

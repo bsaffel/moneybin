@@ -14,7 +14,7 @@ import tempfile
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Annotated, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import typer
 
@@ -33,7 +33,13 @@ from moneybin.cli.render import (
     compose_human_result,
     render_rows,
 )
-from moneybin.cli.utils import get_terminal_policy
+from moneybin.cli.utils import (
+    emit_cli_commentary,
+    emit_cli_outcome,
+    format_cli_attention,
+    format_cli_failure,
+    get_terminal_policy,
+)
 from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import build_envelope
 
@@ -47,17 +53,26 @@ key_app = typer.Typer(
 app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from moneybin.cli.terminal import TerminalPolicy
+
+
 # Shown in --help and emitted to stderr on every invocation of the three
 # direct-DB commands (shell, ui, query). These commands bypass the MCP
 # privacy middleware entirely — account numbers and other CRITICAL-tier
 # fields are NOT masked. The agent-mediated path (`moneybin sql query`)
 # applies SQL lineage + CRITICAL masking before returning results.
-_DIRECT_DB_BANNER = (
-    "⚠️  Direct DB access — no privacy middleware applies.\n"
-    "   Account numbers and sensitive fields are NOT masked here.\n"
-    "   For agent-mediated access with privacy enforcement, use:\n"
-    '     moneybin sql query "<your SQL>"'
-)
+def _direct_db_banner(policy: "TerminalPolicy | None" = None) -> str:
+    """Return the direct-DB disclosure using the active terminal policy."""
+    return format_cli_attention(
+        "Direct DB access - no privacy middleware applies.\n"
+        "   Account numbers and sensitive fields are NOT masked here.\n"
+        "   For agent-mediated access with privacy enforcement, use:\n"
+        '     moneybin sql query "<your SQL>"',
+        policy=policy,
+    )
+
+
 _CLI_ENCRYPTION_KEY_ENV_VAR = "MONEYBIN_DATABASE__ENCRYPTION_KEY"
 
 
@@ -95,11 +110,13 @@ def _load_encryption_key() -> Generator[str, None, None]:
         key = store.get_key("DATABASE__ENCRYPTION_KEY")
     except SecretUnavailableError:
         logger.error(
-            f"❌ OS keychain denied access to the key. {database_key_error_hint()}"
+            format_cli_failure(
+                f"OS keychain denied access to the key. {database_key_error_hint()}"
+            )
         )
         raise typer.Exit(1) from None
     except SecretNotFoundError:
-        logger.error(f"❌ Key not found. {database_key_error_hint()}")
+        logger.error(format_cli_failure(f"Key not found. {database_key_error_hint()}"))
         raise typer.Exit(1) from None
     try:
         yield key
@@ -230,7 +247,7 @@ def db_init(
         pp = typer.prompt("Enter passphrase", hide_input=True)
         pp_confirm = typer.prompt("Confirm passphrase", hide_input=True)
         if pp != pp_confirm:
-            logger.error("❌ Passphrases do not match")
+            logger.error(format_cli_failure("Passphrases do not match"))
             raise typer.Exit(1)
 
     db_cfg = settings.database
@@ -245,11 +262,12 @@ def db_init(
             argon2_hash_len=db_cfg.argon2_hash_len,
         )
     except Exception as e:  # duckdb raises untyped errors on key/file issues
-        logger.error(f"❌ Failed to initialize database: {e}")
+        logger.error(format_cli_failure(f"Failed to initialize database: {e}"))
         if db_path.exists():
-            logger.info(
-                "💡 An existing database may be encrypted with a different key. "
-                "Delete the file or restore the original key, then retry."
+            typer.echo(
+                "An existing database may be encrypted with a different key. "
+                "Delete the file or restore the original key, then retry.",
+                err=True,
             )
         raise typer.Exit(1) from e
     typer.echo(f"Encrypted database created: {db_path}")
@@ -259,10 +277,10 @@ def _run_duckdb_cli(
     db_path: Path,
     *,
     extra_args: list[str] | None = None,
-    start_msg: str = "🦆 Opening DuckDB interactive shell...",
+    start_msg: str = "Opening DuckDB interactive shell...",
     hint_msg: str = "   Type .help for commands, .quit to exit",
     error_noun: str = "DuckDB shell",
-    exit_msg: str = "✅ DuckDB shell closed",
+    exit_msg: str = "DuckDB shell cancelled",
 ) -> None:
     """Run DuckDB CLI with encrypted database attached.
 
@@ -279,14 +297,14 @@ def _run_duckdb_cli(
         exit_msg: Log message on KeyboardInterrupt.
     """
     if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
-        logger.info("💡 Run 'moneybin db init' to create the database first")
+        logger.error(format_cli_failure(f"Database file not found: {db_path}"))
+        typer.echo("Run 'moneybin db init' to create the database first", err=True)
         raise typer.Exit(1)
 
     duckdb_path = _check_duckdb_cli()
     if duckdb_path is None:
-        logger.error("❌ DuckDB CLI not found in PATH")
-        logger.info("💡 Install from: https://duckdb.org/docs/installation/")
+        logger.error(format_cli_failure("DuckDB CLI not found in PATH"))
+        typer.echo("Install from: https://duckdb.org/docs/installation/", err=True)
         raise typer.Exit(1)
 
     from moneybin.database import database_key_error_hint
@@ -299,18 +317,22 @@ def _run_duckdb_cli(
             child_environment = _duckdb_cli_environment()
         except SecretUnavailableError:
             logger.error(
-                f"❌ OS keychain denied access to the key. "
-                f"{database_key_error_hint(db_path)}"
+                format_cli_failure(
+                    "OS keychain denied access to the key. "
+                    f"{database_key_error_hint(db_path)}"
+                )
             )
             raise typer.Exit(1) from None
         except SecretNotFoundError:
-            logger.error(f"❌ Key not found. {database_key_error_hint(db_path)}")
+            logger.error(
+                format_cli_failure(f"Key not found. {database_key_error_hint(db_path)}")
+            )
             raise typer.Exit(1) from None
 
         if start_msg:
-            logger.info(start_msg)
+            emit_cli_commentary(start_msg)
         if hint_msg:
-            logger.info(hint_msg)
+            emit_cli_commentary(hint_msg)
         cmd = [duckdb_path, "-init", str(init_script)]
         if extra_args:
             cmd.extend(extra_args)
@@ -318,12 +340,12 @@ def _run_duckdb_cli(
             cmd, check=True, env=child_environment
         )
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ {error_noun} failed: {e}")
+        logger.error(format_cli_failure(f"{error_noun} failed: {e}"))
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
         if exit_msg:
-            logger.info(f"\n{exit_msg}")
-        sys.exit(0)
+            emit_cli_outcome(exit_msg)
+        raise typer.Exit(130) from None
     finally:
         init_script.unlink(missing_ok=True)
 
@@ -344,10 +366,11 @@ def db_shell(
     For agent-mediated access with privacy enforcement, use:
     moneybin sql query "<your SQL>"
     """
-    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
-    _run_duckdb_cli(database or get_settings().database.path)
+    settings = get_settings()
+    typer.echo(_direct_db_banner(get_terminal_policy(settings=settings.cli)), err=True)
+    _run_duckdb_cli(database or settings.database.path)
 
 
 @app.command("ui")
@@ -366,16 +389,17 @@ def db_ui(
     For agent-mediated access with privacy enforcement, use:
     moneybin sql query "<your SQL>"
     """
-    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
+    settings = get_settings()
+    typer.echo(_direct_db_banner(get_terminal_policy(settings=settings.cli)), err=True)
     _run_duckdb_cli(
-        database or get_settings().database.path,
+        database or settings.database.path,
         extra_args=["-ui"],
-        start_msg="🚀 Opening DuckDB web UI...",
+        start_msg="Opening DuckDB web UI...",
         hint_msg="   Press Ctrl+C to stop the server",
         error_noun="DuckDB UI",
-        exit_msg="✅ DuckDB UI stopped",
+        exit_msg="DuckDB UI cancelled",
     )
 
 
@@ -408,9 +432,10 @@ def db_query(
     For agent-mediated access with privacy enforcement, use:
     moneybin sql query "<your SQL>"
     """
-    typer.echo(_DIRECT_DB_BANNER, err=True)
     from moneybin.config import get_settings
 
+    settings = get_settings()
+    typer.echo(_direct_db_banner(get_terminal_policy(settings=settings.cli)), err=True)
     output_flag = {
         "text": "-table",
         "json": "-json",
@@ -421,7 +446,7 @@ def db_query(
     extra_args: list[str] = [output_flag, "-c", sql]
 
     _run_duckdb_cli(
-        database or get_settings().database.path,
+        database or settings.database.path,
         extra_args=extra_args,
         start_msg="",
         hint_msg="",
@@ -451,7 +476,7 @@ def db_info(
     db_path = database or settings.database.path
 
     if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
+        logger.error(format_cli_failure(f"Database file not found: {db_path}"))
         raise typer.Exit(1)
 
     payload: dict[str, object] = {
@@ -575,7 +600,7 @@ def db_info(
     except (
         Exception
     ) as e:  # duckdb raises untyped errors on connection/encryption failure
-        logger.error(f"❌ Could not open database: {e}")
+        logger.error(format_cli_failure(f"Could not open database: {e}"))
         raise typer.Exit(1) from e
 
 
@@ -597,7 +622,7 @@ def db_backup(
     db_path = settings.database.path
 
     if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
+        logger.error(format_cli_failure(f"Database file not found: {db_path}"))
         raise typer.Exit(1)
 
     if output:
@@ -660,12 +685,12 @@ def db_restore(
 
     if from_path is None:
         if not backup_dir.exists():
-            logger.error(f"❌ No backup directory found: {backup_dir}")
+            logger.error(format_cli_failure(f"No backup directory found: {backup_dir}"))
             raise typer.Exit(1)
 
         backups: list[Path] = sorted(backup_dir.glob("*.duckdb"), reverse=True)
         if not backups:
-            logger.error(f"❌ No backups found in {backup_dir}")
+            logger.error(format_cli_failure(f"No backups found in {backup_dir}"))
             raise typer.Exit(1)
 
         if latest:
@@ -675,13 +700,13 @@ def db_restore(
                 action="Backup selection",
                 guidance="Use --from or --latest in noninteractive runs.",
             )
-            logger.info("Available backups:")
+            typer.echo("Available backups:")
             for i, b in enumerate(backups, 1):
-                logger.info(f"  {i}. {b.name} ({_format_bytes(b.stat().st_size)})")
+                typer.echo(f"  {i}. {b.name} ({_format_bytes(b.stat().st_size)})")
 
             choice = typer.prompt("Select backup number", type=int)
             if choice < 1 or choice > len(backups):
-                logger.error("❌ Invalid selection")
+                logger.error(format_cli_failure("Invalid selection"))
                 raise typer.Exit(1)
             from_path = backups[choice - 1]
 
@@ -689,7 +714,7 @@ def db_restore(
     selected_path: Path = from_path  # type: ignore[assignment]  # Pyright can't narrow across Typer Option | None
 
     if not selected_path.exists():
-        logger.error(f"❌ Backup file not found: {selected_path}")
+        logger.error(format_cli_failure(f"Backup file not found: {selected_path}"))
         raise typer.Exit(1)
 
     if not yes:
@@ -803,7 +828,7 @@ def db_lock() -> None:
     except SecretNotFoundError:
         typer.echo("Database is already locked (no key in keychain)")
     except Exception as e:  # keyring backends may raise non-specific errors
-        logger.error(f"❌ Failed to lock: {e}")
+        logger.error(format_cli_failure(f"Failed to lock: {e}"))
         raise typer.Exit(1) from e
 
 
@@ -830,8 +855,10 @@ def db_unlock() -> None:
     except SecretNotFoundError:
         if not settings.database.path.exists():
             logger.error(
-                "❌ No passphrase salt found — no database exists yet. "
-                "Run 'moneybin db init --passphrase' to create one."
+                format_cli_failure(
+                    "No passphrase salt found - no database exists yet. "
+                    "Run 'moneybin db init --passphrase' to create one."
+                )
             )
         else:
             # The database exists but the salt couldn't be read — genuinely
@@ -839,12 +866,14 @@ def db_unlock() -> None:
             # used, or that this environment (sandboxed, headless, or CI)
             # denies keychain access outright, which looks identical.
             logger.error(
-                "❌ No passphrase salt found in keychain or env var, but "
-                "the database already exists. This can mean it wasn't "
-                "created with --passphrase mode, or that this environment "
-                "denies keychain access. If you know the raw encryption "
-                "key, set MONEYBIN_DATABASE__ENCRYPTION_KEY to open the "
-                "database directly, bypassing the salt entirely."
+                format_cli_failure(
+                    "No passphrase salt found in keychain or env var, but "
+                    "the database already exists. This can mean it wasn't "
+                    "created with --passphrase mode, or that this environment "
+                    "denies keychain access. If you know the raw encryption "
+                    "key, set MONEYBIN_DATABASE__ENCRYPTION_KEY to open the "
+                    "database directly, bypassing the salt entirely."
+                )
             )
         raise typer.Exit(1) from None
 
@@ -852,9 +881,10 @@ def db_unlock() -> None:
         salt = base64.b64decode(salt_b64)
     except binascii.Error as e:
         logger.error(
-            "❌ Stored passphrase salt is corrupted: %s. "
-            "Run 'moneybin db init --passphrase' to reinitialize.",
-            e,
+            format_cli_failure(
+                f"Stored passphrase salt is corrupted: {e}. "
+                "Run 'moneybin db init --passphrase' to reinitialize."
+            )
         )
         raise typer.Exit(1) from e
     _require_interactive_prompt(
@@ -878,8 +908,12 @@ def db_unlock() -> None:
 
     if not settings.database.path.exists():
         store.delete_key("DATABASE__ENCRYPTION_KEY")
-        logger.error(f"❌ Database file not found: {settings.database.path}")
-        logger.info("💡 Run 'moneybin db init --passphrase' to create a new database.")
+        logger.error(
+            format_cli_failure(f"Database file not found: {settings.database.path}")
+        )
+        typer.echo(
+            "Run 'moneybin db init --passphrase' to create a new database.", err=True
+        )
         raise typer.Exit(1)
     try:
         with Database(settings.database.path, secret_store=store, read_only=True):
@@ -926,8 +960,10 @@ def db_key_show(
         # --output json. Hoisted above all branches so neither path can suppress
         # it.
         logger.warning(
-            "⚠️  Security warning: this key provides full access to your "
-            "database. Do not share it or store it in plain text."
+            format_cli_attention(
+                "Security warning: this key provides full access to your "
+                "database. Do not share it or store it in plain text."
+            )
         )
 
         if output == OutputFormat.JSON:
@@ -958,11 +994,15 @@ def db_key_rotate(
     store = SecretStore()
 
     if not db_path.exists():
-        logger.error(f"❌ Database file not found: {db_path}")
+        logger.error(format_cli_failure(f"Database file not found: {db_path}"))
         raise typer.Exit(1)
 
     if not yes:
-        logger.warning("⚠️  Existing backups will remain encrypted with the old key.")
+        logger.warning(
+            format_cli_attention(
+                "Existing backups will remain encrypted with the old key."
+            )
+        )
         _require_interactive_prompt(
             action="Key rotation confirmation",
             guidance="Use --yes only after reviewing the backup warning.",
@@ -999,7 +1039,7 @@ def db_key_rotate(
                     Exception
                 ) as e:  # duckdb raises untyped errors on ATTACH/COPY failure
                     scrub_key_material(e, old_key, new_key)
-                    logger.error(f"❌ Key rotation failed: {e}")
+                    logger.error(format_cli_failure(f"Key rotation failed: {e}"))
                     rotated_path.unlink(missing_ok=True)
                     raise typer.Exit(1) from e
                 finally:
@@ -1267,11 +1307,11 @@ def db_kill(
 
     db_path = database or get_settings().database.path
     if not db_path.exists():
-        logger.info(f"Database file does not exist yet: {db_path}")
+        typer.echo(f"Database file does not exist yet: {db_path}")
         return
     processes = _find_db_processes(db_path)
     if not processes:
-        logger.info(f"No other processes have {db_path.name} open")
+        typer.echo(f"No other processes have {db_path.name} open")
         return
     preview_snapshot = _capture_process_snapshot(processes)
     if preview_snapshot is None:
@@ -1317,7 +1357,7 @@ def db_kill(
                 typer.echo(f"PID {pid} already exited or was reused; no signal sent")
                 continue
             process.terminate()  # type: ignore[union-attr]  # SIGTERM guarded by psutil identity
-            logger.info(f"Sent SIGTERM to PID {pid} ({proc['command']})")
+            typer.echo(f"Sent SIGTERM to PID {pid} ({proc['command']})")
             sent += 1
         except psutil.NoSuchProcess:
             exited_or_reused += 1

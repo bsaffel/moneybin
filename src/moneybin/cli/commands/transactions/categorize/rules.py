@@ -712,7 +712,17 @@ def rules_resolve(
             f"Apply {len(decisions)} rule-conflict resolution(s) ({verbs})?"
         )
         if not confirmed:
-            logger.info("Resolution cancelled")
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [("Saved state", "No rule conflicts were changed")],
+                        title="Rule conflict resolution cancelled",
+                    )
+                ]),
+                policy=get_terminal_policy(),
+                finite_read=False,
+                receipt=True,
+            )
             raise typer.Exit(0)
 
     with handle_cli_errors():
