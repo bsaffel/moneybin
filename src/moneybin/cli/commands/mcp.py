@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import signal
+import sys
 from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 
@@ -22,11 +23,17 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.utils import _flags  # pyright: ignore[reportPrivateUsage]
+from moneybin.cli.render import render_human_text
+from moneybin.cli.utils import (
+    _flags,  # pyright: ignore[reportPrivateUsage]
+    get_terminal_policy,
+)
 from moneybin.config import canonical_checkout_root, find_repo_root, get_base_dir
 from moneybin.protocol.envelope import build_envelope
 from moneybin.utils.user_config import get_default_profile
@@ -83,6 +90,24 @@ _DEFAULT_CLIENT = "claude-desktop"
 # first connection is the one most likely to time out, and it reads to the user as
 # "MoneyBin is broken" rather than "the environment was still warming up".
 _CODEX_STARTUP_TIMEOUT_SEC = 30
+
+
+def _emit_diagnostic(
+    message: str,
+    *,
+    level: Literal["error", "info", "warning"],
+) -> None:
+    """Send a human diagnostic to stderr with the active terminal symbol policy."""
+    policy = get_terminal_policy()
+    symbol = {
+        "error": policy.symbols.failure,
+        "info": policy.symbols.success,
+        "warning": policy.symbols.attention,
+    }[level]
+    rendered = render_human_text(f"{symbol} {message}", terminal=policy).rstrip("\n")
+    getattr(logger, level)(rendered)
+    typer.echo(rendered, err=True)
+
 
 # ── config subgroup ──────────────────────────────────────────────────────────
 
@@ -144,7 +169,9 @@ def mcp_config_path(
 
     if client not in _SUPPORTED_CLIENTS:
         supported = ", ".join(_SUPPORTED_CLIENTS)
-        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        _emit_diagnostic(
+            f"Unknown client '{client}'. Supported: {supported}", level="error"
+        )
         raise typer.Exit(2)
 
     # Profile resolution only matters for profile-scoped clients (claude-code).
@@ -163,9 +190,10 @@ def mcp_config_path(
             # Reading it is non-interactive, unlike the wizard this path skips.
             resolved_profile = get_default_profile() or ""
             if not resolved_profile:
-                logger.error(
-                    "❌ No active profile and --profile not supplied. "
-                    "Run `moneybin profile create <name>` or pass `--profile <name>`."
+                _emit_diagnostic(
+                    "No active profile and --profile not supplied. "
+                    "Run `moneybin profile create <name>` or pass `--profile <name>`.",
+                    level="error",
                 )
                 raise typer.Exit(1) from e
     else:
@@ -174,9 +202,10 @@ def mcp_config_path(
     path = _client_install_path(client, resolved_profile)
     if path is None:
         if client in _WORKSPACE_SCOPED_CLIENTS:
-            logger.error(
-                f"❌ {client} config path requires running inside a repo "
-                "(no git root found from current directory)."
+            _emit_diagnostic(
+                f"{client} config path requires running inside a repo "
+                "(no git root found from current directory).",
+                level="error",
             )
         raise typer.Exit(1)
     typer.echo(str(path))
@@ -254,7 +283,9 @@ def mcp_install(
 
     if client not in _SUPPORTED_CLIENTS:
         supported = ", ".join(_SUPPORTED_CLIENTS)
-        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        _emit_diagnostic(
+            f"Unknown client '{client}'. Supported: {supported}", level="error"
+        )
         raise typer.Exit(2)  # usage error — matches `mcp config path` convention
 
     from moneybin.cli.main import get_version
@@ -288,10 +319,11 @@ def mcp_install(
         # generated from.
         canonical_root = canonical_checkout_root(repo_root)
         if canonical_root != repo_root:
-            logger.info(
-                f"ℹ️  Installing from a linked worktree. Anchoring the config at "
+            _emit_diagnostic(
+                "Installing from a linked worktree. Anchoring the config at "
                 f"the main checkout ({canonical_root}) so it stays valid after "
-                f"this worktree is removed."
+                "this worktree is removed.",
+                level="info",
             )
         args: list[str] = ["run", "--directory", str(canonical_root)]
     else:
@@ -341,9 +373,10 @@ def mcp_install(
             return
         vscode_path = _client_install_path(client, resolved_profile)
         if vscode_path is None:
-            logger.error(
-                "❌ vscode install requires running inside a repo "
-                "(creates .vscode/mcp.json in the repo root)."
+            _emit_diagnostic(
+                "vscode install requires running inside a repo "
+                "(creates .vscode/mcp.json in the repo root).",
+                level="error",
             )
             raise typer.Exit(1)
         _confirm_and_merge(vscode_path, snippet, yes=yes)
@@ -448,16 +481,36 @@ def _confirm_and_merge(
     warnings about a server they didn't install.
     """
     if not yes:
-        confirmed = typer.confirm(f"\nInstall into {config_path}?", default=False)
+        confirmed = _confirm_install(config_path)
         if not confirmed:
-            logger.info("Installation cancelled.")
+            _emit_diagnostic("Installation cancelled.", level="info")
             return False
     if config_path.suffix == ".toml":
         _merge_toml_config(config_path, snippet)
     else:
         _merge_client_config(config_path, snippet)
-    logger.info(f"✅ Config written to {config_path}")
+    _emit_diagnostic(f"Config written to {config_path}", level="info")
     return True
+
+
+def _confirm_install(config_path: Path) -> bool:
+    """Read the write confirmation without sending any bytes to artifact stdout."""
+    if not get_terminal_policy().interactive:
+        _emit_diagnostic(
+            "Confirmation requires terminal input and terminal output. "
+            "Re-run with --yes to authorize this noninteractive write.",
+            level="error",
+        )
+        raise typer.Exit(1)
+    prompt = f"\nInstall into {config_path}? [y/N]: "
+    while True:
+        typer.echo(prompt, err=True, nl=False)
+        response = sys.stdin.readline().strip().lower()
+        if response in {"y", "yes"}:
+            return True
+        if response in {"", "n", "no"}:
+            return False
+        typer.echo("Error: invalid input", err=True)
 
 
 def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
@@ -476,9 +529,10 @@ def _merge_toml_config(config_path: Path, patch: dict[str, Any]) -> None:
         try:
             doc = tomlkit.parse(config_path.read_text())
         except TOMLKitError:
-            logger.error(
-                f"❌ Cannot parse existing TOML at {config_path}. "
-                "Fix the file manually before running `mcp install` again."
+            _emit_diagnostic(
+                f"Cannot parse existing TOML at {config_path}. "
+                "Fix the file manually before running `mcp install` again.",
+                level="error",
             )
             raise typer.Exit(1) from None
     else:
@@ -506,7 +560,9 @@ def _get_client_config_path(client: str) -> Path:
     """
     if client not in _CLIENT_CONFIG_PATHS:
         supported = ", ".join(_CLIENT_CONFIG_PATHS)
-        logger.error(f"❌ Unknown client '{client}'. Supported: {supported}")
+        _emit_diagnostic(
+            f"Unknown client '{client}'. Supported: {supported}", level="error"
+        )
         raise typer.Exit(1)
     return _CLIENT_CONFIG_PATHS[client]
 
@@ -543,7 +599,7 @@ def _maybe_warn_auto_load(client: str, profile: str) -> None:
     )
     typer.echo("", err=True)
     typer.echo(
-        f"⚠️  {client} auto-loads MoneyBin on {surface}. Two concurrent "
+        f"{get_terminal_policy().symbols.attention} {client} auto-loads MoneyBin on {surface}. Two concurrent "
         f"sessions on profile '{profile}' share one DuckDB file. Writes "
         "serialize and reads usually coexist; a tool call can fail only when "
         "another session holds a conflicting lock past the retry window "
@@ -605,12 +661,13 @@ def _print_client_notes(client: str) -> None:
             err=True,
         )
     if client == "chatgpt-desktop":
+        action = get_terminal_policy().symbols.action
         typer.echo("", err=True)
         typer.echo(
             "Note: this writes ~/.codex/config.toml — the ChatGPT desktop app hosts "
             "Codex and shares its MCP configuration, so this same entry also serves "
             "the Codex CLI and IDE extension (installing for `codex` is equivalent). "
-            "In ChatGPT, the server appears under Settings → MCP servers; select "
+            f"In ChatGPT, the server appears under Settings {action} MCP servers; select "
             "Restart there to pick it up. ChatGPT on the WEB cannot see it — it "
             "does not read local Codex config, and reaching it needs a remote MCP "
             "server (M3D).",
@@ -630,7 +687,7 @@ def _print_client_notes(client: str) -> None:
         overflow = VISIBLE_TOOL_COUNT - WINDSURF_ACTIVE_TOOL_CAP
         typer.echo("", err=True)
         typer.echo(
-            f"⚠️  Windsurf (Cascade) holds at most {WINDSURF_ACTIVE_TOOL_CAP} tools "
+            f"{get_terminal_policy().symbols.attention} Windsurf (Cascade) holds at most {WINDSURF_ACTIVE_TOOL_CAP} tools "
             f"at a time, across ALL your MCP servers. MoneyBin registers "
             f"{VISIBLE_TOOL_COUNT} and hides none, so this install alone is "
             f"{overflow} over the ceiling — and Windsurf gives no warning when it "
@@ -659,9 +716,10 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
         try:
             existing = json.loads(config_path.read_text())
         except json.JSONDecodeError:
-            logger.error(
-                f"❌ Cannot parse existing config at {config_path}. "
-                "Fix the JSON manually before running `mcp install` again."
+            _emit_diagnostic(
+                f"Cannot parse existing config at {config_path}. "
+                "Fix the JSON manually before running `mcp install` again.",
+                level="error",
             )
             raise typer.Exit(1) from None
 
@@ -682,6 +740,7 @@ def _merge_client_config(config_path: Path, patch: dict[str, Any]) -> None:
 def mcp_list_tools(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list-tools has no info chatter; only data lines
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List all registered MCP tools.
 
@@ -715,9 +774,25 @@ def mcp_list_tools(
         )
         return
 
-    for tool in sorted_tools:
-        description = getattr(tool, "description", "") or ""
-        typer.echo(f"  {tool.name}: {description}")
+    if not sorted_tools:
+        emit_human_result(
+            "No tools registered.",
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
+        return
+
+    catalog = "\n".join(
+        f"  {tool.name}: {getattr(tool, 'description', '') or ''}"
+        for tool in sorted_tools
+    )
+    emit_human_result(
+        catalog,
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 # ── list-prompts ─────────────────────────────────────────────────────────────
@@ -727,6 +802,7 @@ def mcp_list_tools(
 def mcp_list_prompts(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List all registered MCP prompts.
 
@@ -762,13 +838,24 @@ def mcp_list_prompts(
         return
 
     if not sorted_prompts:
-        if not quiet:
-            typer.echo("No prompts registered.")
+        emit_human_result(
+            "No prompts registered.",
+            policy=get_terminal_policy(no_pager=no_pager),
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
 
-    for prompt in sorted_prompts:
-        description = getattr(prompt, "description", None) or ""
-        typer.echo(f"  {prompt.name}  {description}")
+    catalog = "\n".join(
+        f"  {prompt.name}  {getattr(prompt, 'description', None) or ''}"
+        for prompt in sorted_prompts
+    )
+    emit_human_result(
+        catalog,
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 # ── serve ────────────────────────────────────────────────────────────────────
@@ -788,21 +875,23 @@ def _gate_network_transport(transport: str, *, insecure: bool) -> None:
     if transport == "stdio":
         return
     if not insecure:
-        logger.error(
-            f"❌ Refusing to start the MCP server on transport '{transport}' "
+        _emit_diagnostic(
+            f"Refusing to start the MCP server on transport '{transport}' "
             "without authentication. This opens a network-reachable MCP server "
             "with NO authentication — anyone who can reach the port can read and "
             "write your financial data. MoneyBin has no HTTP authentication yet; "
             "use the default stdio transport (`moneybin mcp serve`) for local AI "
             "clients. To override on a trusted, localhost-only network, re-run "
-            "with --insecure."
+            "with --insecure.",
+            level="error",
         )
         raise typer.Exit(2)
-    logger.warning(
-        f"⚠️  Starting the MCP server on transport '{transport}' with NO "
+    _emit_diagnostic(
+        f"Starting the MCP server on transport '{transport}' with NO "
         "authentication (--insecure). Anyone who can reach this port can read "
         "and write your financial data. Bind to localhost only and never expose "
-        "this port to an untrusted network."
+        "this port to an untrusted network.",
+        level="warning",
     )
 
 
@@ -878,8 +967,9 @@ def serve(
     # Validate the transport and enforce the auth gate before doing any work —
     # a refused insecure listener must not even import the server stack.
     if transport not in _VALID_TRANSPORTS:
-        logger.error(
-            f"Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}"
+        _emit_diagnostic(
+            f"Invalid transport '{transport}'. Must be one of: {', '.join(_VALID_TRANSPORTS)}",
+            level="error",
         )
         raise typer.Exit(2)
 
