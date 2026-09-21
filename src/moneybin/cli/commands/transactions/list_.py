@@ -13,6 +13,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     emit_human_result,
     no_pager_option,
     output_option,
@@ -245,7 +246,7 @@ def transactions_list(
                 # Unformatted: `render_rows` stringifies it through
                 # `format_money`, which is the only place text output does so.
                 "amount": (
-                    MoneyWithCurrency(t.amount, t.currency_code or "n/a")
+                    MoneyWithCurrency(t.amount, currency_label(t.currency_code))
                     if columns == ["transaction", "amount"]
                     else t.amount
                 ),

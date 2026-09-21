@@ -68,7 +68,8 @@ def test_categories_create_forwards_subcategory_shape(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == "cat-1"
+    assert "Category created" in result.stdout
+    assert "Category ID: cat-1" in result.stdout
     mock_service_cls.return_value.create_category.assert_called_once_with(
         "Food",
         subcategory="Coffee",
@@ -119,7 +120,9 @@ def test_categories_set_forwards_inactive_state(
     result = runner.invoke(categories_app, ["set", "cat-1", "--inactive"])
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == "cat-1"
+    assert "Category updated" in result.stdout
+    assert "Category ID: cat-1" in result.stdout
+    assert "disabled" in result.stdout
     mock_service_cls.return_value.toggle_category.assert_called_once_with(
         "cat-1",
         is_active=False,
@@ -201,7 +204,8 @@ def test_merchants_create_forwards_mapping_fields(
     )
 
     assert result.exit_code == 0, result.output
-    assert result.stdout.strip() == "merchant-1"
+    assert "Merchant mapping created" in result.stdout
+    assert "Merchant ID: merchant-1" in " ".join(result.stdout.split())
     mock_service_cls.return_value.create_merchant.assert_called_once_with(
         "COFFEE",
         "Coffee Shop",

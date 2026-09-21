@@ -19,6 +19,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     emit_human_result,
     no_pager_option,
     output_option,
@@ -211,7 +212,7 @@ def accounts_get(
         ("Institution", record.institution_name or "-"),
         ("Type", record.account_type or "-"),
         ("Subtype", record.account_subtype or "-"),
-        ("Currency", record.currency_code or "n/a"),
+        ("Currency", currency_label(record.currency_code)),
         ("Included in net worth", "yes" if record.include_in_net_worth else "no"),
         ("Status", "archived" if record.archived else "active"),
     ]

@@ -813,8 +813,9 @@ class TestImportFilesCommand:
         # retaining both rows' facts in the receipt.
         assert result.exit_code == 1, result.output
         assert "Import partially completed" in result.stdout
-        assert "Operation not permitted" in result.stdout
-        assert "Grant Full Disk Access" in result.stdout
+        rendered = " ".join(result.stdout.split())
+        assert "Operation not permitted" in rendered
+        assert "Grant Full Disk Access" in rendered
 
     def test_batch_with_a_failed_file_declares_medium_sensitivity(
         self,

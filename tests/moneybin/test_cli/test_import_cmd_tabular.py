@@ -786,11 +786,11 @@ class TestPreview:
 
         assert result.exit_code == 1
         assert not isinstance(result.exception, PermissionError)
-        # The ❌ record has to name THIS failure (not merely be some
-        # classified error) — asserting only `startswith("❌ ")` would pass
+        # The terminal-policy failure marker has to name THIS failure (not merely be
+        # some classified error) — asserting only the marker would pass
         # for any classified error at all.
         assert any(
-            r.message.startswith("❌ ") and "Permission denied" in r.message
+            r.message.startswith("× ") and "Permission denied" in r.message
             for r in caplog.records
         )
         # The 💡 hint has to be the mode-denial one, not just any hint.

@@ -113,7 +113,7 @@ def test_import_revert_deletes_a_seeded_batch_and_reports_the_count(
     result = runner.invoke(app, ["import", "revert", import_id, "--yes"])
 
     assert result.exit_code == 0, result.output
-    assert "2 rows deleted" in result.output
+    assert "Rows deleted: 2" in result.output
     assert _remaining(patched_db, import_id) == 0
     assert _status(patched_db, import_id) == "reverted"
 

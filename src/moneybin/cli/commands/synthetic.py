@@ -157,6 +157,7 @@ def _run_generate(
     skip_transform: bool,
     *,
     terminal: TerminalPolicy,
+    cli_actor: str = "synthetic_generate",
 ) -> _GenerationReceipt:
     """Generate one isolated persona, preserving the caller's runtime profile."""
     from moneybin.cli.progress import operation_progress
@@ -181,7 +182,7 @@ def _run_generate(
     set_current_profile(profile)
 
     try:
-        with handle_cli_errors(cli_actor="synthetic_generate"):
+        with handle_cli_errors(cli_actor=cli_actor):
             with get_database(read_only=False) as db:
                 try:
                     row = db.execute(
@@ -361,6 +362,7 @@ def synthetic_reset(
                 seed=seed,
                 skip_transform=skip_transform,
                 terminal=terminal,
+                cli_actor="synthetic_reset",
             )
         except KeyboardInterrupt:
             _render_interrupted(target_profile, terminal=terminal)

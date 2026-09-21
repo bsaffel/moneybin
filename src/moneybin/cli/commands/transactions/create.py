@@ -15,6 +15,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
     emit_human_result,
     output_option,
     render_or_json,
@@ -151,7 +152,7 @@ def transactions_create(
             build_summary(receipt, title="Transaction created"),
             build_rows(
                 ["amount"],
-                [(MoneyWithCurrency(row.amount, row.currency_code or "n/a"),)],
+                [(MoneyWithCurrency(row.amount, currency_label(row.currency_code)),)],
                 money={"amount": Money("flow")},
                 terminal=get_terminal_policy(),
             ),

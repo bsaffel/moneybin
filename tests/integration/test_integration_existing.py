@@ -14,10 +14,12 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pexpect
 import pytest
 from typer.testing import CliRunner
 
 from moneybin.database import Database
+from tests.pty_support import spawn_python_pty
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -60,86 +62,80 @@ class TestPassphraseRoundTrip:
     def test_passphrase_init_lock_unlock_preserves_data(
         self,
         tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Data survives a lock/unlock cycle via passphrase derivation."""
-        from moneybin.cli.commands.db import app
-
-        runner = CliRunner()
         db_path = tmp_path / "pp_test.duckdb"
+        program = """
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-        # Mock settings to use our tmp_path
-        mock_settings = MagicMock()
-        mock_settings.database.path = db_path
-        mock_settings.database.encryption_key_mode = "passphrase"
-        mock_settings.database.backup_path = tmp_path / "backups"
-        mock_settings.database.argon2_time_cost = 1  # fast for tests
-        mock_settings.database.argon2_memory_cost = 1024  # small for tests
-        mock_settings.database.argon2_parallelism = 1
-        mock_settings.database.argon2_hash_len = 32
-        monkeypatch.setattr("moneybin.config.get_settings", lambda: mock_settings)
+from moneybin.cli.commands.db import app
+from moneybin.database import Database
+from moneybin.secrets import SecretNotFoundError
 
-        # Step 1: Init with passphrase
-        # Use a real SecretStore backed by a dict (avoid hitting system keychain)
-        keychain: dict[str, str] = {}
+db_path = Path(os.environ["MONEYBIN_TEST_DB_PATH"])
+settings = SimpleNamespace(
+    database=SimpleNamespace(
+        path=db_path,
+        encryption_key_mode="passphrase",
+        backup_path=db_path.parent / "backups",
+        argon2_time_cost=1,
+        argon2_memory_cost=1024,
+        argon2_parallelism=1,
+        argon2_hash_len=32,
+    )
+)
 
-        def mock_set_key(name: str, value: str) -> None:
-            keychain[name] = value
+class Store:
+    values = {}
+    def get_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        return self.values[name]
+    def set_key(self, name, value):
+        self.values[name] = value
+    def delete_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        del self.values[name]
 
-        def mock_get_key(name: str) -> str:
-            if name in keychain:
-                return keychain[name]
-            from moneybin.secrets import SecretNotFoundError
+def invoke(args):
+    app(args=args, prog_name="moneybin db", standalone_mode=False)
 
-            raise SecretNotFoundError(f"not found: {name}")
-
-        def mock_delete_key(name: str) -> None:
-            if name in keychain:
-                del keychain[name]
-            else:
-                from moneybin.secrets import SecretNotFoundError
-
-                raise SecretNotFoundError(f"not found: {name}")
-
-        fake_store = MagicMock()
-        fake_store.get_key = mock_get_key
-        fake_store.set_key = mock_set_key
-        fake_store.delete_key = mock_delete_key
-        monkeypatch.setattr("moneybin.secrets.SecretStore", lambda: fake_store)
-
-        result = runner.invoke(
-            app,
-            ["init", "--passphrase", "--yes"],
-            input="testpass123\ntestpass123\n",
-        )
-        assert result.exit_code == 0, result.output
-        assert db_path.exists()
-        assert "DATABASE__ENCRYPTION_KEY" in keychain
-
-        # Write some test data
-        db = Database(db_path, secret_store=fake_store, read_only=False)
+with patch("moneybin.config.get_settings", return_value=settings), patch(
+    "moneybin.database.get_settings", return_value=settings
+), patch("moneybin.secrets.SecretStore", Store):
+    invoke(["init", "--passphrase", "--yes"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
         db.execute("CREATE TABLE raw.test_data (id INTEGER, val VARCHAR)")
         db.execute("INSERT INTO raw.test_data VALUES (1, 'hello')")
-        db.close()
+    invoke(["lock"])
+    assert "DATABASE__ENCRYPTION_KEY" not in Store.values
+    invoke(["unlock"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
+        row = db.execute("SELECT val FROM raw.test_data WHERE id = 1").fetchone()
+    assert row == ("hello",)
+print("roundtrip sentinel: hello")
+"""
+        process = spawn_python_pty(program, env={"MONEYBIN_TEST_DB_PATH": str(db_path)})
+        process.child.expect("Enter passphrase")
+        process.child.sendline("testpass123")
+        process.child.expect("Confirm passphrase")
+        process.child.sendline("testpass123")
+        process.child.expect("Enter passphrase")
+        process.child.sendline("testpass123")
+        process.child.expect("roundtrip sentinel: hello")
+        process.child.expect(pexpect.EOF)
+        process.child.close()
 
-        # Step 2: Lock — clears key from keychain
-        result = runner.invoke(app, ["lock"])
-        assert result.exit_code == 0
-        assert "DATABASE__ENCRYPTION_KEY" not in keychain
-
-        # Step 3: Unlock with same passphrase
-        result = runner.invoke(app, ["unlock"], input="testpass123\n")
-        assert result.exit_code == 0, result.output
-        assert "DATABASE__ENCRYPTION_KEY" in keychain
-
-        # Step 4: Verify data is accessible
-        db2 = Database(db_path, secret_store=fake_store, read_only=False)
-        try:
-            row = db2.execute("SELECT val FROM raw.test_data WHERE id = 1").fetchone()
-            assert row is not None
-            assert row[0] == "hello"
-        finally:
-            db2.close()
+        assert process.child.exitstatus == 0
+        assert "testpass123" not in process.transcript.getvalue()
 
 
 # ---------------------------------------------------------------------------

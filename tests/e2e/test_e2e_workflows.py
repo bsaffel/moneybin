@@ -678,19 +678,28 @@ class TestAutoRulePipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # auto-review surfaces the seeded proposal
-        result = run_cli("transactions", "categorize", "auto", "review", env=env)
-        result.assert_success()
-        assert "COFFEE SHOP" in result.output, (
-            f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
+        # JSON preserves full proposals regardless of the terminal's table width.
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "auto",
+            "review",
+            "--output",
+            "json",
+            env=env,
         )
+        result.assert_success()
+        proposals = json.loads(result.stdout)["data"]["proposals"]
+        assert any(
+            proposal["merchant_pattern"] == "COFFEE SHOP" for proposal in proposals
+        ), f"Expected COFFEE SHOP pattern in auto-review output: {result.stdout}"
 
         # auto-accept promotes the proposal to an active rule
         result = run_cli(
             "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Accepted 1" in result.output, (
+        assert "Accepted: 1" in " ".join(result.output.split()), (
             f"auto-accept did not approve the proposal: {result.output}"
         )
 

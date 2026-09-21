@@ -318,6 +318,7 @@ class TestResetCommand:
             "seed": 42,
             "skip_transform": False,
             "terminal": None,
+            "cli_actor": "synthetic_reset",
         }
         # Profile must be restored after successful reset
         self.mock_set_profile.assert_called_with("default")

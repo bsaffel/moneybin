@@ -299,14 +299,18 @@ class TestSystemAuditUndo:
         assert any(e["action"] == "tag.add" for e in detail["events"])
 
         # undo reverses the tag.
-        undone = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        undone = run_cli(
+            "system", "audit", "undo", op, "--yes", "--output", "json", env=env
+        )
         undone.assert_success()
         assert _loads(undone.stdout)["data"]["reversed_row_count"] == 1
         remaining = _query_json(env, "SELECT COUNT(*) AS n FROM app.transaction_tags")
         assert remaining[0]["n"] == 0
 
         # undoing again is refused with the already-undone code.
-        again = run_cli("system", "audit", "undo", op, "--output", "json", env=env)
+        again = run_cli(
+            "system", "audit", "undo", op, "--yes", "--output", "json", env=env
+        )
         assert again.exit_code == 1
         assert _loads(again.stdout)["error"]["code"] == "undo_already_undone"
 
