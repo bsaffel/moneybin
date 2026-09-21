@@ -2,7 +2,7 @@
 
 ## Status
 
-in-progress
+implemented
 
 ## Goal and scope
 
@@ -16,7 +16,7 @@ and outcome reporting. It preserves the taxonomy in [MoneyBin CLI](moneybin-cli.
 and builds on [CLI Output Coherence](cli-output-coherence.md). Existing financial
 formatting, redaction, result-framing, and audit requirements remain binding.
 This spec records the approved interaction choices and implementation boundary.
-Implementation is in progress; the behavior is not yet fully shipped.
+The shared presentation boundary and command migration implement this contract.
 
 ## Approach and tradeoffs
 
