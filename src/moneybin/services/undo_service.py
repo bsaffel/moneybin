@@ -320,7 +320,7 @@ class UndoService:
                 repo.refresh_pending_gauge()
             except Exception:  # telemetry never fails a committed undo
                 logger.warning(
-                    f"⚠️ Could not refresh the review-queue gauge for "
+                    f"! Could not refresh the review-queue gauge for "
                     f"{type(repo).__name__} after undo {operation_id}; the count "
                     "will correct itself on the next decision."
                 )

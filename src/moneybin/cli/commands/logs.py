@@ -22,7 +22,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
 )
-from moneybin.cli.utils import get_terminal_policy
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy
 from moneybin.config import get_settings
 from moneybin.utils.parsing import parse_duration
 
@@ -245,12 +245,13 @@ def _render_prune_outcome(outcome: _PruneOutcome, *, dry_run: bool) -> None:
     )
 
 
-def _do_prune(log_dir: Path, older_than: str, *, dry_run: bool) -> _PruneOutcome:
+def _do_prune(
+    log_dir: Path, older_than: str, *, dry_run: bool, output: OutputFormat
+) -> _PruneOutcome:
     try:
         delta = parse_duration(older_than)
     except ValueError as e:
-        logger.error(f"❌ {e}")
-        raise typer.Exit(2) from e
+        abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     cutoff = datetime.now() - delta
     if not log_dir.exists():
@@ -302,34 +303,41 @@ def _do_view(
     no_pager: bool,
 ) -> None:
     if level and level.upper() not in _LEVEL_PRIORITY:
-        logger.error(
-            f"❌ Unknown level '{level}'. Choose from: {', '.join(_LEVEL_PRIORITY)}"
+        abort_cli_error(
+            ValueError(
+                f"Unknown level '{level}'. Choose from: {', '.join(_LEVEL_PRIORITY)}"
+            ),
+            output=output,
+            exit_code=2,
+            cli_actor="logs",
         )
-        raise typer.Exit(2)
 
     since_dt: datetime | None = None
     if since:
         try:
             since_dt = _parse_time_bound(since)
         except ValueError as e:
-            logger.error(f"❌ {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     until_dt: datetime | None = None
     if until:
         try:
             until_dt = _parse_time_bound(until)
         except ValueError as e:
-            logger.error(f"❌ {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(e, output=output, exit_code=2, cli_actor="logs")
 
     grep_pattern: re.Pattern[str] | None = None
     if grep:
         try:
             grep_pattern = re.compile(grep)
         except re.error as e:
-            logger.error(f"❌ Invalid regex pattern: {e}")
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                ValueError(str(e)),
+                output=output,
+                exit_code=2,
+                cli_actor="logs",
+                message=f"Invalid regex pattern: {e}",
+            )
 
     if not log_dir.exists():
         if output == OutputFormat.JSON:
@@ -532,7 +540,7 @@ def logs_command(
     if prune:
         # older_than presence enforced by guard above; type narrows here.
         assert older_than is not None  # noqa: S101  # type-narrowing aid
-        outcome = _do_prune(log_dir, older_than, dry_run=dry_run)
+        outcome = _do_prune(log_dir, older_than, dry_run=dry_run, output=output)
         _render_prune_outcome(outcome, dry_run=dry_run)
         if outcome.failures:
             raise typer.Exit(1)

@@ -10,7 +10,7 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat, emit_human_result, output_option
 from moneybin.cli.render import build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import ErrorDetail
 
@@ -75,11 +75,21 @@ def categorize_commit_from_file(
             with input_path.open(encoding="utf-8") as f:
                 raw = json.load(f)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {input_path}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_commit_from_file",
+            message=f"File not found: {input_path}",
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit_from_file",
+            message=f"Invalid JSON: {e}",
+        )
 
     # Map export-shape rows into CategorizationItem-shape rows. The export
     # command emits {transaction_id, description_scrubbed, source_type} for the
@@ -102,8 +112,12 @@ def categorize_commit_from_file(
     try:
         items, parse_errors = validate_items(normalized)
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit_from_file",
+        )
 
     if items:
         from moneybin.services.categorization import CategorizationService

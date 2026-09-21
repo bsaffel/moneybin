@@ -21,7 +21,12 @@ from moneybin.cli.output import (
     quiet_option,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import confidence_cell, get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    confidence_cell,
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.merchants import (
     MerchantLinksHistoryPayload,
@@ -137,12 +142,12 @@ def links_set(
       moneybin merchants links set dec001 --new
     """
     if into is not None and new:
-        logger.error("❌ --into and --new are mutually exclusive")
+        logger.error(format_cli_failure("--into and --new are mutually exclusive"))
         raise typer.Exit(2)
     # Truthiness, not `is None`: an empty `--into ""` is not a valid merchant id
     # and must not silently fall through to the bind path.
     if not into and not new:
-        logger.error("❌ Specify either --into <merchant_id> or --new")
+        logger.error(format_cli_failure("Specify either --into <merchant_id> or --new"))
         raise typer.Exit(2)
 
     target_merchant_id: str | None = into if not new else None

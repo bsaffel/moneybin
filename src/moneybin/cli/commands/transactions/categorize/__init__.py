@@ -30,7 +30,7 @@ from moneybin.cli.render import (
     compose_human_result,
     format_money,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import ErrorDetail
 
@@ -93,12 +93,23 @@ def categorize_pending(
     try:
         min_amount_dec = Decimal(min_amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid --min-amount: {min_amount}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_pending",
+            payload_type=CatPendingPayload,
+            message=f"Invalid --min-amount: {min_amount}",
+        )
 
     if sort not in {"date", "impact"}:
-        typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
-        raise typer.Exit(2)
+        abort_cli_error(
+            ValueError("--sort must be 'date' or 'impact'."),
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_pending",
+            payload_type=CatPendingPayload,
+        )
 
     with handle_cli_errors(cli_actor="categorize_pending"):
         with get_database(read_only=True) as db:
@@ -340,17 +351,26 @@ def categorize_commit(
         else:
             raw = json.load(sys.stdin)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {input_path}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_commit",
+            message=f"File not found: {input_path}",
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit",
+            message=f"Invalid JSON: {e}",
+        )
 
     try:
         items, parse_errors = validate_items(raw)
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(e, output=output, exit_code=1, cli_actor="categorize_commit")
 
     if items:
         with handle_cli_errors(cli_actor="categorize_commit"):
@@ -452,11 +472,14 @@ def categorize_run(
         else:
             bad.append(name)
     if bad:
-        typer.echo(
-            f"❌ Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}.",
-            err=True,
+        abort_cli_error(
+            ValueError(
+                f"Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}."
+            ),
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_run",
         )
-        raise typer.Exit(2)
 
     with handle_cli_errors(cli_actor="categorize_run"):
         with get_database(read_only=False) as db:
@@ -582,8 +605,12 @@ def categorize_assist(
     if date_range:
         parts = [p.strip() for p in date_range.split(",")]
         if len(parts) != 2:
-            typer.echo("❌ --date-range must be START,END (ISO dates).", err=True)
-            raise typer.Exit(2)
+            abort_cli_error(
+                ValueError("--date-range must be START,END (ISO dates)."),
+                output=output,
+                exit_code=2,
+                cli_actor="categorize_assist",
+            )
         date_tuple = (parts[0], parts[1])
 
     with handle_cli_errors(cli_actor="categorize_assist"):

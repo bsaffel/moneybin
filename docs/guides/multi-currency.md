@@ -161,7 +161,7 @@ Accounts:    5
 │ ING checking …0001            │ 67,179.32 │ USD      │         │
 │ RBC Royal Bank checking …0003 │ 10,526.51 │ USD      │         │
 └───────────────────────────────┴───────────┴──────────┴─────────┘
-Converted from AED, CAD, EUR, GBP using 4 stored rates; run 'moneybin fx rate AED USD 2025-12-27' for one of them, or --output json for all
+Converted from AED, CAD, EUR, GBP using 4 stored rates; run 'moneybin --profile cli-ux-international fx rate AED USD 2025-12-27' for one of them, or --output json for all
 › Run reports(report_id='core:networth_history', parameters={'from_date':
 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
 › Run accounts_balances(view='history', reference='<account>') to drill into

@@ -18,7 +18,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
     NoteDeletePayload,
@@ -62,8 +62,9 @@ def transactions_notes_add(
                     transaction_id, text, actor="cli"
                 )
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_notes_add"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -153,11 +154,13 @@ def transactions_notes_edit(
             with get_database(read_only=False) as db:
                 note = TransactionService(db).edit_note(note_id, text, actor="cli")
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_notes_edit"
+        )
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_notes_edit"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -208,8 +211,9 @@ def transactions_notes_delete(
             with get_database(read_only=False) as db:
                 TransactionService(db).delete_note(note_id, actor="cli")
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_notes_delete"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(

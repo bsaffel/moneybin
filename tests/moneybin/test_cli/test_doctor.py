@@ -116,8 +116,8 @@ def test_quiet_never_hides_a_failing_invariant(
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
-    assert "⚠️  categorization_coverage — 80% uncategorized" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "! categorization_coverage — 80% uncategorized" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -136,7 +136,7 @@ def test_quiet_silences_the_next_step_hints_and_nothing_else(
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "💡" in result.output
+    assert "›" in result.output
     assert "transactions_notes_delete" in result.output
     assert "invariants checked" in result.output
 
@@ -151,7 +151,7 @@ def test_a_failing_invariant_prints_its_name_and_detail(
     mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
     result = runner.invoke(app, ["system", "doctor"])
 
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -198,7 +198,7 @@ def test_verbose_restores_the_full_roll(
     result = runner.invoke(app, ["system", "doctor", "--verbose"])
 
     assert result.exit_code == 0
-    assert result.output.count("✅") == 5
+    assert result.output.count("✓") == 5
     assert "fct_transactions_fk_integrity" in result.output
 
 
@@ -296,7 +296,7 @@ def test_doctor_renders_skipped_invariant(
     mock_svc_cls.return_value.run_all.return_value = skipped_report
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0  # skipped is not a failure
-    assert "⏭️" in result.output
+    assert "!" in result.output
     assert "dedup_reconciliation" in result.output
     assert "skipped" in result.output
 

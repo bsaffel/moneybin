@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import sys
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Never
 
 import typer
 
@@ -62,6 +63,37 @@ def format_cli_attention(
     return f"{terminal.symbols.attention} {terminal_safe_text(message)}"
 
 
+def generated_cli_command(*parts: object) -> str:
+    """Build a copyable command without resolving profile or application state."""
+    argv = ["moneybin"]
+    if _flags.profile is not None:
+        argv.extend(("--profile", _flags.profile))
+    argv.extend(str(part) for part in parts)
+    return shlex.join(argv)
+
+
+_LEGACY_STATE_MARKER_PREFIX = re.compile(r"^(✅|❌|⚠️?|⏭️?|👀|❓|💡)(?=\s)")
+
+
+def format_cli_hint(message: object, *, policy: TerminalPolicy | None = None) -> str:
+    """Adapt a fixed leading legacy token without rewriting literal hint data."""
+    terminal = policy or get_terminal_policy()
+    marker_map = {
+        "✅": terminal.symbols.success,
+        "❌": terminal.symbols.failure,
+        "⚠": terminal.symbols.attention,
+        "⚠️": terminal.symbols.attention,
+        "⏭": terminal.symbols.attention,
+        "⏭️": terminal.symbols.attention,
+        "👀": terminal.symbols.attention,
+        "❓": terminal.symbols.attention,
+        "💡": terminal.symbols.action,
+    }
+    return _LEGACY_STATE_MARKER_PREFIX.sub(
+        lambda match: marker_map[match.group(1)], terminal_safe_text(message)
+    )
+
+
 def _error_audit_classification(payload_type: type | None) -> tuple[str, list[str]]:
     """Audit (sensitivity, classes) for a JSON-mode error row.
 
@@ -106,6 +138,34 @@ def emit_json_failure(
             row_count=0,
         )
     )
+
+
+def abort_cli_error(
+    error: Exception,
+    *,
+    output: OutputFormat,
+    exit_code: int,
+    cli_actor: str | None = None,
+    payload_type: type | None = None,
+    message: str | None = None,
+) -> Never:
+    """Emit one classified known failure while preserving the caller's exit code."""
+    user_error = classify_user_error(error)
+    if user_error is None:
+        raise error
+    if message is not None:
+        user_error.message = message
+        user_error.args = (message,)
+    with operation():
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                user_error, cli_actor=cli_actor, payload_type=payload_type
+            )
+        else:
+            logger.error(format_cli_failure(user_error.message))
+            if user_error.hint:
+                typer.echo(format_cli_hint(user_error.hint), err=True)
+    raise typer.Exit(exit_code) from error
 
 
 @contextmanager
@@ -180,7 +240,7 @@ def handle_cli_errors(
                     # the console but never the log file goes straight to
                     # stderr via typer.echo, bypassing the logging pipeline
                     # entirely.
-                    typer.echo(user_error.hint, err=True)
+                    typer.echo(format_cli_hint(user_error.hint), err=True)
             raise typer.Exit(1) from e
 
 

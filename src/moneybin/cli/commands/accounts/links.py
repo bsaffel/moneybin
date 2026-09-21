@@ -25,6 +25,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import (
+    format_cli_failure,
     get_terminal_policy,
     handle_cli_errors,
 )
@@ -206,10 +207,14 @@ def links_set(
       moneybin accounts links set dec001 --standalone
     """
     if into is not None and standalone:
-        logger.error("❌ --into and --standalone are mutually exclusive")
+        logger.error(
+            format_cli_failure("--into and --standalone are mutually exclusive")
+        )
         raise typer.Exit(2)
     if into is None and not standalone:
-        logger.error("❌ Specify either --into <account_id> or --standalone")
+        logger.error(
+            format_cli_failure("Specify either --into <account_id> or --standalone")
+        )
         raise typer.Exit(2)
 
     target_account_id: str | None = into if not standalone else None
@@ -679,8 +684,10 @@ def links_run(
     """
     if (account_id is None) != (candidate_account_id is None):
         logger.error(
-            "❌ Naming one account is ambiguous. Pass both ids to propose that "
-            "pair, or neither to sweep every account for duplicates."
+            format_cli_failure(
+                "Naming one account is ambiguous. Pass both ids to propose that "
+                "pair, or neither to sweep every account for duplicates."
+            )
         )
         raise typer.Exit(2)
 

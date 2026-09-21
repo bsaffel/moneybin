@@ -27,7 +27,7 @@ from moneybin.cli.render import (
     build_summary,
     compose_human_result,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.protocol.envelope import build_envelope
 
@@ -69,8 +69,13 @@ def transactions_create(
     try:
         amount_dec = Decimal(amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid --amount {amount!r}: not a decimal", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="transactions_create",
+            message=f"Invalid --amount {amount!r}: not a decimal",
+        )
 
     parsed_date: date_cls
     if date is None:
@@ -79,8 +84,13 @@ def transactions_create(
         try:
             parsed_date = date_cls.fromisoformat(date)
         except ValueError as e:
-            typer.echo(f"❌ Invalid --date {date!r}: expected YYYY-MM-DD", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_create",
+                message=f"Invalid --date {date!r}: expected YYYY-MM-DD",
+            )
 
     entry: dict[str, object] = {
         "account_id": account,
@@ -120,8 +130,7 @@ def transactions_create(
                 if tags:
                     applied_tags = svc.add_tags(transaction_id, tags, actor="cli")
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(e, output=output, exit_code=1, cli_actor="transactions_create")
 
     payload = {
         "transaction_id": transaction_id,

@@ -28,7 +28,7 @@ from moneybin.cli.render import (
     build_summary,
     compose_human_result,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import (
     SplitAddPayload,
@@ -76,8 +76,13 @@ def transactions_splits_add(
     try:
         amount_dec = Decimal(amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid amount {amount!r}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="transactions_splits_add",
+            message=f"Invalid amount {amount!r}",
+        )
 
     try:
         with handle_cli_errors():
@@ -93,8 +98,9 @@ def transactions_splits_add(
                 )
                 residual = svc.splits_balance(transaction_id)
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_splits_add"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -193,14 +199,19 @@ def transactions_splits_remove(
                 # Look up parent before delete so we can report residual after.
                 existing = svc.get_split(split_id)
                 if existing is None:
-                    typer.echo(f"❌ split_id={split_id} not found", err=True)
-                    raise typer.Exit(1)
+                    abort_cli_error(
+                        LookupError(f"split_id={split_id} not found"),
+                        output=output,
+                        exit_code=1,
+                        cli_actor="transactions_splits_remove",
+                    )
                 transaction_id = existing.transaction_id
                 svc.remove_split(split_id, actor="cli")
                 residual = svc.splits_balance(transaction_id)
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_splits_remove"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(

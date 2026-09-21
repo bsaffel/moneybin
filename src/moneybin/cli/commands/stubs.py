@@ -60,8 +60,12 @@ def _not_implemented(feature: str, *, whole_command: bool = True) -> None:
         if command is not None:
             CLI_STUB_INVOKED_TOTAL.labels(command=command).inc()
 
+    from moneybin.cli.utils import format_cli_attention
+
     typer.echo(
-        f"⚠️  This command is not yet implemented. Support for {feature} is "
-        "planned — run `moneybin --help` for what works today.",
+        format_cli_attention(
+            f"This command is not yet implemented. Support for {feature} is "
+            "planned — run `moneybin --help` for what works today.",
+        ),
         err=True,
     )

@@ -198,11 +198,12 @@ def applied_rates_note(
             str(rate.rate),
         ),
     )
+    from moneybin.cli.utils import generated_cli_command
+
     return (
         f"Converted from {', '.join(sources)} using "
         f"{len(applied_rates)} stored rates; run "
-        f"'moneybin fx rate {example.from_currency} {example.to_currency} "
-        f"{example.requested_date}' "
+        f"'{generated_cli_command('fx', 'rate', example.from_currency, example.to_currency, example.requested_date)}' "
         "for one of them, or --output json for all"
     )
 

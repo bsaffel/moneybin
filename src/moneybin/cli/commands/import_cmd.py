@@ -35,6 +35,9 @@ from moneybin.cli.render import (
     compose_human_result,
 )
 from moneybin.cli.utils import (
+    format_cli_attention,
+    format_cli_failure,
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
@@ -90,7 +93,7 @@ logger = logging.getLogger(__name__)
 # import, so the decision is restated at the moment it acts — one message, one
 # definition, both the single-file and batch paths echo it.
 _SIGN_OVERRIDE_REPLAYED_NOTE = (
-    "⚠️  Sign convention taken from your saved --sign override for this "
+    "Sign convention taken from your saved --sign override for this "
     "statement format — the credit-card detector was not consulted. Re-run "
     "with --sign to change it."
 )
@@ -129,14 +132,20 @@ def _parse_kv(
     for raw in values:
         if "=" not in raw:
             masked = mask_embedded_account_number(raw)
-            logger.error(f"❌ Invalid {flag} format (expected {fmt}): {masked!r}")
+            logger.error(
+                format_cli_failure(
+                    f"Invalid {flag} format (expected {fmt}): {masked!r}"
+                )
+            )
             raise typer.Exit(1)
         key, _, value = raw.partition("=")
         key, value = key.strip(), value.strip()
         if key in result and result[key] != value:
             logger.error(
-                f"❌ {flag} {mask_embedded_account_number(key)!r} was given twice "
-                f"with different values ({result[key]!r} and {value!r}). Send one."
+                format_cli_failure(
+                    f"{flag} {mask_embedded_account_number(key)!r} was given twice "
+                    f"with different values ({result[key]!r} and {value!r}). Send one."
+                )
             )
             raise typer.Exit(1)
         result[key] = value
@@ -163,8 +172,10 @@ def _parse_account_metadata(
     for raw in meta:
         if ":" not in raw or "=" not in raw.split(":", 1)[1]:
             logger.error(
-                "❌ Invalid --account-meta format "
-                f"(expected source_key:field=value): {raw!r}"
+                format_cli_failure(
+                    "Invalid --account-meta format "
+                    f"(expected source_key:field=value): {raw!r}"
+                )
             )
             raise typer.Exit(1)
         key, _, field_value = raw.partition(":")
@@ -437,8 +448,10 @@ def import_files_command(
 
     if len(file_paths) > 1 and has_single_file_knobs:
         logger.warning(
-            "⚠️  Per-file flags only apply in single-file mode and will be "
-            "ignored. Use one file per command for per-file overrides."
+            format_cli_attention(
+                "Per-file flags only apply in single-file mode and will be "
+                "ignored. Use one file per command for per-file overrides."
+            )
         )
     if len(file_paths) > 1 and account_bindings is not None:
         # Deliberately NOT in has_single_file_knobs above. Everything in that
@@ -507,7 +520,9 @@ def import_files_command(
                         # report, so this stays a bare error rather than a
                         # failed row: there is nothing actionable in
                         # `data.files[]` that the message does not already say.
-                        logger.error(f"❌ File not found: {file_paths[0]}")
+                        logger.error(
+                            format_cli_failure(f"File not found: {file_paths[0]}")
+                        )
                         raise typer.Exit(1)
 
             # Skipped when the preflight already failed: the file was never
@@ -569,13 +584,18 @@ def import_files_command(
                         else:
                             if result.sign_correction_suggested:
                                 typer.echo(
-                                    "⚠️  Sign convention may be inverted (running "
-                                    "balance suggests negation). If amounts look "
-                                    "wrong, re-run with --sign to override.",
+                                    format_cli_attention(
+                                        "Sign convention may be inverted (running "
+                                        "balance suggests negation). If amounts look "
+                                        "wrong, re-run with --sign to override."
+                                    ),
                                     err=True,
                                 )
                             if result.sign_override_replayed:
-                                typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
+                                typer.echo(
+                                    format_cli_attention(_SIGN_OVERRIDE_REPLAYED_NOTE),
+                                    err=True,
+                                )
                             # Through the batch projector rather than an inline
                             # dict: the per-file row is a public contract agents
                             # branch on, and a second copy of it is how
@@ -598,14 +618,19 @@ def import_files_command(
                             r.sign_correction_suggested for r in batch_result.per_file
                         ):
                             typer.echo(
-                                "⚠️  Sign convention may be inverted for one or "
-                                "more imports (running balance suggests negation). "
-                                "If amounts look wrong, re-run with --sign to "
-                                "override.",
+                                format_cli_attention(
+                                    "Sign convention may be inverted for one or "
+                                    "more imports (running balance suggests negation). "
+                                    "If amounts look wrong, re-run with --sign to "
+                                    "override."
+                                ),
                                 err=True,
                             )
                         if any(r.sign_override_replayed for r in batch_result.per_file):
-                            typer.echo(_SIGN_OVERRIDE_REPLAYED_NOTE, err=True)
+                            typer.echo(
+                                format_cli_attention(_SIGN_OVERRIDE_REPLAYED_NOTE),
+                                err=True,
+                            )
                         files_list, data = _batch_payload(batch_result)
                         refresh_steps = batch_result.refresh_steps
     except Exception as _exc:  # dispatch on type below
@@ -1116,7 +1141,9 @@ def echo_accounts_created(accounts: Sequence[dict[str, str]]) -> None:
         return
     for account in accounts:
         typer.echo(
-            f"👀 Created account: {account['display_name']} ({account['account_id']})",
+            format_cli_attention(
+                f"Created account: {account['display_name']} ({account['account_id']})"
+            ),
             err=True,
         )
     typer.echo(
@@ -1490,9 +1517,7 @@ def _import_confirm_command(
     command refuses alongside it. The bridge takes ``--confirm``, not
     ``--accept``, so the two are mutually exclusive here as well.
     """
-    import shlex
-
-    parts = ["moneybin", "import", "confirm", file_path_str]
+    parts = ["import", "confirm", file_path_str]
     if bridge_response is not None:
         parts.extend(("--bridge-response", str(bridge_response), "--confirm"))
     elif accept:
@@ -1516,7 +1541,7 @@ def _import_confirm_command(
     )
     if not save_format:
         parts.append("--no-save-format")
-    return shlex.join(parts)
+    return generated_cli_command(*parts)
 
 
 def _account_recovery_command(
@@ -1655,13 +1680,11 @@ def _sign_recovery_commands(
             f"Keep amounts exactly as printed: {native_command}",
         ]
 
-    import shlex
-
     from moneybin.services.import_confirmation import (
         sign_convention_effect,
     )
 
-    quoted = shlex.quote(file_path_str)
+    command = generated_cli_command("import", "files", file_path_str)
     # The account-identity options ride along on every one of these, exactly as
     # the tabular branch above threads them through _import_confirm_command. On
     # PDF the sign gate raises BEFORE the account gate, so this is the command a
@@ -1678,10 +1701,10 @@ def _sign_recovery_commands(
     note = _sign_recovery_note(account_bindings, account_metadata)
     if prior_sign is None:
         return [
-            f"If it IS a credit card: moneybin import files {quoted} "
+            f"If it IS a credit card: {command} "
             f"--confirm{acct} (records charges as expenses, payments as "
             f"credits).{note}",
-            f"If it is NOT a credit card: moneybin import files {quoted} "
+            f"If it is NOT a credit card: {command} "
             f"--sign negative_is_expense{acct} "
             f"(records amounts exactly as printed).{note}",
         ]
@@ -1693,9 +1716,9 @@ def _sign_recovery_commands(
     # closes with a parenthetical instead, which is why it can keep its period.
     return [
         f"Accept the change — {sign_convention_effect(accepted)}: "
-        f"moneybin import files {quoted} --confirm{acct}{note}",
+        f"{command} --confirm{acct}{note}",
         f"Keep the previous convention — {sign_convention_effect(prior_sign)}: "
-        f"moneybin import files {quoted} --sign {prior_sign}{acct}{note}",
+        f"{command} --sign {prior_sign}{acct}{note}",
     ]
 
 
@@ -1756,7 +1779,8 @@ def _render_sign_convention_prompt(
     honest recoveries — never "Validation failed" (this is a proposal, not a
     failure) or the --mapping hint (a dead-end loop for a PDF).
     """
-    typer.echo("\n👀  Sign convention confirmation required")
+    symbols = get_terminal_policy().symbols
+    typer.echo(f"\n{symbols.attention} Sign convention confirmation required")
     typer.echo(f"   File: {file_path_str}")
     if proposed.prior_sign_convention is None:
         typer.echo(
@@ -1853,7 +1877,12 @@ def _render_confirmation_prompt(
 
     quoted_path = shlex.quote(file_path_str)
     tier = outcome.confidence.tier
-    tier_icon = {"high": "✅", "medium": "⚠️", "low": "❓"}.get(tier, "❓")
+    symbols = get_terminal_policy().symbols
+    tier_icon = {
+        "high": symbols.success,
+        "medium": symbols.attention,
+        "low": symbols.attention,
+    }.get(tier, symbols.attention)
 
     typer.echo(f"\n{tier_icon}  Confirmation required ({tier} confidence)")
     typer.echo(f"   File: {file_path_str}")
@@ -1870,7 +1899,7 @@ def _render_confirmation_prompt(
         else {},
     )
     if outcome.error_message:
-        typer.echo(f"   ❌ Validation failed: {outcome.error_message}")
+        typer.echo(f"   {symbols.failure} Validation failed: {outcome.error_message}")
 
     if isinstance(outcome.proposed, ProposedMapping):
         typer.echo("\n   Proposed column mapping:")
@@ -1883,11 +1912,11 @@ def _render_confirmation_prompt(
 
         if outcome.confidence.flagged:
             typer.echo(
-                f"\n   ⚠️  Flagged fields: {', '.join(outcome.confidence.flagged)}"
+                f"\n   {symbols.attention} Flagged fields: {', '.join(outcome.confidence.flagged)}"
             )
         if outcome.confidence.missing_required:
             typer.echo(
-                f"   ❌ Missing required fields: "
+                f"   {symbols.failure} Missing required fields: "
                 f"{', '.join(outcome.confidence.missing_required)}"
             )
         if outcome.proposed.unmapped_columns:
@@ -2115,7 +2144,7 @@ def import_confirm_command(
     # tracebacks rather than classifying.
     with handle_cli_errors(cli_actor="import_confirm_command"):
         if not file_path.exists():
-            logger.error(f"❌ File not found: {file_path}")
+            logger.error(format_cli_failure(f"File not found: {file_path}"))
             raise typer.Exit(1)
 
     bridge_response_data: dict[str, Any] | None = None
@@ -2464,7 +2493,7 @@ def import_confirm_command(
         if result.sign_correction_suggested:
             actions.insert(
                 0,
-                "⚠️  Sign convention may be inverted — inspect amounts and re-import "
+                "Sign convention may be inverted — inspect amounts and re-import "
                 "with --mapping corrected if needed.",
             )
         envelope = build_envelope(data=data, sensitivity="medium", actions=actions)
@@ -2486,8 +2515,10 @@ def import_confirm_command(
     echo_accounts_created(_accounts_created_payload(result.accounts_created))
     if result.sign_correction_suggested:
         typer.echo(
-            "⚠️  Sign convention may be inverted (running balance suggests "
-            "negation). If amounts look wrong, re-run with --mapping corrected.",
+            format_cli_attention(
+                "Sign convention may be inverted (running balance suggests "
+                "negation). If amounts look wrong, re-run with --mapping corrected.",
+            ),
             err=True,
         )
 
@@ -2679,10 +2710,10 @@ def import_revert(
 
     status = result.get("status")
     if status == "not_found":
-        logger.error(f"❌ {result.get('reason', 'Import not found')}")
+        logger.error(format_cli_failure(result.get("reason", "Import not found")))
         raise typer.Exit(1)
     elif status == "superseded":
-        logger.error(f"❌ {result.get('reason', 'Import was superseded')}")
+        logger.error(format_cli_failure(result.get("reason", "Import was superseded")))
         raise typer.Exit(1)
     elif status == "already_reverted":
         _confirm_receipt(
@@ -2734,7 +2765,11 @@ def _preview_pdf(source: Path) -> None:
         # SecretNotFoundError. database_key_error_hint() is what picks the right
         # recovery — a hardcoded "db unlock" strands a fresh install on the one
         # command that cannot work, since there is no salt to re-derive from.
-        logger.error(f"❌ Can't open the database, so {source.name} wasn't read: {e}")
+        logger.error(
+            format_cli_failure(
+                f"Can't open the database, so {source.name} wasn't read: {e}"
+            )
+        )
         logger.info(database_key_error_hint())
         raise typer.Exit(1) from e
     except ImportConfirmationRequiredError as e:
@@ -2842,7 +2877,7 @@ def import_preview(
     # scenario into a traceback instead of the Full Disk Access guidance.
     with handle_cli_errors():
         if not source.exists():
-            logger.error(f"❌ File not found: {source}")
+            logger.error(format_cli_failure(f"File not found: {source}"))
             raise typer.Exit(1)
 
     if source.suffix.lower() == ".pdf":
@@ -2864,9 +2899,11 @@ def import_preview(
             # and got a clean report would otherwise conclude the flag was
             # honoured, and repeat it on the import that follows.
             logger.warning(
-                f"⚠️  Ignored for a PDF (tabular-only): {', '.join(ignored)}. "
-                f"A statement's structure comes from its recipe, not a column "
-                f"mapping."
+                format_cli_attention(
+                    f"Ignored for a PDF (tabular-only): {', '.join(ignored)}. "
+                    "A statement's structure comes from its recipe, not a column "
+                    "mapping."
+                )
             )
         # Same handler the tabular stages below use, for the same reason: a
         # PermissionError here (statements live under ~/Documents, where macOS
@@ -2893,7 +2930,7 @@ def import_preview(
         df = read_result.df
 
         if len(df) == 0:
-            logger.warning(f"⚠️  No data rows found in {source.name}")
+            logger.warning(format_cli_attention(f"No data rows found in {source.name}"))
             return
 
         # Stage 3: Column mapping — load built-in + user-saved formats
@@ -2913,7 +2950,9 @@ def import_preview(
             matched_format = all_formats.get(format_name)
             if matched_format is None:
                 logger.warning(
-                    f"⚠️  Format {format_name!r} not found in available formats"
+                    format_cli_attention(
+                        f"Format {format_name!r} not found in available formats"
+                    )
                 )
         else:
             headers = list(df.columns)
@@ -2958,9 +2997,11 @@ def import_preview(
             # A warning (diagnostic) → stderr via logger, not stdout, per
             # cli.md; the ⚠️ icon is reserved for logger.warning messages.
             logger.warning(
-                "⚠️  The row consumed as the header also parses as a transaction "
-                "(date + amount) — this may be a headerless file misread as having "
-                "a header. Re-run with a corrected --format or check the source file."
+                format_cli_attention(
+                    "The row consumed as the header also parses as a transaction "
+                    "(date + amount) — this may be a headerless file misread as having "
+                    "a header. Re-run with a corrected --format or check the source file."
+                )
             )
         if read_result.header_position_ambiguous:
             # Dismissible, unlike the flag above: ratifying the detected
@@ -2978,7 +3019,9 @@ def import_preview(
                 header_position_ambiguous_recovery,
             )
 
-            logger.warning(f"⚠️  {header_position_ambiguous_recovery(str(source))}")
+            logger.warning(
+                format_cli_attention(header_position_ambiguous_recovery(str(source)))
+            )
         final_field_mapping: dict[str, str]
         final_effective_date_format: str | None
         if matched_format:
@@ -3436,7 +3479,9 @@ def formats_delete(
     from moneybin.services.import_service import ImportService
 
     if name in load_builtin_formats():
-        logger.error(f"❌ {name!r} is a built-in format and cannot be deleted")
+        logger.error(
+            format_cli_failure(f"{name!r} is a built-in format and cannot be deleted")
+        )
         raise typer.Exit(1)
 
     with handle_cli_errors():
@@ -3520,7 +3565,7 @@ def import_status(
             with get_database(read_only=True) as db:
                 rows = ImportService(db).raw_data_summary()
     except Exception as e:  # surface connection errors generically
-        logger.error(f"❌ Could not open database: {e}")
+        logger.error(format_cli_failure(f"Could not open database: {e}"))
         raise typer.Exit(1) from e
 
     if output == OutputFormat.JSON:

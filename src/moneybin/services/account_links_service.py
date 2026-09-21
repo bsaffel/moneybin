@@ -1034,7 +1034,7 @@ class AccountLinksService:
             # report, this only refuses to lose the disclosure on the way out.
             if collapsed:
                 logger.warning(
-                    f"⚠️  The merge reversed {collapsed} accepted transfer(s) "
+                    f"! The merge reversed {collapsed} accepted transfer(s) "
                     "before the rebuild failed; that reversal stands. Inspect "
                     "with 'moneybin system audit list' and restore with "
                     "'moneybin system audit undo <operation-id>' if that was wrong"

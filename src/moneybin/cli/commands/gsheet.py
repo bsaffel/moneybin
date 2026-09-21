@@ -32,6 +32,7 @@ from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import build_summary, compose_human_result
 from moneybin.cli.utils import (
     emit_json_failure,
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
     warn_refresh_steps,
@@ -90,7 +91,7 @@ def _connections_envelope(
     return build_envelope(
         data=GsheetConnectionsPayload(connections=rows),
         actions=[
-            f"Run 'moneybin gsheet reconnect {row.connection_id}' to re-detect "
+            f"Run '{generated_cli_command('gsheet', 'reconnect', row.connection_id)}' to re-detect "
             "this sheet's structure"
             for row in rows
             if row.status == "drift_detected"
@@ -297,7 +298,7 @@ def gsheet_connect(
             build_envelope(
                 data=gsheet_connect_payload(result),
                 actions=[
-                    "Run 'moneybin gsheet pull' to refresh this connection",
+                    f"Run '{generated_cli_command('gsheet', 'pull')}' to refresh this connection",
                 ],
             ),
             output,
@@ -680,7 +681,9 @@ def gsheet_reconnect(
         render_or_json(
             build_envelope(
                 data=gsheet_connect_payload(result),
-                actions=["Run 'moneybin gsheet pull' to refresh this connection"],
+                actions=[
+                    f"Run '{generated_cli_command('gsheet', 'pull')}' to refresh this connection"
+                ],
             ),
             output,
             cli_actor="gsheet_reconnect",

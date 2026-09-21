@@ -266,7 +266,7 @@ class MatchingService:
                         forwarding_failure = forwarding_error
                     else:
                         logger.warning(
-                            f"⚠️ Transaction-id alias forwarding failed at "
+                            f"! Transaction-id alias forwarding failed at "
                             f"{exception_origin(forwarding_error)} while a matching run "
                             f"was already failing; reporting the run's own error. Any "
                             f"curation left on a superseded id is repaired by the next "

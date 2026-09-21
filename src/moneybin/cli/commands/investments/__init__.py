@@ -176,8 +176,9 @@ def investments_add(
             cli_actor="investments_add",
         )
         return
+    policy = get_terminal_policy()
     for txn_id in ids:
-        typer.echo(f"✅ Recorded {txn_id}")
+        typer.echo(f"{policy.symbols.success} Recorded {txn_id}")
 
 
 _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (

@@ -265,7 +265,10 @@ def _surface_link(initiate: LinkInitiateResponse, *, open_browser: bool) -> None
     display server). Called by SyncService.link via the on_initiate hook
     before it begins polling.
     """
-    typer.echo("⚙️  To complete authentication, open this URL:", err=True)
+    typer.echo(
+        f"{get_terminal_policy().symbols.action} To complete authentication, open this URL:",
+        err=True,
+    )
     typer.echo(f"   {initiate.link_url}", err=True)
     if open_browser:
         try:

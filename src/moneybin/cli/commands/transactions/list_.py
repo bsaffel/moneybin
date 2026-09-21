@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from dataclasses import replace
 from decimal import Decimal
 from typing import cast
@@ -28,7 +27,7 @@ from moneybin.cli.render import (
     Placeholder,
     build_rows,
 )
-from moneybin.cli.utils import get_terminal_policy
+from moneybin.cli.utils import generated_cli_command, get_terminal_policy
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +43,10 @@ def _continuation_command(invocation: dict[str, object], next_cursor: str) -> st
     instead of an envelope.
 
     Mirrors the MCP twin (``_transaction_actions``), which already emits a
-    complete continuation call. ``shlex.join`` handles account names and
-    description patterns containing spaces or quotes.
+    complete continuation call. The shared builder handles shell quoting and
+    the explicit root profile without resolving either profile or settings.
     """
-    argv = ["moneybin", "transactions", "list"]
+    argv = ["transactions", "list"]
     for account in cast("list[str]", invocation["accounts"]):
         argv += ["--account", account]
     for category in cast("list[str]", invocation["categories"]):
@@ -73,7 +72,7 @@ def _continuation_command(invocation: dict[str, object], next_cursor: str) -> st
         "--cursor",
         next_cursor,
     ]
-    return shlex.join(argv)
+    return generated_cli_command(*argv)
 
 
 def _list_actions(next_cursor: str | None, invocation: dict[str, object]) -> list[str]:

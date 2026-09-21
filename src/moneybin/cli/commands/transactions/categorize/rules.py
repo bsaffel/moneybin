@@ -25,7 +25,7 @@ from moneybin.cli.render import (
     compose_human_result,
     render_note,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
@@ -253,15 +253,30 @@ def rules_create(
             with from_file.open(encoding="utf-8") as f:
                 loaded = json.load(f)
         except FileNotFoundError as e:
-            typer.echo(f"❌ File not found: {from_file}", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="rules_create",
+                message=f"File not found: {from_file}",
+            )
         except json.JSONDecodeError as e:
-            typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
-            raise typer.Exit(1) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=1,
+                cli_actor="rules_create",
+                message=f"Invalid JSON in {from_file}: {e}",
+            )
         except OSError as e:
             # PermissionError, IsADirectoryError, broken-mount OSError, etc.
-            typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
-            raise typer.Exit(2) from e
+            abort_cli_error(
+                e,
+                output=output,
+                exit_code=2,
+                cli_actor="rules_create",
+                message=f"Cannot read {from_file}: {e}",
+            )
         if not isinstance(loaded, list):
             raise typer.BadParameter(
                 "--from-file must point at a JSON list of rule dicts"
@@ -536,21 +551,24 @@ def _label(category: object, subcategory: object) -> str:
     return f"{category} / {subcategory}" if subcategory else str(category)
 
 
-def _load_resolution_file(from_file: Path) -> list[object]:
+def _load_resolution_file(from_file: Path, *, output: OutputFormat) -> list[object]:
     """Read a batch resolution file, mapping every read failure to an exit code."""
     try:
         with from_file.open(encoding="utf-8") as f:
             loaded = json.load(f)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {from_file}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e, output=output, exit_code=2, message=f"File not found: {from_file}"
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON in {from_file}: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, message=f"Invalid JSON in {from_file}: {e}"
+        )
     except OSError as e:
         # PermissionError, IsADirectoryError, broken-mount OSError, etc.
-        typer.echo(f"❌ Cannot read {from_file}: {e}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e, output=output, exit_code=2, message=f"Cannot read {from_file}: {e}"
+        )
     if not isinstance(loaded, list):
         raise typer.BadParameter(
             "--from-file must point at a JSON list of resolution dicts"
@@ -689,7 +707,7 @@ def rules_resolve(
             )
         decisions = [
             _decision_from_row(index, row)
-            for index, row in enumerate(_load_resolution_file(from_file))
+            for index, row in enumerate(_load_resolution_file(from_file, output=output))
         ]
     else:
         if not conflict_id:

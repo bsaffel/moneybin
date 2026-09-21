@@ -32,6 +32,7 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import (
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
     parse_cli_date,
@@ -208,8 +209,9 @@ def fx_list(
                 [
                     (
                         "Next",
-                        f"moneybin fx rate {payload.from_currency} "
-                        f"{payload.to_currency}",
+                        generated_cli_command(
+                            "fx", "rate", payload.from_currency, payload.to_currency
+                        ),
                     )
                 ],
                 title=(

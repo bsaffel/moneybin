@@ -65,7 +65,13 @@ def doctor_command(
         with get_database(read_only=False) as db:
             report = DoctorService(db).run_all(verbose=verbose, full=full)
 
-    status_icon = {"pass": "✅", "fail": "❌", "warn": "⚠️ ", "skipped": "⏭️ "}
+    symbols = get_terminal_policy().symbols
+    status_icon = {
+        "pass": symbols.success,
+        "fail": symbols.failure,
+        "warn": symbols.attention,
+        "skipped": symbols.attention,
+    }
 
     failing = report.failing
     warning = report.warning
@@ -151,7 +157,7 @@ def doctor_command(
         recovery = result.recovery_actions or []
         for action in recovery:
             lines.append(
-                f"   💡 [{action.confidence}] {action.tool} "
+                f"   {symbols.action} [{action.confidence}] {action.tool} "
                 f"arguments: {json.dumps(action.arguments, sort_keys=True)} "
                 f"— {action.rationale}"
             )

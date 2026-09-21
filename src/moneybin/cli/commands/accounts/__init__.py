@@ -27,7 +27,12 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    abort_cli_error,
+    format_cli_attention,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.accounts import (
     AccountDetail,
@@ -196,8 +201,13 @@ def accounts_get(
         with get_database(read_only=True) as db:
             record = AccountService(db).get_account(account_id)
     if record is None:
-        logger.error(f"❌ Account not found: {account_id}")
-        raise typer.Exit(1)
+        abort_cli_error(
+            LookupError(f"Account not found: {account_id}"),
+            output=output,
+            exit_code=1,
+            cli_actor="accounts_get",
+            payload_type=AccountDetail,
+        )
     if output == OutputFormat.JSON:
         # AccountDetail carries CRITICAL fields; render_or_json derives the tier.
         render_or_json(
@@ -239,7 +249,7 @@ def _maybe_prompt_soft_validation(
     """
     if is_canonical:
         return True
-    msg = f"⚠️  '{value}' is not a known {field_name}"
+    msg = format_cli_attention(f"'{value}' is not a known {field_name}")
     if suggestion:
         msg += f" (did you mean '{suggestion}'?)"
     if yes:

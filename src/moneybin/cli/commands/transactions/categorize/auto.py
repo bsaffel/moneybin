@@ -14,7 +14,11 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.categorize import (
     AutoRuleRow,
@@ -141,7 +145,9 @@ def categorize_auto_accept(
     from moneybin.services.auto_rule_service import AutoRuleService
 
     if accept_all and reject_all:
-        logger.error("❌ --accept-all and --reject-all are mutually exclusive")
+        logger.error(
+            format_cli_failure("--accept-all and --reject-all are mutually exclusive")
+        )
         raise typer.Exit(2)
 
     with handle_cli_errors():

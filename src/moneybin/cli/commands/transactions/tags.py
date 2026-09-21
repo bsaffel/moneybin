@@ -19,7 +19,7 @@ from moneybin.cli.output import (
     render_or_json,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.transactions import TagRenamePayload, TagsPayload
 from moneybin.protocol.envelope import build_envelope
@@ -48,8 +48,9 @@ def transactions_tags_add(
                     transaction_id, tags, actor="cli"
                 )
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_tags_add"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -215,8 +216,9 @@ def transactions_tags_rename(
             with get_database(read_only=False) as db:
                 result = TransactionService(db).rename_tag(old, new, actor="cli")
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_tags_rename"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
