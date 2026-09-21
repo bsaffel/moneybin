@@ -458,12 +458,18 @@ Set a batch's full label state with `import_labels_set(import_id=..., labels=[..
 **Exit codes for `moneybin import files`.**
 
 - `0` — every file imported and (when refresh is enabled) the post-load refresh succeeded.
-- `1` — at least one file failed, or the refresh pipeline failed. Per-file failures do **not** abort the batch (the rest still import); the non-zero exit signals "look at the envelope."
+- `1` — at least one file failed, needs confirmation, or the refresh pipeline failed. Per-file failures and confirmation-required files do **not** abort the batch (the rest still import); the non-zero exit signals "look at the envelope."
 - `2` — usage error (missing arg, bad flag).
 
-A `confirmation_required` result does not, by itself, flip a batch's exit code to `1` — check each file's `status` field, not just the exit code, to catch one waiting on confirmation. Single-file invocations differ: `--output json` (or any non-TTY caller) exits `0` on `confirmation_required` so the envelope parses cleanly; the interactive text path exits `1`.
+A `confirmation_required` result makes the command exit `1` in both text and
+JSON/non-TTY mode. The envelope still identifies the specific file and recovery
+command. Scripts should use the exit status to stop and the per-file `status`
+field to decide whether to confirm, retry, or inspect a failure.
 
-The same contract applies to `moneybin import inbox`: the command exits 0 when the drain completes, even if individual files moved to `failed/`. Detect per-file failure via the `--output json` envelope or by checking the `failed/` directory — do not rely on exit code alone for the inbox.
+The same contract applies to `moneybin import inbox`: individual files can move
+to `failed/` while the drain continues, but any failed or confirmation-required
+file makes the completed drain exit nonzero. The JSON envelope and the
+`failed/` directory provide the per-file detail.
 
 **`--output json` envelope shape** (mutating-command envelope; see [cli-reference.md](cli-reference.md#output-envelopes) for the full schema):
 

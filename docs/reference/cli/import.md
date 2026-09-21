@@ -157,6 +157,7 @@ Usage: `moneybin import history [OPTIONS]`
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import revert
 
@@ -244,6 +245,7 @@ Usage: `moneybin import status [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import formats
 
@@ -284,6 +286,7 @@ Usage: `moneybin import formats list [OPTIONS]`
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--type` | one of `tabular`, `pdf`, `all` | `all` | Filter by format type: tabular (CSV/Excel/etc.), pdf, or all (default). JSON output uses a uniform list; each row carries a 'type' field. Example: --type=pdf |
 
 ## moneybin import formats show
@@ -316,6 +319,7 @@ Usage: `moneybin import formats show [OPTIONS] NAME`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import formats delete
 
@@ -377,6 +381,7 @@ Usage: `moneybin import inbox list [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import inbox path
 
@@ -456,3 +461,4 @@ Usage: `moneybin import labels list [OPTIONS]`
 | `--import-id` | text |  | Filter to one import (omit for distinct counts) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

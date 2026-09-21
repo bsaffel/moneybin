@@ -74,6 +74,7 @@ Usage: `moneybin transform status [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform validate
 
@@ -87,6 +88,7 @@ Usage: `moneybin transform validate [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform audit
 
@@ -102,6 +104,7 @@ Usage: `moneybin transform audit [OPTIONS]`
 | `--end` | text |  | Required. End date for audit window (YYYY-MM-DD) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform restate
 
@@ -117,3 +120,4 @@ Usage: `moneybin transform restate [OPTIONS]`
 | `--start` | text |  | Required. Start date for restatement (YYYY-MM-DD) |
 | `--end` | text |  | End date (defaults to today) |
 | `--yes, -y` | flag |  | Skip confirmation |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

@@ -29,3 +29,4 @@ Usage: `moneybin logs [OPTIONS] [STREAM]`
 | `--prune` | flag |  | Delete old log files instead of viewing (no stream required) |
 | `--older-than` | text |  | With --prune: delete logs older than this duration (e.g., 30d) |
 | `--dry-run` | flag |  | With --prune: show what would be deleted |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

@@ -988,6 +988,12 @@ Supported clients: `claude-desktop`, `claude-code`, `cursor`, `vscode`, `windsur
 - `--yes` / `-y` — skip the install confirmation prompt.
 - Interactive mode (no `--client` flag) prompts the user to select a client and profile.
 
+**Superseding implementation note.** The current CLI defaults an omitted
+`--client` to `claude-desktop` and resolves an omitted profile from the active
+profile; it does not prompt for either optional value. This supersedes only the
+interaction detail above. [CLI Human Experience](cli-human-experience.md)
+requires prompts for missing required choices, not optional defaults.
+
 Scope: install only. Does not edit or remove existing entries — that's the user's responsibility. Re-running `--install` for a different profile **adds** an additional entry rather than replacing the previous one.
 
 ### `mcp config path`

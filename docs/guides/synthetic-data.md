@@ -151,9 +151,9 @@ moneybin synthetic generate --persona <name> [--profile <name>] [--years <N>] [-
 | `--seed` | no | random `1..9999` | Integer seed for deterministic output |
 | `--skip-transform` | no | `False` | Skip running SQLMesh after the raw write |
 
-`generate` refuses to write into a profile that already has imported data — it exits with code 1 and points you at `synthetic reset`. The profile is created if it does not exist.
+`generate` refuses to write into a profile that already has imported data — it exits with code 1 and points you at `synthetic reset`. Create a new target first with `moneybin profile create <name>`; generation then writes only into that existing profile.
 
-After raw rows are written, the command runs SQLMesh to materialize the staging, core, and reports models against the new data. Pass `--skip-transform` to keep just the raw write — useful when you want to inspect the loader output before transformation.
+After raw rows are written, the command runs SQLMesh to materialize the staging, core, and reports models against the new data. Pass `--skip-transform` to keep just the raw write — an intentional successful raw-only generation, useful when you want to inspect the loader output before transformation. If transforms were requested but fail after the raw write, the receipt says that raw data was saved and the command exits nonzero; reports may remain stale.
 
 ### Reset
 

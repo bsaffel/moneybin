@@ -42,6 +42,7 @@ Usage: `moneybin system status [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit
 
@@ -78,6 +79,7 @@ Usage: `moneybin system audit list [OPTIONS]`
 | `--limit` | int | `100` | Max events to return |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit show
 
@@ -96,6 +98,7 @@ Usage: `moneybin system audit show [OPTIONS] AUDIT_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit undo
 
@@ -118,6 +121,7 @@ Usage: `moneybin system audit undo [OPTIONS] OPERATION_ID`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
+| `--yes, -y` | flag |  | Confirm the displayed undo scope |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin system audit history
@@ -139,6 +143,7 @@ Usage: `moneybin system audit history [OPTIONS]`
 | `--include-undone` | flag |  | Include the undo operations themselves |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit get
 
@@ -157,3 +162,4 @@ Usage: `moneybin system audit get [OPTIONS] OPERATION_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

@@ -76,6 +76,8 @@ Usage: `moneybin sync link-status [OPTIONS]`
 |---|---|---|---|
 | `--session-id` | text |  | Required. Session ID from link. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin sync disconnect
 
@@ -119,4 +121,5 @@ Usage: `moneybin sync status [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--json-fields` | text |  | Comma-separated field projection (json output only). Available: id, provider_item_id, institution_name, provider, status, last_sync, error_code, guidance |
