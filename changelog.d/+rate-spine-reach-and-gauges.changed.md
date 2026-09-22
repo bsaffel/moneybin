@@ -1,0 +1,1 @@
+A rate recorded with `moneybin fx set` or gathered by `moneybin refresh` reaches every report immediately, with no separate rebuild step. `moneybin system doctor` gained two gauges for that spine: `moneybin_fx_rate_spine_rows` and `moneybin_net_worth_unpriced_dates`.

@@ -150,9 +150,11 @@ def demo_command(
                     ("Net worth", format_money(result.net_worth, "balance"))
                 ])
             else:
-                # currency_code is the nullable field here: reports.net_worth
-                # pools every account whose currency is unknown into one
-                # NULL-coded segment. `currency_label` names that slot.
+                # currency_code is the nullable field here:
+                # reports.net_worth_currencies — the view behind the
+                # `core:net_worth_currencies` read above — pools every account
+                # whose currency is unknown into one NULL-coded segment.
+                # `currency_label` names that slot.
                 render_summary(
                     [
                         (

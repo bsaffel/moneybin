@@ -62,7 +62,7 @@ Top-level groups represent **entities** (`accounts`, `transactions`) or **cross-
 
 Concretely:
 
-- `accounts` owns its per-account workflows (`balance`) and its aggregation (`net-worth`)
+- `accounts` owns its per-account workflows (`balance`); the cross-account rollup is a report, so `net-worth` lives under `reports`
 - `transactions` owns its per-transaction workflows (`matches`, `categorize`) and entity ops (`list`, `show`, `search`)
 - `reports` holds analytical lenses on transaction-level data (spending, cashflow, budget vs actual) — cross-cutting, read-only
 
@@ -1180,8 +1180,8 @@ These existing specs define CLI commands that need updates to reflect v2's taxon
 
 | Spec | CLI change needed (v2) | MCP change needed (v2) |
 |---|---|---|
-| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports networth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:networth")` for net worth. |
-| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports networth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
+| `reports-net-worth.md` | `track balance` → `accounts balance`. `track networth` → `reports net-worth` (cross-domain rollup, accounts + assets). `reconciliation show` → `accounts balance reconcile`. | Use `accounts_balances(view=...)` for balances and `reports(report_id="core:net_worth")` for net worth. |
+| `asset-tracking.md` | CLI namespace: top-level `assets` group (parallel to `accounts`). Net worth contribution flows through `reports.net_worth` consumed by `reports net-worth`. | Future MCP capabilities remain unnamed until bounded-registry admission. |
 | `account-management.md` (planned) | Owns the `accounts` namespace entity ops (`list`, `get`, `set`, `resolve`). Settings updates (display name, include/exclude, archive/unarchive) fold into `accounts set` flags. Balance subcommands stay nested per `reports-net-worth.md`. | Use `accounts(view=...)` for reads and `accounts_set(...)` for settings. |
 | `matching-same-record-dedup.md` / `matching-transfer-detection.md` | `matches *` → `transactions matches *` | Use `reviews(kind="matches", status="pending")` and `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])`. Locate an operation with `system_audit(view="history", ...)` or inspect events with `system_audit(view="events", ...)` before `system_audit_undo(operation_id=...)`; use `refresh_run(steps=["match"])` to rerun matching. |
 | `categorization-overview.md` / `categorization-auto-rules.md` / `categorization-bulk.md` | `categorize *` workflow → `transactions categorize *`. Pull category-taxonomy and merchant-mapping commands to top-level `categories *` and `merchants *` groups | Use the admitted categorization operations, `reviews(kind=...)`, and `taxonomy(view=...)` / `taxonomy_set(...)`. |

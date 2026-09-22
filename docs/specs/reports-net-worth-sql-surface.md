@@ -1110,6 +1110,18 @@ after it.
 [`investments-price-feeds.md`](investments-price-feeds.md); it is the same
 concept and must not acquire a second spelling.
 
+**This rung is not an exact summand of the currency rung.**
+`account_balance_home` rounds once per account, while
+`reports.net_worth_currencies` converts a per-currency subtotal and so rounds
+once per `(currency_code, balance_date)`. Summing this view's
+`account_balance_home` over a currency-day can therefore differ from that
+row's `total_assets_home + total_liabilities_home` by a fraction of a cent —
+bounded by half a cent per account, and in practice under a cent per currency
+per day. Expected, and the price of a per-account column that itself adds up
+to the cent; reconcile the rungs at the cent rather than the sub-cent, and do
+not "fix" it by deriving one rung from another (`assert_acyclic` forbids that
+anyway).
+
 **An eligible unanchored account is `M2B.3`'s addition to this rung too, and
 it needs no count column of its own.** `reports.net_worth`'s guard needs
 `unanchored_account_count` because one row there aggregates every account on
@@ -2161,11 +2173,25 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
   reasoning `_recompute_net_worth_and_change`'s docstring gives in
   `src/moneybin/reports/definitions/net_worth.py`.
 - **A converted envelope's `summary` carries `home_currency`.** `execute.py`'s
-  `_priced_home_currency` publishes the priced currency on every report
-  envelope, not only the three net-worth rungs; `ReportResult.to_envelope`
-  and `mcp/tools/reports.py` both surface it, so a caller reads the
-  denominating currency without re-deriving it from `display_currency` or a
-  row's own `home_currency_code` column.
+  `_priced_home_currency` is a framework-level rule rather than a net-worth
+  one — any report could satisfy it — but it publishes narrowly: only on a
+  read that actually applied a non-identity rate, whose spec declares a
+  `currency_basis="home"` column, and where a surviving row holds a non-null
+  value in one. The three net-worth rungs are the only reports declaring such
+  a column today, so they are the only ones that publish it.
+  `ReportResult.to_envelope` and `mcp/tools/reports.py` both surface it, so a
+  caller reads the denominating currency without re-deriving it from
+  `display_currency` or a row's own `home_currency_code` column.
+- **An unset home currency names its own remedy.** The three rungs fail closed
+  on a profile with no home currency — every home-basis column NULL,
+  `unpriced_currency_count` at least 1 — which reads as broken rates unless
+  something says otherwise. `redact_catalog_execution` appends
+  `HOME_CURRENCY_HINT` ("Run `moneybin profile set home_currency <CODE>` to
+  get converted totals; this profile has no home currency set") whenever
+  `execution.home_currency is None` **and** the spec declares at least one
+  `currency_basis="home"` column. Gated on the declaration rather than on
+  `applied_rates`, which is false in exactly the case being explained, and
+  quiet on every report that never converts.
 - **`days_since_observed` is `DataClass.AGGREGATE`.** Declared on
   `core:net_worth_accounts` (`net_worth_accounts.py`), matching the same
   concept's declaration in `investments-price-feeds.md`.

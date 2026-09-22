@@ -37,7 +37,6 @@ from moneybin.privacy.sql_lineage import (
 )
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import (
-    RegisteredReport,
     ReportTier,
     get_report_catalog,
     report_tier,
@@ -135,12 +134,12 @@ def explain_report(
 
 
 def explain_spec(
-    db: Database, report: RegisteredReport, *, parameters: Mapping[str, JsonValue]
+    db: Database, report: ReportSpec, *, parameters: Mapping[str, JsonValue]
 ) -> ReportExplanation:
     """Explain one already-resolved report.
 
     Split from :func:`explain_report` at the resolution seam so the evidence is
-    assembled from a ``RegisteredReport`` alone — the same input every tier
+    assembled from a ``ReportSpec`` alone — the same input every tier
     reduces to, which is what makes "the same evidence for every tier" a
     property of the code rather than a claim about it.
     """
@@ -172,7 +171,7 @@ def explain_spec(
 
 def _sql_forms(
     db: Database,
-    report: RegisteredReport,
+    report: ReportSpec,
     *,
     parameters: Mapping[str, JsonValue],
     tier: ReportTier,
@@ -216,7 +215,7 @@ def _sentinel(report: ReportSpec, name: str) -> JsonValue:
     return type_sentinel(declared.annotation)  # type: ignore[return-value]  # a JSON scalar by construction
 
 
-def _freshness(db: Database, report: RegisteredReport) -> _Freshness:
+def _freshness(db: Database, report: ReportSpec) -> _Freshness:
     """Read the stored row's drift state — the R4 question, asked out loud.
 
     Re-deriving through ``spec_from_row`` rather than reading a flag: the
@@ -241,7 +240,7 @@ def _freshness(db: Database, report: RegisteredReport) -> _Freshness:
 
 
 def _column_provenance(
-    db: Database, report: RegisteredReport, *, query_sql: str | None
+    db: Database, report: ReportSpec, *, query_sql: str | None
 ) -> tuple[ColumnProvenance, ...]:
     """Join the report's class map to the projection each column came from.
 
@@ -290,7 +289,7 @@ def _projection_sources(
 
 
 def _graduation(
-    report: RegisteredReport, query_sql: str, *, tier: ReportTier
+    report: ReportSpec, query_sql: str, *, tier: ReportTier
 ) -> tuple[GraduationState, tuple[str, ...]]:
     """Whether this report could become a SQLMesh ``reports.*`` model.
 

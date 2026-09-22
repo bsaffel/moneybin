@@ -28,9 +28,8 @@ _REPORT_ID = "core:net_worth_accounts"
         "currency_code": DataClass.CURRENCY,
         "home_currency_code": DataClass.CURRENCY,
         # Matches dim_accounts.account_type's own CLASSIFICATION entry
-        # (taxonomy.py) and this view's runner-less derivation
-        # (_derived_classes.py) — a closed depository/credit/loan/investment/
-        # other vocabulary, not a user-authored CATEGORY.
+        # (taxonomy.py) — a closed depository/credit/loan/investment/other
+        # vocabulary, not a user-authored CATEGORY.
         "account_type": DataClass.TXN_TYPE,
         "is_observed": DataClass.TXN_TYPE,
         "observation_source": DataClass.TXN_TYPE,

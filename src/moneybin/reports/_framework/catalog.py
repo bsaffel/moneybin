@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import types
 import typing
 from collections import defaultdict
@@ -263,11 +262,7 @@ def pending_dedup_caveat(db: Database, provenance: Iterable[str]) -> DedupCaveat
     )
 
 
-_REPORT_ID = re.compile(r"[a-z][a-z0-9_-]*:[a-z][a-z0-9_-]*")
-
 type ReportTier = Literal["builtin", "extension", "user"]
-
-type RegisteredReport = ReportSpec
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,7 +292,7 @@ class ReportCatalog:
 
     def __init__(
         self,
-        reports: Iterable[RegisteredReport],
+        reports: Iterable[ReportSpec],
         *,
         status: Mapping[str, ReportStatus] | None = None,
     ) -> None:
@@ -322,7 +317,7 @@ class ReportCatalog:
                 f"({', '.join(report_ids)}); each stays runnable by report_id."
             )
 
-    def list(self, *, archived: bool | None = False) -> tuple[RegisteredReport, ...]:
+    def list(self, *, archived: bool | None = False) -> tuple[ReportSpec, ...]:
         """Reports ordered by stable full ID, filtered by archived state.
 
         ``False`` (the default) is the active catalog, ``True`` the archived-only
@@ -357,7 +352,7 @@ class ReportCatalog:
         """
         return self._name_collisions
 
-    def resolve(self, report_id: str) -> RegisteredReport:
+    def resolve(self, report_id: str) -> ReportSpec:
         """Resolve an exact full ID or an unambiguous short report name."""
         exact = [report for report in self._reports if report.report_id == report_id]
         if exact:
@@ -471,7 +466,7 @@ class ReportCatalog:
         parameters: Mapping[str, JsonValue],
         limit: int | None,
         defer_truncation: bool = False,
-    ) -> tuple[RegisteredReport, CatalogReportExecution]:
+    ) -> tuple[ReportSpec, CatalogReportExecution]:
         """Validate and execute one report without terminal redaction.
 
         ``defer_truncation`` returns the rows uncut and records the cap on the
@@ -521,7 +516,7 @@ class ReportCatalog:
         report_id: str,
         parameters: Mapping[str, JsonValue],
         limit: int | None,
-    ) -> tuple[RegisteredReport, dict[str, JsonValue]]:
+    ) -> tuple[ReportSpec, dict[str, JsonValue]]:
         """Resolve and validate one request without executing its report."""
         if limit is not None and limit < 0:
             raise UserError(
@@ -535,7 +530,7 @@ class ReportCatalog:
 
 
 def _name_collisions(
-    reports: Sequence[RegisteredReport],
+    reports: Sequence[ReportSpec],
 ) -> Mapping[str, tuple[str, ...]]:
     """Group report IDs by any name more than one of them claims."""
     by_name: dict[str, list[str]] = defaultdict(list)
@@ -548,7 +543,7 @@ def _name_collisions(
     })
 
 
-def report_tier(report: RegisteredReport) -> ReportTier:
+def report_tier(report: ReportSpec) -> ReportTier:
     """Which of R5's three tiers ``report`` belongs to.
 
     Keyed on the ``report_id`` namespace for the user tier and on the extension
@@ -567,12 +562,12 @@ def report_tier(report: RegisteredReport) -> ReportTier:
     return "builtin"
 
 
-def _parameter_specs(spec: RegisteredReport) -> tuple[ParamSpec, ...]:
+def _parameter_specs(spec: ReportSpec) -> tuple[ParamSpec, ...]:
     return spec.params
 
 
 def validate_report_parameters(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     supplied: Mapping[str, JsonValue],
 ) -> dict[str, JsonValue]:
     """Reject unknown/missing/mistyped parameters and fill declared defaults.
@@ -840,7 +835,7 @@ def result_to_payload(result: CatalogReportResult) -> ReportResultPayload:
 
 
 def _catalog_entry_to_payload(
-    report: RegisteredReport, *, archived: bool = False
+    report: ReportSpec, *, archived: bool = False
 ) -> ReportCatalogEntry:
     return ReportCatalogEntry(
         report_id=report.report_id,
@@ -869,7 +864,7 @@ def _catalog_entry_to_payload(
     )
 
 
-def _parameter_schema(report: RegisteredReport) -> dict[str, JsonValue]:
+def _parameter_schema(report: ReportSpec) -> dict[str, JsonValue]:
     """Build the strict object schema published for one report's parameters."""
     properties: dict[str, JsonValue] = {}
     required: list[JsonValue] = []

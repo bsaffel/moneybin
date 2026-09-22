@@ -176,7 +176,11 @@ class DateRange:
     """A validated ``balance_date`` window, ready to splice into a runner's SQL."""
 
     where_sql: str
-    """The ``WHERE`` fragment to append, with a leading space; never empty."""
+    """The ``WHERE`` fragment to append, with a leading space.
+
+    Empty only on the unranged ``default_latest=False`` path, where the whole
+    history is wanted and there is nothing to constrain; every other path
+    returns a non-empty fragment."""
     params: list[Binding]
     """Positional bindings for ``where_sql``'s ``?`` placeholders, in order."""
     period: str | None

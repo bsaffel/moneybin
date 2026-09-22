@@ -446,11 +446,11 @@ def render_rows(
     more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
-    deduplicates, merges, or suppresses a row. `reports net-worth-accounts`
-    currently sums an account once per balance source, so a doubled account
-    shows as repeated rows; collapsing them here would make the output look
-    right while the total stayed wrong, removing the symptom that finds the
-    defect.
+    deduplicates, merges, or suppresses a row. `reports net-worth-accounts` is
+    one row per (account, date), so one real account that cross-source dedup
+    left as two unlinked accounts shows as two rows on the same date;
+    collapsing them here would make the output look right while the total
+    stayed wrong, removing the symptom that finds the defect.
     """
     from rich.console import Console  # defer heavy import
     from rich.table import Table  # defer heavy import

@@ -14,6 +14,15 @@
 > `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`, and its
 > `TableRef` is `CORE_UNCATEGORIZED_QUEUE`.
 
+> **Superseded surface (2026-09-18):**
+> every `networth` / `networth-history` recipe below is retired. The net-worth
+> recipes now target three `@report` SQL runners: `core:net_worth` (day grain,
+> one home-currency total), `core:net_worth_currencies` (currency × day), and
+> `core:net_worth_accounts` (account × day), reached as `reports net-worth`,
+> `reports net-worth-currencies`, and `reports net-worth-accounts`.
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) holds
+> the current contract; what follows records what M2A shipped.
+
 ## Goal
 
 Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).

@@ -761,6 +761,34 @@ def test_currencies_rung_projects_the_declared_column_order(
     assert columns == list(_CURRENCIES_COLUMNS)
 
 
+def test_currencies_rung_publishes_the_documented_types(model_db: Database) -> None:
+    """The six measures are DECIMAL(18, 2) and the two counts INTEGER.
+
+    The same widening the day rung guards against reaches this rung by two
+    routes: SUM() over DECIMAL(18, 2) widens to DECIMAL(38, 2), and adding the
+    two already-cast home totals widens to DECIMAL(19, 2). Either one ships a
+    view whose real type contradicts what data-model.md and
+    reports-net-worth-sql-surface.md publish, which DESCRIBE settles directly.
+    """
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth_currencies")
+
+    types_by_column = {
+        row[0]: row[1]
+        for row in model_db.execute(
+            "DESCRIBE SELECT * FROM reports.net_worth_currencies"
+        ).fetchall()
+    }
+    assert types_by_column["account_count"] == "INTEGER"
+    assert types_by_column["carried_forward_count"] == "INTEGER"
+    assert types_by_column["total_assets"] == "DECIMAL(18,2)"
+    assert types_by_column["total_liabilities"] == "DECIMAL(18,2)"
+    assert types_by_column["net_worth"] == "DECIMAL(18,2)"
+    assert types_by_column["total_assets_home"] == "DECIMAL(18,2)"
+    assert types_by_column["total_liabilities_home"] == "DECIMAL(18,2)"
+    assert types_by_column["net_worth_home"] == "DECIMAL(18,2)"
+
+
 def test_day_rung_sums_currencies_in_home(model_db: Database) -> None:
     """USD 100.00 plus EUR 100.00 at 1.10 totals 210.00 in the home currency."""
     _install_net_worth_sources(model_db)

@@ -50,12 +50,11 @@ import moneybin.reports.definitions as definitions
 # anyway — the glyph a money cell really carries.
 from moneybin.cli.render import MINUS
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import RegisteredReport
 from moneybin.reports._framework.cli_register import (
     resolve_default_columns,
     visible_columns,
 )
-from moneybin.reports._framework.contract import OutputColumn
+from moneybin.reports._framework.contract import OutputColumn, ReportSpec
 from moneybin.reports._framework.registry import discover_reports, spec_of
 from moneybin.reports.definitions._shared import (
     DRIFT_STATUSES,
@@ -128,7 +127,7 @@ _COLUMN_BEARING_PARAMETERS: Mapping[str, Mapping[str, Sequence[object]]] = {
 }
 
 
-def _in_tree_reports() -> list[RegisteredReport]:
+def _in_tree_reports() -> list[ReportSpec]:
     """Every report defined in this repository."""
     return [spec_of(runner) for runner in discover_reports(definitions)]
 
@@ -172,7 +171,7 @@ def _parameter_combinations(report_id: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
-def test_every_report_declares_a_default_column_set(spec: RegisteredReport) -> None:
+def test_every_report_declares_a_default_column_set(spec: ReportSpec) -> None:
     """Requirement 6: an in-tree report never relies on the renderer's fit.
 
     Fitting to the terminal is what a surface does when nobody told it which
@@ -189,7 +188,7 @@ def test_every_report_declares_a_default_column_set(spec: RegisteredReport) -> N
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
 def test_every_default_column_set_fits_eighty_characters(
-    spec: RegisteredReport,
+    spec: ReportSpec,
 ) -> None:
     """Requirement 9, over every parameter combination that changes the set."""
     by_name = {column.name: column for column in spec.columns}

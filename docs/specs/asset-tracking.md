@@ -15,7 +15,7 @@ The dividing line between assets and investments: **if the value comes from a ma
 
 Related specs and docs:
 - [`reports-net-worth.md`](reports-net-worth.md) — balance tracking and `reports.net_worth`; this spec extends it to include physical assets
-- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports networth`. CLI examples below already use the v2 path.
+- [`moneybin-cli.md`](moneybin-cli.md) v2 — assets are a **top-level command group** (`moneybin assets …`), parallel to `accounts`. The full asset workflow (registration, valuation, liability linking, staleness) is owned by this spec. Net worth contribution flows through `reports.net_worth`, surfaced via `reports net-worth`. CLI examples below already use the v2 path.
 - [`privacy-data-protection.md`](privacy-data-protection.md) — asset data encrypted at rest via `Database` class
 - [`database-migration.md`](database-migration.md) — migration infrastructure for new tables
 - [`mcp-architecture.md`](mcp-architecture.md) — tool taxonomy and response envelope conventions
@@ -245,7 +245,7 @@ for it; adding the nullable column later is an additive migration.
 ### Where staleness surfaces
 
 - **`assets list`** — warning indicator next to stale assets with days since last valuation
-- **`reports networth`** — summary note: "N assets have stale valuations" with asset names
+- **`reports net-worth`** — summary note: "N assets have stale valuations" with asset names
 
 Staleness is informational only — never blocks queries or omits stale assets from net worth. The value is still included; the system tells you it might be outdated.
 
@@ -324,7 +324,7 @@ Grandma's Ring      valuable      $12,000      2024-03-01     ✅ Current
 ```
 
 ```
-$ moneybin reports networth
+$ moneybin reports net-worth
 
 Net Worth: $347,250 as of 2025-04-23
 
@@ -345,11 +345,13 @@ existing report catalog; this spec does not reserve callback names.
 ### Draft report-catalog change
 
 Implementation would extend
-`reports(report_id="core:networth", parameters={...})` and
-`reports(report_id="core:networth_history", parameters={...})` through the
-underlying `reports.net_worth` model. The proposed snapshot response adds
-`total_physical_assets` alongside `total_assets` and `total_liabilities`; that
-field is not part of the live catalog response.
+`reports(report_id="core:net_worth", parameters={...})` — and its finer
+rungs `core:net_worth_currencies` and `core:net_worth_accounts` — through
+the underlying `reports.net_worth` model. (`core:net_worth` takes an
+`interval` parameter; the separate history report it replaced is retired.)
+The proposed snapshot response adds `total_physical_assets` alongside
+`total_assets` and `total_liabilities`; that field is not part of the live
+catalog response.
 
 ## Testing Strategy
 
@@ -375,7 +377,7 @@ field is not part of the live catalog response.
 
 ### Tier 3 — Integration
 
-- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `reports networth` → verify asset included in net worth.
+- End-to-end: `assets add` → `assets value set` → `sqlmesh run` → `reports net-worth` → verify asset included in net worth.
 - Disposal flow: `assets sell` → `sqlmesh run` → verify asset excluded from net worth after disposal date.
 - Liability linking: add asset with `--liability-account-id` → `assets show` → verify equity display.
 - Staleness surfacing: set an old valuation → `assets list` → verify warning appears.

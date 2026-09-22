@@ -78,12 +78,14 @@ SELECT
   rate_source, /* override / provider / identity; NULL when the pair is unpriced on this date */
   balance_date, /* Grain. Calendar date */
   rate_published_date, /* The day the applied rate was actually published; NULL when this currency is unpriced on this date */
-  account_count, /* Accounts contributing on this date in this currency */
-  carried_forward_count, /* How many of them are carried forward, not observed */
-  total_assets, /* Sum of positive balances, in currency_code */
-  total_liabilities, /* Sum of negative balances, kept negative, in currency_code */
-  net_worth, /* This currency's segment, in its own unit */
+  account_count::INT AS account_count, /* Accounts contributing on this date in this currency */
+  carried_forward_count::INT AS carried_forward_count, /* How many of them are carried forward, not observed */
+  total_assets::DECIMAL(18, 2) AS total_assets, /* Sum of positive balances, in currency_code */
+  total_liabilities::DECIMAL(18, 2) AS total_liabilities, /* Sum of negative balances, kept negative, in currency_code */
+  net_worth::DECIMAL(18, 2) AS net_worth, /* This currency's segment, in its own unit */
   total_assets_home, /* Assets converted at rate; NULL when this currency is unpriced on this date */
   total_liabilities_home, /* Liabilities converted at rate; NULL when this currency is unpriced on this date */
-  total_assets_home + total_liabilities_home AS net_worth_home /* Headline. Assets plus liabilities in home currency, so the row's own columns always add up; deliberately the sum of the two converted components rather than ROUND(net_worth * rate, 2) — rounding each side independently lets a row's own columns disagree by a cent (the same reasoning _recompute_net_worth_and_change's docstring gives in reports/definitions/net_worth.py). NULL when unpriced */
+  (
+    total_assets_home + total_liabilities_home
+  )::DECIMAL(18, 2) AS net_worth_home /* Headline. Assets plus liabilities in home currency, so the row's own columns always add up; deliberately the sum of the two converted components rather than ROUND(net_worth * rate, 2) — rounding each side independently lets a row's own columns disagree by a cent (the same reasoning _recompute_net_worth_and_change's docstring gives in reports/definitions/net_worth.py). NULL when unpriced */
 FROM converted

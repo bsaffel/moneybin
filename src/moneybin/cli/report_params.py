@@ -26,14 +26,14 @@ import typer
 from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.contract import ParamSpec
+from moneybin.reports._framework.contract import ParamSpec, ReportSpec
 
 if TYPE_CHECKING:
-    from moneybin.reports._framework.catalog import RegisteredReport, ReportCatalog
+    from moneybin.reports._framework.catalog import ReportCatalog
 
 
 def coerce_report_parameters(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     raw_parameters: list[str] | None,
 ) -> dict[str, JsonValue]:
     """Coerce each ``--param key=value`` through its declared annotation.

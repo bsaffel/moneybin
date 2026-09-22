@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
-from moneybin.reports._framework.contract import Binding, ReportQuery, ReportSpec
+from moneybin.reports._framework.contract import (
+    Binding,
+    OutputColumn,
+    ReportQuery,
+    ReportSpec,
+)
 from moneybin.reports._framework.execute import (
+    HOME_CURRENCY_HINT,
     ReportResult,
     execute_catalog_report,
+    redact_catalog_execution,
     run_report,
 )
 from moneybin.reports._framework.introspect import build_spec
@@ -194,4 +203,86 @@ def test_unmasked_output_carries_no_inspection_hint(reports_db: Database) -> Non
     result = run_report(_spec(unmasked, name="open"), reports_db, max_rows=50)
 
     assert result.records[0]["account_id"] == "acct_11112222"
+    assert result.actions == ["reports.next"]
+
+
+_OPEN_CLASSES = {
+    "account_id": DataClass.RECORD_ID,
+    "amount": DataClass.TXN_AMOUNT,
+    "txn_count": DataClass.AGGREGATE,
+}
+
+
+def _home_basis_spec(name: str = "home_basis") -> ReportSpec:
+    """A synthetic report declaring one ``currency_basis="home"`` money column."""
+    return build_spec(
+        _summary,
+        report_id=f"test:{name}",
+        name=name,
+        view=_VIEW,
+        classes=_OPEN_CLASSES,
+        parameter_classes={"top": DataClass.AGGREGATE},
+        columns=(
+            OutputColumn("account_id", "Synthetic grain.", DataClass.RECORD_ID),
+            OutputColumn(
+                "amount",
+                "Synthetic home-priced balance.",
+                DataClass.TXN_AMOUNT,
+                money_kind="balance",
+                currency_basis="home",
+            ),
+            OutputColumn("txn_count", "Synthetic count.", DataClass.AGGREGATE),
+        ),
+        semantics=TEST_SEMANTICS,
+    )
+
+
+def test_unset_home_currency_names_the_setting_that_fills_the_total(
+    reports_db: Database,
+) -> None:
+    """A NULL home-currency total with no stated cause reads as broken rates.
+
+    Every new profile — and ``moneybin demo`` — starts with no home currency, so
+    a report declaring a home-basis column answers with nothing in it. Without
+    this hint the response names no setting, and a single-currency user concludes
+    the FX spine failed.
+    """
+    spec = _home_basis_spec()
+    execution = execute_catalog_report(spec, reports_db, max_rows=50)
+    assert execution.home_currency is None
+
+    result = redact_catalog_execution(spec, execution)
+
+    assert result.actions == ["reports.next", HOME_CURRENCY_HINT]
+    assert "moneybin profile set home_currency <CODE>" in HOME_CURRENCY_HINT
+
+
+def test_set_home_currency_carries_no_hint(reports_db: Database) -> None:
+    """The over-explaining twin: the setting is already made, so say nothing."""
+    spec = _home_basis_spec(name="home_basis_set")
+    execution = replace(
+        execute_catalog_report(spec, reports_db, max_rows=50),
+        home_currency="USD",
+    )
+
+    result = redact_catalog_execution(spec, execution)
+
+    assert result.actions == ["reports.next"]
+
+
+def test_a_report_with_no_home_basis_column_carries_no_hint(
+    reports_db: Database,
+) -> None:
+    """Gated on the declared column, so a report that never converts stays quiet.
+
+    ``applied_rates`` would be the wrong gate — it is false in exactly the case
+    the hint explains — so the declaration is what keeps this off the reports
+    that hold no home-currency column at all.
+    """
+    spec = _spec(_OPEN_CLASSES, name="no_home_basis")
+    execution = execute_catalog_report(spec, reports_db, max_rows=50)
+    assert execution.home_currency is None
+
+    result = redact_catalog_execution(spec, execution)
+
     assert result.actions == ["reports.next"]

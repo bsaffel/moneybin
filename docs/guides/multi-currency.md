@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-09-12 -->
 # Multi-currency
 
-Every transaction, balance, and investment event keeps the currency it arrived in, and no report adds two currencies into one figure without a stored rate behind it. Declare a home currency and the three reports whose rows are single dated events price themselves into it at read time; the five that aggregate keep one sub-total per currency. Rates come from Frankfurter's ECB reference series, your own corrections outrank them, and a report's own read-time conversion is never written to disk — every source amount stays exactly as recorded. The one exception is the derived FX-accounting tables a set home currency persists; see [Choose a home currency](#choose-a-home-currency).
+Every transaction, balance, and investment event keeps the currency it arrived in, and no report adds two currencies into one figure without a stored rate behind it. Declare a home currency and the five reports whose rows are single dated events price themselves into it at read time; the four that aggregate keep one sub-total per currency. Rates come from Frankfurter's ECB reference series, your own corrections outrank them, and a report's own read-time conversion is never written to disk — every source amount stays exactly as recorded. The one exception is the derived FX-accounting tables a set home currency persists; see [Choose a home currency](#choose-a-home-currency).
 
 Every transcript below is real output from the international demo persona, trimmed only by whole lines:
 

@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear. `catalog`
     # is deferred for the same reason — it reaches `execute`.
-    from moneybin.reports._framework.catalog import RegisteredReport
     from moneybin.reports._framework.execute import CatalogReportResult
 
 
@@ -163,7 +162,7 @@ class ColumnView(NamedTuple):
 
 
 def column_view(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
@@ -202,7 +201,7 @@ def column_view(
 
 
 def visible_columns(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
@@ -263,7 +262,7 @@ def visible_columns(
 
 
 def resolve_default_columns(
-    spec: RegisteredReport, parameters: Mapping[str, Any]
+    spec: ReportSpec, parameters: Mapping[str, Any]
 ) -> tuple[str, ...]:
     """The names a report's declaration resolves to, before any intersection.
 
@@ -295,7 +294,7 @@ def resolve_default_columns(
     return tuple(declared)
 
 
-def money_columns(spec: RegisteredReport) -> dict[str, Money]:
+def money_columns(spec: ReportSpec) -> dict[str, Money]:
     """Build the renderer's money declarations from a report's own columns.
 
     Requirement 12: the kind is declared where the meaning is known — beside

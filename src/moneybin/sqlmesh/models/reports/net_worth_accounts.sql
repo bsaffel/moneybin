@@ -2,7 +2,12 @@
    profile's home currency. The account-grain rung of the net-worth ladder
    (reports-net-worth-sql-surface.md); it reads core.* and app.* only and
    never another reports.* view, because privacy-class derivation rejects
-   a stacked ladder (assert_acyclic). */
+   a stacked ladder (assert_acyclic).
+   This rung is not an exact summand of reports.net_worth_currencies:
+   account_balance_home rounds once per account, while that view rounds once
+   per currency per day, so SUM(account_balance_home) can differ from
+   total_assets_home + total_liabilities_home by a fraction of a cent per
+   currency per day. Expected and bounded — reconcile the rungs to the cent. */
 MODEL (
   name reports.net_worth_accounts,
   kind VIEW

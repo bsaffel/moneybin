@@ -588,6 +588,20 @@ def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
     )
 
 
+#: The unset-home-currency hint. A profile that never chose one — every new
+#: profile — reads a converting report as a NULL total beside an unpriced
+#: count, and nothing else on the response names the setting that fills it.
+HOME_CURRENCY_HINT = (
+    "Run `moneybin profile set home_currency <CODE>` to get converted totals; "
+    "this profile has no home currency set"
+)
+
+
+def home_basis_columns(columns: Sequence[OutputColumn]) -> set[str]:
+    """The declared output columns priced FROM the profile home currency."""
+    return {column.name for column in columns if column.currency_basis == "home"}
+
+
 def _priced_home_currency(execution: CatalogReportExecution) -> str | None:
     """The profile home currency actually priced into a home-basis column.
 
@@ -602,11 +616,7 @@ def _priced_home_currency(execution: CatalogReportExecution) -> str | None:
     """
     if not execution.applied_rates or execution.home_currency is None:
         return None
-    home_basis = {
-        column.name
-        for column in execution.output_columns
-        if column.currency_basis == "home"
-    }
+    home_basis = home_basis_columns(execution.output_columns)
     if not home_basis:
         return None
     if any(
@@ -633,6 +643,13 @@ def redact_catalog_execution(
     actions = list(execution.actions)
     if masked:
         actions.append(inspection_hint(execution.report_id, masked))
+
+    # The same shape for the other silently-empty result: a report that declares
+    # a home-basis column on a profile that has chosen no home currency returns
+    # NULL in it and names no cause. Gated on the *declared* column rather than
+    # on `applied_rates`, which is false precisely in the case being explained.
+    if execution.home_currency is None and home_basis_columns(execution.output_columns):
+        actions.append(HOME_CURRENCY_HINT)
 
     return CatalogReportResult(
         report_id=execution.report_id,
