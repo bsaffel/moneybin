@@ -145,7 +145,8 @@ def _stage_summary(stage: StageOutcome) -> str:
         return (
             f"  {label}: {counts['total']} categorized "
             f"({counts['merchant']} merchant, {counts['rule']} rule, "
-            f"{counts['plaid']} provider)"
+            f"{counts['plaid']} provider, "
+            f"{counts['source_category_map']} source map)"
         )
     if stage.step == "identity":
         # Each domain reports only if it ran: one can fail while the other

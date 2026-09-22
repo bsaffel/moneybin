@@ -156,6 +156,7 @@ class TestRefreshCategorizationProposalSummary:
             "merchant": 3,
             "rule": 2,
             "plaid": 0,
+            "source_category_map": 0,
         }
         from moneybin.services.auto_rule_service import AutoStatsResult
 
@@ -197,6 +198,7 @@ class TestRefreshCategorizationProposalSummary:
             "merchant": 1,
             "rule": 0,
             "plaid": 0,
+            "source_category_map": 0,
         }
         from moneybin.services.auto_rule_service import AutoStatsResult
 

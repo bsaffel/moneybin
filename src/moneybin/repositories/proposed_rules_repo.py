@@ -65,6 +65,9 @@ class ProposedRulesRepo(BaseRepo):
 
     table_ref = PROPOSED_RULES
     pk_columns = ("proposed_rule_id",)
+    # #517's blank-text rule; restore-path enforcement lives in
+    # BaseRepo._require_admissible (#547).
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, proposed_rule_id: str) -> dict[str, Any] | None:
         return self._fetch_one(

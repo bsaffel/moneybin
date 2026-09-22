@@ -754,6 +754,30 @@ class TestMetrics:
             UndoService(db).undo("op_legacy_metric", actor="cli")
         assert self._outcome("no_path") - before == 1.0
 
+    def test_value_inadmissible_increments_its_outcome(self, db: Database) -> None:
+        # A blank category (the shape #517's write path refuses, #547) trips
+        # _require_admissible inside the reversal loop; that refusal must
+        # record its own outcome, not fall through to "no_path" or vanish.
+        from moneybin.repositories.user_categories_repo import UserCategoriesRepo
+
+        repo = UserCategoriesRepo(db)
+        with operation():
+            category_id = repo.insert(category="   ", actor="user").target_id
+        assert category_id is not None
+        with operation() as delete_op:
+            repo.delete(category_id, actor="user")
+        before = self._outcome("value_inadmissible")
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(delete_op, actor="user")
+        assert exc.value.code == error_codes.UNDO_VALUE_INADMISSIBLE
+        assert self._outcome("value_inadmissible") - before == 1.0
+        # Populated recovery_actions, not an empty list beside a non-no_path
+        # code (data-recovery-contract.md Resolved Design Decision 6).
+        assert exc.value.recovery_actions is not None
+        action = exc.value.recovery_actions[0]
+        assert action.tool == "system_audit"
+        assert action.arguments == {"view": "detail", "operation_id": delete_op}
+
 
 class TestGet:
     """get() returns full before/after for each row, with undoability flags."""

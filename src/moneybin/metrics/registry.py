@@ -518,8 +518,9 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
 CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     "moneybin_categorize_provider_native_total",
     "Categorizations assigned from a provider's native categorization. "
-    "trigger='sweep' is the automatic apply_plaid_categories pass over "
-    "still-uncategorized rows; trigger='backfill' is the explicit "
+    "trigger='sweep' is the automatic pass over still-uncategorized rows — "
+    "apply_plaid_categories and apply_source_category_map, told apart by the "
+    "source_type label; trigger='backfill' is the explicit "
     "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
     ["source_type", "trigger"],
 )
@@ -824,7 +825,8 @@ app_mutation_audit_emitted_total = Counter(
 audit_undo_total = Counter(
     "moneybin_audit_undo_total",
     "system_audit_undo invocations by outcome (success, not_found, "
-    "already_undone, cascade_blocked, no_path). One increment per undo attempt.",
+    "already_undone, cascade_blocked, no_path, value_inadmissible). One "
+    "increment per undo attempt.",
     ["outcome"],
 )
 

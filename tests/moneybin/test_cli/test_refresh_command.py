@@ -688,6 +688,7 @@ def test_refresh_names_every_stage_that_ran(runner: CliRunner) -> None:
                     "merchant": 250,
                     "rule": 120,
                     "plaid": 30,
+                    "source_category_map": 0,
                 }),
             ),
             StageOutcome(
@@ -732,6 +733,7 @@ def test_refresh_distinguishes_a_zero_stage_from_a_skipped_one(
                     "merchant": 0,
                     "rule": 0,
                     "plaid": 0,
+                    "source_category_map": 0,
                 }),
             ),
         ),
@@ -763,6 +765,7 @@ def test_refresh_stage_notes_are_silenced_by_quiet(runner: CliRunner) -> None:
                     "merchant": 0,
                     "rule": 0,
                     "plaid": 0,
+                    "source_category_map": 400,
                 }),
             )
         ),
@@ -792,6 +795,7 @@ def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
                 "merchant": 250,
                 "rule": 120,
                 "plaid": 30,
+                "source_category_map": 0,
             }),
         )
     )
@@ -809,7 +813,13 @@ def test_refresh_json_carries_the_stages(runner: CliRunner) -> None:
         {
             "step": "categorize",
             "ran": True,
-            "counts": {"total": 400, "merchant": 250, "rule": 120, "plaid": 30},
+            "counts": {
+                "total": 400,
+                "merchant": 250,
+                "rule": 120,
+                "plaid": 30,
+                "source_category_map": 0,
+            },
             "error": None,
         }
     ]
@@ -843,3 +853,43 @@ def test_a_failed_apply_is_warned_about_once_not_once_per_surface(
 
     assert "model boom" not in caplog.text
     assert "categorizer boom" in caplog.text
+
+
+def test_categorize_summary_breakdown_accounts_for_every_engine(
+    runner: CliRunner,
+) -> None:
+    """The printed parts must account for the printed total.
+
+    ``_run_categorize_step`` reports one count per engine plus a ``total``.
+    When an engine was added to that dict without being added to the printed
+    breakdown, the line read "9 categorized (2 merchant, 3 rule, 1 provider)"
+    — parts summing to 6 against a stated total of 9, silently hiding the new
+    engine's output from the CLI.
+
+    Each count is deliberately distinct so a line that dropped one cannot
+    still pass on another's digits.
+    """
+    counts = {
+        "total": 9,
+        "merchant": 2,
+        "rule": 3,
+        "plaid": 1,
+        "source_category_map": 3,
+    }
+    assert sum(v for k, v in counts.items() if k != "total") == counts["total"], (
+        "fixture must be self-consistent or it cannot detect an omitted engine"
+    )
+
+    invocation = _run_text_refresh(
+        runner,
+        _staged_result(
+            StageOutcome(step="categorize", ran=True, counts=MappingProxyType(counts)),
+        ),
+    )
+
+    assert invocation.exit_code == 0, invocation.output
+    assert "Categorization: 9 categorized" in invocation.output
+    assert "2 merchant" in invocation.output
+    assert "3 rule" in invocation.output
+    assert "1 provider" in invocation.output
+    assert "3 source map" in invocation.output

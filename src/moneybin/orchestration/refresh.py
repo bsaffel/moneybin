@@ -700,7 +700,8 @@ def _run_categorize_step(db: Database) -> StageOutcome:
         logger.debug(
             f"Auto-categorized {stats['total']} transactions "
             f"({stats['merchant']} merchant, {stats['rule']} rule, "
-            f"{stats['plaid']} plaid)"
+            f"{stats['plaid']} plaid, "
+            f"{stats['source_category_map']} source_category_map)"
         )
     # Informational only — never surfaces as the categorize stage's error.
     try:
@@ -719,7 +720,10 @@ def _run_categorize_step(db: Database) -> StageOutcome:
         # A fresh dict rather than the service's own: it owns that one and is
         # free to reuse it, so holding it by reference would let a later run
         # rewrite a stage this one already reported.
-        counts={key: int(stats[key]) for key in ("total", "merchant", "rule", "plaid")},
+        counts={
+            key: int(stats[key])
+            for key in ("total", "merchant", "rule", "plaid", "source_category_map")
+        },
     )
 
 

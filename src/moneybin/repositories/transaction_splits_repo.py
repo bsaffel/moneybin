@@ -42,6 +42,9 @@ class TransactionSplitsRepo(BaseRepo):
 
     table_ref = TRANSACTION_SPLITS
     pk_columns = ("split_id",)
+    # #517's blank-text rule; restore-path enforcement lives in
+    # BaseRepo._require_admissible (#547).
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, split_id: str) -> dict[str, Any] | None:
         return self._fetch_one(
