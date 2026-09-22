@@ -42,6 +42,9 @@ class BudgetsRepo(BaseRepo):
 
     table_ref = BUDGETS
     pk_columns = ("budget_id",)
+    # #517's blank-text rule; restore-path enforcement lives in
+    # BaseRepo._require_admissible (#547). No subcategory column on this table.
+    _CATEGORY_TEXT_COLUMNS = ("category",)
 
     def _fetch_row(self, budget_id: str) -> dict[str, Any] | None:
         return self._fetch_one(BUDGETS, _BUDGETS_COLUMNS, "budget_id", budget_id)

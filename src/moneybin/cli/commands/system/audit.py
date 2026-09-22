@@ -139,8 +139,10 @@ def system_audit_undo(
 
     Refuses (exit 1) when a later operation modified the same rows
     (``undo_cascade_blocked`` — undo those first), when the operation was already
-    undone, or when it touched a table outside the undoable app.* surface. The
-    returned ``undo_operation_id`` is itself undoable.
+    undone, when it touched a table outside the undoable app.* surface, or when
+    restoring the captured row would write back a value the write path no longer
+    admits (``undo_value_inadmissible`` — e.g. a pre-existing blank category).
+    The returned ``undo_operation_id`` is itself undoable.
     """
     from moneybin.services.undo_service import UndoService
 

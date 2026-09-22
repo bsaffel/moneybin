@@ -825,7 +825,8 @@ app_mutation_audit_emitted_total = Counter(
 audit_undo_total = Counter(
     "moneybin_audit_undo_total",
     "system_audit_undo invocations by outcome (success, not_found, "
-    "already_undone, cascade_blocked, no_path). One increment per undo attempt.",
+    "already_undone, cascade_blocked, no_path, value_inadmissible). One "
+    "increment per undo attempt.",
     ["outcome"],
 )
 
