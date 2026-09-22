@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from moneybin.database import DatabaseLockError
-from moneybin.db_lock import write_lock
+from moneybin.db_lock import live_writer, write_lock
 from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
 )
@@ -409,3 +409,34 @@ def test_write_lock_sanitizes_command_stored_on_disk(
         metadata = json.loads(_lock_path(db_path).read_text())
     assert metadata["command"] == "transform pipeline"
     assert "/Users/bob" not in metadata["command"]
+
+
+def test_live_writer_reports_the_current_holder(tmp_path: Path) -> None:
+    """live_writer names the holder while the lock is held, and nobody after."""
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="transform_apply"):
+        writer = live_writer(db_path)
+    assert writer is not None
+    assert writer["pid"] == os.getpid()
+    assert writer["operation_type"] == "transform_apply"
+    # The lock file outlives the hold, so its presence must not read as a writer.
+    assert _lock_path(db_path).exists()
+    assert live_writer(db_path) is None
+
+
+def test_live_writer_returns_none_when_metadata_is_unreadable(tmp_path: Path) -> None:
+    """An unreadable payload reads as "no writer", never as a writer.
+
+    The boot schema check asks live_writer whether a peer heal is in flight, so
+    the degradation direction matters: a misread costs a wait, never grants one.
+    """
+    db_path = tmp_path / "test.duckdb"
+    db_path.touch()
+    deadline = time.monotonic() + 1.0
+    with write_lock(db_path, deadline=deadline, operation_type="transform_apply"):
+        # flock is advisory: truncating through a second fd leaves the holder's
+        # lock intact and reproduces the mid-rewrite empty-read window.
+        _lock_path(db_path).write_text("")
+        assert live_writer(db_path) is None
