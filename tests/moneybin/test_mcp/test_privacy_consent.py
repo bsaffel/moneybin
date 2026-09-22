@@ -206,10 +206,10 @@ async def test_consent_standard_registrar_advertises_closed_destructive_contract
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"privacy_consent_set"}
     tool = await listed_tool(mcp, "privacy_consent_set")
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.destructiveHint is True
-    assert set(tool.inputSchema["properties"]["state"]["enum"]) == {
+    assert tool.annotations.destructive_hint is True
+    assert set(tool.input_schema["properties"]["state"]["enum"]) == {
         "granted",
         "revoked",
     }

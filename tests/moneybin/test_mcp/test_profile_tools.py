@@ -177,9 +177,9 @@ async def test_registered_profile_set_requires_exactly_one_setting_without_mutat
         isolated_server(register_profile_tools), "profile_set", arguments
     )
 
-    assert response.structuredContent is not None
+    assert response.structured_content is not None
     assert (
-        response.structuredContent["error"]["code"]
+        response.structured_content["error"]["code"]
         == error_codes.MUTATION_INVALID_INPUT
     )
     settings = (await profile()).data

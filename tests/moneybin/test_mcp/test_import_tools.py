@@ -95,14 +95,14 @@ async def test_import_revert_schema_admits_the_confirmation_token_round_trip() -
     mcp = isolated_server(import_tools_module.register_import_workflow_tools)
     revert = await listed_tool(mcp, "import_revert")
 
-    Draft202012Validator.check_schema(revert.inputSchema)
+    Draft202012Validator.check_schema(revert.input_schema)
     validate_json_schema(
         {
             "operation": "revert_import",
             "import_id": "imp_20260809_abc",
             "confirmation_token": "tok_abc",
         },
-        revert.inputSchema,
+        revert.input_schema,
         cls=Draft202012Validator,
     )
 
@@ -123,7 +123,7 @@ async def test_import_revert_schema_still_forbids_cross_branch_targets(
     revert = await listed_tool(mcp, "import_revert")
 
     with pytest.raises(JSONSchemaValidationError):
-        validate_json_schema(arguments, revert.inputSchema, cls=Draft202012Validator)
+        validate_json_schema(arguments, revert.input_schema, cls=Draft202012Validator)
 
 
 def test_import_human_confirmation_tools_allow_decision_window() -> None:

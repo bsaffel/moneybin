@@ -120,18 +120,18 @@ dependencies = [
     "lxml>=6.1.3",
     "openpyxl>=3.1.5",
     "fastexcel>=0.21.0",
-    # MCP server — primary AI assistant interface. Capped below 4 with mcp below.
-    "fastmcp>=3.4.7,<4",
+    # MCP server — primary AI assistant interface. Capped below 5 with mcp below.
+    "fastmcp>=4.0.5,<5",
     # Also a transitive dep of fastmcp, but declared directly because _registration.py,
     # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
     # a future fastmcp pin change must not silently break those importers.
     # Floor is CVE-2026-52869/52870 (unverified principal on HTTP transports; cross-client
     # task access) and CVE-2026-59950 (no WebSocket Host/Origin validation), all fixed by 1.28.1.
-    # Capped below 2: mcp 2 renames every protocol model field to snake_case
-    # (Tool.inputSchema, CallToolResult.structuredContent, ToolAnnotations.*Hint)
-    # and moves McpError and RequestContext — a migration of its own. fastmcp 4
-    # requires mcp 2.
-    "mcp>=1.30.0,<2",
+    # Capped below 3: mcp 2 is the 2026-07-28 protocol revision, and fastmcp 4
+    # requires it. Protocol model fields are snake_case for Python attribute
+    # access; the JSON wire format is unchanged, so a model_dump that feeds a
+    # peer or a snapshot must pass by_alias=True (see surface_inventory).
+    "mcp>=2.2.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.15.1",
     "httpx>=0.28.1",

@@ -483,7 +483,7 @@ class TestMCPBulkCreate:
                 result = await session.call_tool(
                     "transactions_create", {"transactions": entries}
                 )
-                assert not result.isError, result.content
+                assert not result.is_error, result.content
                 from mcp.types import TextContent
 
                 content = result.content[0]

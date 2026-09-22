@@ -854,9 +854,9 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"reviews"}
     tool = await listed_tool(mcp, "reviews")
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert_literal_values(
-        tool.inputSchema,
+        tool.input_schema,
         ("properties", "kind"),
         {
             "summary",
@@ -871,7 +871,7 @@ async def test_review_standard_registrar_renders_closed_contract() -> None:
         },
     )
     assert_literal_values(
-        tool.inputSchema,
+        tool.input_schema,
         ("properties", "status"),
         {"pending", "history"},
     )
@@ -991,9 +991,9 @@ async def test_review_raw_transport_is_canonical_and_uses_public_actor(
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["data"]["kind"] == kind
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["data"]["kind"] == kind
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.reviews"
     assert captured[0]["sensitivity"] == expected_sensitivity
@@ -1012,9 +1012,9 @@ async def test_review_cursor_error_is_canonical_and_sanitized() -> None:
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "review_cursor_invalid"
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["error"]["code"] == "review_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 
@@ -1034,7 +1034,7 @@ async def test_review_raw_transport_rejects_invalid_arguments(
 
     response = await call_tool_raw(mcp, "reviews", arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 def _seed_ordinary_decisions() -> tuple[str, str, str, str]:
@@ -2774,8 +2774,8 @@ async def test_identity_standard_write_reports_its_prompt_disclosure_tier() -> N
             },
         )
 
-    assert response.structuredContent is not None
-    assert response.structuredContent["status"] == "ok"
+    assert response.structured_content is not None
+    assert response.structured_content["status"] == "ok"
     assert len(captured) == 1
     assert captured[0]["sensitivity"] == "medium"
     assert captured[0]["classes_returned"] == [
@@ -2969,8 +2969,8 @@ async def test_identity_reject_batch_uses_public_privacy_actor() -> None:
             },
         )
 
-    assert response.structuredContent is not None
-    assert response.structuredContent["data"]["applied_count"] == 1
+    assert response.structured_content is not None
+    assert response.structured_content["data"]["applied_count"] == 1
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.identity_links_decide"
 
@@ -3359,12 +3359,12 @@ async def test_review_standard_write_registrar_is_closed_and_max_risk() -> None:
     assert set(tools) == {"reviews_decide", "identity_links_decide"}
     reviews_tool = await listed_tool(mcp, "reviews_decide")
     identity_tool = await listed_tool(mcp, "identity_links_decide")
-    assert reviews_tool.outputSchema is None
-    assert identity_tool.outputSchema is None
+    assert reviews_tool.output_schema is None
+    assert identity_tool.output_schema is None
     assert reviews_tool.annotations is not None
-    assert reviews_tool.annotations.destructiveHint is False
+    assert reviews_tool.annotations.destructive_hint is False
     assert identity_tool.annotations is not None
-    assert identity_tool.annotations.destructiveHint is True
+    assert identity_tool.annotations.destructive_hint is True
 
 
 def _seed_investment_history(security_id: str, label: str) -> None:
