@@ -1,0 +1,1 @@
+CSV and OFX account-merge confirmations now show the same ledger-overlap evidence (matched vs. comparable transaction counts) that PDF imports already surfaced, so a caller can judge a proposed merge instead of seeing only a matched name or number.

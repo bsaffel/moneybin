@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -1888,6 +1888,7 @@ class ImportService:
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import (
             OFXLoadError,
+            incoming_ofx_transactions,
             ofx_source_accounts,
             parse_ofx_content,
         )
@@ -1985,6 +1986,7 @@ class ImportService:
             ofx_source_accounts(parsed_ofx, source_origin),
             account_bindings,
             channel="ofx",
+            incoming_transactions=incoming_ofx_transactions(parsed_ofx),
         )
 
         # OFX <ACCTID> values are institution-assigned account numbers, not
@@ -2177,7 +2179,8 @@ class ImportService:
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
-        incoming_transactions: Sequence[IncomingTransaction] = (),
+        incoming_transactions: Mapping[str, Sequence[IncomingTransaction]]
+        | None = None,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> list[SourceAccount]:
@@ -2229,6 +2232,16 @@ class ImportService:
         reaches ``resolve()``'s candidate pass any more — the confidence
         histogram it used to feed would read zero for the interactive path.
         ``disposition="rollback"`` because raising is this call's success case.
+
+        ``incoming_transactions`` is keyed by ``source_account_key``, not one
+        flat sequence, so a multi-account file (a tabular export with several
+        accounts, an OFX file with several ``<STMTRS>`` blocks) probes each
+        candidate against only the rows belonging to ITS OWN source account.
+        A single shared sequence would let one account's rows count as
+        overlap evidence for a sibling account merely because both arrived in
+        the same file. A source key with no entry (or an empty tuple) leaves
+        every candidate's ``overlap`` at ``None`` — unmeasured, not a
+        measured zero — same as passing nothing at all.
         """
         source_accounts, binding_targets = _apply_account_bindings(
             source_accounts, bindings or {}
@@ -2250,7 +2263,10 @@ class ImportService:
             proposal = resolver.propose(
                 src, fallback=src.source_account_key in wanted_fallback
             )
-            if incoming_transactions and proposal.candidates:
+            own_transactions = (incoming_transactions or {}).get(
+                src.source_account_key
+            ) or ()
+            if own_transactions and proposal.candidates:
                 proposal = dataclasses.replace(
                     proposal,
                     candidates=tuple(
@@ -2258,7 +2274,7 @@ class ImportService:
                             candidate,
                             overlap=probe_incoming_ledger_overlap(
                                 self._db,
-                                transactions=incoming_transactions,
+                                transactions=own_transactions,
                                 against_account_id=candidate.account_id,
                             ),
                         )
@@ -2562,7 +2578,10 @@ class ImportService:
         from moneybin.extractors.tabular.sign_convention import (
             validate_explicit_sign_shape,
         )
-        from moneybin.extractors.tabular.transforms import transform_dataframe
+        from moneybin.extractors.tabular.transforms import (
+            incoming_tabular_transactions,
+            transform_dataframe,
+        )
         from moneybin.utils import slugify
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
@@ -3874,7 +3893,10 @@ class ImportService:
 
         # Phase 2 — gate on any account identity the caller hasn't ratified.
         # Raises ImportConfirmationRequiredError (no rows load) and returns the
-        # bound accounts for the resolve pass below.
+        # bound accounts for the resolve pass below. Ledger evidence comes from
+        # the raw mapped frame (Stage 3), one stage before transform_dataframe
+        # (Stage 4) below normalizes it further — the gate needs date/amount now,
+        # not after a confirm it might never reach.
         source_accounts = self._gate_account_proposals(
             resolver,
             source_accounts,
@@ -3882,6 +3904,14 @@ class ImportService:
             channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
             fallback_keys=fallback_keys,
+            incoming_transactions=incoming_tabular_transactions(
+                df=df,
+                field_mapping=resolved.field_mapping,
+                date_format=final_date_format,
+                sign_convention=resolved.sign_convention,
+                number_format=resolved.number_format,
+                account_ids=account_ids,
+            ),
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -4512,7 +4542,9 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
-            incoming_transactions=incoming_pdf_transactions(decision),
+            incoming_transactions={
+                identity.source.source_account_key: incoming_pdf_transactions(decision)
+            },
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -5178,7 +5210,11 @@ class ImportService:
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
-                incoming_transactions=incoming_pdf_transactions(decision),
+                incoming_transactions={
+                    identity.source.source_account_key: incoming_pdf_transactions(
+                        decision
+                    )
+                },
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
