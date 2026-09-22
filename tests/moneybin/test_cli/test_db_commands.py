@@ -1877,6 +1877,8 @@ class TestDbPromptPolicy:
 
         assert result.exit_code == 1
         assert "never reads passphrases from redirected input" in result.output
+        assert "never reads passphrases from redirected input" in result.stderr
+        assert "never reads passphrases from redirected input" not in result.stdout
 
 
 class TestDbMaintenanceInterrupts:

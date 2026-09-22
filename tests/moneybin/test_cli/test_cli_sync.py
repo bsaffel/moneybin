@@ -872,7 +872,9 @@ def test_sync_disconnect_refusal_performs_no_mutation(
         sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
 
     assert exit_info.value.exit_code == 0
-    receipt = capsys.readouterr().out
+    from rich.text import Text
+
+    receipt = Text.from_ansi(capsys.readouterr().out).plain
     assert "Disconnect cancelled" in receipt
     assert "Institution: Chase" in receipt
     assert "No connection was removed" in receipt

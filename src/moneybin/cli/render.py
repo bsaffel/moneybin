@@ -548,6 +548,8 @@ def build_rows(
         highlight=False,
         no_color=not terminal.style,
         width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
     )
     absent_at: int | None = None
     absent_as = ""
@@ -707,6 +709,8 @@ def render_rows(
         highlight=False,
         no_color=not terminal.style,
         width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
     )
     result = build_rows(
         columns,

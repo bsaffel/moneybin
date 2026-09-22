@@ -38,7 +38,7 @@ def _safe_text(text: str, *, color: bool) -> str:
 
 
 def page_text(text: str, *, color: bool, wide: bool) -> bool:
-    """Page a rendered answer, returning false only if no child could start."""
+    """Page a rendered answer, returning false when it needs ordinary output."""
     args = ["less", "-F", "-X", "-K"]
     if color:
         args.append("-R")
@@ -69,7 +69,7 @@ def page_text(text: str, *, color: bool, wide: bool) -> bool:
     try:
         process.communicate(_safe_text(text, color=color))
     except BrokenPipeError:
-        pass
+        process.wait()
     except KeyboardInterrupt:
         try:
             process.terminate()
@@ -77,4 +77,4 @@ def page_text(text: str, *, color: bool, wide: bool) -> bool:
         except ProcessLookupError:
             pass
         raise
-    return True
+    return process.returncode == 0

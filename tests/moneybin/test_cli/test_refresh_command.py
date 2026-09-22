@@ -13,9 +13,28 @@ from typer.testing import CliRunner
 
 from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh_outcome import StageOutcome
+
+
+def _ascii_terminal() -> TerminalPolicy:
+    """Use a redirected ASCII terminal policy for receipt assertions."""
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
@@ -85,6 +104,44 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh"])
 
     assert result.exit_code == 1
+
+
+@pytest.mark.parametrize(
+    ("refresh_result", "expected_title"),
+    [
+        (RefreshResult(applied=True, duration_seconds=0.5), "OK Refresh complete"),
+        (
+            RefreshResult(
+                applied=True,
+                duration_seconds=0.5,
+                stages=(StageOutcome(step="categorize", ran=True, error="boom"),),
+            ),
+            "! Refresh partially completed",
+        ),
+        (
+            RefreshResult(applied=False, duration_seconds=0.5, error="boom"),
+            "X Refresh failed",
+        ),
+    ],
+)
+def test_refresh_receipt_titles_follow_ascii_terminal_policy(
+    runner: CliRunner, refresh_result: RefreshResult, expected_title: str
+) -> None:
+    """Every receipt title uses the active terminal policy's status marker."""
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=refresh_result),
+        patch("moneybin.database.get_database") as get_db,
+        patch(
+            "moneybin.cli.commands.refresh.get_terminal_policy",
+            return_value=_ascii_terminal(),
+        ),
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert expected_title in result.output
+    assert "✓ Refresh complete" not in result.output
+    assert "× Refresh failed" not in result.output
 
 
 def test_refresh_receipt_names_investment_planning_as_transform_blocker(

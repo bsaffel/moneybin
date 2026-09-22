@@ -272,6 +272,42 @@ def test_targeted_confirm_exits_non_zero_when_the_accept_was_reversed(
 
 @patch("moneybin.services.matching_service.MatchingService")
 @patch("moneybin.cli.commands.transactions.review.get_database")
+def test_refused_confirm_json_is_parseable_before_its_nonzero_exit(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A reconciliation refusal remains machine-readable for a caller on exit 1."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status="reversed", transfers_retired=1
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_stale00001",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "match_id": "tx_stale00001",
+        "match_status": "reversed",
+        "transfers_retired": 1,
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
 def test_targeted_confirm_exits_zero_when_the_accept_stood(
     mock_get_db: MagicMock, mock_service: MagicMock
 ) -> None:
@@ -290,6 +326,190 @@ def test_targeted_confirm_exits_zero_when_the_accept_stood(
     assert result.exit_code == 0
     assert "Match decision saved" in result.output
     assert "Decision: accepted" in result.output
+
+
+@pytest.mark.parametrize(
+    ("flag", "requested_status"),
+    [
+        pytest.param("--confirm", "accepted", id="confirm"),
+        pytest.param("--reject", "rejected", id="reject"),
+    ],
+)
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_targeted_decision_json_is_audited_match_set_envelope(
+    mock_get_db: MagicMock,
+    mock_service: MagicMock,
+    flag: str,
+    requested_status: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JSON caller receives one typed result after its decision commits.
+
+    This fails if a receipt or preview reaches stdout after a mutation, which
+    would make the claimed JSON output unparsable and bypass its privacy audit.
+    """
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    audit_event: dict[str, object] = {}
+    monkeypatch.setattr("moneybin.cli.output.write_privacy_event", audit_event.update)
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.return_value = MatchDecisionOutcome(
+        match_status=requested_status, transfers_retired=0
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            flag,
+            "tx_pending0001",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    body = json.loads(result.stdout)
+    assert body["data"] == {
+        "match_id": "tx_pending0001",
+        "match_status": requested_status,
+        "transfers_retired": 0,
+    }
+    assert audit_event["classes_returned"] == ["aggregate", "record_id", "txn_type"]
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_combined_decisions_json_returns_one_envelope_with_both_outcomes(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Two explicit decisions still produce one parseable JSON result."""
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.side_effect = [
+        MatchDecisionOutcome(match_status="accepted", transfers_retired=0),
+        MatchDecisionOutcome(match_status="rejected", transfers_retired=0),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_confirm0001",
+            "--reject",
+            "tx_reject0002",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["data"] == {
+        "outcomes": [
+            {
+                "match_id": "tx_confirm0001",
+                "match_status": "accepted",
+                "transfers_retired": 0,
+            },
+            {
+                "match_id": "tx_reject0002",
+                "match_status": "rejected",
+                "transfers_retired": 0,
+            },
+        ]
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_combined_decision_json_keeps_the_first_committed_outcome_on_error(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A later failure cannot erase a prior durable decision from JSON output."""
+    from moneybin import error_codes
+    from moneybin.services.matching_service import MatchDecisionOutcome
+
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.set_status.side_effect = [
+        MatchDecisionOutcome(match_status="accepted", transfers_retired=0),
+        ValueError("unable to reject this match"),
+    ]
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm",
+            "tx_confirm0001",
+            "--reject",
+            "tx_reject0002",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "outcomes": [
+            {
+                "match_id": "tx_confirm0001",
+                "match_status": "accepted",
+                "transfers_retired": 0,
+            }
+        ]
+    }
+    assert body["error"]["code"] == error_codes.INFRA_INVALID_INPUT
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_json_reports_committed_counts_and_stale_accounting(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Bulk JSON reports the post-reconciliation outcome instead of a receipt."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection(
+        "match-1", "match-2", "match-3"
+    )
+    bulk = _bulk_outcome(accepted=2, reversed_=1, retired=4)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(
+        app,
+        [
+            "review",
+            "--type",
+            "matches",
+            "--confirm-all",
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "requested": 3,
+        "accepted": 2,
+        "reversed_by_reconciliation": 1,
+        "transfers_retired": 4,
+        "accounting_stale": True,
+        "accounting_hint": "Refresh FX accounting before relying on FX reports.",
+    }
 
 
 @patch("moneybin.services.matching_service.MatchingService")

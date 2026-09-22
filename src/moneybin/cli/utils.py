@@ -566,13 +566,27 @@ def get_terminal_policy(
 ) -> TerminalPolicy:
     """Resolve terminal presentation without triggering profile setup or a DB open."""
     from moneybin.cli.terminal import resolve_terminal_policy
-    from moneybin.config import CLISettings, get_current_profile, get_settings
+    from moneybin.config import (
+        CLISettings,
+        MoneyBinSettings,
+        get_current_profile,
+        get_settings,
+    )
 
     if settings is None:
         try:
             get_current_profile(auto_resolve=False)
         except RuntimeError:
-            settings = CLISettings()
+            default_profile = (
+                _flags.profile
+                or os.environ.get("MONEYBIN_PROFILE")
+                or get_default_profile()
+            )
+            settings = (
+                MoneyBinSettings(profile=default_profile).cli
+                if default_profile is not None
+                else CLISettings()
+            )
         else:
             settings = get_settings().cli
     return resolve_terminal_policy(

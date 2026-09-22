@@ -111,6 +111,7 @@ def review_impl(
             reject_id=reject_id,
             confirm_all=confirm_all,
             limit=limit,
+            output=output,
         )
         return
 
@@ -175,14 +176,22 @@ def transactions_review(
 
 
 def _review_matches_noninteractive(
-    *, confirm_id: str | None, reject_id: str | None, confirm_all: bool, limit: int
+    *,
+    confirm_id: str | None,
+    reject_id: str | None,
+    confirm_all: bool,
+    limit: int,
+    output: OutputFormat,
 ) -> None:
     from moneybin.cli.utils import (
         handle_cli_errors,
         warn_transfers_retired,
     )
     from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
-    from moneybin.services.matching_service import MatchingService
+    from moneybin.services.matching_service import (
+        MatchDecisionOutcome,
+        MatchingService,
+    )
 
     # --confirm-all bulk-accepts the whole queue; pairing it with a targeted
     # --confirm/--reject is ambiguous (the targeted id would be silently
@@ -204,43 +213,76 @@ def _review_matches_noninteractive(
             svc = MatchingService(db)
             if confirm_all:
                 selection = svc.preview_pending(limit=limit)
-                from moneybin.cli.render import render_summary
+                if output == OutputFormat.TEXT:
+                    from moneybin.cli.render import render_summary
 
-                render_summary(
-                    [
-                        ("Scope", f"{len(selection.ids)} pending match(es)"),
-                        ("Effect", "Accept the exact matches below"),
-                        *[
-                            (
-                                item.match_id,
-                                f"{item.match_type}: "
-                                f"{item.source_transaction_id_a} ↔ "
-                                f"{item.source_transaction_id_b}",
-                            )
-                            for item in selection.items
-                        ],
-                    ],
-                    title="Confirm match decisions",
-                )
-                bulk = svc.accept_previewed(selection, actor="cli")
-                emit_human_result(
-                    compose_human_result([
-                        build_summary(
-                            [
-                                ("Requested", str(len(selection.ids))),
-                                ("Accepted", str(bulk.accepted)),
+                    render_summary(
+                        [
+                            ("Scope", f"{len(selection.ids)} pending match(es)"),
+                            ("Effect", "Accept the exact matches below"),
+                            *[
                                 (
-                                    "Review scope",
-                                    f"First {selection.limit} in review order",
-                                ),
+                                    item.match_id,
+                                    f"{item.match_type}: "
+                                    f"{item.source_transaction_id_a} ↔ "
+                                    f"{item.source_transaction_id_b}",
+                                )
+                                for item in selection.items
                             ],
-                            title="Match decisions saved",
+                        ],
+                        title="Confirm match decisions",
+                    )
+                bulk = svc.accept_previewed(selection, actor="cli")
+                if output == OutputFormat.JSON:
+                    from moneybin import error_codes
+                    from moneybin.errors import ErrorDetail
+                    from moneybin.privacy.payloads.transactions import (
+                        MatchBulkSetPayload,
+                    )
+
+                    envelope = build_envelope(
+                        data=MatchBulkSetPayload(
+                            requested=len(selection.ids),
+                            accepted=bulk.accepted,
+                            reversed_by_reconciliation=(
+                                bulk.reversed_by_reconciliation
+                            ),
+                            transfers_retired=bulk.transfers_retired,
+                            accounting_stale=bulk.accounting_stale,
+                            accounting_hint=bulk.accounting_hint,
+                        ),
+                        sensitivity="low",
+                    )
+                    if bulk.reversed_by_reconciliation:
+                        envelope = envelope.with_error(
+                            ErrorDetail(
+                                message=(
+                                    f"{bulk.reversed_by_reconciliation} requested "
+                                    "match decision(s) were reversed by reconciliation."
+                                ),
+                                code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                            )
                         )
-                    ]),
-                    policy=get_terminal_policy(),
-                    finite_read=False,
-                    receipt=True,
-                )
+                    render_or_json(envelope, output, cli_actor="review")
+                else:
+                    emit_human_result(
+                        compose_human_result([
+                            build_summary(
+                                [
+                                    ("Requested", str(len(selection.ids))),
+                                    ("Accepted", str(bulk.accepted)),
+                                    (
+                                        "Review scope",
+                                        f"First {selection.limit} in review order",
+                                    ),
+                                ],
+                                title="Match decisions saved",
+                            )
+                        ]),
+                        policy=get_terminal_policy(),
+                        finite_read=False,
+                        receipt=True,
+                    )
                 if bulk.accounting_stale:
                     logger.warning(
                         "! Match decisions were saved, but FX accounting is stale. "
@@ -271,20 +313,23 @@ def _review_matches_noninteractive(
             # Independent ifs (not elif): `--confirm X --reject Y` targets two
             # different matches in one invocation.
             refused = False
+            outcomes: list[tuple[str, MatchDecisionOutcome]] = []
             if confirm_id:
                 outcome = svc.set_status(confirm_id, status="accepted", actor="cli")
+                outcomes.append((confirm_id, outcome))
                 if outcome.match_status == "accepted":
-                    emit_human_result(
-                        compose_human_result([
-                            build_summary(
-                                [("Match", confirm_id), ("Decision", "accepted")],
-                                title="Match decision saved",
-                            )
-                        ]),
-                        policy=get_terminal_policy(),
-                        finite_read=False,
-                        receipt=True,
-                    )
+                    if output == OutputFormat.TEXT:
+                        emit_human_result(
+                            compose_human_result([
+                                build_summary(
+                                    [("Match", confirm_id), ("Decision", "accepted")],
+                                    title="Match decision saved",
+                                )
+                            ]),
+                            policy=get_terminal_policy(),
+                            finite_read=False,
+                            receipt=True,
+                        )
                 else:
                     # Same refusal `matches set` can hit: the reconciliation this
                     # accept triggers walks every accepted transfer, this row
@@ -301,18 +346,86 @@ def _review_matches_noninteractive(
                     rematch_follow_up=True,
                 )
             if reject_id:
-                svc.set_status(reject_id, status="rejected", actor="cli")
-                emit_human_result(
-                    compose_human_result([
-                        build_summary(
-                            [("Match", reject_id), ("Decision", "rejected")],
-                            title="Match decision saved",
-                        )
-                    ]),
-                    policy=get_terminal_policy(),
-                    finite_read=False,
-                    receipt=True,
+                try:
+                    outcome = svc.set_status(reject_id, status="rejected", actor="cli")
+                except Exception as exc:
+                    from moneybin.errors import ErrorDetail, classify_user_error
+                    from moneybin.privacy.payloads.transactions import (
+                        MatchReviewDecisionPayload,
+                        MatchSetPayload,
+                    )
+
+                    user_error = classify_user_error(exc)
+                    if (
+                        output != OutputFormat.JSON
+                        or not outcomes
+                        or user_error is None
+                    ):
+                        raise
+                    payload = MatchReviewDecisionPayload(
+                        outcomes=[
+                            MatchSetPayload(
+                                match_id=match_id,
+                                match_status=saved_outcome.match_status,
+                                transfers_retired=saved_outcome.transfers_retired,
+                            )
+                            for match_id, saved_outcome in outcomes
+                        ]
+                    )
+                    envelope = build_envelope(
+                        data=payload,
+                        sensitivity="low",
+                        recovery_actions=user_error.recovery_actions,
+                    ).with_error(ErrorDetail.from_user_error(user_error))
+                    render_or_json(envelope, output, cli_actor="review")
+                    raise typer.Exit(1) from exc
+                outcomes.append((reject_id, outcome))
+                if output == OutputFormat.TEXT:
+                    emit_human_result(
+                        compose_human_result([
+                            build_summary(
+                                [("Match", reject_id), ("Decision", "rejected")],
+                                title="Match decision saved",
+                            )
+                        ]),
+                        policy=get_terminal_policy(),
+                        finite_read=False,
+                        receipt=True,
+                    )
+            if output == OutputFormat.JSON:
+                from moneybin.privacy.payloads.transactions import (
+                    MatchReviewDecisionPayload,
+                    MatchSetPayload,
                 )
+
+                decision_payloads = [
+                    MatchSetPayload(
+                        match_id=match_id,
+                        match_status=outcome.match_status,
+                        transfers_retired=outcome.transfers_retired,
+                    )
+                    for match_id, outcome in outcomes
+                ]
+                payload = (
+                    decision_payloads[0]
+                    if len(decision_payloads) == 1
+                    else MatchReviewDecisionPayload(outcomes=decision_payloads)
+                )
+                envelope = build_envelope(data=payload, sensitivity="low")
+                if refused:
+                    from moneybin import error_codes
+                    from moneybin.errors import ErrorDetail
+
+                    envelope = envelope.with_error(
+                        ErrorDetail(
+                            message=(
+                                "A requested match acceptance was reversed by "
+                                "reconciliation."
+                            ),
+                            code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                        )
+                    )
+                render_or_json(envelope, output, cli_actor="review")
             # After both, for the same reason they are independent ifs: a
             # refused confirm must not skip the reject the caller also asked
             # for. Same exit code as `matches set` on the identical refusal.

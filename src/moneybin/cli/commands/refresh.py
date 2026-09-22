@@ -51,6 +51,7 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
     """Render the pipeline's factual outcome after progress has cleaned up."""
     from moneybin.orchestration.refresh import RefreshResult
 
+    terminal = get_terminal_policy()
     refresh_result = result
     if not isinstance(refresh_result, RefreshResult):
         raise TypeError("refresh receipt requires RefreshResult")
@@ -61,16 +62,16 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
         and investment_stage.error is not None
     )
     if investment_blocked_transform:
-        title = "× Refresh failed"
+        title = f"{terminal.symbols.failure} Refresh failed"
         outcome = f"Investment planning prevented transform: {refresh_result.error}"
     elif refresh_result.error is not None:
-        title = "× Refresh failed"
+        title = f"{terminal.symbols.failure} Refresh failed"
         outcome = f"Failed: {refresh_result.error}"
     elif partial:
-        title = "! Refresh partially completed"
+        title = f"{terminal.symbols.attention} Refresh partially completed"
         outcome = "Requested steps completed with incomplete best-effort results"
     else:
-        title = "✓ Refresh complete"
+        title = f"{terminal.symbols.success} Refresh complete"
         outcome = "Requested refresh steps completed"
     pairs = [("Outcome", outcome)]
     if partial:
@@ -102,7 +103,7 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
         ))
     emit_human_result(
         compose_human_result([build_summary(pairs, title=title)]),
-        policy=get_terminal_policy(),
+        policy=terminal,
         finite_read=False,
         receipt=True,
     )
@@ -254,7 +255,7 @@ def refresh_command(
                             ("Saved state", "Saved scope is unknown"),
                             ("Next step", "`moneybin transform status`"),
                         ],
-                        title="! Refresh cancelled",
+                        title=f"{terminal.symbols.attention} Refresh cancelled",
                     )
                 ]),
                 policy=terminal,

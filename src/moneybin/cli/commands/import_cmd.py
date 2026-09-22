@@ -3079,7 +3079,7 @@ def _preview_pdf(source: Path) -> None:
                 f"Can't open the database, so {source.name} wasn't read: {e}"
             )
         )
-        logger.info(database_key_error_hint())
+        typer.echo(database_key_error_hint(), err=True)
         raise typer.Exit(1) from e
     except ImportConfirmationRequiredError as e:
         # pdf_preview signals both the sign gate and a bridge escalation by

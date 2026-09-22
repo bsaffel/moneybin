@@ -80,7 +80,7 @@ def _require_interactive_prompt(*, action: str, guidance: str) -> None:
     """Refuse prompts when redirected streams cannot express a real choice."""
     if sys.stdin.isatty() and sys.stdout.isatty():
         return
-    typer.echo(f"{action} requires an interactive terminal. {guidance}")
+    typer.echo(f"{action} requires an interactive terminal. {guidance}", err=True)
     raise typer.Exit(1)
 
 

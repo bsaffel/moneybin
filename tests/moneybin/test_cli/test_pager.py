@@ -16,6 +16,8 @@ def test_page_text_starts_less_with_safe_fixed_options(
     received: dict[str, object] = {}
 
     class _Pager:
+        returncode = 0
+
         def communicate(self, text: str) -> None:
             received["text"] = text
 
@@ -52,6 +54,8 @@ def test_page_text_uses_ansi_option_only_for_colored_rendering(
     arguments: list[list[str]] = []
 
     class _Pager:
+        returncode = 0
+
         def communicate(self, text: str) -> None:
             pass
 
@@ -72,6 +76,8 @@ def test_page_text_preserves_only_library_sgr_in_colored_output(
     received: list[str] = []
 
     class _Pager:
+        returncode = 0
+
         def communicate(self, text: str) -> None:
             received.append(text)
 
@@ -102,10 +108,18 @@ def test_page_text_accepts_early_pager_close(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Closing less early is successful reading, not a failed command."""
+    calls: list[str] = []
 
     class _Pager:
+        returncode = 0
+
         def communicate(self, text: str) -> None:
+            calls.append("communicate")
             raise BrokenPipeError
+
+        def wait(self) -> int:
+            calls.append("wait")
+            return self.returncode
 
     def _popen(*args: object, **kwargs: object) -> _Pager:
         return _Pager()
@@ -113,6 +127,26 @@ def test_page_text_accepts_early_pager_close(
     monkeypatch.setattr(pager.subprocess, "Popen", _popen)
 
     assert pager.page_text("answer", color=False, wide=False)
+    assert calls == ["communicate", "wait"]
+
+
+def test_page_text_returns_false_when_pager_exits_unsuccessfully(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A completed pager failure leaves the caller to print its ordinary output."""
+
+    class _Pager:
+        returncode = 1
+
+        def communicate(self, text: str) -> tuple[str, str]:
+            return "", ""
+
+    def _popen(*args: object, **kwargs: object) -> _Pager:
+        return _Pager()
+
+    monkeypatch.setattr(pager.subprocess, "Popen", _popen)
+
+    assert not pager.page_text("answer", color=False, wide=False)
 
 
 def test_page_text_cleans_up_the_child_when_interrupted(
