@@ -6,8 +6,9 @@
    This rung is not an exact summand of reports.net_worth_currencies:
    account_balance_home rounds once per account, while that view rounds once
    per currency per day, so SUM(account_balance_home) can differ from
-   total_assets_home + total_liabilities_home by a fraction of a cent per
-   currency per day. Expected and bounded — reconcile the rungs to the cent. */
+   total_assets_home + total_liabilities_home by up to half a cent per account
+   in that currency-day, plus that view's own half cent. Expected and bounded —
+   reconcile the rungs at the cent, not the sub-cent. */
 MODEL (
   name reports.net_worth_accounts,
   kind VIEW

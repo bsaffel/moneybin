@@ -2187,7 +2187,7 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
   `unpriced_currency_count` at least 1 — which reads as broken rates unless
   something says otherwise. `redact_catalog_execution` appends
   `HOME_CURRENCY_HINT` ("Run `moneybin profile set home_currency <CODE>` to
-  get converted totals; this profile has no home currency set") whenever
+  get converted totals; this profile has no usable home currency") whenever
   `execution.home_currency is None` **and** the spec declares at least one
   `currency_basis="home"` column. Gated on the declaration rather than on
   `applied_rates`, which is false in exactly the case being explained, and

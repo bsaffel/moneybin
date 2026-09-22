@@ -593,8 +593,11 @@ def inspection_hint(report_id: str, columns: tuple[str, ...]) -> str:
 #: count, and nothing else on the response names the setting that fills it.
 HOME_CURRENCY_HINT = (
     "Run `moneybin profile set home_currency <CODE>` to get converted totals; "
-    "this profile has no home currency set"
+    "this profile has no usable home currency"
 )
+# "no usable" rather than "none set": `_conversion_target` falls back to None on
+# a stored code that fails validation too, so a profile with a malformed setting
+# reaches this hint with one set. Both states have the same remedy.
 
 
 def home_basis_columns(columns: Sequence[OutputColumn]) -> set[str]:
