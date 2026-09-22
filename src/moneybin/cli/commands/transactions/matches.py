@@ -365,6 +365,11 @@ def matches_undo(
 ) -> None:
     """Reverse a match decision."""
     if not yes:
+        if not get_terminal_policy().interactive:
+            typer.echo(
+                "Undo requires explicit confirmation. Re-run with --yes.", err=True
+            )
+            raise typer.Exit(2)
         confirmed = typer.confirm(f"Undo match {match_id}?")
         if not confirmed:
             _emit_cancelled_receipt("Undo", "No match decision changed")

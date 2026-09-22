@@ -13,6 +13,7 @@ from decimal import Decimal, InvalidOperation
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -30,6 +31,7 @@ from moneybin.cli.render import (
 )
 from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.transactions import (
     SplitAddPayload,
     SplitRemovePayload,
@@ -188,6 +190,18 @@ def transactions_splits_remove(
     from moneybin.services.transaction_service import TransactionService
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_splits_remove",
+                payload_type=SplitRemovePayload,
+            )
         if not typer.confirm(f"Remove split {split_id}?"):
             _emit_split_cancellation("Split removal cancelled", "No split was removed")
             raise typer.Exit(0)
@@ -239,6 +253,17 @@ def transactions_splits_clear(
     from moneybin.services.transaction_service import TransactionService
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_splits_clear",
+            )
         if not typer.confirm(f"Clear all splits on {transaction_id}?"):
             _emit_split_cancellation("Split clear cancelled", "No splits were removed")
             raise typer.Exit(0)

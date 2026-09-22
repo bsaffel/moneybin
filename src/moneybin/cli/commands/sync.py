@@ -1,7 +1,6 @@
 """Data synchronization commands for MoneyBin CLI."""
 
 import logging
-import sys
 import webbrowser
 from contextlib import contextmanager
 
@@ -321,7 +320,10 @@ def sync_link(
                         target = error_state[0].institution_name
                         if yes:
                             institution = target
-                        elif output == OutputFormat.JSON or not sys.stdin.isatty():
+                        elif (
+                            output == OutputFormat.JSON
+                            or not get_terminal_policy().interactive
+                        ):
                             message = (
                                 "A connected institution needs re-authentication. "
                                 f"Pass --institution {target} with --yes to re-authenticate, "
@@ -606,7 +608,7 @@ def sync_disconnect(
 ) -> None:
     """Remove a bank connection."""
     if not yes:
-        if output == OutputFormat.JSON or not sys.stdin.isatty():
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
             message = "Disconnect requires explicit confirmation. Re-run with --yes."
             if output == OutputFormat.JSON:
                 emit_json_failure(

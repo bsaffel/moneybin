@@ -5,9 +5,10 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.transactions.matches import app
+from moneybin.cli.commands.transactions.matches import app, matches_undo
 
 runner = CliRunner()
 
@@ -15,16 +16,26 @@ runner = CliRunner()
 @patch("moneybin.cli.commands.transactions.matches.get_database")
 @patch("moneybin.services.matching_service.MatchingService.undo")
 def test_undo_declined_confirmation_has_a_visible_receipt(
-    mock_undo: MagicMock, mock_get_db: MagicMock
+    mock_undo: MagicMock,
+    mock_get_db: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A declined match reversal must not disappear with INFO suppression."""
     mock_get_db.return_value.__enter__.return_value = MagicMock()
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
 
-    result = runner.invoke(app, ["undo", "match_123"], input="n\n")
+    with patch(
+        "moneybin.cli.commands.transactions.matches.typer.confirm", return_value=False
+    ):
+        with pytest.raises(typer.Exit) as exit_info:
+            matches_undo("match_123", yes=False)
 
-    assert result.exit_code == 0, result.output
-    assert "Undo cancelled" in result.stdout
-    assert "No match decision changed" in result.stdout
+    assert exit_info.value.exit_code == 0
+    receipt = capsys.readouterr().out
+    assert "Undo cancelled" in receipt
+    assert "No match decision changed" in receipt
     mock_undo.assert_not_called()
 
 

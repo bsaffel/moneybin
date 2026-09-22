@@ -7,7 +7,6 @@ business logic and the same response envelope. ``restate`` keeps the direct
 ``sqlmesh_context()`` path — it's operator-only and has no MCP equivalent.
 """
 
-import sys
 from collections.abc import Sequence
 
 import typer
@@ -406,7 +405,9 @@ def transform_restate(
     output: OutputFormat = output_option,
 ) -> None:
     """Force recompute a model for a date range."""
-    if output == OutputFormat.JSON or not yes and not sys.stdin.isatty():
+    if output == OutputFormat.JSON or (
+        not yes and not get_terminal_policy().interactive
+    ):
         message = "Restate requires an interactive confirmation or --yes."
         if output == OutputFormat.JSON:
             from moneybin.cli.utils import emit_json_failure

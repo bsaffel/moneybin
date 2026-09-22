@@ -725,6 +725,16 @@ def rules_resolve(
         ]
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+            )
         verbs = ", ".join(sorted({d.resolution for d in decisions}))
         confirmed = typer.confirm(
             f"Apply {len(decisions)} rule-conflict resolution(s) ({verbs})?"

@@ -6,14 +6,40 @@ import json
 from collections.abc import Generator
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
 
+from moneybin import error_codes
+from moneybin.cli import utils as cli_utils
 from moneybin.cli.main import app
 from moneybin.database import Database
 from moneybin.services.transaction_service import TransactionService
 from tests.moneybin.test_cli._curation_helpers import make_curation_db, patch_db
+
+
+class _Stream:
+    def __init__(self, tty: bool) -> None:
+        self.tty = tty
+        self.encoding = "utf-8"
+
+    def isatty(self) -> bool:
+        return self.tty
+
+
+def _set_terminal_streams(
+    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool
+) -> None:
+    monkeypatch.setattr(
+        cli_utils,
+        "sys",
+        SimpleNamespace(
+            stdin=_Stream(stdin_tty),
+            stdout=_Stream(stdout_tty),
+            stderr=_Stream(True),
+        ),
+    )
 
 
 @pytest.fixture()
@@ -154,10 +180,13 @@ def test_splits_add_refuses_a_blank_category(runner: CliRunner, db: Database) ->
     assert rows is not None and rows[0] == 0
 
 
-def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
+def test_splits_remove_with_yes(
+    runner: CliRunner, db: Database, output_args: list[str]
+) -> None:
     s = TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
     result = runner.invoke(
-        app, ["transactions", "splits", "remove", s.split_id, "--yes"]
+        app, ["transactions", "splits", "remove", s.split_id, "--yes", *output_args]
     )
     assert result.exit_code == 0
     rows = db.conn.execute(
@@ -167,10 +196,41 @@ def test_splits_remove_with_yes(runner: CliRunner, db: Database) -> None:
     assert rows is not None and rows[0] == 0
 
 
+@pytest.mark.parametrize(
+    ("output_args", "stdin_tty", "stdout_tty"),
+    [([], False, True), ([], True, False), (["--output", "json"], True, True)],
+)
+def test_splits_remove_refuses_piped_confirmation_without_yes(
+    runner: CliRunner,
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    output_args: list[str],
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> None:
+    """A redirected ``y`` must not authorize removing a split."""
+    split = TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+    _set_terminal_streams(monkeypatch, stdin_tty=stdin_tty, stdout_tty=stdout_tty)
+
+    result = runner.invoke(
+        app,
+        ["transactions", "splits", "remove", split.split_id, *output_args],
+        input="y\n",
+    )
+
+    assert result.exit_code == 2, result.output
+    if output_args:
+        body = json.loads(result.stdout)
+        assert body["error"]["code"] == error_codes.MUTATION_CONFIRMATION_REQUIRED
+        assert "Remove split" not in result.output
+    assert TransactionService(db).get_split(split.split_id) is not None
+
+
 def test_splits_remove_cancellation_is_a_visible_receipt(
-    runner: CliRunner, db: Database
+    runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     split = TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+    _set_terminal_streams(monkeypatch, stdin_tty=True, stdout_tty=True)
 
     result = runner.invoke(
         app, ["transactions", "splits", "remove", split.split_id], input="n\n"
@@ -182,10 +242,11 @@ def test_splits_remove_cancellation_is_a_visible_receipt(
 
 
 def test_splits_clear_cancellation_is_a_visible_receipt(
-    runner: CliRunner, db: Database
+    runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A declined clear reports that the existing splits remain saved."""
     TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+    _set_terminal_streams(monkeypatch, stdin_tty=True, stdout_tty=True)
 
     result = runner.invoke(app, ["transactions", "splits", "clear", "T1"], input="n\n")
 
@@ -203,15 +264,50 @@ def test_splits_remove_missing_exits_1(runner: CliRunner, db: Database) -> None:
     assert "not found" in result.output
 
 
-def test_splits_clear_with_yes(runner: CliRunner, db: Database) -> None:
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
+def test_splits_clear_with_yes(
+    runner: CliRunner, db: Database, output_args: list[str]
+) -> None:
     TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
     TransactionService(db).add_split("T1", Decimal("-25"), actor="cli")
-    result = runner.invoke(app, ["transactions", "splits", "clear", "T1", "--yes"])
+    result = runner.invoke(
+        app, ["transactions", "splits", "clear", "T1", "--yes", *output_args]
+    )
     assert result.exit_code == 0
     rows = db.conn.execute(
         "SELECT COUNT(*) FROM app.transaction_splits WHERE transaction_id = 'T1'"
     ).fetchone()
     assert rows is not None and rows[0] == 0
+
+
+@pytest.mark.parametrize(
+    ("output_args", "stdin_tty", "stdout_tty"),
+    [([], False, True), ([], True, False), (["--output", "json"], True, True)],
+)
+def test_splits_clear_refuses_piped_confirmation_without_yes(
+    runner: CliRunner,
+    db: Database,
+    monkeypatch: pytest.MonkeyPatch,
+    output_args: list[str],
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> None:
+    """A redirected ``y`` must not authorize clearing every split."""
+    TransactionService(db).add_split("T1", Decimal("-50"), actor="cli")
+    _set_terminal_streams(monkeypatch, stdin_tty=stdin_tty, stdout_tty=stdout_tty)
+
+    result = runner.invoke(
+        app,
+        ["transactions", "splits", "clear", "T1", *output_args],
+        input="y\n",
+    )
+
+    assert result.exit_code == 2, result.output
+    if output_args:
+        body = json.loads(result.stdout)
+        assert body["error"]["code"] == error_codes.MUTATION_CONFIRMATION_REQUIRED
+        assert "Clear all splits" not in result.output
+    assert len(TransactionService(db).list_splits("T1")) == 1
 
 
 def test_splits_clear_receipt_uses_resolved_transaction_and_actual_count(

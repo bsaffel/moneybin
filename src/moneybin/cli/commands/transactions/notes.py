@@ -9,6 +9,7 @@ import logging
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -20,6 +21,7 @@ from moneybin.cli.output import (
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.transactions import (
     NoteDeletePayload,
     NotePayload,
@@ -192,6 +194,18 @@ def transactions_notes_delete(
     from moneybin.services.transaction_service import TransactionService
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_notes_delete",
+                payload_type=NoteDeletePayload,
+            )
         if not typer.confirm(f"Delete note {note_id}?"):
             emit_human_result(
                 compose_human_result([

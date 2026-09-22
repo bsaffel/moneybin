@@ -521,7 +521,8 @@ def test_sync_link_declined_reauth_performs_no_link(
     ]
     mock_build.return_value.__enter__.return_value = service
 
-    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
     from moneybin.cli.commands.sync import sync_link
 
     with pytest.raises(typer.Exit) as exit_info:
@@ -561,7 +562,8 @@ def test_sync_link_json_tty_refuses_ambiguous_reauth_without_prompt(
         )
     ]
     mock_build.return_value.__enter__.return_value = service
-    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
     from moneybin.cli.commands.sync import sync_link
 
     with pytest.raises(typer.Exit) as exit_info:
@@ -862,7 +864,8 @@ def test_sync_disconnect_refusal_performs_no_mutation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The disconnect confirmation refusal must happen before service construction."""
-    monkeypatch.setattr("moneybin.cli.commands.sync.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
     from moneybin.cli.commands.sync import sync_disconnect
 
     with pytest.raises(typer.Exit) as exit_info:
