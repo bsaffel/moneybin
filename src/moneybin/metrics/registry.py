@@ -458,9 +458,10 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
 # The two gauges below are not that case: both are **unlabeled**, so — unlike
 # a labeled gauge with no child — they emit a sample the instant the process
 # starts, whether or not currency_integrity has ever run. Doctor's
-# currency_integrity check (doctor_service.py) already reads core.* and
-# reports.* once per run to build PROFILE_CURRENCIES; these two ride the same
-# read rather than opening a second query path.
+# currency_integrity check (doctor_service.py) sets them, each from its own
+# COUNT in its own try/except, so an install whose core layer predates the
+# rate spine or the net-worth rung skips one gauge without failing the check
+# or the other gauge.
 
 FX_RATE_SPINE_ROWS = Gauge(
     "moneybin_fx_rate_spine_rows",

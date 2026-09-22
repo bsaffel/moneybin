@@ -4304,7 +4304,7 @@ class DoctorService:
             )
         if len(currencies) > 1:
             # A home currency already set doesn't mean this warning is wrong —
-            # the five aggregating reports still sub-total regardless — but it
+            # the four aggregating reports still sub-total regardless — but it
             # does mean two of this detail's claims are: telling the user to
             # set what is already set, and asserting every combined figure is
             # withheld when the five converting reports (the three net-worth
@@ -4334,7 +4334,7 @@ class DoctorService:
                 )
             else:
                 remedy = (
-                    f"The five reports that aggregate per currency still "
+                    f"The four reports that aggregate per currency still "
                     f"sub-total separately; the three net-worth reports, "
                     f"`large-transactions`, and `balance-drift` price into "
                     f"{home_currency} whenever "

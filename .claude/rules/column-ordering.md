@@ -165,8 +165,12 @@ Two reports already satisfy this and are the models to copy:
 - `core:balance_drift` — `asserted_balance`, `computed_balance`, `drift`. The
   two positions being reconciled, then the discrepancy.
 
-`core:net_worth` now ends on `net_worth` too — the service-backed report this
-replaced was the counter-example this section used to name.
+`core:net_worth`'s base projection — the `reports.net_worth` view and the
+unbucketed read — now ends on `net_worth` too, where the service-backed report
+it replaced was the counter-example this section used to name. Its declared
+`ReportSpec.columns` and its `--interval` SQL end on `change_pct` instead,
+because the bucketed read appends `change_abs` and `change_pct` after the base
+columns; that is Rule C's base-wins clause, not an exception to this one.
 
 One inverted it before this rule, and is why it is written down:
 

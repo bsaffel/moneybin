@@ -16,7 +16,7 @@ uv run moneybin demo --persona family
 
 That build ends with `✅ Demo profile 'demo' ready (4 accounts, 2886 transactions, 2473 categorized).` — three calendar years ending on the last complete one, two bank accounts and two credit cards, seed 42. The seed fixes the figures within one calendar year: the window ends on the last complete year and `demo` has no option to pin it, so a rerun after January 1 shifts every date-bound number a year forward while the shapes hold.
 
-## The nine built-in reports
+## The ten built-in reports
 
 | Command | Report id | Answers |
 |---|---|---|

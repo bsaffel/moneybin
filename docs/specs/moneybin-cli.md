@@ -699,10 +699,10 @@ format and reject `--format` and `--compress`; ZIP is limited to local CSV and
 Parquet bundles.
 
 **Exports carry original currency, deliberately — there is no
-`--display-currency` here.** `moneybin reports run` and every converting
-report command (`reports net-worth`, `reports net-worth-currencies`,
-`reports net-worth-accounts`, `reports large-transactions`,
-`reports balance-drift`) all take one; `export report` does not, and
+`--display-currency` here.** `moneybin reports run` and all ten generated report
+commands take one — including the five that cannot convert, which accept it and
+report why they stayed segmented rather than varying their signature per report;
+`export report` does not, and
 `ExportService.prepare_report` reads through `execute_raw` so no conversion can
 reach a written artifact. Display conversion is presentation-time by
 construction: nothing converted is ever stored, because a converted figure is

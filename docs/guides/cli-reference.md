@@ -57,7 +57,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
+`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Four `summary` keys are conditional on conversion: `degraded` and `degraded_reason` when the read could not price what was asked for, `applied_rates` when at least one real rate was applied, and `home_currency` when one of those rates put a value into a home-basis column — the `_home` columns on the three net-worth reports. `home_currency` names the currency those columns are in; `display_currency` names the rest of the row. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
 
 **Read response — `transactions list`** (list payload):
 

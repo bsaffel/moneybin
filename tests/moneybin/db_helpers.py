@@ -237,9 +237,9 @@ CREATE VIEW IF NOT EXISTS reports.net_worth_currencies AS
 SELECT
     CAST(NULL AS VARCHAR) AS currency_code,
     CAST(NULL AS VARCHAR) AS home_currency_code,
+    CAST(NULL AS VARCHAR) AS rate_source,
     CURRENT_DATE AS balance_date,
     CAST(NULL AS DATE) AS rate_published_date,
-    CAST(NULL AS VARCHAR) AS rate_source,
     0 AS account_count,
     0 AS carried_forward_count,
     0.00::DECIMAL(18, 2) AS total_assets,

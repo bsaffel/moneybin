@@ -197,6 +197,8 @@ Using profile: demo
 
 Every converted figure traces to a stored rate. Under `--output json`, `summary.applied_rates` lists one entry per pair and date the read used, with the rate, its source, the date requested, and the date actually priced, and each row carries `original_currency_code` and `rate_source` so a figure can be tied back to the entry that priced it.
 
+A row on the three net-worth reports carries two units — its own currency and a home-currency column beside it (`net_worth_home` and its siblings) — and `applied_rates` names each rate's own pair, never which of the two it priced. `summary.home_currency` closes that: it names the home currency actually priced into a home-basis column on this response, and is absent when no conversion put a value in one. A response with no home-basis column, or one whose home-basis columns all came back null, omits the key rather than naming a currency nothing on the response is in.
+
 ### When a rate is missing
 
 A converting report needs a rate for every foreign row it fetches, not only the ones it returns: a capped read pulls one extra row past the cap to detect truncation, converts the whole fetched set first, then drops that extra row — so a missing rate on the discarded row alone still degrades the response. When any row's rate is missing, the whole report falls back to per-currency sub-totals rather than converting the rows it can and leaving the rest, because a figure that mixes converted and unconverted rows is worse than no figure. The home-currency default falls back quietly, so a profile that has set one is not warned on every read it cannot price; ask for a currency explicitly and the reason is printed, and lands in `summary.degraded_reason` under `--output json`:

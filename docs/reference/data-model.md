@@ -148,7 +148,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
 | `currency_code` | VARCHAR | ISO-4217. User override, else the currency the account's own source reported; `NULL` when nobody stated one — there is no `'USD'` default. See "Currency handling" above. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
-| `archived` | BOOLEAN | Hides from default lists. Excludes the account from the three net-worth reports only for dates after `archived_at`; balances on or before it still count. |
+| `archived` | BOOLEAN | Hides from default lists. With an `archived_at` date, excludes the account from the three net-worth reports only for dates after it; balances on or before it still count. With `archived_at` NULL, excludes it on every date — the predicate has no date to scope to. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle, not forced by archiving. |
 | `archived_at` | DATE | The date the account stopped being part of the position. NULL while active. |
 

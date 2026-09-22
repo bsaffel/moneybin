@@ -176,7 +176,7 @@ Transaction query returned 5 of 20 rows (has_more=True)
 5 of 20 shown · raise --limit for more · 5 uncategorized
 ```
 
-Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending-trend`, `merchant-activity`, `recurring-subscriptions`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cash-flow` and `reports spending-trend` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all nine built-in reports on a populated profile and shows how to save your own.
+Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending-trend`, `merchant-activity`, `recurring-subscriptions`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cash-flow` and `reports spending-trend` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all ten built-in reports on a populated profile and shows how to save your own.
 
 ## 7. Categorize
 
@@ -217,7 +217,7 @@ The assistant calls the same catalog the CLI reads — `reports`, `transactions`
 ## Next
 
 - [Data import](data-import.md) — more formats, the watched inbox, migrating from Tiller, Mint, or YNAB.
-- [Reports](reports.md) — the nine built-in reports and your own.
+- [Reports](reports.md) — the ten built-in reports and your own.
 - [Categorization](categorization.md) — rules, merchant mappings, LLM assist.
 - [Database and security](database-security.md) — backups, passphrase mode, and [env-var key injection](database-security.md#headless-and-cron-deployments) for a NAS, a container, or cron.
 - [Direct SQL access](sql-access.md) — the encrypted file from DuckDB's own CLI or UI.

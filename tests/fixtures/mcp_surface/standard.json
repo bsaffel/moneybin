@@ -1,5 +1,5 @@
 {
-  "sha256": "c23148ccec278cd0a3e762f90e002042273afd0b7f22c2a28882c1132b01619c",
+  "sha256": "67625a7fda3ce5f974d53ab1933be0d76899cec72bb857474ae324962952ee90",
   "tool_count": 50,
   "tools": [
     {
@@ -2739,7 +2739,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
+        "description": "Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure, and `summary.home_currency` names the home currency actually priced into a home-basis column such as `net_worth_home`, absent when no conversion put a value in one. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2801,12 +2801,12 @@
         },
         "name": "reports"
       },
-      "description_bytes": 689,
+      "description_bytes": 854,
       "input_schema_bytes": 396,
       "name": "reports",
       "other_bytes": 58,
       "output_schema_bytes": 0,
-      "total_bytes": 1279
+      "total_bytes": 1444
     },
     {
       "annotation_bytes": 89,
@@ -5251,5 +5251,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 62356
+  "total_bytes": 62521
 }

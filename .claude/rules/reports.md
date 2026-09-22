@@ -12,13 +12,17 @@ the `reports` MCP tool, the CLI, `export report`, `reports explain` — reads th
 spec and nothing else. What varies between report *kinds* is only where the spec
 comes from.
 
-Three kinds ship today. Pick the row you are writing, then read its section.
+Three kinds are supported; two have instances today. Pick the row you are
+writing, then read its section.
 
 | Kind | Where the spec comes from | Who declares the classes |
 |---|---|---|
 | **Materialized** SQL-backed | An `@report` runner in the repo | The author, verified against derivation in CI |
-| **Runner-less view** | The generated `_derived_classes.py` | Derivation, checked in |
+| **Runner-less view** — supported, none shipped | The generated `_derived_classes.py` | Derivation, checked in |
 | **User-created** (dynamic) | A row in `app.user_reports`, via `spec_from_row` | Derivation, at save time — the user never declares one |
+
+All ten built-in reports are `@report` runners, so `DERIVED_REPORT_CLASSES` is
+currently empty. The runner-less path still works; nothing uses it.
 
 ## A new report is SQL-backed — anything else needs explicit approval first
 
@@ -151,9 +155,12 @@ complete, and fails the build if the two disagree.
   all, the exact shape of gap that let a coverage hole through undetected
   before this branch.
 
-**Runner-less views (no `@report`).** Their classes live in the generated,
-checked-in `src/moneybin/reports/definitions/_derived_classes.py` — never edit
-it by hand. Regenerate after adding or changing a runner-less model with:
+**Runner-less views (no `@report`).** None ship today —
+`DERIVED_REPORT_CLASSES` is `{}` — but the path is live. Their classes would
+live in the generated, checked-in
+`src/moneybin/reports/definitions/_derived_classes.py` — never edit it by hand.
+Regenerate after adding or changing a runner-less model, and after deleting the
+last one, with:
 
 ```bash
 make generate-report-classes
