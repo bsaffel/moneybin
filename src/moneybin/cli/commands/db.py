@@ -1085,7 +1085,7 @@ def db_key_rotate(
         typer.echo(f"  (old database backup: {old_backup})", err=True)
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
-        if database_rotated or original_archived:
+        if database_rotated:
             typer.echo(
                 "Key rotation interrupted after the database swap began; the keychain "
                 "update is unconfirmed. Keep the old database backup until access is restored.",
@@ -1096,6 +1096,27 @@ def db_key_rotate(
             )
             typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
             typer.echo(f"  (old database backup: {old_backup})", err=True)
+        elif original_archived:
+            typer.echo(
+                "Key rotation interrupted after the original database was archived. The "
+                f"original backup is retained at {old_backup}; the replacement is "
+                "unconfirmed. The original backup requires the old key. Inspect the "
+                "original backup, rotated candidate "
+                f"({rotated_path}), and configured database path ({db_path}) before "
+                "retrying.",
+                err=True,
+            )
+            typer.echo(
+                "The new key can only access a confirmed rotated candidate; it "
+                "cannot access the original backup.",
+                err=True,
+            )
+            typer.echo(
+                "Recovery: after confirming the configured database path holds the "
+                "rotated candidate, set the following env var to regain access:",
+                err=True,
+            )
+            typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
         elif original_move_started or replacement_move_started:
             typer.echo(
                 "Key rotation interrupted during the database swap; file state is "

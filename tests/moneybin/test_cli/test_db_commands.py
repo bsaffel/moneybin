@@ -1122,6 +1122,100 @@ class TestDbRotateKeyCommand:
         assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
         assert "keychain update is unconfirmed" in result.output
 
+    def test_rotate_key_interrupt_before_replacement_retains_recovery_artifacts(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """An interrupted replacement reports each retained recovery artifact."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        db_path = tmp_path / "moneybin.duckdb"
+        old_backup = tmp_path / "moneybin.old.duckdb"
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+        rotated_path.write_bytes(b"rotated candidate")
+        moves = 0
+
+        def interrupt_before_replacement(source: str, destination: str) -> str:
+            nonlocal moves
+            moves += 1
+            if moves == 2:
+                raise KeyboardInterrupt
+            return str(Path(source).replace(destination))
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=interrupt_before_replacement,
+        )
+        synthetic_new_key = "synthetic-new-key"
+        mocker.patch("secrets.token_hex", return_value=synthetic_new_key)
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert old_backup.read_bytes() == b""
+        assert rotated_path.read_bytes() == b"rotated candidate"
+        assert not db_path.exists()
+        assert "original backup is retained" in result.output.lower()
+        assert "replacement is unconfirmed" in result.output.lower()
+        assert str(old_backup) in result.output
+        assert str(rotated_path) in result.output
+        assert str(db_path) in result.output
+        assert "original backup requires the old key" in result.output.lower()
+        assert "only access a confirmed rotated candidate" in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert synthetic_new_key not in result.stdout
+        assert synthetic_new_key in result.stderr
+        assert synthetic_new_key not in caplog.text
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_interrupt_after_replacement_keeps_backup_and_candidate_guidance(
+        self,
+        runner: CliRunner,
+        mocker: Any,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        """A post-move interrupt keeps the original backup and bounds new-key recovery."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        db_path = tmp_path / "moneybin.duckdb"
+        old_backup = tmp_path / "moneybin.old.duckdb"
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+        rotated_path.write_bytes(b"rotated candidate")
+        moves = 0
+
+        def interrupt_after_replacement(source: str, destination: str) -> str:
+            nonlocal moves
+            moves += 1
+            result = str(Path(source).replace(destination))
+            if moves == 2:
+                raise KeyboardInterrupt
+            return result
+
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=interrupt_after_replacement,
+        )
+        synthetic_new_key = "synthetic-new-key"
+        mocker.patch("secrets.token_hex", return_value=synthetic_new_key)
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert old_backup.read_bytes() == b""
+        assert db_path.read_bytes() == b"rotated candidate"
+        assert not rotated_path.exists()
+        assert "original backup is retained" in result.output.lower()
+        assert "replacement is unconfirmed" in result.output.lower()
+        assert "original backup requires the old key" in result.output.lower()
+        assert "only access a confirmed rotated candidate" in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
+        assert synthetic_new_key not in result.stdout
+        assert synthetic_new_key in result.stderr
+        assert synthetic_new_key not in caplog.text
+        mock_store.set_key.assert_not_called()
+
     def test_rotate_key_second_move_failure_reports_archived_original(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:
