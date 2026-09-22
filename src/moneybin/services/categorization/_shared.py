@@ -140,6 +140,45 @@ def plaid_bridge_match_predicate(detailed_expr: str, primary_expr: str) -> str:
     )
 
 
+def source_category_bridge_match_predicate(
+    source_origin_expr: str, category_expr: str, subcategory_expr: str
+) -> str:
+    """Render the predicate matching one imported row to the category-source bridge.
+
+    Keyed on ``core.bridge_category_source_map`` (alias ``b``), mirroring
+    :func:`plaid_bridge_match_predicate`. Per the owner's ruling
+    (docs/specs/category-source-map.md's "Multi-aggregator and free-text
+    boundary" extension), imported rows are matched on ``source_origin`` —
+    e.g. ``chase_credit``, ``mint`` — not the generic ``source_type`` value
+    (``tabular``/``manual``): two exporters must be free to map the same
+    category string to two different MoneyBin categories.
+
+    ``app.category_source_map``'s key is a real ``(source_type,
+    source_category_code, source_subcategory_code)`` triple — a prior
+    version packed ``category``/``subcategory`` into one JSON-encoded
+    ``source_category_code`` string, but comparing a VARCHAR column against
+    a JSON-typed literal made DuckDB cast the column to JSON, which raised
+    ``ConversionException`` on every bare (non-JSON) code already in the
+    table, such as a seeded Plaid row. Comparing the two columns directly
+    avoids that cast entirely. ``source_subcategory_code`` uses ``''`` as
+    its sentinel for "no subcategory" — DuckDB primary keys reject NULL, so
+    an absent subcategory cannot be stored as NULL — hence the
+    ``COALESCE(..., '')`` on the read side here.
+
+    This predicate is built in exactly one place because the write side
+    (``CategorySourceMapRepo.upsert``, which normalizes ``subcategory or
+    ""`` in Python) and the read side
+    (``CategorizationOrchestrator._source_category_bridge_candidates``, via
+    this function) must key identically — if the two drifted, a curated
+    mapping would silently stop matching instead of raising.
+    """
+    return (
+        f"b.source_type = {source_origin_expr} "
+        f"AND b.source_category_code = {category_expr} "
+        f"AND b.source_subcategory_code = COALESCE({subcategory_expr}, '')"
+    )
+
+
 def is_unselective_contains(pattern: str, match_type: str) -> bool:
     """True when a `contains` pattern is too short to discriminate.
 

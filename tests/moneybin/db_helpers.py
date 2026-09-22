@@ -275,6 +275,7 @@ CORE_BRIDGE_CATEGORY_SOURCE_MAP_STUB_DDL = """\
 CREATE OR REPLACE VIEW core.bridge_category_source_map AS
 SELECT CAST(NULL AS VARCHAR) AS source_type,
        CAST(NULL AS VARCHAR) AS source_category_code,
+       CAST(NULL AS VARCHAR) AS source_subcategory_code,
        CAST(NULL AS VARCHAR) AS code_level,
        CAST(NULL AS VARCHAR) AS category_id,
        CAST(NULL AS VARCHAR) AS source_taxonomy_version,

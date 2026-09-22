@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-07-09
-> Status: Implemented — M1V (Ingestion Core). Feature spec.
+> Last updated: 2026-09-20
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -53,30 +53,34 @@ extensions/overrides in `app`, one resolved view in `core`.
 
 ```mermaid
 flowchart TD
-    seed["seeds.category_source_map<br/>PK (source_type, source_category_code)<br/>+ code_level, category_id, source_taxonomy_version"]
-    app["app.category_source_map<br/>PK (source_type, source_category_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
-    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_category_code · code_level · category_id · source_taxonomy_version · is_default"]
+    seed["seeds.category_source_map<br/>PK (source_type, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version"]
+    app["app.category_source_map<br/>PK (source_type, source_category_code, source_subcategory_code)<br/>+ code_level, category_id, source_taxonomy_version, created_at, updated_at"]
+    view["core.bridge_category_source_map (VIEW)<br/>source_type · source_category_code · source_subcategory_code · code_level · category_id · source_taxonomy_version · is_default"]
     dim["core.dim_categories<br/>+ class (income/expense/transfer/debt)"]
     seed -- "anti-join: seed MINUS overridden" --> view
-    app -- "UNION ALL (user wins per code)" --> view
+    app -- "UNION ALL (user wins per key)" --> view
     view -- "FK category_id" --> dim
 ```
 
 **Precedence uses an anti-join, not `UNION`.** A user row and a seed row for
-the same `(source_type, source_category_code)` may point at *different*
-`category_id`s; `UNION` would keep both and re-break the one-row-per-code
-guarantee. The view is therefore: seed rows whose `(source_type,
-source_category_code)` is **not** present in `app`, `UNION ALL` all `app`
-rows. This preserves exactly-one-row-per-code across the union.
+the same `(source_type, source_category_code, source_subcategory_code)` may
+point at *different* `category_id`s; `UNION` would keep both and re-break the
+one-row-per-key guarantee. The view is therefore: seed rows whose
+`(source_type, source_category_code, source_subcategory_code)` is **not**
+present in `app`, `UNION ALL` all `app` rows. This preserves
+exactly-one-row-per-key across the union.
 
 ### Grain: canonical-by-primary-key
 
-The bridge is keyed **`(source_type, source_category_code)`**. Exactly one
-canonical MoneyBin category per code is guaranteed by the primary key itself
-— there is no `is_canonical` flag that could go two-TRUE or zero-TRUE. The
-ambiguous-mapping winner is a visible, editable data row that cannot be made
-ambiguous (satisfies the "magic stays visible" requirement in
-`.claude/rules/design-principles.md`).
+The bridge is keyed **`(source_type, source_category_code,
+source_subcategory_code)`**. Exactly one canonical MoneyBin category per key
+is guaranteed by the primary key itself — there is no `is_canonical` flag
+that could go two-TRUE or zero-TRUE. The ambiguous-mapping winner is a
+visible, editable data row that cannot be made ambiguous (satisfies the
+"magic stays visible" requirement in `.claude/rules/design-principles.md`).
+`source_subcategory_code` uses `''` as its sentinel for "the source supplied
+no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory
+cannot be represented as one.
 
 ### Two-tier: detailed with primary fallback
 
@@ -106,8 +110,9 @@ falling through to rules/AI.
 
 | Column | Type | Notes |
 |---|---|---|
-| `source_type` | `VARCHAR` | Provenance vocabulary (`plaid`, future `mx`/`simplefin`). Closed-vocabulary discriminator (not an entity reference). |
+| `source_type` | `VARCHAR` | Taxonomy namespace: whose vocabulary the code belongs to. Two suppliers today — a provider tag (`plaid`, future `mx`/`simplefin`) for provider-native codes, and a `source_origin` slug (`chase_credit`, `mint`) for imported mappings (see "Extension" below). Closed-vocabulary discriminator (not an entity reference); deliberately not tied to the import vector — the same institution arriving as a PDF statement and as a CSV can resolve to one namespace value, so a future normalization layer can map several vectors onto one namespace without changing this column's meaning. |
 | `source_category_code` | `VARCHAR` | The provider's code, stored verbatim (source-provided ID, `.claude/rules/identifiers.md` strategy 1). |
+| `source_subcategory_code` | `VARCHAR` | Second half of the source's (category, subcategory) key. `''` is the sentinel for "no subcategory" — DuckDB primary keys reject NULL, so an absent subcategory cannot be stored as one; never a distinct real value. |
 | `code_level` | `VARCHAR` | `'detailed'` \| `'primary'` — the tier this code sits at for the provider. |
 | `category_id` | `VARCHAR` | **FK** to `core.dim_categories.category_id` (Guard 3 — never text-key the relationship). May reference a `user_categories` row (app table only). |
 | `source_taxonomy_version` | `VARCHAR` | The provider taxonomy revision the row was curated against (e.g. `plaid_pfc_v2`). Non-PK — drift insurance; promote into the key only if historical multi-version rows ever coexist. |
@@ -134,6 +139,65 @@ own `source_taxonomy_version` — **zero schema change**. The bridge serves
 code set; they correctly produce no bridge row and fall through to
 rules/AI/LLM, which is the right solver for free text. Absence of a row is
 fall-through, not data loss.
+
+## Extension: imported (tabular/manual) category text (MB-180)
+
+An imported row (tabular/CSV, manual entry) was passed straight through to
+`core.fct_transactions.category` via `fct_transactions.sql`'s
+`COALESCE(dc.category, c.category, t.category)` — no `categorized_by`
+attribution, invisible to `core.uncategorized_queue`, and never overridable
+by a later rule. The owner's ruling: this text is only ever an INPUT to the
+existing bridge above, never a passed-through value. The engine leg
+(`CategorizationOrchestrator.apply_source_category_map`, PR1 of MB-180)
+reuses `app.category_source_map` / `core.bridge_category_source_map`
+unchanged; only the reverse-lookup key and code shape are new:
+
+- **Keyed on `source_origin`, not the generic `source_type` ('tabular').**
+  The primary key is `(source_type, source_category_code,
+  source_subcategory_code)`; storing a concrete `source_origin` value
+  (`chase_credit`, `mint`, `tiller`) in the `source_type` column — instead of
+  Plaid's provider tag — lets two exporters map an identical category string
+  to two different MoneyBin categories. This reframes rather than
+  contradicts "Multi-aggregator and free-text boundary" above: a single
+  exporter's own category list IS a closed vocabulary from that exporter's
+  perspective, even though the generic `tabular`/`manual` discriminator is
+  not — SimpleFIN's genuinely arbitrary free text is a different case and
+  still falls through as documented.
+- **Real second key column, not a composite code.** An imported row carries
+  `category` and `subcategory` independently. An earlier version of this
+  extension packed both into `source_category_code` via
+  `to_json({'category': ..., 'subcategory': ...})` — but comparing that
+  VARCHAR column against a JSON-typed literal made DuckDB cast the column to
+  JSON, and seeded Plaid rows hold bare codes (`INCOME`) that are not valid
+  JSON, so the cast raised `ConversionException` on every categorization run
+  that touched the bridge with seeded data present. `source_subcategory_code`
+  is a real second key column instead: `category` maps to
+  `source_category_code` verbatim, `subcategory` maps to
+  `source_subcategory_code` (normalized to `''` when absent, because a
+  DuckDB primary key rejects NULL; collapsing `''` and NULL to one value
+  matches how V054–V056 already treat blank taxonomy text). The write side
+  (`CategorySourceMapRepo.upsert`) and the read side
+  (`_source_category_bridge_candidates`, via
+  `_shared.source_category_bridge_match_predicate`) both key on the two
+  columns directly, so there is no serializer to keep in sync.
+- **No confidence gate.** Unlike Plaid's ML-classifier confidence, a curated
+  mapping row is a deterministic assertion — the same footing as a rule or
+  merchant — so every match writes `confidence=1.0`.
+- **Row grain, not merge grain.** Reads `prep.int_transactions__matched`
+  (row-grain, pre-merge — carries the gold `transaction_id` alongside each
+  source row's own `source_origin`/`category`/`subcategory`), not
+  `prep.int_transactions__merged` (which resolves one winning value per
+  transaction but drops which member contributed it).
+- **Schema widening: `V067__add_source_subcategory_code.py`.** Adds
+  `source_subcategory_code` and rebuilds the table's primary key (DuckDB
+  cannot `ALTER` a primary key), replacing the JSON-encoded composite code
+  described above.
+
+PR1 ships the engine only (repo write method + orchestrator leg, wired into
+`categorize_pending`). The CLI/MCP surface to author `app.category_source_map`
+rows for an exporter is a later slice — until it ships, this leg is a
+capability with no way to populate its own input for imported sources users
+haven't already mapped via Plaid-style curation.
 
 ## Reverse-lookup contract
 
