@@ -81,6 +81,24 @@ keys its ``decision_id`` on ``(transaction_id, attempt_number)`` and
 their live effect (the category itself) is forwarded through
 ``app.transaction_categories``. Re-keying history would have to re-mint ids for
 events that already occurred.
+
+``app.proposed_rules.sample_txn_ids`` is the same shape, and :func:`_curation_repos`
+deliberately excludes ``ProposedRulesRepo`` (issue #552). It is an evidence
+trail of which transactions triggered a pattern, not live curation attached to
+one transaction, and its live effect — the promoted rule — lives in
+``app.categorization_rules`` keyed on pattern, not on any transaction id. It is
+also a list-valued column, so "forwarding" it would need a repoint-in-array
+write plus undo-replay semantics no existing repo has, for a value this module
+already treats as history rather than state. A stored sample id can still be
+superseded by a later re-key, so counting it as fresh evidence again under its
+new canonical id would double-count one real transaction toward
+``trigger_count``. ``AutoRuleService.record_categorization`` guards against
+that by resolving every stored sample through
+:func:`resolve_curation_transaction_ids` before checking membership — reusing
+the module's one sanctioned way to ask "is this the same transaction now"
+rather than adding a second one, and narrow enough (one Python-side membership
+check, not a SQL join repeated per consumer) that it does not repeat the
+mistake "Forward at re-key, never resolve on read" warns against above.
 """
 
 from __future__ import annotations
