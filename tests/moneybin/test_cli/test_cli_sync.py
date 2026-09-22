@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -87,6 +88,21 @@ def _fake_pull_result(
     )
 
 
+def _fake_failed_pull_result() -> PullResult:
+    """Return a pull result whose institution failed to refresh."""
+    result = _fake_pull_result()
+    result.institutions = [
+        InstitutionResult(
+            provider_item_id="item_chase",
+            institution_name="Chase",
+            status="failed",
+            transaction_count=0,
+            error="provider unavailable",
+        )
+    ]
+    return result
+
+
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_client")
 def test_sync_login_invokes_client_login(mock_build: MagicMock) -> None:
@@ -129,6 +145,86 @@ def test_sync_pull_text_output(mock_build: MagicMock) -> None:
     assert result.exit_code == 0, result.output
     assert "Chase" in result.stdout
     assert "10" in result.stdout
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("result_factory", "action", "exit_code"),
+    [
+        (_fake_failed_pull_result, "moneybin sync status", 1),
+        (
+            lambda: _fake_pull_result(transforms_error="SQLMeshError"),
+            "moneybin transform apply",
+            1,
+        ),
+        (
+            lambda: _fake_pull_result(security_resolution_error="resolver unavailable"),
+            "moneybin sync pull",
+            1,
+        ),
+        (
+            lambda: _fake_pull_result(security_resolution={"pending": 1}),
+            "moneybin investments securities links pending",
+            0,
+        ),
+        (
+            lambda: _fake_pull_result(investment_source_overlap_accounts=["account-1"]),
+            "moneybin doctor",
+            0,
+        ),
+    ],
+    ids=(
+        "failed-institution",
+        "transform",
+        "security-resolution",
+        "identity",
+        "overlap",
+    ),
+)
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_receipt_actions_use_ascii_terminal_symbol(
+    mock_build: MagicMock,
+    result_factory: Callable[[], PullResult],
+    action: str,
+    exit_code: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every text recovery action follows the active terminal symbol policy."""
+    service = MagicMock()
+    service.pull.return_value = result_factory()
+    mock_build.return_value.__enter__.return_value = service
+    monkeypatch.setattr(
+        "moneybin.cli.commands.sync.get_terminal_policy",
+        lambda: _pager_policy(ascii=True),
+    )
+
+    result = runner.invoke(app, ["sync", "pull"])
+
+    assert result.exit_code == exit_code, result.output
+    assert f"> {action}" in result.stdout
+    assert "›" not in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_cancellation_uses_ascii_terminal_symbol(
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelled pulls keep their recovery action legible in ASCII terminals."""
+    service = MagicMock()
+    service.pull.side_effect = KeyboardInterrupt
+    mock_build.return_value.__enter__.return_value = service
+    monkeypatch.setattr(
+        "moneybin.cli.commands.sync.get_terminal_policy",
+        lambda: _pager_policy(ascii=True),
+    )
+
+    result = runner.invoke(app, ["sync", "pull"])
+
+    assert result.exit_code == 130, result.output
+    assert "> moneybin sync status" in result.stdout
+    assert "›" not in result.stdout
 
 
 @pytest.mark.unit

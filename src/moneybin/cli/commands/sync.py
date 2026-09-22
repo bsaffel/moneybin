@@ -180,15 +180,17 @@ def _render_sync_pull_receipt(
     if _sync_pull_has_incomplete_work(result):
         typer.echo("Loaded transactions were saved.")
     if failed:
-        typer.echo("› moneybin sync status")
+        typer.echo(f"{terminal.symbols.action} moneybin sync status")
     if result.transforms_error:
-        typer.echo("› moneybin transform apply")
+        typer.echo(f"{terminal.symbols.action} moneybin transform apply")
     if result.security_resolution_error:
-        typer.echo("› moneybin sync pull")
+        typer.echo(f"{terminal.symbols.action} moneybin sync pull")
     if awaiting_identity:
-        typer.echo("› moneybin investments securities links pending")
+        typer.echo(
+            f"{terminal.symbols.action} moneybin investments securities links pending"
+        )
     if result.investment_source_overlap_accounts:
-        typer.echo("› moneybin doctor")
+        typer.echo(f"{terminal.symbols.action} moneybin doctor")
 
 
 def _build_sync_client():
@@ -693,7 +695,7 @@ def sync_pull(
         if output == OutputFormat.TEXT:
             typer.echo("! Sync cancelled")
             typer.echo("Saved scope is unknown; inspect the current connection state.")
-            typer.echo("› moneybin sync status")
+            typer.echo(f"{terminal.symbols.action} moneybin sync status")
         else:
             emit_json_failure(
                 UserError(
