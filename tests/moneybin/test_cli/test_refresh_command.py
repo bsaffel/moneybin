@@ -855,8 +855,9 @@ def test_a_failed_apply_is_warned_about_once_not_once_per_surface(
     assert "categorizer boom" in caplog.text
 
 
+@pytest.mark.parametrize("columns", [60, 80, 120])
 def test_categorize_summary_breakdown_accounts_for_every_engine(
-    runner: CliRunner,
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, columns: int
 ) -> None:
     """The printed parts must account for the printed total.
 
@@ -879,6 +880,7 @@ def test_categorize_summary_breakdown_accounts_for_every_engine(
     assert sum(v for k, v in counts.items() if k != "total") == counts["total"], (
         "fixture must be self-consistent or it cannot detect an omitted engine"
     )
+    monkeypatch.setenv("COLUMNS", str(columns))
 
     invocation = _run_text_refresh(
         runner,
@@ -888,8 +890,9 @@ def test_categorize_summary_breakdown_accounts_for_every_engine(
     )
 
     assert invocation.exit_code == 0, invocation.output
-    assert "Categorization: 9 categorized" in invocation.output
-    assert "2 merchant" in invocation.output
-    assert "3 rule" in invocation.output
-    assert "1 provider" in invocation.output
-    assert "3 source map" in invocation.output
+    output = " ".join(invocation.output.split())
+    assert "Categorization: 9 categorized" in output
+    assert "2 merchant" in output
+    assert "3 rule" in output
+    assert "1 provider" in output
+    assert "3 source map" in output
