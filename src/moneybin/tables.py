@@ -56,7 +56,6 @@ PLAID_BALANCES = TableRef("raw", "plaid_balances")
 # -- Raw tabular tables (replaces csv_* tables) --
 TABULAR_TRANSACTIONS = TableRef("raw", "tabular_transactions")
 TABULAR_ACCOUNTS = TableRef("raw", "tabular_accounts")
-IMPORT_LOG = TableRef("raw", "import_log")
 MANUAL_TRANSACTIONS = TableRef("raw", "manual_transactions")
 GSHEET_SEEDS = TableRef("raw", "gsheet_seeds")
 PDF_SEEDS = TableRef("raw", "pdf_seeds")
@@ -72,6 +71,7 @@ BUDGETS = TableRef("app", "budgets", audience="interface")
 TRANSACTION_NOTES = TableRef("app", "transaction_notes", audience="interface")
 TRANSACTION_TAGS = TableRef("app", "transaction_tags", audience="interface")
 TRANSACTION_SPLITS = TableRef("app", "transaction_splits", audience="interface")
+IMPORT_LOG = TableRef("app", "import_log")
 IMPORTS = TableRef("app", "imports", audience="interface")
 IMPORT_PREVIEWS = TableRef("app", "import_previews")
 IMPORT_PREVIEW_SNAPSHOTS = TableRef("raw", "import_preview_snapshots")
@@ -102,6 +102,10 @@ TABULAR_FORMATS = TableRef("app", "tabular_formats")
 
 # -- App matching tables --
 MATCH_DECISIONS = TableRef("app", "match_decisions")
+INVESTMENT_MATCH_DECISIONS = TableRef("app", "investment_match_decisions")
+INVESTMENT_EVENT_HEADERS = TableRef("prep", "int_investment_events__headers")
+INVESTMENT_EVENT_LEGS = TableRef("prep", "int_investment_events__legs")
+INVESTMENT_EVENT_EVIDENCE = TableRef("prep", "int_investment_events__evidence")
 SEED_SOURCE_PRIORITY = TableRef("app", "seed_source_priority")
 
 # -- App account-identity tables (M1S) --

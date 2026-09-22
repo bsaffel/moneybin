@@ -55,7 +55,7 @@ Core models union multiple sources and deduplicate. Row counts will differ inten
 
 ### Layer 3: Import Integrity
 
-Per-import-batch validation using `raw.import_log` metadata.
+Per-import-batch validation using `app.import_log` metadata.
 
 | Check | Query shape | Expected |
 |---|---|---|

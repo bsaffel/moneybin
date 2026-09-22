@@ -11,7 +11,7 @@ from datetime import date
 from decimal import Decimal
 
 from moneybin.database import Database
-from moneybin.loaders import import_log
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.services.import_service import ImportService
 from moneybin.services.investment_service import InvestmentService
 from tests.moneybin.db_helpers import create_core_tables
@@ -27,15 +27,14 @@ def test_revert_unknown_import_id_returns_not_found(db: Database) -> None:
 
 def test_revert_already_reverted_returns_already_reverted(db: Database) -> None:
     """Reverting an already-reverted batch returns status='already_reverted'."""
-    import_id = import_log.begin_import(
-        db,
+    import_id = ImportLogRepo(db).begin_import(
         source_file="/tmp/test.csv",  # noqa: S108  # test fixture path
         source_type="csv",
         source_origin="tiller",
         account_names=["checking"],
     )
-    import_log.finalize_import(
-        db, import_id, status="complete", rows_total=0, rows_imported=0
+    ImportLogRepo(db).finalize_import(
+        import_id, status="complete", rows_total=0, rows_imported=0
     )
     # First revert flips status; the second is the one we're asserting on.
     ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
@@ -47,8 +46,7 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
     db: Database,
 ) -> None:
     """Revert deletes raw.tabular_* rows for the import_id and flips status."""
-    import_id = import_log.begin_import(
-        db,
+    import_id = ImportLogRepo(db).begin_import(
         source_file="/tmp/test.csv",  # noqa: S108  # test fixture path
         source_type="csv",
         source_origin="tiller",
@@ -84,8 +82,8 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
             import_id,
         ],
     )
-    import_log.finalize_import(
-        db, import_id, status="complete", rows_total=2, rows_imported=2
+    ImportLogRepo(db).finalize_import(
+        import_id, status="complete", rows_total=2, rows_imported=2
     )
 
     result = ImportService(db).revert_confirmed(import_id, verify=lambda _live: None)
@@ -99,7 +97,7 @@ def test_revert_tabular_deletes_matching_rows_and_marks_reverted(
     assert remaining is not None
     assert remaining[0] == 0
     status_row = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status_row is not None
     assert status_row[0] == "reverted"
@@ -171,7 +169,7 @@ def test_revert_manual_investment_deletes_rows_not_orphaned(db: Database) -> Non
     assert remaining is not None
     assert remaining[0] == 0
     status_row = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status_row is not None
     assert status_row[0] == "reverted"
@@ -199,7 +197,7 @@ def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
     # removes flakiness from timestamp-resolution ties, without faking the
     # outcome under test (revert() still runs its real query).
     db.execute(
-        "UPDATE raw.import_log SET started_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
+        "UPDATE app.import_log SET started_at = CURRENT_TIMESTAMP - INTERVAL '1 hour' "
         "WHERE import_id = ?",
         [stuck_investment_import_id],
     )
@@ -208,8 +206,8 @@ def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
         format_name="manual_entry",
         actor="cli",
     )
-    import_log.finalize_import(
-        db, cash_import_id, status="complete", rows_total=1, rows_imported=1
+    ImportLogRepo(db).finalize_import(
+        cash_import_id, status="complete", rows_total=1, rows_imported=1
     )
 
     result = ImportService(db).revert_confirmed(
@@ -222,8 +220,7 @@ def test_revert_stuck_investment_import_not_superseded_by_cash_batch(
 
 def test_plan_revert_reports_counts_without_deleting_anything(db: Database) -> None:
     """Planning is read-only — the rows it counts must still be there after."""
-    import_id = import_log.begin_import(
-        db,
+    import_id = ImportLogRepo(db).begin_import(
         source_file="/tmp/plan.csv",  # noqa: S108  # test fixture path
         source_type="csv",
         source_origin="tiller",
@@ -248,8 +245,8 @@ def test_plan_revert_reports_counts_without_deleting_anything(db: Database) -> N
             import_id,
         ],
     )
-    import_log.finalize_import(
-        db, import_id, status="complete", rows_total=1, rows_imported=1
+    ImportLogRepo(db).finalize_import(
+        import_id, status="complete", rows_total=1, rows_imported=1
     )
 
     plan = ImportService(db).plan_revert(import_id)
@@ -264,7 +261,7 @@ def test_plan_revert_reports_counts_without_deleting_anything(db: Database) -> N
     assert remaining is not None
     assert remaining[0] == 1
     status = db.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert status is not None
     assert status[0] == "complete"

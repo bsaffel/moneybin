@@ -28,6 +28,8 @@ import io
 import re
 import string
 from dataclasses import dataclass, replace
+from datetime import date
+from decimal import Decimal
 from functools import lru_cache
 from importlib import resources
 
@@ -389,3 +391,100 @@ class SourceAccount:
         if self.last_four is not None:
             stripped = self.last_four.strip()
             object.__setattr__(self, "last_four", stripped or None)
+
+
+@dataclass(frozen=True)
+class IncomingTransaction:
+    """One normalized incoming row available before an account is resolved.
+
+    Relocated by MB-52 slice 3 from ``services/ledger_overlap.py``, alongside
+    ``SourceAccount`` above: every extractor channel builds these before an
+    account exists to compare them against, so the type has to live where an
+    extractor can reach it. ``probe_incoming_ledger_overlap`` (still in
+    ``ledger_overlap.py`` — it queries the DB) is the only consumer.
+    """
+
+    transaction_date: date
+    amount: Decimal
+    currency_code: str | None
+
+
+# Five digits, counted across any single NON-ALPHANUMERIC separator. Four is
+# the masked last-four banks print (and the shape of a year), so it stays;
+# anything longer in an account label is a number, not a label.
+#
+# **A whole word ends an account number. Nothing else does.**
+#
+# That sentence is the rule, and it is the fourth attempt at it. The first three
+# each described the *gap* between two digits and each shipped a leak: "-", then
+# any single non-alphanumeric ("." "/" "_"), then any run of three ("12AB34CD56"
+# masked but "12ABCD34EFGH56" did not). Every one was a guess about how account
+# numbers are punctuated, and an issuer who punctuated them differently walked
+# straight through. Stop guessing at the gap's *shape* and name what actually
+# separates two labels: a word.
+#
+# So a run of digits continues across a gap that is either
+#
+#   - whitespace-free  — "12ABCD34", "1234-5678", "12X3456789": letters and
+#     punctuation inside one token are part of the identifier, however long; or
+#   - letter-free      — "4111 1111 1111", "1234 - 5678": spacing and
+#     punctuation between digit groups, however long.
+#
+# and stops at a gap that is neither, which is exactly a whitespace-delimited
+# alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
+# tokens, and "Retirement Plan 2024 Rewards" keeps its name instead of collapsing to
+# "****2024".
+#
+# Every quantifier here must have exactly one way to match a given gap, because
+# this runs on file-supplied labels and a failed match backtracks through every
+# alternative. An earlier version wrote the second branch as
+# `[^0-9A-Za-z]*\s[^0-9A-Za-z]*`, whose leading run can itself match whitespace
+# — so a run of N spaces had N places to put the `\s`, and a label that ended up
+# not matching cost 2^N. 165 characters took half a second; every further pair
+# of spaces doubled it. Excluding whitespace from the leading run pins `\s` to
+# the *first* one, which leaves a single parse. The two branches are disjoint on
+# whitespace count (zero vs. at least one), so no gap can take both.
+#
+# The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
+# masks whole rather than leaving an "X" stub that publishes the prefix.
+#
+# The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
+# right side to err on: an over-masked label is legible, an under-masked one is
+# an account number.
+_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
+# The lookbehind is the other half of keeping this linear. Without it the
+# leading [A-Za-z]* is retried from every character of a long letter run,
+# rescanning the whole run each time — quadratic, 1.2s on a 20k-character label,
+# and labels come from the file. A match can only begin where the identifier
+# does, so requiring a non-alphanumeric (or string start) before it makes every
+# interior retry fail in O(1) instead of O(n). It changes no result: a match
+# that could start mid-token is already found from that token's start, where the
+# greedy prefix covers the same span.
+_EMBEDDED_ACCOUNT_NUMBER = re.compile(
+    rf"(?<![0-9A-Za-z])[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
+)
+
+
+def mask_embedded_account_number(label: str) -> str:
+    """Mask an account number embedded in a derived account label.
+
+    ``parse_account_label`` lifts out a *recognized masked* last-four —
+    ``(...7777)``, ``x7777``, a bare trailing group — so the shapes it leaves
+    behind are the ones that matter, and grouping is what makes them dangerous:
+    ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
+    ``Checking 4111 1111 1111``, twelve digits of a card number in a field
+    declared ``USER_NOTE`` and shown unmasked wherever a mint is reported.
+
+    Masks the run rather than the whole string, because naming what was created
+    is the entire purpose of the field: "Checking 987654321098" has to become
+    "Checking ****1098", not "****1098". The kept four are the run's last four
+    *digits*, so a grouped number, a contiguous one, and an alphanumeric one
+    mask alike — and the suffix stays four digits, the form every other masked
+    surface in the codebase shows.
+    """
+
+    def _mask(match: re.Match[str]) -> str:
+        digits = re.sub(r"\D", "", match.group())
+        return f"****{digits[-4:]}"
+
+    return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)

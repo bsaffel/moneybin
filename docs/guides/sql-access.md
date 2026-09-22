@@ -1,7 +1,7 @@
-<!-- Last reviewed: 2026-09-02 -->
+<!-- Last reviewed: 2026-09-14 -->
 # Direct SQL Access
 
-MoneyBin stores your finances in an encrypted DuckDB file. You can query it from your own scripts and clients with the same SQL you'd write against any DuckDB. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
+MoneyBin stores your finances in an encrypted DuckDB file. Any DuckDB client that supplies the encryption key on `ATTACH` reads that file with ordinary SQL, with no MoneyBin process in the path. This guide covers the read-only surface, how to connect from external tools, and the patterns that hold up across releases.
 
 The schema reference lives in [`docs/reference/data-model.md`](../reference/data-model.md) — table grains, column types, sign conventions, join recipes, and the canonical queries that demonstrate them. This guide is the *how*: which schemas to read, which tools to use, and how to attach the encrypted file from a non-MoneyBin client.
 
@@ -19,7 +19,7 @@ The schema reference lives in [`docs/reference/data-model.md`](../reference/data
 
 `core.*` and `reports.*` are stable consumer surfaces. `app.*` is readable as a debugging aid, but every consumer-relevant column already surfaces through `core.fct_transactions` (notes, tags, splits as nested `LIST(STRUCT(...))` columns) or `core.dim_accounts` (account settings joined in). Reach down into `app.*` only when you need raw history that the dim/fact resolution discards.
 
-This table describes what's reachable through `db query`/`db shell`/`db ui` and external clients, which have no schema restriction of their own — DuckDB's own permissions are the only gate. The agent-safe paths (`sql_query` and `moneybin sql query`) admit five of the seven: `core`, `app`, `reports`, `raw`, and `prep`. `meta` and `seeds` are refused. Rows from `raw` and `prep` are masked by a different mechanism than the other three — 34 columns across 17 tables carry an explicit CRITICAL declaration, and every other column is masked by value shape rather than by declaration. See [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
+This table describes what's reachable through `db query`/`db shell`/`db ui` and external clients, which have no schema restriction of their own — DuckDB's own permissions are the only gate. The agent-safe paths (`sql_query` and `moneybin sql query`) admit five of the seven: `core`, `app`, `reports`, `raw`, and `prep`. `meta` and `seeds` are refused. Rows from `raw` and `prep` are masked by a different mechanism than the other three — 33 columns across 16 tables carry an explicit CRITICAL declaration, and every other column is masked by value shape rather than by declaration. See [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
 
 See [`docs/reference/data-model.md`](../reference/data-model.md) for column-level documentation of every table above.
 
@@ -38,29 +38,33 @@ moneybin sql query "SELECT year_month, total_spend
                     ORDER BY year_month DESC LIMIT 12"
 ```
 
-Output is governed by `-o, --output {text,json}` (only two formats — not `db query`'s five, since results go through the same envelope as MCP tools) and `--json-fields` to project a subset of columns. Full rule set — allowed statements, blocked functions, multi-statement handling, masking — in [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
+Output is governed by `-o, --output {text,json}` (only two formats — not `db query`'s five, since results go through the same envelope as MCP tools) and `--json-fields` to project a subset of columns; the generated flag reference is [`docs/reference/cli/sql.md`](../reference/cli/sql.md). Full rule set — allowed statements, blocked functions, multi-statement handling, masking — in [`sql_query` rules](#sql_query-rules-mcp-tool-and-moneybin-sql-query-cli) below.
 
 ### `moneybin db query "<sql>"` — one-shot from the CLI
 
-For scripts, one-liners, and anything you'd pipe into `jq` or `csvq`. Output is governed by `-o, --output`:
-
-```bash
-moneybin db query "SELECT year_month, total_spend
-                   FROM reports.spending_trend
-                   WHERE category = 'Food & Drink'
-                   ORDER BY year_month DESC LIMIT 12" \
-                  --output csv
-```
-
-Available formats: `text` (DuckDB's `-table` boxed ASCII, the default), `json`, `csv`, `markdown`, `box`. Output goes straight to stdout; informational messages go to stderr.
+`db query` takes the SQL as one positional argument, hands it to the DuckDB CLI's `-c` flag, and writes the formatted result to stdout; informational messages and the unmasked-access warning go to stderr, so a pipe carries rows only. `-o, --output` selects the format — the five names and every other flag are in [`docs/reference/cli/db.md`](../reference/cli/db.md), generated from the command itself. `text` is DuckDB's boxed ASCII and the default.
 
 **JSON shape.** `--output json` invokes DuckDB CLI's native `-json` formatter, which emits a top-level **array of objects** — one object per row, keyed by column name verbatim:
 
-```json
-[
-  {"year_month":"2026-04","total_spend":"1284.50"},
-  {"year_month":"2026-03","total_spend":"1102.18"}
-]
+```console
+$ uv run moneybin db query "SELECT year_month, total_spend FROM reports.spending_trend WHERE category = 'Food & Drink' ORDER BY year_month DESC LIMIT 12" --output json
+⚠️  Direct DB access — no privacy middleware applies.
+   Account numbers and sensitive fields are NOT masked here.
+   For agent-mediated access with privacy enforcement, use:
+     moneybin sql query "<your SQL>"
+Using profile: demo
+[{"year_month":"2025-12","total_spend":"967.39"},
+{"year_month":"2025-11","total_spend":"991.80"},
+{"year_month":"2025-10","total_spend":"1058.10"},
+{"year_month":"2025-09","total_spend":"1140.32"},
+{"year_month":"2025-08","total_spend":"940.29"},
+{"year_month":"2025-07","total_spend":"670.95"},
+{"year_month":"2025-06","total_spend":"885.48"},
+{"year_month":"2025-05","total_spend":"800.06"},
+{"year_month":"2025-04","total_spend":"1154.29"},
+{"year_month":"2025-03","total_spend":"814.71"},
+{"year_month":"2025-02","total_spend":"1390.84"},
+{"year_month":"2025-01","total_spend":"876.71"}]
 ```
 
 `DECIMAL` columns — MoneyBin's money type, `DECIMAL(18,2)` on every amount — serialize as JSON **strings**, not numbers: DuckDB's `-json` formatter preserves exact decimal precision rather than risk a double-precision float rounding a cent away. Plain `INTEGER`/`DOUBLE` columns serialize as ordinary JSON numbers. `jq` consumers need `tonumber` before arithmetic on a money column. Dates serialize as `"2026-04-15"`; timestamps serialize space-separated, not `T`-separated (`"2026-04-15 10:23:00"`, not ISO 8601's `"2026-04-15T10:23:00"`). SQL `NULL` serializes as JSON `null` with the key still present. The whole result is buffered before any byte hits stdout — large result sets allocate memory on both DuckDB's side and yours; add an explicit `LIMIT` or stream via `COPY ... TO '/tmp/out.parquet'` from `db shell` for big extracts.
@@ -232,7 +236,7 @@ The MCP `sql_query` tool and the `moneybin sql query` CLI command are the agent-
 - **Allowed top-level statements:** `SELECT`, `WITH`, `DESCRIBE`, `SHOW`. Match is case-insensitive against the leading non-whitespace token.
 - **`PRAGMA` and `EXPLAIN` are not allowed** — use `DESCRIBE <table>` or `SHOW ALL TABLES` to inspect schema. The rule behind the allowed list is that a statement is executable only if the schema gate can resolve every table it names, and these two reference tables while hiding them: a pragma's target is a string literal rather than a table reference, and an `EXPLAIN`'s entire payload is left unparsed. The gate finds no tables in either and passes without having checked anything. Both were live holes — `PRAGMA storage_info` returns per-segment min/max statistics that are a *cleartext prefix of the stored values* (a CRITICAL routing number's first eight digits, unmasked, where a `SELECT` on the same column returns `*****`), and `EXPLAIN ANALYZE` **executes** its inner query, reporting row counts from a path meant to return schema text. For query plans, use `moneybin db query` (raw operator access, no privacy middleware).
 - **Allowed schemas:** `core`, `app`, `reports`, `raw`, and `prep`. The limit binds **every statement that names a table** — `DESCRIBE meta.model_freshness` is refused exactly as `SELECT ... FROM meta.model_freshness` is. `meta` and `seeds` remain readable through `db query`/`db shell`/external clients (see [the read surface](#the-read-surface) above); it is the agent-facing path that refuses them.
-- **How `raw` and `prep` are masked:** by value shape, not by column declaration. `core`, `app`, and `reports` declare a `DataClass` for every deployed column and CI verifies the coverage. `raw` and `prep` cannot be covered that way — column names track each source's export format, and `raw.gsheet_<alias>` / `raw.pdf_<alias>` views are minted at connect time from your own spreadsheet headers and document fields. So 34 columns across 17 tables carry an explicit CRITICAL declaration, ten names and no others: `account_id`, `account_name`, `account_number`, `account_number_masked`, `source_account_key`, `routing_number`, the Plaid `mask`, the account-prefixed composite `match_group_id`, and the opaque `source_bytes` / `account_names` payloads. Every other column is re-scanned per value at execution: an SSN-shaped value (`NNN-NN-NNNN`) comes back `***-**-****`, and an unbroken run of 8 or more digits keeps only its last four (`12345678` → `****...5678`).
+- **How `raw` and `prep` are masked:** by value shape, not by column declaration. `core`, `app`, and `reports` declare a `DataClass` for every deployed column and CI verifies the coverage. `raw` and `prep` cannot be covered that way — column names track each source's export format, and `raw.gsheet_<alias>` / `raw.pdf_<alias>` views are minted at connect time from your own spreadsheet headers and document fields. So 33 columns across 16 tables carry an explicit CRITICAL declaration, nine names and no others: `account_id`, `account_name`, `account_number`, `account_number_masked`, `source_account_key`, `routing_number`, the Plaid `mask`, the account-prefixed composite `match_group_id`, and the opaque `source_bytes` payload. Every other column is re-scanned per value at execution: an SSN-shaped value (`NNN-NN-NNNN`) comes back `***-**-****`, and an unbroken run of 8 or more digits keeps only its last four (`12345678` → `****...5678`).
 
   **What that scan does not catch:** an account number of 4 to 7 digits, one written with separators (`1234-5678`), or one stored as `DECIMAL` or `FLOAT` — the scan covers strings and integers. In a `raw.gsheet_<alias>` or `raw.pdf_<alias>` view it is the only masking there is. Keep a spreadsheet out of MoneyBin if you don't want an agent reading its cells, or drop an existing one with `moneybin gsheet disconnect <connection-id> --purge`, which removes the view and its raw rows.
 - **What the schema gate does not cover:** `SHOW ALL TABLES` names no table, so there is nothing for the gate to resolve, and DuckDB's catalog listing includes a `column_names` and `column_types` array for every table it lists. The *shape* of `meta` and `seeds` — table names, column names, types — is therefore still reachable, even though `DESCRIBE` on those same tables is refused. This is a structure disclosure, not a data one: no statement returns their row values. Treat it as the current boundary rather than a guarantee that fenced schemas are invisible.
@@ -243,6 +247,16 @@ The MCP `sql_query` tool and the `moneybin sql query` CLI command are the agent-
 - **Row cap:** `mcp.max_rows` from `MoneyBinSettings` (default **1000**), shared by both surfaces. Results are buffered, not streamed.
 - **Time cap:** `mcp.tool_timeout_seconds` (default **30 s**), applied by the MCP tool decorator only — `moneybin sql query` has no equivalent wall-clock cap. On MCP timeout the active DuckDB statement is interrupted.
 - **Sensitivity tier:** derived per call from the columns your query returns (the max class among them). Every MCP call, and every CLI call made with `--output json`, is recorded to the per-call privacy log (`privacy.log.jsonl`) with the tool name, tier, returned data classes, and row count — **not** the query text and **not** row content. `moneybin sql query` under its default `--output text` writes no privacy event: the text branch returns before the audit write. Pass `--output json` when the query needs to land in the log. CRITICAL columns (account/routing numbers) are masked identically on both surfaces: account identifiers keep the last four digits (`****1234`), routing numbers are masked in full (`*****`, no digits retained). An output column the classifier can't resolve fails closed to the most-sensitive treatment. An output column drawing from more than one source — a `UNION` branch, a `COALESCE`, a `CASE` arm — takes whichever of its inputs masks hardest, so mixing a `prep` column into a `core` projection keeps the value-shape scan on the result. There is no consent-grant requirement today (the consent ledger records but does not gate). See [What the AI Provider Sees](what-the-ai-sees.md).
+
+A `raw` read shows the masking in place. `account_id` is one of the ten declared names, so it comes back as its last four; `routing_number` holds no value on this profile; `account_type` carries no digit run for the value-shape scan to catch and arrives as stored:
+
+```console
+$ uv run moneybin sql query "SELECT account_id, routing_number, account_type FROM raw.ofx_accounts ORDER BY account_id"
+Using profile: demo
+account_id | routing_number | account_type
+****0001 | None | CHECKING
+****0002 | None | SAVINGS
+```
 
 For schema-aware composition without burning tokens on the full catalog, call `sql_schema(table=None)` first (compact catalog) and then `sql_schema(table='core.fct_transactions')` for the table you need.
 
@@ -260,9 +274,17 @@ The compact catalog covers only the curated tables — the interface tables, plu
 
 ## Stability promise
 
-MoneyBin is pre-v1. Column names and view shapes in `core.*` and `reports.*` may rename or restructure before launch — but every change lands in [`CHANGELOG.md`](../../CHANGELOG.md). Post-launch, the surface locks: additive changes only, with deprecation windows for anything that has to move.
+Every rename or restructure of a `core.*` or `reports.*` column lands in [`CHANGELOG.md`](../../CHANGELOG.md), before launch and after it. After launch the surface locks: additive changes only, with a deprecation window for anything that has to move.
 
-Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. `meta.model_freshness` reports the SQLMesh model versions in effect (`last_changed_at`, `last_applied_at`, `last_executed_at` per model) — useful for schema-drift checks; `moneybin db info` reports the running DuckDB version — useful for the client-compatibility check in [DuckDB version compatibility](#duckdb-version-compatibility) above. The two are unrelated version axes; neither substitutes for the other.
+Practical implication for scripts: pin to MoneyBin versions in your tooling and re-read the changelog when bumping. Two version axes answer two different questions, and neither substitutes for the other. `meta.model_freshness` reports `last_changed_at`, `last_applied_at`, and `last_executed_at` per SQLMesh model — check it to detect schema drift between what your script was written against and what is deployed. `moneybin db info` reports the running DuckDB version — check it against the client-compatibility requirement in [DuckDB version compatibility](#duckdb-version-compatibility) above.
+
+## What is not built yet
+
+- **`db query` has no parameter binding.** There is no `--param` flag and no stdin JSON input; the SQL is one positional string. `moneybin sql query` and the MCP `sql_query` tool bind nothing either; each takes one query string, and their read-only parser limits what an interpolated value can do rather than binding it. The one surface that binds is an external `ATTACH` from Python, where `conn.execute(sql, [params])` binds `?` placeholders.
+- **`moneybin sql query` has no wall-clock cap.** `mcp.tool_timeout_seconds` (default 30 s) is applied by the MCP tool decorator, so it bounds the MCP `sql_query` tool and not the CLI twin. A long CLI query runs until DuckDB finishes it; cap the work yourself with a `LIMIT` or a narrower date filter.
+- **Consent is recorded, not enforced.** The consent ledger records grants and revocations, and the per-call record is `privacy.log.jsonl`; no grant is required before a query returns CRITICAL-classified columns. Masking and the sensitivity tier are the controls in effect today — see [What the AI Provider Sees](what-the-ai-sees.md).
+- **`SHOW ALL TABLES` discloses the shape of `meta` and `seeds`.** The statement names no table, so the five-schema gate has nothing to resolve, and DuckDB's catalog listing returns `column_names` and `column_types` for every table including the two fenced schemas. No statement returns their row values. Treat the fence as a row-level boundary, not a structural one.
+- **No snapshot isolation across attaches.** A read-only client querying during a `moneybin refresh` can observe a mix of pre- and post-refresh rows for rebuilt models. For a multi-query analysis that must be internally consistent, take a backup with `moneybin db backup` and attach that file instead.
 
 ## See also
 

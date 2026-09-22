@@ -1877,7 +1877,7 @@ Migration:
 
 Tests: unit tests for each new model's shape and null behavior, a scenario test
 comparing the three rungs against generator ground truth, the two guard
-tests named in §Testing Strategy, and seven acceptance tests for
+tests named in §Testing Strategy, and thirteen acceptance tests for
 `account_archive_intent_ambiguous`: an account backfilled by V063 into the
 ambiguous state warns; the same account after `unarchive()` — `archived`
 back to `FALSE`, `include_in_net_worth` still the cascade-written `FALSE`
@@ -1897,17 +1897,28 @@ invariant exists to flag; as a third negative, an account whose
 `account_settings.set` history contains a pre-marker row that turns
 `include_in_net_worth` from `TRUE` to `FALSE` while that same row's
 `archived` stays `FALSE`, followed later by a separate row recording
-`archived = TRUE` — never warns, even though the later row alone would
-satisfy the cascade-evidence clause, pinning that the row-shape evidence
-settles the account exactly as the marker would; and, as a fourth negative,
+`archived = TRUE` — never warns, pinning that an archive which found the flag
+already `FALSE` is no cascade evidence; and, as a fourth negative,
 an account whose very first `account_settings.set` row is that same
 standalone `--exclude` — `before_value IS NULL` (the INSERT path, no prior
 row to snapshot), `after_value.include_in_net_worth = FALSE`,
 `after_value.archived = FALSE` — followed later by a separate row recording
-`archived = TRUE`: never warns either, pinning that a `NULL` `before_value`
-settles the account the same way a stored `TRUE` does, rather than falling
-through to a warning because neither the marker nor a stored-`TRUE` snapshot
-exists to read.
+`archived = TRUE`: never warns either, for the same reason; as a fifth
+negative, an account whose `include_in_net_worth =
+FALSE` predates the audit log, archived today through `AccountService.archive()`
+with no other audit history, never warns — pinning that only a pre-V063 image
+(no `archived_at` key) is cascade evidence; a backfilled account settled by
+`accounts set --include` and then returned to `FALSE` by undoing that write
+warns again, pinning that an undone decision does not settle; and a backfilled
+account whose history also holds a hand-built `account_settings.set.undo` row
+with the standalone-exclusion shape still warns, pinning that an undo row never
+settles; a pre-marker exclude, then an include, then a pre-V063 cascade archive
+warns, pinning that a settling row must postdate the latest evidence row; a
+backfilled cascade followed by an unarchive-and-include and then a pre-marker
+standalone exclude never warns, pinning that the row-shape evidence settles the
+account exactly as the marker would; and a lone pre-V063 archive whose before
+image already reads `include_in_net_worth = FALSE` never warns, pinning that
+only a write that flipped the flag is cascade evidence.
 
 ### Files to Modify
 
@@ -2681,7 +2692,14 @@ approved as a footnote rather than reviewed on its own terms.
   evidence of a historical archive/cascade action** — an
   `account_settings.set` row whose full-row snapshot (`after_value`) records
   `archived = TRUE` at that point in time, regardless of the account's
-  *current* `archived` value. That third clause is the scope fix: a legacy
+  *current* `archived` value, in a pre-V063 image (one whose `after_value`
+  carries no `archived_at` key). A post-V063 archive cannot be the retired
+  cascade, and every post-V063 capture carries the key, present even when
+  `NULL`. The row must also be the write that flipped the flag:
+  `before_value.include_in_net_worth` `TRUE` (or `before_value IS NULL`) and
+  `after_value.include_in_net_worth = FALSE`. A pre-V063 archive of an
+  account already excluded did not write that `FALSE`, so it is no evidence.
+  That third clause is the scope fix: a legacy
   account whose `include_in_net_worth = FALSE` never passed through the
   cascade — set directly via `--exclude`, or predating this feature and its
   audit trail entirely — carries no `archived = TRUE` audit row at all, so it
@@ -2717,8 +2735,15 @@ approved as a footnote rather than reviewed on its own terms.
   `context_json: {"confirms_include_in_net_worth": true}`; when it is
   `None`, no marker is written, regardless of what the flag's stored value
   ends up being. The check's `NOT EXISTS` therefore looks for that marker,
-  not for a timestamp — any account with a marked row is settled, whenever
-  it was written, and a rename or an omitted flag never produces one.
+  not for a merely later write — any account with a marked row is settled
+  (every marked row postdates all pre-V063 evidence), unless that write was
+  later undone, and a rename or an omitted flag never produces one.
+  A settling row, marked or matching the row shape below, counts only while
+  no audit row carries its `operation_id` as `undoes_operation_id`, and an
+  undo row (`account_settings.set.undo`) never settles on its own. A redo
+  carries no marker, so a decision undone and then redone warns again until
+  `accounts set` restates it: the accepted cost of reading intent only from
+  the write that named the flag.
 
   That marker only exists on writes made after this feature ships, though
   — a `--exclude` predating it leaves no `context_json` at all. Such a
@@ -2753,10 +2778,14 @@ approved as a footnote rather than reviewed on its own terms.
   ways to satisfy it — the marker or this row shape — not two exemptions
   to keep in sync as a third shape surfaces: a legacy account excluded
   standalone (on its first settings write or a later one alike) and
-  archived only later, whose old exclusion row carries no marker but does
-  carry this shape, is settled by the second and never warns, even though
-  a later row in its history also satisfies the cascade-evidence clause
-  above.
+  archived only later never warns: its archive row found the flag already
+  `FALSE`, so it is no cascade evidence at all.
+  Either kind of settling row counts only when it postdates the account's
+  latest evidence row, ordered by `(occurred_at, rowid)` exactly as V063
+  orders audit rows. A pre-marker row-shape exclusion can predate the
+  evidence, and an exclude, then an include, then a pre-V063 archive leaves a
+  `FALSE` the cascade wrote: the later include→archive cascade overwrote the
+  earlier choice, so that exclusion no longer settles the account.
   Rationale and the redundancy that makes the cascade removable:
   §`app.account_settings`; the check's file and acceptance test:
   §Implementation Plan.

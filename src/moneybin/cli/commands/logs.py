@@ -197,7 +197,7 @@ class _PruneOutcome:
 
     @property
     def regular_file_bytes(self) -> int:
-        """Return logical regular-file sizes, not physical space reclaimed."""
+        """Logical regular-file sizes, not physical space reclaimed."""
         return sum(size for _, size in self.removed if size is not None)
 
     @property

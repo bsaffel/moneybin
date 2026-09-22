@@ -97,8 +97,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | category_id | RECORD_ID | FK to `core.dim_categories.category_id` (V014 dual-write). |
 | (app, categorization_rules) | rule_id | RECORD_ID | 12-char truncated UUID4; app-created entity. |
 | (app, category_overrides) | category_id | CATEGORY | matches `seeds.categories.category_id` which is a semantic slug (e.g. `INC-SAL`); rule 9 classifies semantic-slug category IDs as CATEGORY. |
-| (app, imports) | import_id | RECORD_ID | FK to `raw.import_log.import_id`, a content-hash internal identifier. |
-| (app, import_previews) | import_id | RECORD_ID | Resulting `raw.import_log.import_id`; same class as the referenced import row. |
+| (app, imports) | import_id | RECORD_ID | FK to `app.import_log.import_id`, a content-hash internal identifier. |
+| (app, import_previews) | import_id | RECORD_ID | Resulting `app.import_log.import_id`; same class as the referenced import row. |
 | (app, import_previews) | preview_id | RECORD_ID | Opaque 12-char UUID4 handle for one expiring preview. |
 | (app, match_decisions) | account_id | RECORD_ID | opaque minted surrogate. |
 | (app, match_decisions) | account_id_b | RECORD_ID | second account in a transfer pair; same class as account_id. |
@@ -162,6 +162,8 @@ compares `duckdb_columns()` against `CLASSIFICATION` in both directions.
 | (app, categorization_rules) | name | USER_NOTE | human-readable rule label; user-authored free text. |
 | (app, export_destinations) | name, managed_tab_prefix | USER_NOTE | user-authored labels can reveal the export's purpose; mask them by default. |
 | (app, export_destinations) | destination_id, local_path, spreadsheet_id | RECORD_ID | opaque generated ID and storage/provider references; local paths follow `import_previews.file_path`. |
+| (app, import_log) | account_names | COMPOSITE_IDENTIFIER | JSON array of account names/numbers the batch touched (MB-255 moved this table `raw` → `app`, where an undeclared column fails closed to UNRESOLVED and whole-masks — this makes the prior `raw`-floor override an explicit declaration). A DuckDB JSON column reaches the redaction transform as `str`, so ACCOUNT_IDENTIFIER's partial `"****" + value[-4:]` mask would publish the tail of the *serialized array*, not of any value inside it — same reasoning as `account_link_decisions.match_signals` above. |
+| (app, import_log) | rejection_details | TXN_AMOUNT | JSON `[{row_number, reason}]`; `reason` can embed a raw unparseable source value verbatim (`transforms.py`'s `_extract_amounts` writes `f"Unparseable amount: {s!r}"`), so the worst case is an un-redacted amount string at an unknown position — same "classify by highest-sensitivity possible content" reasoning as `import_previews.snapshot_json` below, not the `tabular_formats.field_mapping`-style DESCRIPTION given to sibling JSON columns that only ever hold column names. |
 | (app, imports) | labels | USER_NOTE | LIST of user-applied slug labels; user-authored, treat as USER_NOTE for parity with `transaction_tags.tag`. |
 | (app, import_previews) | file_path | RECORD_ID | Local source provenance, matching the existing `source_file` classification; never exposed as account identity. |
 | (app, import_previews) | snapshot_json | TXN_AMOUNT | Complete preview payload can contain exact sample amounts and descriptions; classify by its highest-sensitivity possible content. |
@@ -420,7 +422,7 @@ Ninety such arms recover a routing number in one query, at LOW.
 
 This is written down rather than closed, and the reason is that it is **not specific to this rule**. The counting-aggregate collapse has it identically: `COUNT(j.account_id)` over the same joins yields the same ninety bits, with no `IS NULL` anywhere, and has done since long before MB-102. `COUNT(col)` counts non-NULLs, which is the same one bit per row in a different spelling. Closing it for the newer spelling alone would leave two behaviours for one question — the failure mode `design-principles.md` names as the largest source of rot.
 
-It is therefore tracked as MB-179, against **both** rules, and belongs to whichever change closes both. What MB-102 changed is which spellings reach it, not whether it is reachable.
+What MB-102 changed is which spellings reach it, not whether it is reachable. Both spellings are deliberate reconstruction, which "What the masking protects against" below places out of scope (MB-179, closed 2026-09-18).
 
 #### The cap is a claim about base columns
 
@@ -489,6 +491,14 @@ The snapshot cache key is the migration version integer from `SELECT MAX(version
 - `redact_records` accepts an explicit `{column_name: DataClass}` map from the lineage resolver and applies `_TRANSFORMS` to each row's values by column name.
 
 Because both functions share the same `_TRANSFORMS` table, a change to how CRITICAL columns are masked (e.g., adding a HIGH/MEDIUM transform) automatically applies to both the typed surface and `sql_query`.
+
+### What the masking protects against
+
+Decided 2026-09-18 (MB-177). `sql_query` masking stops **accidental disclosure**: a query an agent writes to answer a question never returns a CRITICAL value unmasked. A projection that returns one is a bug and is fixed (MB-178).
+
+It does **not** hold against **deliberate reconstruction**, where a query is built to infer a CRITICAL value one bit at a time. Classification reads projections only, so a `WHERE`, `HAVING`, `JOIN … ON`, or `ORDER BY` condition over a CRITICAL column, or an outer join feeding a counting aggregate (see "The cap is not absolute" above), answers yes/no questions about the value at tier LOW. Recovering a 9-digit routing number takes about 90 such conditions written for that purpose. No agent reaches that by accident, and the person running the query already owns the database. Closing it would mean masking ordinary filters such as `WHERE last_four = '5678'`, or hiding CRITICAL values from the query engine entirely. DuckDB has no built-in column masking to build that on.
+
+Report a reconstruction path as a documented limit, not as a masking bug. Reopen the question if `sql_query` ever serves a caller other than the database owner's own agent.
 
 ### Scope note (honest)
 

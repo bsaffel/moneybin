@@ -301,6 +301,18 @@ class DatabaseLockError(Exception):
     """DuckDB file lock held by another process; caller may retry."""
 
 
+class DatabaseUpgradeRequiredError(Exception):
+    """A database's migration ladder is behind the code and couldn't be upgraded.
+
+    Raised instead of ever serving a read, or a silently-incomplete write,
+    against a schema the installed code no longer matches. The three
+    causes: ``no_auto_upgrade`` is set, the file/filesystem is not
+    writable, or the write lock could not be acquired in time. Each
+    message names the remedy (``moneybin db migrate apply`` or clearing
+    ``no_auto_upgrade``).
+    """
+
+
 class DatabaseNotInitializedError(Exception):
     """Database file missing or incomplete; run 'moneybin db init'.
 
@@ -492,9 +504,20 @@ def _attach_encrypted(
     IO error + ``"different configuration"`` catalog error in 1.5.2) into a
     single ``"Could not set lock on file"`` IO error. Both phrasings are
     matched for belt-and-suspenders coverage across environments.
+
+    Contention inside one process never reaches the file lock: DuckDB refuses
+    a second attach of a file another connection in the process still holds
+    with a ``"Unique file handle conflict"`` binder error. It is the same
+    transient condition, so it retries the same way.
     """
     try:
         conn.execute(sql)
+    except duckdb.BinderException as e:
+        scrub_key_material(e, encryption_key)
+        if "Unique file handle conflict" not in str(e):
+            raise
+        conn.close()
+        raise DatabaseLockError(str(e)) from e
     except duckdb.CatalogException as e:
         scrub_key_material(e, encryption_key)
         conn.close()
@@ -717,19 +740,43 @@ class Database:
             if skip_upgrade is None:
                 settings = get_settings()
                 skip_upgrade = settings.database.no_auto_upgrade
-            if not skip_upgrade:
-                current_pkg_version = importlib.metadata.version("moneybin")
-                stored_versions = get_current_versions(self)
-                stored_pkg_version = stored_versions.get("moneybin")
 
-                # Gate on pending migrations, not pkg version. The version
-                # string in pyproject.toml is bumped by hand and was previously
-                # the only trigger — so a DB opened pre-V003 stayed pre-V003
-                # forever if the version hadn't moved between releases. Any
-                # unapplied migration (or a version mismatch) drives the runner.
-                runner = MigrationRunner(self)
-                pending = runner.pending()
-                if pending or stored_pkg_version != current_pkg_version:
+            # Computed unconditionally — both reads are plain SELECTs against
+            # tables init_schemas always creates, and skip_upgrade must not
+            # blind this open to a ladder it is about to leave stranded.
+            # Gate on pending migrations, not pkg version. The version
+            # string in pyproject.toml is bumped by hand and was previously
+            # the only trigger — so a DB opened pre-V003 stayed pre-V003
+            # forever if the version hadn't moved between releases. Any
+            # unapplied migration (or a version mismatch) drives the runner.
+            current_pkg_version = importlib.metadata.version("moneybin")
+            stored_versions = get_current_versions(self)
+            stored_pkg_version = stored_versions.get("moneybin")
+            runner = MigrationRunner(self)
+            pending = runner.pending()
+            needs_upgrade = bool(pending) or stored_pkg_version != current_pkg_version
+
+            if skip_upgrade:
+                # A never-before-opened database (stored_pkg_version is None)
+                # has nothing stranded: init_schemas() just built every table
+                # at its current shape from scratch, so "every migration is
+                # unapplied" is a fresh install, not a ladder behind the code.
+                # Anything else is a real upgrade skip_upgrade is refusing to
+                # run — most concretely, init_schemas() may have just created
+                # a relocated table (e.g. a schema-moved one) EMPTY while the
+                # real rows stay stranded under its old name, and that empty
+                # table would otherwise answer reads as though it were
+                # authoritative. Refuse instead of serving that silently.
+                if stored_pkg_version is not None and needs_upgrade:
+                    raise DatabaseUpgradeRequiredError(
+                        f"Database at {db_path} has pending schema migrations, "
+                        "but no_auto_upgrade is set, so this open cannot apply "
+                        "them. Run 'moneybin db migrate apply' after clearing "
+                        "no_auto_upgrade (MONEYBIN_DATABASE__NO_AUTO_UPGRADE or "
+                        "the config setting), or clear it for this open."
+                    )
+            else:
+                if needs_upgrade:
                     if stored_pkg_version is None:
                         # First-ever open of this DB — schema initialization.
                         logger.info("⚙️  Initializing MoneyBin schema...")
@@ -1253,20 +1300,33 @@ def database_key_error_hint(db_path: Path | None = None) -> str:
     )
 
 
-def _lock_error_message(db_path: "Path", max_wait: float) -> str:
+def _lock_error_message(db_path: "Path", max_wait: float, *, read_only: bool) -> str:
+    from moneybin.db_lock import live_writer
     from moneybin.utils.db_processes import describe_process, find_blocking_processes
 
+    # A read-only open fails too while another process holds the file
+    # read-write, so name which open failed rather than always "write lock".
+    failed = (
+        f"Could not open the database for reading after {max_wait:.0f}s"
+        if read_only
+        else f"Could not acquire write lock after {max_wait:.0f}s"
+    )
+    # The lock metadata names the holder's operation, which a process name
+    # ("moneybin --profile") cannot — the difference between "another server is
+    # updating the schema" and "something is stuck".
+    writer = live_writer(db_path)
+    if writer is not None:
+        return (
+            f"{failed} (held by another MoneyBin process running "
+            f"{writer['operation_type']}). "
+            f"Run 'moneybin db ps' for details."
+        )
     blockers = find_blocking_processes(db_path)
     if blockers:
         names = ", ".join(describe_process(str(p["cmdline"])) for p in blockers)
-        return (
-            f"Could not acquire write lock after {max_wait:.0f}s "
-            f"(held by: {names}). "
-            f"Run 'moneybin db ps' for details."
-        )
+        return f"{failed} (held by: {names}). Run 'moneybin db ps' for details."
     return (
-        f"Could not acquire write lock after {max_wait:.0f}s. "
-        f"Another process may be writing to the database. "
+        f"{failed}. Another process may be writing to the database. "
         f"Run 'moneybin db ps' for details."
     )
 
@@ -1318,8 +1378,13 @@ def get_database(
     Write-mode opens acquire a process file lock (``write_lock``) that is
     held for the **lifetime of the returned Database**, not just during
     ATTACH. ``Database.close()`` releases the file lock alongside the
-    DuckDB connection. Read-mode opens never touch the file lock — DuckDB's
-    own arbitration handles read-write contention at the ATTACH layer.
+    DuckDB connection. Read-mode opens never touch the file lock for their
+    own ATTACH — DuckDB's own arbitration handles read-write contention at
+    that layer — with one exception: a read-only open whose migration
+    ladder is behind the running code briefly escalates to a write open
+    (via the same ``write_lock``) to bring it current before re-attaching
+    read-only, so a read is never served from a stale or empty schema. See
+    ``_upgrade_then_reopen_read_only``.
 
     A single shared ``deadline = monotonic() + max_wait`` drives both
     file-lock acquisition AND the existing ATTACH retry, so end-to-end
@@ -1338,12 +1403,6 @@ def get_database(
     acquiring the writer lock so a concurrent deletion cannot turn maintenance
     into implicit database creation.
     """
-    global _database_written, _active_write_conn
-
-    # Lazy import: db_lock.lock imports DatabaseLockError from this module,
-    # so deferring the import past module-load time breaks the cycle.
-    from moneybin.db_lock import write_lock
-
     settings = get_settings()
     db_path = settings.database.path
     if require_existing and not db_path.exists():
@@ -1367,6 +1426,11 @@ def get_database(
             deadline=deadline,
             max_wait=max_wait,
         )
+        if _read_only_ladder_is_behind(db):
+            db.close()
+            db = _upgrade_then_reopen_read_only(
+                db_path=db_path, deadline=deadline, max_wait=max_wait
+            )
         # Read opens register in the per-call holder too. Without this a
         # long-running read (sql_query) that hits the MCP timeout left the
         # handler on its "no connection acquired, nothing to reset" arm, so
@@ -1376,6 +1440,36 @@ def get_database(
         if _holder is not None:
             _holder[0] = db
         return db
+
+    return _open_write_locked(
+        db_path=db_path,
+        skip_upgrade=skip_upgrade,
+        deadline=deadline,
+        max_wait=max_wait,
+        operation_type=operation_type,
+        require_existing=require_existing,
+    )
+
+
+def _open_write_locked(
+    *,
+    db_path: Path,
+    skip_upgrade: bool,
+    deadline: float,
+    max_wait: float,
+    operation_type: OperationType,
+    require_existing: bool,
+) -> "Database":
+    """Acquire the write lock and open a write-mode ``Database`` inside it.
+
+    Factored out of ``get_database()`` so a read-only open's upgrade
+    escalation (``_upgrade_then_reopen_read_only``) can run the exact same
+    write-lock-and-migrate path a normal write open uses — one coordination
+    mechanism, not two.
+    """
+    global _database_written, _active_write_conn
+
+    from moneybin.db_lock import write_lock
 
     # write_lock places its lock file at <db_path>.write.lock inside the
     # profile directory, so that directory must exist before it runs. Pre-PR-B
@@ -1445,6 +1539,105 @@ def get_database(
         raise
 
 
+def _read_only_ladder_is_behind(db: "Database") -> bool:
+    """Whether a read-only-attached database's migration ladder is behind.
+
+    Read-only-safe: both reads are plain ``SELECT``s against tables
+    ``init_schemas`` always creates. Mirrors ``Database.__init__``'s own
+    write-path trigger condition, with the same fresh-install carve-out: a
+    never-versioned database (``stored_pkg_version`` is ``None``) has
+    nothing stranded — ``init_schemas()`` already built it at its current
+    shape from scratch, so ``MigrationRunner.pending()`` reporting every
+    migration unapplied does not mean anything is actually behind.
+
+    Any ``duckdb.Error`` counts as behind too — including a
+    ``CatalogException`` (schema init never completed against this file) and
+    an attempted write DuckDB's read-only attach refuses (``pending()``'s
+    ``_ensure_tracking_schema`` self-heal ALTERs a pre-V013 database's
+    tracking table if it lacks ``content_hash``). Either way, the
+    escalation's write open re-runs ``init_schemas()`` and the migration
+    ladder, which is exactly the idempotent repair for both cases.
+    """
+    from moneybin.migrations import MigrationRunner, get_current_versions
+
+    try:
+        stored_pkg_version = get_current_versions(db).get("moneybin")
+        if stored_pkg_version is None:
+            return False
+        if stored_pkg_version != importlib.metadata.version("moneybin"):
+            return True
+        return bool(MigrationRunner(db).pending())
+    except duckdb.Error:
+        return True
+
+
+def _upgrade_then_reopen_read_only(
+    *, db_path: Path, deadline: float, max_wait: float
+) -> "Database":
+    """Bring a behind-schedule database current, then re-open it read-only.
+
+    A read-only operation must never be served from a database whose
+    migration ladder is behind the running code (MB-255 review). Escalates
+    to a write open — reusing ``_open_write_locked``'s existing write-lock
+    acquisition and retry/backoff rather than a second coordination
+    mechanism — applies the ladder exactly as ``moneybin db migrate apply``
+    would, closes it (releasing the write lock), and re-attaches read-only.
+
+    A concurrent second reader that also observed the ladder as behind
+    blocks on the same write lock; by the time it acquires it, the first
+    reader's write open has already brought the ladder current, so its own
+    write-mode ``Database.__init__`` finds nothing pending and no-ops.
+
+    Refuses instead of ever serving a stale or empty read when the upgrade
+    genuinely cannot run:
+
+    Raises:
+        DatabaseUpgradeRequiredError: ``no_auto_upgrade`` is set, the write
+            lock could not be acquired within ``deadline``, or the database
+            file/directory is not writable.
+    """
+    settings = get_settings()
+    if settings.database.no_auto_upgrade:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but "
+            "no_auto_upgrade is set, so this read-only open cannot bring it "
+            "current. Run 'moneybin db migrate apply' after clearing "
+            "no_auto_upgrade (MONEYBIN_DATABASE__NO_AUTO_UPGRADE or the "
+            "config setting), or clear it for this open."
+        )
+    try:
+        write_db = _open_write_locked(
+            db_path=db_path,
+            skip_upgrade=False,
+            deadline=deadline,
+            max_wait=max_wait,
+            operation_type="migration",
+            require_existing=False,
+        )
+    except DatabaseLockError as exc:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but the "
+            "write lock needed to apply them could not be acquired in time. "
+            "Retry, or run 'moneybin db migrate apply' once no writer is "
+            "active."
+        ) from exc
+    except OSError as exc:
+        raise DatabaseUpgradeRequiredError(
+            f"Database at {db_path} has pending schema migrations, but the "
+            f"database file or its directory is not writable ({exc}). Fix "
+            "the permissions, or run 'moneybin db migrate apply' with write "
+            "access."
+        ) from exc
+    write_db.close()
+    return _open_with_attach_retry(
+        db_path=db_path,
+        read_only=True,
+        skip_upgrade=True,
+        deadline=deadline,
+        max_wait=max_wait,
+    )
+
+
 def _open_with_attach_retry(
     *,
     db_path: Path,
@@ -1483,7 +1676,7 @@ def _open_with_attach_retry(
         except DatabaseLockError:
             if time.monotonic() >= deadline:
                 raise DatabaseLockError(
-                    _lock_error_message(db_path, max_wait)
+                    _lock_error_message(db_path, max_wait, read_only=read_only)
                 ) from None
             time.sleep(delay)
             delay = min(delay * 1.5, 0.5)

@@ -18,10 +18,24 @@ jobs:
       - uses: astral-sh/setup-uv@v7
       - name: Validate fragments and release scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           SKIP_CHANGELOG: ${{ contains(github.event.pull_request.labels.*.name, 'skip-changelog') }}
           RELEASE_PREPARATION: ${{ contains(github.event.pull_request.labels.*.name, 'release-preparation') }}
         run: |
+          # actions/checkout builds the ephemeral GitHub merge commit for
+          # pull_request events: HEAD^1 is the base branch's current tip and
+          # HEAD^2 is the PR head. github.event.pull_request.base.sha is only
+          # the base at last sync and can lag main, so diffing against it
+          # blames the PR for base-branch commits made in between (#603).
+          # Fail loudly instead of silently falling back if that assumption
+          # ever stops holding (e.g. checkout switches to the PR head ref).
+          MERGE_HEAD_SHA="$(git rev-parse HEAD^2)"
+          if [ "$MERGE_HEAD_SHA" != "$PR_HEAD_SHA" ]; then
+            echo "HEAD^2 ($MERGE_HEAD_SHA) does not match the PR head ($PR_HEAD_SHA)." >&2
+            echo "Expected actions/checkout to have checked out GitHub's merge-ref commit for this pull_request event." >&2
+            exit 1
+          fi
+          BASE_SHA="$(git rev-parse HEAD^1)"
           if [ "$RELEASE_PREPARATION" != "true" ]; then
             if ! git diff --quiet "$BASE_SHA...HEAD" -- CHANGELOG.md; then
               echo 'CHANGELOG.md is assembled only in a release-preparation PR. Add a changelog.d fragment instead.'

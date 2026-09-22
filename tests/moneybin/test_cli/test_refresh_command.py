@@ -87,6 +87,28 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
     assert result.exit_code == 1
 
 
+def test_refresh_receipt_names_investment_planning_as_transform_blocker(
+    runner: CliRunner,
+) -> None:
+    """A failed planner receipt must not imply that SQLMesh apply ran."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        error="planner boom",
+        stages=(StageOutcome(step="investment_match", ran=True, error="planner boom"),),
+    )
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "transform"])
+
+    assert result.exit_code == 1
+    assert "Investment planning prevented transform" in result.output
+    assert "Transforms: rebuilt" not in result.output
+
+
 def test_interrupted_refresh_reports_unknown_saved_scope(runner: CliRunner) -> None:
     """Cancellation never invents rollback or an empty saved scope."""
     with (

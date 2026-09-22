@@ -3,6 +3,22 @@
 ## Status
 implemented
 
+> **Read-only migration escalation (2026-09-18, MB-255 review).** The
+> "Read-mode opens never call this" line under "Lock primitive contract"
+> below is no longer absolute. A read-only open never reached
+> `init_schemas()`/`MigrationRunner` at all, so it could read a schema the
+> running code had already moved past — and a write open with
+> `no_auto_upgrade` set could create a just-relocated table empty while real
+> rows stayed stranded under its old name, since `init_schemas()` runs
+> unconditionally before that check. Fix: a read-only open whose ladder is
+> behind briefly escalates to a write open — through this exact `write_lock`
+> primitive, not a second coordination mechanism — to bring it current
+> before re-attaching read-only, and a write open refuses instead of
+> proceeding silently when it can't. See `get_database()`'s
+> `_upgrade_then_reopen_read_only` / `_read_only_ladder_is_behind` /
+> `_open_write_locked` in `database.py`. The common case (ladder already
+> current) is unaffected: no lock touched, same ~14 ms path.
+
 > **Current MCP mapping.** Tools that touch DuckDB acquire their own
 > `get_database(read_only=...)` connection. Connection mode follows the actual
 > database operation; MCP annotations separately describe observable behavior.
@@ -628,6 +644,13 @@ The directional invariants from ADR-010 still hold: read-read
 coexists; all other combinations fail. The 1.5.2 table in ADR-010
 remains as the historical record.
 
+Contention inside one process never reaches the file lock. DuckDB refuses a
+write attach of a file that another connection in the same process still
+holds read-only with `BinderException: Unique file handle conflict`. `_attach_encrypted` classifies that message as `DatabaseLockError`
+too, so it retries until the deadline like cross-process contention. The
+read-only migration escalation hits it when two threads race the same upgrade
+(#628).
+
 ### Lock primitive contract
 
 ```python
@@ -640,8 +663,11 @@ def write_lock(
 ) -> Generator[None, None, None]: ...
 ```
 
-- **Read-mode opens never call this.** The file lock is exclusively a
-  write-write coordination primitive.
+- **Read-mode opens never call this for their own ATTACH** — the file lock
+  is a write-write coordination primitive there. One narrow exception: a
+  read-only open whose migration ladder is behind briefly escalates to a
+  write open through this exact primitive before re-attaching read-only.
+  See the "Read-only migration escalation" note at the top of this spec.
 - **Reentrant within a thread.** Re-entry from the same `(pid, thread_id)`
   returns immediately without re-acquiring the OS lock; depth is tracked.
   A *different* thread in the same process opens its own descriptor and
@@ -654,12 +680,17 @@ def write_lock(
   temp-file-then-rename. A rename would swap the lock file's inode and
   strand the `fcntl` lock on the old, unlinked inode — a second writer
   opening the path would then bind a fresh inode and acquire its own lock.
-  A diagnostic reader (`system_status`) may observe the brief partial-write
-  window between the `ftruncate(0)` and the following `write(payload)` (an
-  empty or truncated read); that is acceptable because lock authority is the
-  held `fcntl`, not the file contents, and the reader re-reads a few times to
-  ride out that window (`_read_writer_metadata`). The file is created once at
-  `0o600` and never replaced, so its mode is not downgraded by a rename.
+  Two readers share that payload through `live_writer()`: `system_status`
+  reports it, and `check_schema_at_boot` asks it whether a peer's heal is in
+  flight before waiting the heal out. Either may observe the brief
+  partial-write window between the `ftruncate(0)` and the following
+  `write(payload)` (an empty or truncated read); that is acceptable because
+  lock authority is the held `fcntl`, not the file contents, and the reader
+  re-reads a few times to ride out that window (`_read_writer_metadata`). An
+  unreadable payload reads as "no writer", so a misread costs the boot check
+  its wait and drops it back to the ordinary write-lock wait — it never grants
+  one. The file is created once at `0o600` and never replaced, so its mode is
+  not downgraded by a rename.
 - **Lifetime bound to the returned Database, not to ATTACH.**
   `get_database()` enters the `write_lock` context via an
   `ExitStack` and stashes the stack's `close` on the returned

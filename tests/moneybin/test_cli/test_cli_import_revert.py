@@ -19,7 +19,7 @@ from typer.testing import CliRunner
 from moneybin.cli.main import app
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
-from moneybin.loaders import import_log
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.services.import_service import ImportRevertPlan, ImportService
 
 
@@ -37,8 +37,7 @@ def patched_db(db: Database, monkeypatch: pytest.MonkeyPatch) -> Database:
 
 def _seed_revertable_batch(database: Database, rows: int) -> str:
     """Import ``rows`` tabular transactions under one complete batch."""
-    import_id = import_log.begin_import(
-        database,
+    import_id = ImportLogRepo(database).begin_import(
         source_file="/tmp/revert.csv",  # noqa: S108  # test fixture path
         source_type="csv",
         source_origin="tiller",
@@ -64,8 +63,8 @@ def _seed_revertable_batch(database: Database, rows: int) -> str:
                 import_id,
             ],
         )
-    import_log.finalize_import(
-        database, import_id, status="complete", rows_total=rows, rows_imported=rows
+    ImportLogRepo(database).finalize_import(
+        import_id, status="complete", rows_total=rows, rows_imported=rows
     )
     return import_id
 
@@ -81,7 +80,7 @@ def _remaining(database: Database, import_id: str) -> int:
 
 def _status(database: Database, import_id: str) -> str:
     row = database.execute(
-        "SELECT status FROM raw.import_log WHERE import_id = ?", [import_id]
+        "SELECT status FROM app.import_log WHERE import_id = ?", [import_id]
     ).fetchone()
     assert row is not None
     return str(row[0])

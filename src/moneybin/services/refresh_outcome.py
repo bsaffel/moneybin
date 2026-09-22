@@ -74,11 +74,16 @@ def best_effort(stages: Sequence[StageOutcome]) -> tuple[StageOutcome, ...]:
 
     Every stage except the apply. The apply rides in ``stages`` so a renderer
     has an entry to name for the one step every full refresh runs, but it
-    answers a different question than the rest: it is the only step that can
-    hard-fail, every carrier reports it separately as ``transforms_error``, and
-    it gates a non-zero exit the best-effort steps do not. A caller asking "did
-    something degrade that I can offer a retry for?" and counting the apply
-    answers yes for a blocker, and sends the user to a retry instead of a fix.
+    answers a different question than the rest: its own crash always
+    hard-fails the run, every carrier reports it separately as
+    ``transforms_error``, and it gates a non-zero exit the best-effort steps
+    do not. (``investment_match`` can also hard-fail the run — it blocks
+    apply from running at all — but it stays in ``best_effort`` here: only a
+    *blocking* investment_match crash sets ``transforms_error``, so a caller
+    already reads that field to tell a block apart from an ordinary
+    best-effort crash of this step.) A caller asking "did something degrade
+    that I can offer a retry for?" and counting the apply answers yes for a
+    blocker, and sends the user to a retry instead of a fix.
 
     One function rather than an ``if step != …`` at each reader, because the
     two readers had already drifted once: this is the sort of filter that gets

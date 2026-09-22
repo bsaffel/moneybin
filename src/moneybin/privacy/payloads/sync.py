@@ -78,10 +78,11 @@ class SyncPullPayload:
     # What the pull's own refresh did, step by step. Named exactly as
     # `RefreshRunPayload` names them, and built by the same flattener, so an
     # agent reading sync_pull and refresh_run learns one vocabulary.
-    # `transforms_error` above covers only the SQLMesh apply; `stages` carries
-    # the steps it cannot report — each one's counts, its error, and whether it
-    # ran at all. A currency pair is CURRENCY (Tier.LOW): it names no account
-    # and discloses no amount.
+    # `transforms_error` above covers only a blocking failure (SQLMesh apply,
+    # or an investment_match crash that kept apply from running); `stages`
+    # carries the steps it cannot report — each one's counts, its error, and
+    # whether it ran at all. A currency pair is CURRENCY (Tier.LOW): it names
+    # no account and discloses no amount.
     stages: list[RefreshStageRow] = field(default_factory=list)
     identity_errors: Annotated[list[str], DataClass.TXN_TYPE] = field(
         default_factory=list

@@ -1897,10 +1897,17 @@ def test_import_log_account_names_masks_whole_not_partial() -> None:
     Whole, not partial: a DuckDB ``JSON`` column arrives as ``str``, so
     ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would publish the TAIL of the
     serialized array — which for a one-element array of a bare number is the
-    tail of an account number.
+    tail of an account number. ``app.import_log`` (MB-255 moved it out of
+    ``raw``, which is FLOORED) declares this explicitly as
+    ``COMPOSITE_IDENTIFIER`` rather than relying on the fail-closed class —
+    see the enum's own guidance against writing ``UNRESOLVED`` into
+    ``CLASSIFICATION``.
     """
-    assert _class_of_key(("raw", "import_log", "account_names")) is FAIL_CLOSED_CLASS
-    assert mask_strength(FAIL_CLOSED_CLASS) is MaskStrength.WHOLE
+    assert (
+        _class_of_key(("app", "import_log", "account_names"))
+        is DataClass.COMPOSITE_IDENTIFIER
+    )
+    assert mask_strength(DataClass.COMPOSITE_IDENTIFIER) is MaskStrength.WHOLE
 
 
 # ---------------------------------------------------------------------------

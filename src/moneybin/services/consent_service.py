@@ -70,7 +70,7 @@ class ConsentTargetPlan:
 
     @property
     def changed(self) -> bool:
-        """Return whether at least one grant must change."""
+        """Whether at least one grant must change."""
         return bool(self.changed_categories)
 
 

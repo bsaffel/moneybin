@@ -160,10 +160,10 @@ def pipeline_db(db: Database) -> Generator[Database, None, None]:
 def _log_import(
     db: Database, *, import_id: str, source_type: str, source_file: str
 ) -> None:
-    """Record the batch in ``raw.import_log`` so ``plan_revert`` can find it."""
+    """Record the batch in ``app.import_log`` so ``plan_revert`` can find it."""
     db.execute(
         """
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin, account_names,
             status, rows_imported, started_at, completed_at
         ) VALUES (?, ?, ?, ?, '[]', 'complete', 1, ?, ?)

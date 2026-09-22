@@ -24,7 +24,7 @@ held to that same schema limit, so a catalog statement cannot inspect a table
 the data path won't read. Each output column is classified via SQL lineage;
 A column declared CRITICAL (account/routing numbers) is ALWAYS masked
 (****\<last4>), exactly like the typed tools and the ``sql_query`` MCP tool.
-``raw`` and ``prep`` carry 34 such declarations and no registry behind them,
+``raw`` and ``prep`` carry 33 such declarations and no registry behind them,
 so every other column there passes through unless the value is a text or
 integer one shaped like an SSN or a run of eight or more digits — weaker
 than a declaration. A 4-to-7 digit account number survives it, and a

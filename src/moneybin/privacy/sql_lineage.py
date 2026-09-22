@@ -858,7 +858,8 @@ def _only_null_tested(node: exp.Expr, stop: exp.Expr) -> bool:
     shipped counting-aggregate collapse has it identically — ``COUNT(j.account_id)``
     over the same joins returns the same ninety bits at LOW, with no ``IS NULL``
     anywhere — so closing it here alone would leave two behaviours for one
-    question. It belongs to whichever change closes both; see MB-179.
+    question. Both are deliberate reconstruction, documented as out of scope in
+    privacy-data-classification.md → "What the masking protects against".
 
     It also discloses nothing new. ``COUNT(col)`` has collapsed to AGGREGATE
     since long before this rule, so ``COUNT(*) - COUNT(last_four)`` already

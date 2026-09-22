@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-13 -->
+<!-- Last reviewed: 2026-09-17 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
@@ -33,7 +33,7 @@ These flags appear on commands across every group. They are not repeated in the 
 | Code | Meaning |
 |---|---|
 | `0` | Success. |
-| `1` | Runtime error: the operation ran and failed (file not found, database locked, upstream API 5xx, validation error on data already accepted, partial-batch error). Mutating commands also exit `1` when any item in a batch fails or is skipped (e.g., `transactions categorize commit` with one bad row). |
+| `1` | Runtime error: the operation ran and failed (file not found, database locked, upstream API 5xx, validation error on data already accepted, partial-batch error). `transactions categorize commit` also exits `1` when any row fails or is skipped; `import files` exits `1` only when every file in the batch fails, so a partial batch exits `0` (see [Data import](data-import.md#for-scripts-and-agents)). |
 | `2` | Usage error: missing argument, invalid flag value, unknown subcommand, bad combination of flags. |
 
 Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipes (`| jq`, `| less`) are safe in both modes.

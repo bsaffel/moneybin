@@ -425,7 +425,7 @@ _HISTORY_RECORDS = [
 
 def _patched_history() -> Any:
     return patch(
-        "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+        "moneybin.services.import_service.ImportService.get_import_history",
         return_value=_HISTORY_RECORDS,
     )
 
@@ -481,7 +481,7 @@ def test_import_history_distinguishes_same_named_files(wide_terminal: None) -> N
     with (
         patch("moneybin.database.get_database", _fake_db_ctx),
         patch(
-            "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+            "moneybin.services.import_service.ImportService.get_import_history",
             return_value=records,
         ),
     ):
@@ -542,7 +542,7 @@ def test_import_history_pager_and_no_pager_receive_the_same_complete_answer(
     with (
         patch("moneybin.database.get_database", _fake_db_ctx),
         patch(
-            "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+            "moneybin.services.import_service.ImportService.get_import_history",
             return_value=records,
         ),
     ):
@@ -562,7 +562,7 @@ def test_import_history_empty_filter_names_the_scope_and_recovery(
     with (
         patch("moneybin.database.get_database", _fake_db_ctx),
         patch(
-            "moneybin.extractors.tabular.TabularExtractor.get_import_history",
+            "moneybin.services.import_service.ImportService.get_import_history",
             return_value=[],
         ),
     ):

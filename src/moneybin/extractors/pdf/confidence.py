@@ -8,9 +8,15 @@ seed routing (Phase 1 path).
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
+
 _REQUIRED_WEIGHT = 0.7
 _IMPORTANT_WEIGHT = 0.3
 _THRESHOLD = 0.7  # Req 2; spec default — module constant for Phase 2a
+
+# How many rows the sign proposal shows as before/after samples.
+_SIGN_SAMPLE_LIMIT = 3
 
 
 def score(
@@ -33,3 +39,20 @@ def score(
 def is_high_confidence(s: float) -> bool:
     """Return True if *s* meets or exceeds the auto-derive threshold."""
     return s >= _THRESHOLD
+
+
+def sign_sample_rows(
+    rows: list[dict[str, Any]], *, limit: int = _SIGN_SAMPLE_LIMIT
+) -> list[dict[str, str]]:
+    """Show the flip concretely: what the statement printed vs what we'd record."""
+    samples: list[dict[str, str]] = []
+    for row in rows[:limit]:
+        printed = row.get("amount")
+        if printed is None:
+            continue
+        samples.append({
+            "description": str(row.get("description", ""))[:60],
+            "as_printed": str(printed),
+            "as_recorded": str(-Decimal(str(printed))),
+        })
+    return samples

@@ -9,8 +9,9 @@ verb that wraps five source-agnostic steps:
    same transaction observed by multiple loaders collapses to one row.
 2. **SQLMesh apply** — :class:`TransformService` rebuilds derived
    ``core.*`` and ``reports.*`` models from current raw state. This is
-   the only step that can hard-fail the call (``RefreshResult.error``);
-   the others surface crashes without aborting (see below).
+   the step whose crash hard-fails the call (``RefreshResult.error``); so
+   does an ``investment_match`` crash when it blocks apply from running at
+   all (see below). Every other step surfaces crashes without aborting.
 3. **Deterministic categorization** — :class:`CategorizationService`
    applies user rules + merchant exemplars to uncategorized rows, with
    source-precedence enforcement so user-manual categories are never
@@ -31,8 +32,13 @@ failure never aborts the pipeline, so a partial run still leaves raw rows
 durable and core tables rebuilt. Matcher/categorizer crashes surface their
 error strings; identity failures surface only their fixed domain labels in
 ``RefreshResult.identity_errors``. A missing-view precondition on first load
-is logged at DEBUG and not surfaced. Only SQLMesh apply failures set
-``RefreshResult.error``.
+is logged at DEBUG and not surfaced. ``investment_match`` is the one
+exception to "best-effort": ``expand_steps`` always adds it alongside
+``transform``, so its crash is a precondition failure, not a degraded step —
+apply never runs, and the crash sets the top-level ``RefreshResult.error``
+exactly like a SQLMesh apply failure would. A caller that reads only that
+field (every embedded refresh caller does) must not see this as a clean
+skip. Only these two failures set ``RefreshResult.error``.
 
 Invoked by any service whose loaders wrote to ``raw.*``:
 ``ImportService`` (file imports), ``InboxService`` (inbox drain),
@@ -114,8 +120,10 @@ class SelfHealRecord:
 class RefreshResult:
     """Outcome of a :func:`refresh` call.
 
-    ``error`` describes the SQLMesh apply step — the only step that can
-    hard-fail. Every other step reports its own crash, its own counts, and
+    ``error`` describes a blocking failure — the SQLMesh apply step, or an
+    ``investment_match`` crash that kept apply from running at all (it is a
+    precondition whenever ``transform`` is requested; see the module
+    docstring). Every other step reports its own crash, its own counts, and
     whether it ran at all in its ``stages`` entry, so a caller reads one place
     per step. A missing-view precondition on first load (before SQLMesh apply
     built the views) is NOT a crash: that step's entry has ``ran=False`` and no
@@ -155,10 +163,19 @@ class RefreshResult:
         return find_stage(self.stages, step)
 
 
-RefreshStep = Literal["gsheet", "match", "transform", "categorize", "identity", "rates"]
+RefreshStep = Literal[
+    "gsheet",
+    "match",
+    "investment_match",
+    "transform",
+    "categorize",
+    "identity",
+    "rates",
+]
 CANONICAL_STEPS: tuple[RefreshStep, ...] = (
     "gsheet",
     "match",
+    "investment_match",
     "transform",
     "categorize",
     "identity",
@@ -210,7 +227,8 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     Used by surfaces to decide which follow-up hints to emit without
     re-deriving the membership rule from the service's internal logic.
     """
-    return frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
+    requested = frozenset(CANONICAL_STEPS) if steps is None else frozenset(steps)
+    return requested | {"investment_match"} if "transform" in requested else requested
 
 
 def refresh(
@@ -394,6 +412,24 @@ def refresh(
             )
         )
 
+    if "investment_match" in requested:
+        investment_stage = _run_investment_match_step(db, actor=actor)
+        stages.append(investment_stage)
+        if investment_stage.error is not None and "transform" in requested:
+            # A blocking precondition failure, not a best-effort one: apply
+            # never runs. Surface it on the top-level `error` — the field
+            # every embedded refresh caller (SyncService.pull, ImportService,
+            # InboxService, ...) already reads — so `applied=False` cannot be
+            # mistaken for raw data landing cleanly with a merely-skipped
+            # transform.
+            return RefreshResult(
+                applied=False,
+                duration_seconds=None,
+                error=investment_stage.error,
+                transfers_retired=transfers_retired,
+                stages=tuple(stages),
+            )
+
     if "transform" not in requested:
         # Caller asked for a partial cascade that omits transform. Return
         # an "apply did not run" result so the envelope's applied=False
@@ -517,6 +553,54 @@ def _step_error(exc: Exception, *, step: str) -> str:
     if classified is not None:
         return classified.message
     return f"{step} failed — the cause is in the local log"
+
+
+def _run_investment_match_step(db: Database, *, actor: str) -> StageOutcome:
+    """Persist review-only Proposals before any requested dependent transform."""
+    from moneybin.services.investment_matching_service import InvestmentMatchingService
+    from moneybin.tables import (
+        INVESTMENT_EVENT_EVIDENCE,
+        INVESTMENT_EVENT_HEADERS,
+        INVESTMENT_EVENT_LEGS,
+    )
+
+    try:
+        for table in (
+            INVESTMENT_EVENT_HEADERS,
+            INVESTMENT_EVENT_LEGS,
+            INVESTMENT_EVENT_EVIDENCE,
+        ):
+            present = db.execute(
+                """SELECT 1 FROM information_schema.tables
+                WHERE table_schema = ? AND table_name = ?""",
+                [table.schema, table.name],
+            ).fetchone()
+            if present is None:
+                # Slice 4 owns comparison bootstrap on a newly initialized profile.
+                return StageOutcome(step="investment_match", ran=False)
+        result = InvestmentMatchingService(db).run(actor=actor)
+    except Exception as exc:  # surface a real crash; never abort the pipeline
+        # Same classification path as match/categorize (`_step_error`): a
+        # recognized `UserError` — e.g. the component-size-too-large refusal
+        # in `event_assignment._solve_component` — surfaces its own
+        # actionable message verbatim; anything unclassified falls back to
+        # the generic step-failed string rather than leaking DuckDB/financial
+        # detail.
+        return StageOutcome(
+            step="investment_match",
+            ran=True,
+            error=_step_error(exc, step="Investment matching"),
+        )
+    return StageOutcome(
+        step="investment_match",
+        ran=True,
+        counts={
+            "pending_unique": result.pending_unique,
+            "pending_competing": result.pending_competing,
+            "stale": result.stale,
+            "suppressed": result.suppressed,
+        },
+    )
 
 
 def _run_gsheet_step(db: Database) -> list[Any]:

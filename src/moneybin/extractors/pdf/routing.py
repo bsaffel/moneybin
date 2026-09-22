@@ -34,11 +34,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
+from datetime import date
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import ValidationError
 
 from moneybin.database import Database
+from moneybin.extractors.account_identity import IncomingTransaction
 from moneybin.extractors.pdf.auto_derive import (
     credit_card_markers,
     derivation_failure_reason,
@@ -210,6 +213,39 @@ class RouteDecision:
     rederived_reason: str | None = None
 
 
+def pdf_account_type(decision: RouteDecision) -> str | None:
+    """The account_type a PDF import stamps on ``raw.tabular_accounts``.
+
+    A ``negative_is_income`` recipe carries a "this is a credit card" verdict:
+    either human-confirmed on the deterministic rung (the ``--confirm`` sign
+    gate) or agent-authored via the bridge recipe, which reaches
+    ``ImportService._import_pdf_transactions`` through
+    ``ImportService.apply_pdf_bridge_response`` → ``route_forced_recipe`` and
+    does NOT run the sign gate. Either way ``credit`` follows from the
+    recipe's own convention — a fact about the account, not a guess. prep
+    normalizes it through ``seeds.account_type_map`` like every other
+    source's spelling.
+
+    Tolerates a missing recipe rather than asserting one:
+    ``derive_pdf_source_account`` also calls this, and it runs on a decision
+    whose recipe the caller may not have narrowed yet. A recipe-less decision
+    has stated no convention, so the document's own captured type is the
+    answer.
+
+    It does NOT drive liability signing, despite the shared word: PDF balances
+    reach ``core.fct_balances`` through the tabular_balances CTE, which applies
+    no type-based negation at all (the ``IN ('credit','loan')`` negation is
+    scoped to plaid_balances). This value feeds ``display_name`` and the
+    ``accounts --type`` filter — which is why the mint report reads it here too,
+    from the one expression, rather than deriving a second answer.
+    """
+    if decision.recipe is not None and (
+        decision.recipe.sign_convention == "negative_is_income"
+    ):
+        return "credit"
+    return decision.metadata.account_type
+
+
 # ---------------------------------------------------------------------------
 # Confidence helpers
 # ---------------------------------------------------------------------------
@@ -308,6 +344,39 @@ def amount_shape_matches_sign_convention(
         f.cast in ("decimal", "int") and _canonical_key(f) in ("debit", "credit")
         for f in fields
     )
+
+
+def normalize_pdf_amount(row: dict[str, Any], sign_convention: str) -> Decimal:
+    """Return one PDF row's canonical amount before or during loading."""
+    zero = Decimal("0")
+    if sign_convention == "split_debit_credit":
+        return Decimal(str(row.get("credit", zero))) - Decimal(
+            str(row.get("debit", zero))
+        )
+    amount = Decimal(str(row.get("amount", zero)))
+    return -amount if sign_convention == "negative_is_income" else amount
+
+
+def incoming_pdf_transactions(
+    decision: RouteDecision,
+) -> tuple[IncomingTransaction, ...]:
+    """Normalize routed PDF rows for pre-load candidate evidence."""
+    if decision.recipe is None:
+        return ()
+    transactions: list[IncomingTransaction] = []
+    for row in decision.rows:
+        transaction_date = row.get("date")
+        if not isinstance(transaction_date, date):
+            continue
+        currency = decision.metadata.currency_code
+        transactions.append(
+            IncomingTransaction(
+                transaction_date=transaction_date,
+                amount=normalize_pdf_amount(row, decision.recipe.sign_convention),
+                currency_code=str(currency) if currency is not None else None,
+            )
+        )
+    return tuple(transactions)
 
 
 def _canonicalize_rows(
@@ -699,7 +768,7 @@ def _attempt_self_heal(
 
     if trigger is _DIGITLESS_ACCOUNT_ID and not _has_digits(retry.metadata.account_id):
         # The statement itself discloses no account digits — a fully-masked
-        # "XXXX" that _to_account_number_mask deliberately preserves — so the
+        # "XXXX" that to_account_number_mask deliberately preserves — so the
         # fresh recipe reads exactly what the saved one did. Accepting this as a
         # repair would bump the version and write an audit row on every future
         # import of the layout while the account identity never improves. Same

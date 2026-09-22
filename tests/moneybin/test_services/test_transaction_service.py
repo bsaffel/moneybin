@@ -1654,7 +1654,7 @@ class TestManualEntry:
         )
 
         log_rows = transaction_db.conn.execute(
-            "SELECT source_type, format_name FROM raw.import_log WHERE import_id = ?",
+            "SELECT source_type, format_name FROM app.import_log WHERE import_id = ?",
             [result.import_id],
         ).fetchall()
         assert log_rows == [("manual", "manual_entry")]
@@ -1707,7 +1707,7 @@ class TestManualEntry:
 
         row = transaction_db.conn.execute(
             "SELECT status, rows_total, rows_imported, completed_at "
-            "FROM raw.import_log WHERE import_id = ?",
+            "FROM app.import_log WHERE import_id = ?",
             [result.import_id],
         ).fetchone()
         assert row is not None
@@ -1761,7 +1761,7 @@ class TestManualEntry:
         assert manual_count is not None
         assert manual_count[0] == 0
         log_count = transaction_db.conn.execute(
-            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+            "SELECT COUNT(*) FROM app.import_log WHERE source_type = 'manual'"
         ).fetchone()
         assert log_count is not None
         assert log_count[0] == 0
@@ -1844,7 +1844,7 @@ class TestManualEntry:
             service.create_manual_batch(oversize, actor="cli")
         # Size check fires before any DB mutation.
         log_count = transaction_db.conn.execute(
-            "SELECT COUNT(*) FROM raw.import_log WHERE source_type = 'manual'"
+            "SELECT COUNT(*) FROM app.import_log WHERE source_type = 'manual'"
         ).fetchone()
         assert log_count is not None
         assert log_count[0] == 0

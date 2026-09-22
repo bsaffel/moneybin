@@ -100,6 +100,7 @@ class AccountSettingsRepo(BaseRepo):
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
+        context: dict[str, Any] | None = None,
     ) -> AuditEvent:
         """Insert-or-update one account's settings + audit (``account_settings.set``).
 
@@ -113,6 +114,9 @@ class AccountSettingsRepo(BaseRepo):
         ``_archived_at_supported``): there is no column to write the caller's
         value into, so it is silently not persisted rather than raising a raw
         ``duckdb.BinderException``.
+
+        ``context`` rides the audit row's ``context_json`` (caller-intent the
+        full-row snapshot cannot carry).
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             has_archived_at = self._archived_at_supported()
@@ -158,6 +162,7 @@ class AccountSettingsRepo(BaseRepo):
                 after=self._serialize_for_audit(after),
                 actor=actor,
                 parent_audit_id=parent_audit_id,
+                context=context,
             )
 
     def _delete_by_pk(self, row: dict[str, Any]) -> None:

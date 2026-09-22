@@ -1,5 +1,5 @@
 {
-  "sha256": "45cc525e38e6a42e643135ac518a6d2b39ff94e376a0c83fa6b1d2db74d6aeb2",
+  "sha256": "60206db0a25b5e99bc07add35c5cf9a389fcb0e8800a49706c8708fca63dad44",
   "tool_count": 50,
   "tools": [
     {
@@ -1827,7 +1827,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips raw.import_log to 'reverted': permanent \u2014 no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.",
+        "description": "Revert one completed import or delete one user-saved format. Both branches require exact payload-bound confirmation. Import reversion deletes that batch's rows from raw.tabular_*/raw.ofx_* and flips app.import_log to 'reverted': permanent \u2014 no revert, and no system_audit_undo counterpart. Saved-format deletion writes app.tabular_formats and is recoverable with system_audit_undo.",
         "inputSchema": {
           "additionalProperties": false,
           "allOf": [
@@ -2685,7 +2685,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the post-load refresh pipeline. By default it performs Google Sheets pull, matching, SQLMesh apply, deterministic categorization, identity proposal backfill, and an exchange-rate gather in canonical order. Pass steps to select from gsheet, match, transform, categorize, identity, and rates. The match step acts without asking, and folding a duplicate can reverse a transfer the user already accepted: `transfers_retired` counts those, and system_audit_undo(operation_id=...) restores them. The rates step caches the rates this profile's own rows imply so reports convert offline; an unfilled pair lands in rate_pairs_failed (retried), rate_pairs_unsupported (needs `moneybin fx set`), or rate_pairs_discarded (partly unusable, so gaps). Rebuilds core.* and reports.* and may write app categorization or identity-review state, plus the raw exchange-rate cache. No revert; fix inputs and rerun.",
+        "description": "Run the post-load refresh pipeline. Steps select gsheet, match, investment_match, transform, categorize, identity, and rates in canonical order; transform also runs investment planning. Investment planning persists review Proposals without changing Golden membership. The cash match step acts without asking: folding duplicates can reverse accepted transfers. transfers_retired counts those; system_audit_undo(operation_id=...) restores them. Rates cache this profile's currency pairs for offline reports: rate_pairs_failed can be retried; rate_pairs_unsupported needs moneybin fx set; rate_pairs_discarded leaves partial gaps. Rebuilds core.* and reports.*; may write app review/categorization/identity state and raw exchange rates. No revert; fix inputs and rerun.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2696,6 +2696,7 @@
                     "enum": [
                       "gsheet",
                       "match",
+                      "investment_match",
                       "transform",
                       "categorize",
                       "identity",
@@ -2710,7 +2711,7 @@
                 }
               ],
               "default": null,
-              "description": "Subset of ``[\"gsheet\", \"match\", \"transform\", \"categorize\",\n\"identity\", \"rates\"]``\nto run. Defaults to None (full cascade). Steps execute in canonical\norder (gsheet \u2192 match \u2192 transform \u2192 categorize \u2192 identity \u2192 rates)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views, and rates derives the currency pairs it\nfetches from core.*). Pass ``[\"transform\"]`` to run only\nSQLMesh apply."
+              "description": "Subset of ``[\"gsheet\", \"match\", \"investment_match\", \"transform\", \"categorize\",\n\"identity\", \"rates\"]``\nto run. Defaults to None (full cascade). Steps execute in canonical\norder (gsheet \u2192 match \u2192 investment_match \u2192 transform \u2192 categorize \u2192 identity \u2192 rates)\nregardless of input order; dependencies enforce it (categorize\nreads SQLMesh-built views, and rates derives the currency pairs it\nfetches from core.*). Pass ``[\"transform\"]`` to run investment planning followed by\nSQLMesh apply."
             }
           },
           "type": "object"
@@ -2722,12 +2723,12 @@
         },
         "name": "refresh_run"
       },
-      "description_bytes": 896,
-      "input_schema_bytes": 706,
+      "description_bytes": 766,
+      "input_schema_bytes": 798,
       "name": "refresh_run",
       "other_bytes": 53,
       "output_schema_bytes": 0,
-      "total_bytes": 1792
+      "total_bytes": 1754
     },
     {
       "annotation_bytes": 89,
@@ -2838,6 +2839,7 @@
                 "categorization",
                 "auto_rules",
                 "matches",
+                "investment_matches",
                 "rule_conflicts",
                 "account_links",
                 "merchant_links",
@@ -2869,11 +2871,11 @@
         "name": "reviews"
       },
       "description_bytes": 331,
-      "input_schema_bytes": 431,
+      "input_schema_bytes": 452,
       "name": "reviews",
       "other_bytes": 49,
       "output_schema_bytes": 0,
-      "total_bytes": 947
+      "total_bytes": 968
     },
     {
       "annotation_bytes": 90,
@@ -3245,7 +3247,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 34 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
+        "description": "Execute a read-only SQL query against the database. Supports SELECT, WITH, DESCRIBE, SHOW (not PRAGMA or EXPLAIN). Reaches core, app, reports, raw, and prep; meta and seeds are refused. Each output column is classified via SQL lineage; CRITICAL columns (account/routing numbers) are ALWAYS masked (****<last4>). core/app/reports declare a class for every column. raw and prep declare 33 and scan every other text or integer value, masking only SSN and 8-or-more-digit shapes \u2014 a 4-to-7 digit account number passes through, and a DECIMAL or FLOAT is never scanned at all, so treat those two schemas as less protected, not equally protected. Amounts use the accounting convention (negative=expense, positive=income); currency is in summary.display_currency. Call sql_schema (or read resource moneybin://schema) for tables, columns, and example queries.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -5249,5 +5251,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 62373
+  "total_bytes": 62356
 }

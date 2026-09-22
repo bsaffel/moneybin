@@ -1,6 +1,6 @@
 # Investment Event Matching
 
-> Last updated: 2026-09-09
+> Last updated: 2026-09-13
 > Status: in-progress
 > Address: M1J.7 (Investments — cross-source event matching)
 > Type: Feature
@@ -615,6 +615,16 @@ and change no Golden membership. Slice 3 adds audited rejection and its negative
 assignment constraint plus decision-request validation. Slice 4 enables the
 audited `accepted` and `reversed` transitions only with their atomic Golden
 membership changes.
+
+The slice-2 implementation exposes `investments matches run`, `pending`, and
+`history`, the bounded `investment_match` refresh stage, and
+`reviews(kind="investment_matches")`. The stage returns `pending_unique`,
+`pending_competing`, `stale`, and rejection-derived `suppressed` counts; repeat
+planning does not count unchanged pending rows as suppressed. Persisted evidence
+includes competing alternatives, issued field choices, and replacement context.
+Accepted topology is a required explicit planner input until slice 4 supplies
+authoritative active membership. Slice 3 decision requests and recovery behavior,
+and slice 4 acceptance, reversal, bootstrap, and Golden projection remain pending.
 
 `competing` is not a sixth status. A competing Proposal is stored as `pending`.
 The planner derives `is_competing` from the same constrained connected-component

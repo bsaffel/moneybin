@@ -16,6 +16,7 @@ Usage: `moneybin investments [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin investments holdings`](#moneybin-investments-holdings) | Current positions: what you hold, what it is worth, and whether you are up. |
 | [`moneybin investments gains`](#moneybin-investments-gains) | Realized gain/loss (the 1099-B surface) from the realized-gains fact table. |
 | [`moneybin investments lots`](#moneybin-investments-lots) | Tax lots: list and specific-identification selection |
+| [`moneybin investments matches`](#moneybin-investments-matches) | Plan investment matches for review |
 | [`moneybin investments prices`](#moneybin-investments-prices) | Market prices for held securities: refresh feeds, mark by hand, inspect |
 | [`moneybin investments securities`](#moneybin-investments-securities) | Manually-maintained securities catalog |
 
@@ -210,6 +211,63 @@ Usage: `moneybin investments lots select [OPTIONS] DISPOSAL_TXN_ID`
 | `--lot` | text, repeatable |  | LOT_ID:QUANTITY (repeatable) — replaces the full selection |
 | `--clear` | flag |  | Clear all lot-selection overrides for this disposal (revert to FIFO) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+
+## moneybin investments matches
+
+Plan investment matches for review
+
+Usage: `moneybin investments matches [OPTIONS] COMMAND [ARGS]...`
+
+**Commands**
+
+| Command | Purpose |
+|---|---|
+| [`moneybin investments matches pending`](#moneybin-investments-matches-pending) | Inspect pending Proposals with their issued review evidence. |
+| [`moneybin investments matches history`](#moneybin-investments-matches-history) | Inspect historical Proposal evidence without rerunning matching. |
+| [`moneybin investments matches run`](#moneybin-investments-matches-run) | Plan whole-event Proposals without changing the Golden ledger. |
+
+## moneybin investments matches pending
+
+Inspect pending Proposals with their issued review evidence.
+
+Usage: `moneybin investments matches pending [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+
+## moneybin investments matches history
+
+Inspect historical Proposal evidence without rerunning matching.
+
+Usage: `moneybin investments matches history [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+
+## moneybin investments matches run
+
+Plan whole-event Proposals without changing the Golden ledger.
+
+Usage: `moneybin investments matches run [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
 
 ## moneybin investments prices
 

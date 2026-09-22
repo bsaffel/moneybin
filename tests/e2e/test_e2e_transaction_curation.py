@@ -341,7 +341,7 @@ class TestImportLabelsGoldenPath:
         # Pull the most recent import_id from app.imports.
         rows = _query_json(
             env,
-            "SELECT import_id FROM raw.import_log ORDER BY started_at DESC LIMIT 1",
+            "SELECT import_id FROM app.import_log ORDER BY started_at DESC LIMIT 1",
         )
         assert rows, "expected at least one import row"
         import_id = str(rows[0]["import_id"])

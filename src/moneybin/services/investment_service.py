@@ -64,6 +64,7 @@ from moneybin.metrics.registry import (
     PRICE_STALENESS_DAYS,
     SECURITY_RESOLUTION_OUTCOMES_TOTAL,
 )
+from moneybin.repositories.import_log_repo import ImportLogRepo
 from moneybin.repositories.lot_selections_repo import LotSelectionsRepo
 from moneybin.repositories.profile_settings_repo import ProfileSettingsRepo
 from moneybin.repositories.securities_repo import SecuritiesRepo
@@ -514,6 +515,7 @@ class InvestmentService:
         self._audit = audit if audit is not None else AuditService(db)
         self._securities_repo = SecuritiesRepo(db, audit=self._audit)
         self._lot_selections_repo = LotSelectionsRepo(db, audit=self._audit)
+        self._import_log = ImportLogRepo(db)
 
     # ------------------------------------------------------------------
     # Security resolution (Req 3)
@@ -902,7 +904,7 @@ class InvestmentService:
         boundary (Guard 2). A ``reinvest`` writes the acquisition + income row
         pair sharing a minted ``event_group_id`` and returns both ids. All rows
         for one event land in a single DuckDB transaction under one
-        ``raw.import_log`` batch, mirroring the manual-cash-transaction path.
+        ``app.import_log`` batch, mirroring the manual-cash-transaction path.
 
         A ``currency_code`` of ``None`` is stored as NULL, not fabricated:
         ``core.fct_investment_transactions`` inherits the account's own currency
@@ -972,7 +974,7 @@ class InvestmentService:
           continues. Each event's ``account``/``security`` is resolved exactly
           once here (not again at write time).
         - **Pass 2 (write, one transaction).** Every surviving event's rows are
-          inserted under ONE ``raw.import_log`` batch in ONE DuckDB transaction
+          inserted under ONE ``app.import_log`` batch in ONE DuckDB transaction
           with ONE audit event. A failure part-way rolls the whole batch back,
           so the tool's "nothing written / safe to retry" contract holds even
           against an infra error mid-write.
@@ -1321,7 +1323,7 @@ class InvestmentService:
         """Insert one event's rows + one audit event under a single import batch.
 
         Mirrors ``TransactionService.create_manual_batch``: allocate one
-        ``raw.import_log`` row, insert every row in one transaction, emit one
+        ``app.import_log`` row, insert every row in one transaction, emit one
         ``investment.record`` audit event, and mark the batch failed on rollback
         so a crashed write leaves no orphaned ``importing`` batch. The
         multi-event analogue is :meth:`_write_batch`.
@@ -1333,8 +1335,6 @@ class InvestmentService:
             format_name=_IMPORT_FORMAT_NAME,
             actor=actor,
         )
-
-        from moneybin.loaders import import_log
 
         written: list[str] = []
         self._db.begin()
@@ -1355,8 +1355,7 @@ class InvestmentService:
             self._db.commit()
         except BaseException:
             self._db.rollback()
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=0,
@@ -1368,8 +1367,7 @@ class InvestmentService:
         # forever with a NULL completed_at and NULL row counts, which
         # `moneybin import history` / `import_status` cannot tell apart from a
         # genuinely crashed write.
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=len(written),
@@ -1394,7 +1392,7 @@ class InvestmentService:
         """Insert many events' rows atomically under one import batch.
 
         The multi-event analogue of :meth:`_write_rows`: every group's rows
-        (``(account_id, rows)``) are inserted under ONE ``raw.import_log`` batch
+        (``(account_id, rows)``) are inserted under ONE ``app.import_log`` batch
         in ONE transaction with ONE ``investment.record`` audit event. A failure
         part-way rolls the whole batch back and marks the import failed, so a
         retry can't double-insert events that would otherwise have committed
@@ -1409,8 +1407,6 @@ class InvestmentService:
             format_name=_IMPORT_FORMAT_NAME,
             actor=actor,
         )
-
-        from moneybin.loaders import import_log
 
         written: list[str] = []
         self._db.begin()
@@ -1432,8 +1428,7 @@ class InvestmentService:
             self._db.commit()
         except BaseException:
             self._db.rollback()
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=0,
@@ -1442,8 +1437,7 @@ class InvestmentService:
             raise
 
         # Close the batch this path opened — see :meth:`_write_rows`.
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=len(written),

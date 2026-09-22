@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 _STAGE_LABELS: dict[str, str] = {
     "gsheet": "Sheets",
     "match": "Matching",
+    "investment_match": "Investment matching",
     "transform": "Transforms",
     "categorize": "Categorization",
     "identity": "Identity",
@@ -53,7 +54,16 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
     refresh_result = result
     if not isinstance(refresh_result, RefreshResult):
         raise TypeError("refresh receipt requires RefreshResult")
-    if refresh_result.error is not None:
+    investment_stage = refresh_result.stage("investment_match")
+    investment_blocked_transform = (
+        refresh_result.error is not None
+        and investment_stage is not None
+        and investment_stage.error is not None
+    )
+    if investment_blocked_transform:
+        title = "× Refresh failed"
+        outcome = f"Investment planning prevented transform: {refresh_result.error}"
+    elif refresh_result.error is not None:
         title = "× Refresh failed"
         outcome = f"Failed: {refresh_result.error}"
     elif partial:
@@ -73,6 +83,8 @@ def _render_refresh_receipt(result: object, *, partial: bool, retryable: bool) -
             (stage.step, _stage_summary(stage).strip())
             for stage in refresh_result.stages
         )
+    if investment_blocked_transform:
+        pairs.append(("transform", "Transforms: skipped (investment planning failed)"))
     if refresh_result.error is not None:
         pairs.append((
             "Recovery",
@@ -122,6 +134,12 @@ def _stage_summary(stage: StageOutcome) -> str:
         )
     if stage.step == "transform":
         return f"  {label}: rebuilt"
+    if stage.step == "investment_match":
+        return (
+            f"  {label}: {stage.count('pending_unique')} unique, "
+            f"{stage.count('pending_competing')} competing, "
+            f"{stage.count('stale')} stale, {stage.count('suppressed')} suppressed"
+        )
     if stage.step == "categorize":
         return (
             f"  {label}: {counts['total']} categorized "
@@ -159,6 +177,7 @@ class RefreshStepChoice(StrEnum):
     """
 
     MATCH = "match"
+    INVESTMENT_MATCH = "investment_match"
     TRANSFORM = "transform"
     CATEGORIZE = "categorize"
     IDENTITY = "identity"
@@ -173,9 +192,9 @@ def refresh_command(
         "--step",
         help=(
             "Limit the cascade to one or more steps "
-            "(repeatable; choose from match, transform, categorize, identity, "
+            "(repeatable; choose from match, investment_match, transform, categorize, identity, "
             "rates). Default: full cascade. Steps always run in canonical order "
-            "(match → transform → categorize → identity → rates) regardless of "
+            "(match → investment_match → transform → categorize → identity → rates) regardless of "
             "flag order."
         ),
     ),
@@ -185,8 +204,8 @@ def refresh_command(
     Single user-facing entry point for refreshing derived state from raw
     inputs. Idempotent. Matching, categorization and rates are best-effort: a
     real crash in any of them is surfaced (a ⚠️ warning here, that step's own
-    `error` inside `stages` plus `recovery_actions` under `--output json`) but
-    does not fail the command. Identity failures expose
+    `error` inside `stages` plus `recovery_actions` under `--output json`). An
+    incomplete requested stage exits non-zero after its partial receipt. Identity failures expose
     only their domain in `identity_errors`. The rates step gathers the exchange
     rates this profile's own transactions, balances and holdings imply, so
     reports can convert without reaching the network; a pair the provider could
@@ -244,9 +263,8 @@ def refresh_command(
             )
         raise typer.Exit(130) from None
     requested = expand_steps(steps)
-
-    # Best-effort step crashes (matcher/categorizer) don't fail the command,
-    # but they are warnings (diagnostics → stderr), not informational output.
+    # Best-effort step crashes (matcher/categorizer) are warnings
+    # (diagnostics → stderr), not informational output.
     # Emit them regardless of output format and regardless of --quiet (per
     # cli.md, -q suppresses status/✅, not warnings; JSON data still goes
     # cleanly to stdout) so a partial-pipeline failure is never silent. In

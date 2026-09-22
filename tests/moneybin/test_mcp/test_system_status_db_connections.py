@@ -16,10 +16,10 @@ import pytest
 from moneybin.db_lock import write_lock
 from moneybin.db_lock.lock import (
     _LOCK_SUFFIX,  # type: ignore[reportPrivateUsage]  # test-only access to the canonical lock-file suffix
+    _read_writer_metadata,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
 )
 from moneybin.mcp.tools.system import (
     _database_connections_block,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
-    _read_writer_metadata,  # type: ignore[reportPrivateUsage]  # test-only access to the private helper
 )
 
 

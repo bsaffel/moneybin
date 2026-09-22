@@ -88,7 +88,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `transactions_categorize_run` | `methods`, `operation` | Run categorization engines | Audited workflow / at least low |
 | `transactions_categorize_rules` | `view` | Current categorization rules | Read / at least high |
 | `transactions_categorize_rules_set` | `confirmation_token`, `rules` | Rule target state; fails the whole batch with `taxonomy_rule_conflict` when a target claims an active rule's matcher under a different category | Confirmed write / at least low |
-| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to high / queue-derived |
+| `reviews` | `cursor`, `kind`, `limit`, `status` | Pending/history queues, including current blast-radius evidence for pending `kind='auto_rules'` rows and both sides of each `kind='rule_conflicts'` row | Read / dynamic / up to critical / queue-derived |
 | `reviews_decide` | `decisions` | Resolve ordinary, auto-rule, or rule-conflict review items; `kind='auto_rule'` carries proposal-scoped `allow_broad`, `kind='rule_conflict'` takes `replace` / `reprioritize` / `cancel` | Confirmed write / at least low |
 | `identity_links_decide` | `confirmation_token`, `decisions` | Resolve identity links | Confirmed write / at least medium (prompt-disclosed) |
 | `taxonomy` | `cursor`, `include_inactive`, `limit`, `query`, `view` | Read taxonomy projections | Read / dynamic / up to medium / view-derived |

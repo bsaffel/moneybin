@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast, get_args
 
 import duckdb
 
@@ -32,12 +32,26 @@ from moneybin.errors import UserError, classify_user_error
 from moneybin.extractors.account_identity import (
     UNNAMED_ACCOUNT_LABEL,
     AccountNameFacts,
+    IncomingTransaction,
     SourceAccount,
-    account_category,
     derived_last_four,
+    mask_embedded_account_number,
 )
 from moneybin.extractors.confidence import Confidence
 from moneybin.extractors.institution_resolution import resolve_institution_tabular
+from moneybin.extractors.pdf.confidence import sign_sample_rows
+from moneybin.extractors.pdf.fingerprint import pdf_alias, pdf_format_name
+from moneybin.extractors.pdf.identity import (
+    PdfAccountIdentity,
+    derive_pdf_source_account,
+    legacy_pdf_identifier_key,
+)
+from moneybin.extractors.pdf.metadata import to_account_number_mask
+from moneybin.extractors.pdf.routing import (
+    incoming_pdf_transactions,
+    normalize_pdf_amount,
+    pdf_account_type,
+)
 from moneybin.extractors.tabular.account_label import (
     last4_from_account_number,
     parse_account_label,
@@ -45,9 +59,11 @@ from moneybin.extractors.tabular.account_label import (
 from moneybin.extractors.tabular.formats import (
     NumberFormatType,
     SignConventionType,
+    resolve_read_settings,
 )
 from moneybin.metrics.observations import (
     MetricObservations,
+    ObservationDisposition,
     record_counter,
     record_observation,
 )
@@ -58,9 +74,15 @@ from moneybin.metrics.registry import (
     IMPORT_RECORDS_TOTAL,
     TABULAR_DETECTION_CONFIDENCE,
     TABULAR_FORMAT_MATCHES,
+    TABULAR_IMPORT_BATCHES,
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
+from moneybin.repositories.import_log_repo import (
+    REVERT_TABLES,
+    ImportHistoryPage,
+    ImportLogRepo,
+)
 from moneybin.repositories.imports_repo import ImportsRepo
 from moneybin.repositories.pdf_formats_repo import PdfFormatsRepo
 from moneybin.services._validators import validate_slug
@@ -78,11 +100,9 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
-from moneybin.services.ledger_overlap import (
-    IncomingTransaction,
-    probe_incoming_ledger_overlap,
-)
+from moneybin.services.ledger_overlap import probe_incoming_ledger_overlap
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 from moneybin.tables import (
     IMPORTS,
@@ -135,87 +155,6 @@ class CreatedAccount:
 
     account_id: str
     display_name: str
-
-
-# Five digits, counted across any single NON-ALPHANUMERIC separator. Four is
-# the masked last-four banks print (and the shape of a year), so it stays;
-# anything longer in an account label is a number, not a label.
-#
-# **A whole word ends an account number. Nothing else does.**
-#
-# That sentence is the rule, and it is the fourth attempt at it. The first three
-# each described the *gap* between two digits and each shipped a leak: "-", then
-# any single non-alphanumeric ("." "/" "_"), then any run of three ("12AB34CD56"
-# masked but "12ABCD34EFGH56" did not). Every one was a guess about how account
-# numbers are punctuated, and an issuer who punctuated them differently walked
-# straight through. Stop guessing at the gap's *shape* and name what actually
-# separates two labels: a word.
-#
-# So a run of digits continues across a gap that is either
-#
-#   - whitespace-free  — "12ABCD34", "1234-5678", "12X3456789": letters and
-#     punctuation inside one token are part of the identifier, however long; or
-#   - letter-free      — "4111 1111 1111", "1234 - 5678": spacing and
-#     punctuation between digit groups, however long.
-#
-# and stops at a gap that is neither, which is exactly a whitespace-delimited
-# alphabetic word: "Checking 1234 Savings 5678" stays two safe four-digit
-# tokens, and "Retirement Plan 2024 Rewards" keeps its name instead of collapsing to
-# "****2024".
-#
-# Every quantifier here must have exactly one way to match a given gap, because
-# this runs on file-supplied labels and a failed match backtracks through every
-# alternative. An earlier version wrote the second branch as
-# `[^0-9A-Za-z]*\s[^0-9A-Za-z]*`, whose leading run can itself match whitespace
-# — so a run of N spaces had N places to put the `\s`, and a label that ended up
-# not matching cost 2^N. 165 characters took half a second; every further pair
-# of spaces doubled it. Excluding whitespace from the leading run pins `\s` to
-# the *first* one, which leaves a single parse. The two branches are disjoint on
-# whitespace count (zero vs. at least one), so no gap can take both.
-#
-# The leading and trailing [A-Za-z]* take the rest of the token, so "X12345678"
-# masks whole rather than leaving an "X" stub that publishes the prefix.
-#
-# The cost is over-masking a decimal in a label ("Balance 1234.56"). That is the
-# right side to err on: an over-masked label is legible, an under-masked one is
-# an account number.
-_ACCOUNT_NUMBER_GAP = r"(?:[^\s\d]*|[^\s0-9A-Za-z]*\s[^0-9A-Za-z]*)"
-# The lookbehind is the other half of keeping this linear. Without it the
-# leading [A-Za-z]* is retried from every character of a long letter run,
-# rescanning the whole run each time — quadratic, 1.2s on a 20k-character label,
-# and labels come from the file. A match can only begin where the identifier
-# does, so requiring a non-alphanumeric (or string start) before it makes every
-# interior retry fail in O(1) instead of O(n). It changes no result: a match
-# that could start mid-token is already found from that token's start, where the
-# greedy prefix covers the same span.
-_EMBEDDED_ACCOUNT_NUMBER = re.compile(
-    rf"(?<![0-9A-Za-z])[A-Za-z]*\d(?:{_ACCOUNT_NUMBER_GAP}\d){{4,}}[A-Za-z]*"
-)
-
-
-def mask_embedded_account_number(label: str) -> str:
-    """Mask an account number embedded in a derived account label.
-
-    ``parse_account_label`` lifts out a *recognized masked* last-four —
-    ``(...7777)``, ``x7777``, a bare trailing group — so the shapes it leaves
-    behind are the ones that matter, and grouping is what makes them dangerous:
-    ``Checking 4111 1111 1111 1111`` loses only its final token and arrives as
-    ``Checking 4111 1111 1111``, twelve digits of a card number in a field
-    declared ``USER_NOTE`` and shown unmasked wherever a mint is reported.
-
-    Masks the run rather than the whole string, because naming what was created
-    is the entire purpose of the field: "Checking 987654321098" has to become
-    "Checking ****1098", not "****1098". The kept four are the run's last four
-    *digits*, so a grouped number, a contiguous one, and an alphanumeric one
-    mask alike — and the suffix stays four digits, the form every other masked
-    surface in the codebase shows.
-    """
-
-    def _mask(match: re.Match[str]) -> str:
-        digits = re.sub(r"\D", "", match.group())
-        return f"****{digits[-4:]}"
-
-    return _EMBEDDED_ACCOUNT_NUMBER.sub(_mask, label)
 
 
 #: What ``mask_embedded_account_number`` leaves behind, so a residue can be
@@ -371,7 +310,7 @@ class ImportResult:
     with `sign=` — the card-marker detector is bypassed for that format, so the
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created."""
+    """UUID of the app.import_log row this import created."""
     accounts_created: tuple[CreatedAccount, ...] = ()
     """Canonical accounts this import minted; empty when every account was adopted.
 
@@ -446,7 +385,7 @@ class SavedFormatDeletePlan:
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the one-row destructive impact for confirmation metadata."""
+        """The one-row destructive impact for confirmation metadata."""
         return {"saved_formats": 1}
 
 
@@ -477,17 +416,17 @@ class ImportRevertPlan:
 
     @property
     def revertable(self) -> bool:
-        """Return whether this plan would actually delete or flip anything."""
+        """Whether this plan would actually delete or flip anything."""
         return self.outcome == "revertable"
 
     @property
     def rows_to_delete(self) -> int:
-        """Return the total raw rows this reversion would destroy."""
+        """The total raw rows this reversion would destroy."""
         return sum(count for _, count in self.table_counts)
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the per-table destructive impact for confirmation metadata."""
+        """The per-table destructive impact for confirmation metadata."""
         radius = dict(self.table_counts)
         radius["total_rows"] = self.rows_to_delete
         if self.security_link_ids:
@@ -636,28 +575,6 @@ _CARD_SIGN_CONFIDENCE = Confidence(
     score=0.75, tier="medium", flagged=("sign_convention",), missing_required=()
 )
 
-# How many rows the sign proposal shows as before/after samples.
-_SIGN_SAMPLE_LIMIT = 3
-
-
-def _sign_sample_rows(
-    rows: list[dict[str, Any]], *, limit: int = _SIGN_SAMPLE_LIMIT
-) -> list[dict[str, str]]:
-    """Show the flip concretely: what the statement printed vs what we'd record."""
-    from decimal import Decimal
-
-    samples: list[dict[str, str]] = []
-    for row in rows[:limit]:
-        printed = row.get("amount")
-        if printed is None:
-            continue
-        samples.append({
-            "description": str(row.get("description", ""))[:60],
-            "as_printed": str(printed),
-            "as_recorded": str(-Decimal(str(printed))),
-        })
-    return samples
-
 
 @dataclass(frozen=True)
 class PdfPreviewResult:
@@ -782,6 +699,32 @@ class ReviewedTabularPlan:
         return TypeAdapter(cls).validate_python(value)
 
 
+def declared_date_format_reads_column(
+    df: Any,
+    field_mapping: dict[str, str],
+    date_format: str,
+) -> bool:
+    """Whether a declared date format reads the mapped date column.
+
+    The import's bar, not the detector's: `detect_date_format` holds a
+    declaration to `_MIN_PARSE_RATE` because it decides what detection
+    *believes*, while the loader accepts it at `_MIN_OVERRIDE_PARSE_RATE` and
+    reports the rows it could not read. A surface that predicts the import —
+    `import preview` — has to ask this question rather than the detector's, or
+    it reports "not detected" for a format the import will happily use.
+
+    False when no mapped date column exists to read.
+    """
+    import polars as pl
+
+    from moneybin.extractors.tabular.date_detection import format_parses
+
+    date_column = field_mapping.get("transaction_date")
+    if date_column is None or date_column not in df.columns:
+        return False
+    return format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format)
+
+
 def _validate_date_format_override(
     df: Any,
     field_mapping: dict[str, str],
@@ -804,14 +747,10 @@ def _validate_date_format_override(
     """
     if date_format_override is None:
         return
-    import polars as pl
-
-    from moneybin.extractors.tabular.date_detection import format_parses
-
     date_column = field_mapping.get("transaction_date")
     if date_column is None or date_column not in df.columns:
         return
-    if format_parses(df[date_column].cast(pl.Utf8).to_list(), date_format_override):
+    if declared_date_format_reads_column(df, field_mapping, date_format_override):
         return
     raise UserError(
         f"Date format {date_format_override!r} could not read the "
@@ -1162,151 +1101,6 @@ def rekey_bare_proposals_for_path(
     for proposal in account_proposals:
         if str(proposal.get("source_account_key", "")).endswith(f"-{digest}"):
             proposal["source_account_key"] = new_key
-
-
-def _pdf_alias(file_path: Path) -> str:
-    """Resolve the seed alias from the file stem.
-
-    Returns a slug used in ``raw.pdf_<alias>`` view names. The ``pdf_``
-    prefix is added by the view-name construction, so the alias itself can
-    start with any character (including digits) — the view regex sees
-    ``pdf_{alias}``, not just ``{alias}``.
-
-    Capped at 59 chars so the ``pdf_{alias}`` view name fits the shared
-    builder's 63-char limit. When truncation would silently merge distinct
-    long filenames (two PDFs whose slugified stems share the first 59
-    chars), a 4-char content-hash suffix preserves uniqueness within the
-    same ceiling.
-    """
-    import hashlib
-
-    from moneybin.utils import slugify
-
-    slug = slugify(file_path.stem).replace("-", "_")
-    if not slug:
-        slug = "import"
-    if len(slug) > 59:
-        suffix = hashlib.sha256(slug.encode()).hexdigest()[:4]
-        slug = f"{slug[:54]}_{suffix}"
-    return slug
-
-
-def _pdf_format_name(fp: dict[str, Any]) -> str:
-    """Deterministic first-contact format name: issuer slug + fingerprint hash.
-
-    Single source of truth for the ``app.pdf_formats.name`` of an auto-derived
-    or bridge-authored recipe on first contact. Both ``_import_pdf_transactions``
-    (deterministic) and ``apply_pdf_bridge_response`` (bridge) derive the name
-    this way — the hash is built from ``serialize_fingerprint(fp)`` so it stays
-    byte-for-byte identical to the JSON the repo stores and looks up by; any
-    drift between call sites would silently break duplicate detection.
-    """
-    from moneybin.extractors.pdf.fingerprint import serialize_fingerprint
-    from moneybin.utils import slugify
-
-    issuer_slug = slugify(fp.get("issuer", "unknown"))
-    digest = hashlib.sha256(serialize_fingerprint(fp).encode()).hexdigest()[:12]
-    return f"{issuer_slug}_{digest}"
-
-
-def _pdf_account_type(decision: "RouteDecision") -> str | None:
-    """The account_type a PDF import stamps on ``raw.tabular_accounts``.
-
-    A ``negative_is_income`` recipe carries a "this is a credit card" verdict:
-    either human-confirmed on the deterministic rung (the ``--confirm`` sign
-    gate) or agent-authored via the bridge recipe, which reaches
-    ``_import_pdf_transactions`` through ``apply_pdf_bridge_response`` →
-    ``route_forced_recipe`` and does NOT run the sign gate. Either way
-    ``credit`` follows from the recipe's own convention — a fact about the
-    account, not a guess. prep normalizes it through ``seeds.account_type_map``
-    like every other source's spelling.
-
-    Tolerates a missing recipe rather than asserting one: ``_pdf_source_account``
-    also calls this, and it runs on a decision whose recipe the caller may not
-    have narrowed yet. A recipe-less decision has stated no convention, so the
-    document's own captured type is the answer.
-
-    It does NOT drive liability signing, despite the shared word: PDF balances
-    reach ``core.fct_balances`` through the tabular_balances CTE, which applies
-    no type-based negation at all (the ``IN ('credit','loan')`` negation is
-    scoped to plaid_balances). This value feeds ``display_name`` and the
-    ``accounts --type`` filter — which is why the mint report reads it here too,
-    from the one expression, rather than deriving a second answer.
-    """
-    if decision.recipe is not None and (
-        decision.recipe.sign_convention == "negative_is_income"
-    ):
-        return "credit"
-    return decision.metadata.account_type
-
-
-def _to_account_number_mask(raw: str | None) -> str | None:
-    """Reduce a captured PDF account identifier to a last-4 display mask.
-
-    Statement layouts emit account identifiers in several forms:
-
-      ``Account Number: 123456789``  → raw = "123456789"  → ``"****6789"``
-      ``Account ending in 1234``     → raw = "1234"       → ``"****1234"``
-      ``Account Number: ****1234``   → raw = "****1234"   → ``"****1234"``
-
-    The ``raw.tabular_accounts.account_number_masked`` column is contract-
-    defined as a last-4 display mask. Storing the full captured token there
-    would leak a real institution account number into a column that downstream
-    consumers treat as already masked. Apply the reduction at the import
-    boundary so the raw schema's privacy contract is preserved.
-
-    Normalisation is load-bearing for privacy and partial-evidence consistency,
-    not PDF source-native identity. The output populates the masked raw-account
-    field and candidate display; PDF identity is derived separately from the
-    document digest and usable statement evidence.
-
-    Returns the original string when fewer than 4 digits are present (e.g. an
-    institution-specific token, or a fully-masked "xxxx") so we never silently
-    drop a captured value — and never fabricate a short "last 4" that would
-    look authoritative to the institution+last4 merge signal.
-    """
-    if raw is None:
-        return None
-    stripped = raw.strip()
-    if not stripped:
-        return None
-    digits = "".join(c for c in stripped if c.isdigit())
-    if len(digits) < 4:
-        return stripped
-    return f"****{digits[-4:]}"
-
-
-def _normalize_pdf_amount(row: dict[str, Any], sign_convention: str) -> Decimal:
-    """Return one PDF row's canonical amount before or during loading."""
-    zero = Decimal("0")
-    if sign_convention == "split_debit_credit":
-        return Decimal(str(row.get("credit", zero))) - Decimal(
-            str(row.get("debit", zero))
-        )
-    amount = Decimal(str(row.get("amount", zero)))
-    return -amount if sign_convention == "negative_is_income" else amount
-
-
-def _incoming_pdf_transactions(
-    decision: "RouteDecision",
-) -> tuple[IncomingTransaction, ...]:
-    """Normalize routed PDF rows for pre-load candidate evidence."""
-    if decision.recipe is None:
-        return ()
-    transactions: list[IncomingTransaction] = []
-    for row in decision.rows:
-        transaction_date = row.get("date")
-        if not isinstance(transaction_date, date):
-            continue
-        currency = decision.metadata.currency_code
-        transactions.append(
-            IncomingTransaction(
-                transaction_date=transaction_date,
-                amount=_normalize_pdf_amount(row, decision.recipe.sign_convention),
-                currency_code=str(currency) if currency is not None else None,
-            )
-        )
-    return tuple(transactions)
 
 
 # Unambiguous tabular extensions: extension wins, no OFX sniffing attempted.
@@ -1766,24 +1560,6 @@ def _refuse_contradicted_bindings(
         )
 
 
-class PdfAccountIdentity(NamedTuple):
-    """What a PDF statement says about its account, and whether it said anything.
-
-    ``identity_unknown`` is returned beside the account rather than derived again
-    at each call site: the gate and the resolve pass have to agree about whether
-    the file stated an identity, and re-testing the anchor separately is exactly
-    the drift ``_pdf_source_account``'s own contract rules out.
-    """
-
-    source: SourceAccount
-    identity_unknown: bool
-
-    @property
-    def fallback_keys(self) -> tuple[str, ...]:
-        """The gate's ``fallback_keys`` argument for this identity."""
-        return (self.source.source_account_key,) if self.identity_unknown else ()
-
-
 def _pdf_source_account(
     decision: "RouteDecision",
     *,
@@ -1793,158 +1569,76 @@ def _pdf_source_account(
     document_sha256: str,
     source_file: str | None = None,
 ) -> PdfAccountIdentity:
-    """Derive the account identity a PDF statement presents, without resolving.
+    """Resolve the identity a PDF statement presents, then apply pin key-borrowing.
 
-    Shared by the confirm gate (which runs before ``begin_import``) and the
-    resolve pass in ``_import_pdf_transactions``, so the identity the user
-    ratifies is exactly the one bound.
+    ``derive_pdf_source_account`` builds the pure identity — everything
+    ``SourceAccount`` needs from the routed decision and captured metadata,
+    with no DB access. This wrapper adds the two ``AccountResolver`` reads a
+    pin needs, which is why it stays in ``services/`` rather than
+    ``extractors/`` (Invariant: an extractor may not touch the database).
 
-    Every PDF gets a document-content ``source_native`` key. A complete captured
-    identifier separately becomes a validated-routing-scoped ``full_number``
-    strong ref inside the encrypted database; a masked, last-four-only, or
-    issuer-only value remains weak evidence. This prevents two
-    same-issuer/same-last-four accounts from sharing a native key while
-    preserving exact-file re-import idempotency.
+    A pin (agents/users pointing a statement at an existing dim_accounts row)
+    says WHICH account this document belongs to. It does not change what the
+    document's own key is, so it normally travels in ``explicit_account_id``
+    alone and the native key stays derived.
 
-    A statement with no readable account number has no account identity of its
-    own. Its document key still makes the file idempotent, while
-    ``identity_unknown`` sends it through the gate's fallback pick-list.
+    Except that the derived key is the document's BYTES, and a bank hands out
+    a byte-different PDF for the same statement (fresh internal timestamps).
+    transaction_id folds the canonical account, which the pin holds still, so
+    a re-download that moves only the source key forks staging's
+    (transaction_id, account_id) dedup and counts the statement twice. So a
+    pin reuses the key this account already answers to — the same rule the
+    tabular channel applies, and the reason both call _reusable_pinned_keys.
+
+    Applies whether or not the document names an account, because
+    ``derive_pdf_account_identity`` keys EVERY statement by its bytes — an
+    anchored one included — so being anchored buys no stability here. The
+    collision that document key prevents (two same-issuer/same-last-four
+    accounts sharing a key) is a question about inferred identity, and a pin
+    states the account outright, so there is nothing left to disambiguate.
+
+    Several remembered keys take the first in the lookup's stable order
+    rather than refusing or minting. One key per adopted statement is the
+    ordinary state of any card with a history, so minting there would re-open
+    the double count for the accounts holding the most; refusing would
+    hard-fail an import the user has no --account-name to disambiguate with.
+    Which key it lands on does not matter — transaction_id already separates
+    the statements — only that both imports of one statement land on the same
+    one.
+
+    Gated on the document's own key being unknown, because
+    _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
+    is accepted elsewhere. Substituting the target's key first answers that
+    trivially and loads another account's statement here; a document that
+    already named its account keeps saying so.
+
+    "Elsewhere" means another account, not this one. A key the pin target
+    already owns contradicts nothing — and it is the ordinary state here,
+    because the borrowed import below teaches this document's own key to the
+    target. Reading that back as a reason to stop borrowing would send the
+    NEXT import of the same regenerated statement to its own digest while the
+    previous one sits under the borrowed key, splitting one statement across
+    two keys — the exact double count the borrowing exists to prevent.
     """
-    from moneybin.services.pdf_account_identity import derive_pdf_account_identity
-    from moneybin.utils import slugify
-
-    if decision.fp is None:
-        # Defensive: route_pdf_import attaches fp on every outcome that reaches
-        # the transactions path; this guards a hand-built RouteDecision.
-        raise ValueError("PDF routing returned outcome='transactions' but fp is None")
-    issuer = decision.fp.get("issuer", "unknown")
-    derived = derive_pdf_account_identity(
-        issuer=issuer,
-        identifier=decision.metadata.account_id,
+    identity = derive_pdf_source_account(
+        decision,
+        resolved_alias=resolved_alias,
+        account_id_override=account_id_override,
         document_sha256=document_sha256,
-        identifier_is_complete=decision.metadata.account_id_complete,
-        routing_number=decision.metadata.routing_number,
-    )
-    # Whether the document named an account, independent of its idempotency key.
-    anchored = derived.has_usable_identifier
-    derived_key = derived.source_account_key
-    source = SourceAccount(
-        source_type="pdf",
-        source_origin=derived.source_origin,
-        source_account_key=derived_key,
-        account_name=(
-            decision.metadata.account_label
-            or decision.metadata.product_name
-            or resolved_alias
-        ),
-        # account_label is captured from a printed "Account Name:"/"Account
-        # Nickname:" line -- a label the account holder set, the PDF analogue
-        # of Plaid's acc.name and a tabular --account-name. product_name is
-        # the card/product's marketing name (identical across every holder of
-        # that product) and resolved_alias is the filename slug; neither is
-        # authored, so the flag must follow account_label specifically, not
-        # merely "account_name is non-empty".
-        account_name_is_user_set=decision.metadata.account_label is not None,
-        account_number=derived.scoped_full_number,
-        institution=issuer or None,
-        # Before document keys, an anchorless PDF used its filename alias.
-        # Preserve that accepted binding as review-only migration evidence.
-        legacy_source_account_key=(
-            derived.legacy_source_account_key
-            or (resolved_alias if not anchored else None)
-        ),
-        legacy_source_origin=(
-            derived.legacy_source_origin or (slugify(issuer) if not anchored else None)
-        ),
-        legacy_source_account_key_is_filename_alias=(
-            derived.legacy_source_account_key is None and not anchored
-        ),
         source_file=source_file,
-        # None for a digits-free token ("xxxx"), which correctly denies the
-        # institution+last4 signal and routes to name review rather than
-        # inventing a strong match.
-        last_four=derived.last_four,
-        # What core.dim_accounts will name this account, built from the three
-        # values _import_pdf_transactions writes to raw.tabular_accounts for it:
-        # the issuer, the recipe-implied account type, and the last-4 display
-        # mask. Not `derived.last_four`, which answers a different question (it
-        # is None for a digits-free token so the institution+last4 match cannot
-        # fire); the model reads the masked column and strips it to digits.
-        name_facts=AccountNameFacts(
-            institution_name=issuer or None,
-            category=account_category(_pdf_account_type(decision)),
-            last_four=derived_last_four(
-                _to_account_number_mask(decision.metadata.account_id)
-            ),
-            # Same value and same condition as account_name_is_user_set below
-            # -- a captured "Account Name:"/"Account Nickname:" line is the
-            # only PDF-side source that counts as authored. Masked the way
-            # every other display-safe label site is (mask_embedded_account_
-            # number), never the raw captured text.
-            source_label=(
-                mask_embedded_account_number(decision.metadata.account_label)
-                if decision.metadata.account_label
-                else None
-            ),
-        ),
-        explicit_account_id=account_id_override,
-        # Set even when no key is borrowed below; _teach_unpinned_key ignores it
-        # once it equals source_account_key.
-        unpinned_account_key=derived_key if account_id_override else None,
     )
-    # A pin (agents/users pointing a statement at an existing dim_accounts row)
-    # says WHICH account this document belongs to. It does not change what the
-    # document's own key is, so it normally travels in explicit_account_id
-    # alone and the native key stays derived.
-    #
-    # Except that the derived key is the document's BYTES, and a bank hands out
-    # a byte-different PDF for the same statement (fresh internal timestamps).
-    # transaction_id folds the canonical account, which the pin holds still, so
-    # a re-download that moves only the source key forks staging's
-    # (transaction_id, account_id) dedup and counts the statement twice. So a
-    # pin reuses the key this account already answers to — the same rule the
-    # tabular channel applies, and the reason both call _reusable_pinned_keys.
-    #
-    # Applies whether or not the document names an account, because
-    # derive_pdf_account_identity keys EVERY statement by its bytes — an
-    # anchored one included — so being anchored buys no stability here. The
-    # collision that document key prevents (two same-issuer/same-last-four
-    # accounts sharing a key) is a question about inferred identity, and a pin
-    # states the account outright, so there is nothing left to disambiguate.
-    #
-    # Several remembered keys take the first in the lookup's stable order
-    # rather than refusing or minting. One key per adopted statement is the
-    # ordinary state of any card with a history, so minting there would re-open
-    # the double count for the accounts holding the most; refusing would
-    # hard-fail an import the user has no --account-name to disambiguate with.
-    # Which key it lands on does not matter — transaction_id already separates
-    # the statements — only that both imports of one statement land on the same
-    # one.
-    #
-    # Gated on the document's own key being unknown, because
-    # _refuse_contradicted_bindings asks whether the key on THIS SourceAccount
-    # is accepted elsewhere. Substituting the target's key first answers that
-    # trivially and loads another account's statement here; a document that
-    # already named its account keeps saying so.
-    #
-    # "Elsewhere" means another account, not this one. A key the pin target
-    # already owns contradicts nothing — and it is the ordinary state here,
-    # because the borrowed import below teaches this document's own key to the
-    # target. Reading that back as a reason to stop borrowing would send the
-    # NEXT import of the same regenerated statement to its own digest while the
-    # previous one sits under the borrowed key, splitting one statement across
-    # two keys — the exact double count the borrowing exists to prevent.
+    source = identity.source
     document_owner = resolver.accepted_native_account_id(source)
     if account_id_override and document_owner in (None, account_id_override):
         reusable = _reusable_pinned_keys(
             resolver,
             account_id=account_id_override,
             source_type="pdf",
-            source_origin=derived.source_origin,
+            source_origin=source.source_origin,
         )
         if reusable:
             source = dataclasses.replace(source, source_account_key=reusable[0])
-    return PdfAccountIdentity(source=source, identity_unknown=not anchored)
+    return PdfAccountIdentity(source=source, identity_unknown=identity.identity_unknown)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1978,6 +1672,7 @@ class ImportService:
         self._audit = audit if audit is not None else AuditService(db)
         self._imports = ImportsRepo(db, audit=self._audit)
         self._pdf_formats = PdfFormatsRepo(db)
+        self._import_log = ImportLogRepo(db)
 
     def allocate_import_log(
         self,
@@ -1986,34 +1681,70 @@ class ImportService:
         format_name: str,
         actor: str,
     ) -> str:
-        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+        """Allocate a fresh ``app.import_log`` row and return its ``import_id``.
 
-        Thin wrapper around :func:`moneybin.loaders.import_log.begin_import`
-        that exposes the lifecycle to callers (manual entry, future API
-        connectors) that don't have a source file but still need an
-        ``import_id`` to attribute their raw rows. ``source_type`` must be
-        in the loader's allowlist (see ``REVERT_TABLES``); ``actor`` is
-        recorded as the ``account_names`` payload so audit consumers can
-        trace which surface (cli/mcp) initiated the batch. ``format_name``
-        is folded into the synthetic ``source_file`` key alongside
-        ``source_type`` and ``actor`` — callers that share ``source_type``
-        (e.g. manual cash entries and manual investment events both use
-        ``"manual"``) but write to different raw tables use distinct
-        ``format_name`` values, so this keeps their ``source_file`` keys
-        distinct too. Without it, ``revert()``'s superseded-lookup (which
-        matches purely on ``source_file``) could cross-match a batch from
-        an unrelated domain.
+        Thin wrapper around :meth:`ImportLogRepo.begin_import` that exposes
+        the lifecycle to callers (manual entry, future API connectors) that
+        don't have a source file but still need an ``import_id`` to
+        attribute their raw rows. ``source_type`` must be in the repo's
+        allowlist (see ``REVERT_TABLES``); ``actor`` is recorded as the
+        ``account_names`` payload so audit consumers can trace which surface
+        (cli/mcp) initiated the batch. ``format_name`` is folded into the
+        synthetic ``source_file`` key alongside ``source_type`` and
+        ``actor`` — callers that share ``source_type`` (e.g. manual cash
+        entries and manual investment events both use ``"manual"``) but
+        write to different raw tables use distinct ``format_name`` values,
+        so this keeps their ``source_file`` keys distinct too. Without it,
+        ``revert()``'s superseded-lookup (which matches purely on
+        ``source_file``) could cross-match a batch from an unrelated domain.
         """
-        from moneybin.loaders import import_log
-
-        return import_log.begin_import(
-            self._db,
+        return self._import_log.begin_import(
             source_file=f"<{source_type}:{format_name}:{actor}>",
             source_type=source_type,  # type: ignore[arg-type]  # runtime-validated
             source_origin=actor,
             account_names=[actor],
             format_name=format_name,
             format_source="manual",
+        )
+
+    def get_import_history(
+        self,
+        *,
+        limit: int = 20,
+        import_id: str | None = None,
+    ) -> list[dict[str, str | int | None]]:
+        """Read ``app.import_log`` batch history — thin wrapper for CLI/MCP.
+
+        Backs ``moneybin import history``, the read path for one entity
+        (``ImportLogRepo``) whose write path already goes through this
+        service — the extractor is a parsing detail, not the import-batch
+        owner.
+        """
+        return self._import_log.get_import_history(limit=limit, import_id=import_id)
+
+    def get_import_history_page(
+        self,
+        *,
+        limit: int,
+        snapshot_started_at: str | None = None,
+        snapshot_import_id: str | None = None,
+        after_started_at: str | None = None,
+        after_import_id: str | None = None,
+        snapshot_total: int | None = None,
+    ) -> ImportHistoryPage:
+        """Read one keyset page of ``app.import_log`` history.
+
+        The paged twin of :meth:`get_import_history`, so the cursored MCP
+        read reaches the same service boundary as the unpaged one rather
+        than composing ``ImportLogRepo`` itself.
+        """
+        return self._import_log.get_import_history_page(
+            limit=limit,
+            snapshot_started_at=snapshot_started_at,
+            snapshot_import_id=snapshot_import_id,
+            after_started_at=after_started_at,
+            after_import_id=after_import_id,
+            snapshot_total=snapshot_total,
         )
 
     def raw_data_summary(self) -> list[RawTableStat]:
@@ -2165,7 +1896,6 @@ class ImportService:
             ofx_source_accounts,
             parse_ofx_content,
         )
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import OFX_IMPORT_BATCHES
 
         # Canonicalize the path so relative + absolute + symlink-resolved
@@ -2203,8 +1933,8 @@ class ImportService:
         # further down may *prompt*, which a file we're about to reject should
         # never trigger.
         if not force:
-            existing = import_log.find_existing_import(
-                self._db, str(canonical_path), file_sha256=digest
+            existing = self._import_log.find_existing_import(
+                str(canonical_path), file_sha256=digest
             )
             if existing:
                 existing_id, existing_status = existing
@@ -2269,8 +1999,7 @@ class ImportService:
         account_ids = [
             a.account_id for a in parsed_ofx.accounts if a.account_id is not None
         ]
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical_path),
             source_type="ofx",
             source_origin=source_origin,
@@ -2282,7 +2011,7 @@ class ImportService:
         # Extract and write all four raw.ofx_* tables through the encrypted
         # ingest path (OFXExtractor.load(), matching PlaidExtractor's
         # extract+write shape). Wrapped so a failure anywhere inside marks the
-        # batch 'failed' instead of leaving raw.import_log.status='importing'
+        # batch 'failed' instead of leaving app.import_log.status='importing'
         # and blocking re-imports.
         try:
             load_result = OFXExtractor(db=self._db).load(
@@ -2316,8 +2045,7 @@ class ImportService:
             # touches the database — would be counted as a write failure.
             write_failed = isinstance(e, OFXLoadError)
             partial_total = e.rows_loaded.total_rows if write_failed else 0
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=partial_total,
@@ -2355,8 +2083,7 @@ class ImportService:
                     created.append(minted)
             result.accounts_created = tuple(created)
         except Exception:
-            import_log.finalize_import(
-                self._db,
+            self._import_log.finalize_import(
                 import_id,
                 status="failed",
                 rows_total=sum(rows_loaded.values()),
@@ -2378,8 +2105,7 @@ class ImportService:
         # comparability with tabular/Plaid metrics.
         transactions_imported = rows_loaded["transactions"]
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status=finalize_status,
             rows_total=total_rows,
@@ -2695,6 +2421,63 @@ class ImportService:
             )
         return own_key
 
+    def _finalize_tabular_batch(
+        self,
+        import_id: str,
+        *,
+        rows_total: int,
+        rows_imported: int,
+        rows_rejected: int = 0,
+        rows_skipped_trailing: int = 0,
+        rejection_details: list[dict[str, str]] | None = None,
+        detection_confidence: str | None = None,
+        number_format: str | None = None,
+        date_format: str | None = None,
+        sign_convention: str | None = None,
+        balance_validated: bool | None = None,
+        emit_metrics: bool = True,
+        observations: MetricObservations | None = None,
+        metric_disposition: ObservationDisposition = "commit",
+    ) -> None:
+        """Finalize a tabular import batch and record the TABULAR_IMPORT_BATCHES metric.
+
+        Moved here from ``TabularExtractor.finalize_import_batch`` (MB-248):
+        deciding and recording the batch's terminal status is import-batch
+        bookkeeping, not tabular parsing, so it belongs beside the other
+        ``ImportLogRepo`` calls in this service rather than on the extractor.
+        """
+        # Zero-row imports (whether all-rejected, all-trailing-skipped, or
+        # an entirely empty file) must NOT report "complete" — that would
+        # be a green signal for an import that wrote nothing. Map any
+        # zero-imported outcome to "failed" so callers can detect it.
+        if rows_imported == 0:
+            status: Literal["complete", "partial", "failed"] = "failed"
+        elif rows_rejected == 0:
+            status = "complete"
+        else:
+            status = "partial"
+        record_counter(
+            TABULAR_IMPORT_BATCHES,
+            labels={"status": status},
+            emit_metrics=emit_metrics,
+            observations=observations,
+            disposition=metric_disposition,
+        )
+        self._import_log.finalize_import(
+            import_id,
+            status=status,
+            rows_total=rows_total,
+            rows_imported=rows_imported,
+            rows_rejected=rows_rejected,
+            rows_skipped_trailing=rows_skipped_trailing,
+            rejection_details=rejection_details,
+            detection_confidence=detection_confidence,
+            number_format=number_format,
+            date_format=date_format,
+            sign_convention=sign_convention,
+            balance_validated=balance_validated,
+        )
+
     def _import_tabular(
         self,
         file_path: Path,
@@ -2806,38 +2589,72 @@ class ImportService:
                 )
             matched_format = all_formats[format_name]
 
-        # Stage 1: Format detection — apply matched format's properties as defaults
-        effective_delimiter = delimiter or (
-            matched_format.delimiter if matched_format else None
+        # Stage 1: Format detection — apply matched format's properties as
+        # defaults. `import preview` resolves the same eight values from the
+        # same helper, which is what keeps a preview's read identical to the
+        # import it previews.
+        #
+        # `date_format` here is the earliest declared-format signal available
+        # before the read: an explicit --date-format, or an explicit --format's
+        # own saved date_format. The header-signature match (below, once
+        # df.columns is known) can name matched_format later than this, so it
+        # isn't available yet — a headerless file matched only by signature
+        # still relies on the built-in _DATE_FORMATS scan for THIS read.
+        # See _looks_like_data_row's docstring for why this closes #604:
+        # a caller-declared format outside _DATE_FORMATS (e.g. %Y%m%d)
+        # would otherwise never be recognized as data, so a genuinely
+        # headerless file loses its first row to the (0, True) fallback.
+        read_settings = resolve_read_settings(
+            matched_format,
+            delimiter=delimiter,
+            encoding=encoding,
+            sheet=sheet,
+            date_format=date_format_override,
+            number_format=number_format_override,
         )
-        effective_encoding = encoding or (
-            matched_format.encoding if matched_format else None
+
+        # What a `header_row_consumed` retry has to repeat: this read, minus
+        # the format that caused the refusal. Built once, here, because that
+        # reason has four raise sites below — one explicit and three through
+        # classify_unconfirmable_plan — and a retry built at only some of them
+        # is the same silent-wrong-worksheet bug on the paths that were missed.
+        # Drawn from read_settings rather than the caller's flags: a sheet,
+        # delimiter, encoding or number_format the FORMAT supplied appears in
+        # no flag, and dropping --format drops it along with the skip_rows
+        # being escaped. This runs BEFORE the number-format validation further
+        # down, but read_settings.number_format is already safe here: an
+        # invalid raw override was dropped by resolve_read_settings itself
+        # (falling back to the format's own validated value), so nothing
+        # unvalidated is ever echoed onto the printed retry.
+        retry_read_options = TabularReadOptions(
+            format_name=None,
+            date_format=read_settings.date_format,
+            number_format=read_settings.number_format,
+            sheet=read_settings.sheet,
+            delimiter=read_settings.delimiter,
+            encoding=read_settings.encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
-        effective_sheet = sheet or (matched_format.sheet if matched_format else None)
 
         if reviewed_plan is None:
             format_info = detect_format(
                 file_path,
                 source_bytes=source_bytes,
-                format_override=matched_format.file_type
-                if matched_format and matched_format.file_type != "auto"
-                else None,
-                delimiter_override=effective_delimiter,
-                encoding_override=effective_encoding,
+                format_override=read_settings.format_override,
+                delimiter_override=read_settings.delimiter,
+                encoding_override=read_settings.encoding,
                 no_size_limit=no_size_limit,
             )
             read_result = read_file(
                 file_path,
                 format_info,
-                sheet=effective_sheet,
-                skip_rows=matched_format.skip_rows
-                if matched_format and matched_format.skip_rows
-                else None,
-                skip_trailing_patterns=matched_format.skip_trailing_patterns
-                if matched_format
-                else None,
+                sheet=read_settings.sheet,
+                skip_rows=read_settings.skip_rows,
+                skip_trailing_patterns=read_settings.skip_trailing_patterns,
                 no_row_limit=no_row_limit,
                 source_bytes=source_bytes,
+                declared_date_format=read_settings.date_format,
             )
         else:
             from moneybin.extractors.tabular.format_detector import FormatInfo
@@ -3046,6 +2863,9 @@ class ImportService:
                             field_mapping=reviewed_plan.field_mapping,
                             flagged_fields=list(reviewed_plan.flagged_fields),
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                 )
             # The gate above already refused reviewed_plan.date_format is
@@ -3291,6 +3111,9 @@ class ImportService:
                             flagged_fields=list(mapping_result.flagged_fields),
                             header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                         samples=dict(proposed.sample_values),
                         # header_position_ambiguous outranks unreadable_date
                         # in classify_unconfirmable_plan's precedence, so this
@@ -3396,6 +3219,9 @@ class ImportService:
                             if _first_contact_ambiguous_header
                             else ()
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                     if outcome.reason == "unknown_layout"
                     else outcome
@@ -3610,6 +3436,7 @@ class ImportService:
                     ),
                     reason="header_row_consumed",
                     samples=gate_samples,
+                    retry_read_options=retry_read_options,
                 )
             )
 
@@ -3648,11 +3475,12 @@ class ImportService:
         # Validate at runtime: typing.cast has no runtime effect, so an
         # invalid value like ``--sign=backwards`` would silently propagate
         # into the transform pipeline and surface deep inside SQLMesh,
-        # leaving a dangling raw.import_log row in ``importing`` state.
+        # leaving a dangling app.import_log row in ``importing`` state.
         # Guard explicitly via get_args so the failure is a clean UserError
-        # at the import boundary.
-        from typing import get_args
-
+        # at the import boundary. Imported at module scope rather than here:
+        # a function-local import binds the name for the WHOLE function, so
+        # the header_row_consumed gate above — which reads it earlier — would
+        # raise UnboundLocalError instead of reaching its confirmation.
         if sign and sign not in get_args(SignConventionType):
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "
@@ -4104,9 +3932,9 @@ class ImportService:
 
         # Create import batch
         extractor = TabularExtractor(self._db)
-        import_id = extractor.create_import_batch(
+        import_id = self._import_log.begin_import(
             source_file=str(file_path),
-            source_type=source_type,
+            source_type=source_type,  # type: ignore[arg-type]  # runtime-validated by begin_import
             source_origin=source_origin,
             account_names=sorted(acct_id_to_name.values()),
             format_name=matched_format.name if matched_format else None,
@@ -4137,8 +3965,8 @@ class ImportService:
         except (
             Exception
         ) as e:  # re-raised as ValueError after recording rejection in DB
-            extractor.finalize_import_batch(
-                import_id=import_id,
+            self._finalize_tabular_batch(
+                import_id,
                 rows_total=len(df),
                 rows_imported=0,
                 rows_rejected=len(df),
@@ -4181,8 +4009,8 @@ class ImportService:
         rows_imported = extractor.load_transactions(transform_result.transactions)
         extractor.load_accounts(account_df)
 
-        extractor.finalize_import_batch(
-            import_id=import_id,
+        self._finalize_tabular_batch(
+            import_id,
             rows_total=len(df),
             rows_imported=rows_imported,
             rows_rejected=transform_result.rows_rejected,
@@ -4251,6 +4079,16 @@ class ImportService:
             and rows_imported > 0
         ):
             try:
+                # skip_rows and skip_trailing_patterns are deliberately NOT
+                # persisted here (both take their model default, 0/None): a
+                # saved format describes the column layout, not the header's
+                # position, so every read re-detects that position fresh —
+                # which adapts when a future export of this layout grows one
+                # more preamble line, where a pinned position would instead
+                # consume a transaction as the header. resolve_read_settings
+                # already reads a format's skip_rows of 0 as "no opinion" and
+                # lets detection run, so this is the behavior either way — do
+                # not "fix" this omission without deciding to change that.
                 detected_fmt = TabularFormat(
                     name=source_origin,
                     # Institution is best-effort metadata; the per-account label
@@ -4405,7 +4243,7 @@ class ImportService:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
         Four outcomes — same machinery as ``_import_pdf`` but no side effects
-        on raw tables and no ``raw.import_log`` row:
+        on raw tables and no ``app.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
           returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
@@ -4517,7 +4355,7 @@ class ImportService:
           recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
           Invariant 10) unless ``save_format=False``, then load the re-executed
           rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
-          reversible ``raw.import_log`` row (Req 17).
+          reversible ``app.import_log`` row (Req 17).
         - **Verify expectation vs actual.** If the agent's row count differs
           from the re-executed count, ``rows_diverged=True`` is surfaced (and
           logged) — the saved recipe does not reproduce the agent's own
@@ -4549,7 +4387,6 @@ class ImportService:
         )
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_forced_recipe
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import (
             PDF_BRIDGE_EGRESS_TOTAL,
             PDF_IMPORT_TOTAL,
@@ -4656,7 +4493,7 @@ class ImportService:
         #    fire here: we already gated on outcome=="transactions" above, and
         #    route_forced_recipe attaches both recipe and fp on that outcome —
         #    so begin_import's row can't be stranded in "importing".
-        resolved_alias = _pdf_alias(canonical)
+        resolved_alias = pdf_alias(canonical)
 
         # Account-identity gate, same position as the deterministic path's: after
         # routing settles, before begin_import. A bridge recipe is agent-authored,
@@ -4680,14 +4517,13 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
-            incoming_transactions=_incoming_pdf_transactions(decision),
+            incoming_transactions=incoming_pdf_transactions(decision),
             emit_metrics=emit_metrics,
             observations=observations,
         )
 
         result = ImportResult(file_path=str(canonical), file_type="pdf")
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical),
             source_type="pdf",
             source_origin=resolved_alias,
@@ -4878,7 +4714,7 @@ class ImportService:
                     proposed=SignConventionProposal(
                         sign_convention=recipe.sign_convention,
                         evidence=decision.card_markers,
-                        sample_rows=_sign_sample_rows(decision.rows),
+                        sample_rows=sign_sample_rows(decision.rows),
                         # Without this every surface renders the first-contact
                         # card framing, which is backwards for an
                         # income → expense repair: it would describe --confirm
@@ -4933,7 +4769,7 @@ class ImportService:
                 proposed=SignConventionProposal(
                     sign_convention="negative_is_income",
                     evidence=decision.card_markers,
-                    sample_rows=_sign_sample_rows(decision.rows),
+                    sample_rows=sign_sample_rows(decision.rows),
                 ),
                 reason="sign_convention",
                 # A deterministic PDF has no bridge recipe to re-run, so the CLI
@@ -5204,13 +5040,12 @@ class ImportService:
         from moneybin.extractors.pdf.extractor import PDFExtractor
         from moneybin.extractors.pdf.routing import route_pdf_import
         from moneybin.extractors.pdf.seed_store import write_pdf_seed
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL, PDF_SEED_ROWS_TOTAL
         from moneybin.tables import PDF_SEEDS
 
         canonical = file_path.resolve()
         result = ImportResult(file_path=str(canonical), file_type="pdf")
-        resolved_alias = _pdf_alias(canonical)
+        resolved_alias = pdf_alias(canonical)
 
         # Extract + route BEFORE opening an import_log row. A bridge escalation
         # and an extraction failure both load nothing, so neither should leave
@@ -5348,15 +5183,14 @@ class ImportService:
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
-                incoming_transactions=_incoming_pdf_transactions(decision),
+                incoming_transactions=incoming_pdf_transactions(decision),
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
             pdf_bound = gated[0]
 
         # Committing to a write — open the import_log row now.
-        import_id = import_log.begin_import(
-            self._db,
+        import_id = self._import_log.begin_import(
             source_file=str(canonical),
             source_type="pdf",
             source_origin=resolved_alias,
@@ -5417,8 +5251,7 @@ class ImportService:
                     exc_info=True,
                 )
             try:
-                import_log.finalize_import(
-                    self._db,
+                self._import_log.finalize_import(
                     import_id,
                     status="failed",
                     rows_total=0,
@@ -5438,8 +5271,7 @@ class ImportService:
             )
             raise
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=extracted,
@@ -5510,7 +5342,6 @@ class ImportService:
         """
         import polars as pl
 
-        from moneybin.loaders import import_log
         from moneybin.metrics.registry import PDF_IMPORT_TOTAL
         from moneybin.tables import (
             ACCOUNT_LINKS,
@@ -5557,8 +5388,8 @@ class ImportService:
             ).resolve(source_account, in_outer_txn=in_outer_txn)
         except Exception:
             try:
-                import_log.finalize_import(
-                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                self._import_log.finalize_import(
+                    import_id, status="failed", rows_total=0, rows_imported=0
                 )
             except Exception:  # failure-path finalize is best-effort
                 logger.warning(
@@ -5597,8 +5428,6 @@ class ImportService:
                 [str(canonical)],
             ).fetchall()
         }
-        from moneybin.services.pdf_account_identity import legacy_pdf_identifier_key
-
         legacy_identifier_refs = {
             (str(row[0]), str(row[1]))
             for row in self._db.execute(
@@ -5693,7 +5522,7 @@ class ImportService:
         }
         _zero = Decimal("0")
         for idx, row in enumerate(decision.rows, start=1):
-            amt = _normalize_pdf_amount(row, sign_conv)
+            amt = normalize_pdf_amount(row, sign_conv)
             # rows are canonical-keyed by routing._canonicalize_rows. Credit-card
             # layouts with both columns produce "date" and "post_date"; we keep
             # them on distinct DB columns so neither overwrites the other.
@@ -5864,7 +5693,7 @@ class ImportService:
             # builds — the report has to state the name this row will produce
             # before the row exists. on_conflict="ignore" below means a type
             # Plaid/OFX already set is never clobbered.
-            account_type = _pdf_account_type(decision)
+            account_type = pdf_account_type(decision)
             account_df = pl.DataFrame({
                 "account_id": [account_id],
                 "account_name": [source_account.account_name],
@@ -5883,7 +5712,7 @@ class ImportService:
                     else None
                 ],
                 "account_number": [None],
-                "account_number_masked": [_to_account_number_mask(raw_account_id)],
+                "account_number_masked": [to_account_number_mask(raw_account_id)],
                 "account_type": [account_type],
                 "institution_name": [str(institution) if institution else None],
                 "currency": [decision.metadata.currency_code],
@@ -5922,8 +5751,8 @@ class ImportService:
                         exc_info=True,
                     )
             try:
-                import_log.finalize_import(
-                    self._db, import_id, status="failed", rows_total=0, rows_imported=0
+                self._import_log.finalize_import(
+                    import_id, status="failed", rows_total=0, rows_imported=0
                 )
             except Exception:  # failure-path finalize is best-effort
                 logger.warning(
@@ -5944,32 +5773,31 @@ class ImportService:
         # trigger the cleanup DELETE on rows that already landed successfully.
         # Both are best-effort: the import succeeds either way.
         # First-contact format name (issuer slug + fingerprint hash). Shared
-        # with apply_pdf_bridge_response via _pdf_format_name so the two paths
+        # with apply_pdf_bridge_response via pdf_format_name so the two paths
         # can never drift on the naming scheme — see that helper.
-        first_contact_format_name = _pdf_format_name(fp)
+        first_contact_format_name = pdf_format_name(fp)
 
-        # Backfill format columns on raw.import_log now that routing has
+        # Backfill format columns on app.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
         # know it post-routing, so without this update every PDF import_log
         # entry would carry NULL format_name/format_source and users could
         # not tell whether a replay or auto-derive served the import.
         if decision.matched_format_name is not None:
-            pdf_format_name: str | None = decision.matched_format_name
+            resolved_format_name: str | None = decision.matched_format_name
             pdf_format_source = "saved"
         elif save_format:
-            pdf_format_name = first_contact_format_name
+            resolved_format_name = first_contact_format_name
             pdf_format_source = "detected"
         else:
             # First-contact import that intentionally won't persist a recipe;
             # leave format_name NULL so it doesn't look saveable to operators
             # tailing import_log.
-            pdf_format_name = None
+            resolved_format_name = None
             pdf_format_source = "detected"
         try:
-            import_log.update_format(
-                self._db,
+            self._import_log.update_format(
                 import_id,
-                format_name=pdf_format_name,
+                format_name=resolved_format_name,
                 format_source=pdf_format_source,
             )
         except Exception:  # observability stamp must not roll back data
@@ -6108,8 +5936,7 @@ class ImportService:
                     exc_info=True,
                 )
 
-        import_log.finalize_import(
-            self._db,
+        self._import_log.finalize_import(
             import_id,
             status="complete",
             rows_total=transactions_extracted,
@@ -6638,10 +6465,8 @@ class ImportService:
         binding instead of slipping past it.
 
         Args:
-            import_id: UUID of the import batch in ``raw.import_log``.
+            import_id: UUID of the import batch in ``app.import_log``.
         """
-        # REVERT_TABLES is owned by import_log because begin_import also consults it.
-        from moneybin.loaders.import_log import REVERT_TABLES
         from moneybin.tables import IMPORT_LOG
 
         row = self._db.execute(
@@ -6751,9 +6576,8 @@ class ImportService:
             ``{'status': 'reverted', 'rows_deleted': N}`` on success, else the
             live non-revertable outcome.
         """
-        # Deferred with the rest: `matching.aliasing` reaches back into the
-        # repositories, whose base -> audit chain re-enters this package.
-        from moneybin.loaders.import_log import REVERT_TABLES
+        # Deferred: `matching.aliasing` reaches back into the repositories,
+        # whose base -> audit chain re-enters this package.
         from moneybin.matching.aliasing import (
             AliasForwardResult,
             forward_rekeyed_transaction_ids,
@@ -6782,15 +6606,7 @@ class ImportService:
                         f"DELETE FROM {table.full_name} WHERE import_id = ?",
                         [import_id],
                     )
-                self._db.execute(
-                    f"""
-                    UPDATE {IMPORT_LOG.full_name} SET
-                        status = 'reverted',
-                        reverted_at = CURRENT_TIMESTAMP
-                    WHERE import_id = ?
-                    """,
-                    [import_id],
-                )
+                self._import_log.mark_reverted(import_id)
                 # After the deletes: the re-key it causes is what the pass reads.
                 forwarding = forward_rekeyed_transaction_ids(
                     self._db, actor=actor, in_outer_txn=True

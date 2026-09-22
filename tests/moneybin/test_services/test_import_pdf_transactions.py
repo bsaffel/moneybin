@@ -235,7 +235,7 @@ def test_pdf_transaction_import_joins_outer_transaction_and_buffers_metrics(
 
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_accounts") == 0
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
     assert metric._value.get() == before  # type: ignore[reportPrivateUsage]
     observations.flush("rollback")
@@ -277,7 +277,7 @@ def test_pdf_seed_import_joins_outer_transaction_and_buffers_metrics(
         db.rollback()
 
     assert _count(db, "SELECT COUNT(*) FROM raw.pdf_seeds") == 0
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert import_metric._value.get() == import_before  # type: ignore[reportPrivateUsage]
     assert seed_metric._value.get() == seed_before  # type: ignore[reportPrivateUsage]
     observations.flush("rollback")
@@ -863,7 +863,7 @@ def test_pdf_transactions_path_cleanup_on_ingest_failure(
 
     # The import_log row was finalized as "failed", not left in "importing"
     log_status = db.execute(
-        "SELECT status FROM raw.import_log WHERE source_type = 'pdf' "
+        "SELECT status FROM app.import_log WHERE source_type = 'pdf' "
         "ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
     assert log_status is not None
@@ -915,7 +915,7 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
 
     # Finalized as "failed" — not left at "importing".
     log_status = db.execute(
-        "SELECT status FROM raw.import_log WHERE source_type = 'pdf' "
+        "SELECT status FROM app.import_log WHERE source_type = 'pdf' "
         "ORDER BY started_at DESC LIMIT 1"
     ).fetchone()
     assert log_status is not None
@@ -928,7 +928,7 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
 
 
 # ---------------------------------------------------------------------------
-# Test 9: _to_account_number_mask covers every branch of the privacy boundary
+# Test 9: to_account_number_mask covers every branch of the privacy boundary
 # ---------------------------------------------------------------------------
 
 
@@ -971,12 +971,10 @@ def test_pdf_resolver_failure_finalizes_import_and_records_the_failure_metric(
 def test_to_account_number_mask_covers_every_branch(
     raw: str | None, expected: str | None
 ) -> None:
-    """Exercise every branch of _to_account_number_mask (privacy boundary)."""
-    from moneybin.services.import_service import (
-        _to_account_number_mask,  # pyright: ignore[reportPrivateUsage]
-    )
+    """Exercise every branch of to_account_number_mask (privacy boundary)."""
+    from moneybin.extractors.pdf.metadata import to_account_number_mask
 
-    assert _to_account_number_mask(raw) == expected
+    assert to_account_number_mask(raw) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -1010,7 +1008,7 @@ def test_fully_masked_pdf_requires_explicit_binding_before_loading(
     assert proposal["candidates"] == []
     assert proposal["is_new"] is True
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
 
 
@@ -1109,7 +1107,7 @@ def test_pdf_batch_rejects_mask_only_identity_before_loading(
         "confirmation_required",
     ]
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
 
 
@@ -1581,7 +1579,7 @@ def test_pdf_first_contact_save_format_false_suppresses_recipe(
 
     # Import_log format columns reflect "ran auto-derive but did not persist"
     log = db.execute(
-        "SELECT format_name, format_source FROM raw.import_log WHERE import_id = ?",
+        "SELECT format_name, format_source FROM app.import_log WHERE import_id = ?",
         [result.import_id],
     ).fetchone()
     assert log is not None
@@ -1705,7 +1703,7 @@ def test_pdf_scanned_no_text_layer_raises_unsupported(
     assert after == before + 1
 
     # Raised before begin_import — no import_log row, no orphan seed view.
-    log_rows = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+    log_rows = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
     assert log_rows is not None and log_rows[0] == 0
     views = db.execute(
         "SELECT COUNT(*) FROM duckdb_views() "
@@ -2540,7 +2538,7 @@ def test_pdf_import_gates_account_identity_before_begin_import(
     assert "1234" not in source_key
     # Nothing loaded, no batch opened, no link written, no recipe saved.
     assert _count(db, "SELECT COUNT(*) FROM raw.tabular_transactions") == 0
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.pdf_formats") == 0
 

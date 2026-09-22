@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from moneybin.database import Database
-from moneybin.loaders import import_log
 from moneybin.sql.migrations.V046__add_file_sha256_to_import_log import migrate
 from tests.moneybin.migration_helpers import run_migration
 
@@ -15,13 +14,30 @@ SELECT column_name, data_type, is_nullable
 """
 
 
-def _drop_column(db: Database) -> None:
-    """Simulate a pre-V046 database, which the schema file otherwise pre-creates."""
-    db.execute("ALTER TABLE raw.import_log DROP COLUMN IF EXISTS file_sha256")
+def _create_legacy_raw_import_log_without_file_sha256(db: Database) -> None:
+    """Simulate a pre-V046 (and pre-MB-255-move) database.
+
+    A fresh install no longer creates raw.import_log at all (MB-255 moved
+    the table to app.import_log with file_sha256 already in its DDL) --
+    V046 now only has work to do on a database still carrying the legacy
+    raw table.
+    """
+    db.execute(
+        """
+        CREATE TABLE raw.import_log (
+            import_id VARCHAR PRIMARY KEY,
+            source_file VARCHAR NOT NULL,
+            source_type VARCHAR NOT NULL,
+            source_origin VARCHAR NOT NULL,
+            account_names JSON NOT NULL,
+            status VARCHAR NOT NULL DEFAULT 'importing'
+        )
+        """
+    )
 
 
-def test_v046_adds_file_sha256_on_a_pre_v046_database(db: Database) -> None:
-    _drop_column(db)
+def test_v046_adds_file_sha256_to_a_legacy_raw_import_log(db: Database) -> None:
+    _create_legacy_raw_import_log_without_file_sha256(db)
 
     run_migration(db, migrate)
 
@@ -35,12 +51,12 @@ def test_v046_leaves_existing_batches_matchable_by_path(db: Database) -> None:
     A backfill is impossible here — the source file may be long gone — so the
     upgrade has to leave old batches on the path predicate alone.
     """
-    _drop_column(db)
+    _create_legacy_raw_import_log_without_file_sha256(db)
     db.execute(
         "INSERT INTO raw.import_log "
         "(import_id, source_file, source_type, source_origin, "
         " account_names, status) "
-        "VALUES ('legacy-01', '/tmp/legacy.ofx', 'ofx', 'wells_fargo', "  # test fixture path
+        "VALUES ('legacy-01', '/tmp/legacy.ofx', 'ofx', 'synthetic_credit_union', "  # test fixture path
         " '[\"checking\"]', 'complete')"
     )
 
@@ -49,39 +65,36 @@ def test_v046_leaves_existing_batches_matchable_by_path(db: Database) -> None:
     assert db.execute(
         "SELECT file_sha256 FROM raw.import_log WHERE import_id = 'legacy-01'"
     ).fetchone() == (None,)
-    assert import_log.find_existing_import(db, "/tmp/legacy.ofx") == (  # noqa: S108  # test fixture path
-        "legacy-01",
-        "complete",
-    )
 
 
-def test_v046_produces_the_same_shape_as_a_fresh_install(db: Database) -> None:
-    """Upgraded and fresh-installed databases agree on the table's shape.
+def test_v046_is_a_no_op_on_a_fresh_install(db: Database) -> None:
+    """A fresh install never creates raw.import_log -- migrate() must not fail.
 
-    The DDL exists twice — `sql/schema/raw_import_log.sql` for fresh installs
-    and this migration for upgrades. Nothing but this test stops the two copies
-    from drifting apart.
-
-    Ordinal position is part of the shape, hence ``ORDER BY ordinal_position``
-    and an ordered comparison: ``ALTER TABLE ADD COLUMN`` can only append, so a
-    schema file that declares the column anywhere but last would give fresh and
-    upgraded databases different layouts under ``SELECT *``.
+    MB-255 moved the table to app.import_log, whose schema file already
+    declares file_sha256, so there is nothing left for V046 to add.
     """
-    fresh_shape = db.execute(_COLUMN_SHAPE_SQL).fetchall()
-    assert any(row[0] == "file_sha256" for row in fresh_shape), (
-        "schema file should have created the column for a fresh install"
+    assert (
+        db.execute(
+            "SELECT 1 FROM duckdb_tables() WHERE schema_name = 'raw' AND table_name = 'import_log'"
+        ).fetchone()
+        is None
     )
 
-    _drop_column(db)
-    run_migration(db, migrate)
-    migrated_shape = db.execute(_COLUMN_SHAPE_SQL).fetchall()
+    run_migration(db, migrate)  # should not raise
 
-    assert migrated_shape == fresh_shape
+    columns = {
+        row[0]
+        for row in db.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'app' AND table_name = 'import_log'"
+        ).fetchall()
+    }
+    assert "file_sha256" in columns
 
 
 def test_v046_is_idempotent(db: Database) -> None:
     """Fresh installs and migration upgrades may both invoke the DDL."""
-    _drop_column(db)
+    _create_legacy_raw_import_log_without_file_sha256(db)
     run_migration(db, migrate)
     run_migration(db, migrate)
 

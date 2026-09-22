@@ -406,12 +406,11 @@ async def test_import_revert_refuses_builtin_format_deletion(mcp_db: Path) -> No
 def _seed_revertable_import(*, rows: int = 2) -> str:
     """Create one complete tabular import holding ``rows`` revertable raw rows."""
     from moneybin.database import get_database
-    from moneybin.loaders import import_log
+    from moneybin.repositories.import_log_repo import ImportLogRepo
 
     source_file = "/tmp/revert_gate.csv"  # noqa: S108  # test fixture path
     with get_database(read_only=False) as db:
-        import_id = import_log.begin_import(
-            db,
+        import_id = ImportLogRepo(db).begin_import(
             source_file=source_file,
             source_type="csv",
             source_origin="tiller",
@@ -438,8 +437,8 @@ def _seed_revertable_import(*, rows: int = 2) -> str:
                     import_id,
                 ],
             )
-        import_log.finalize_import(
-            db, import_id, status="complete", rows_total=rows, rows_imported=rows
+        ImportLogRepo(db).finalize_import(
+            import_id, status="complete", rows_total=rows, rows_imported=rows
         )
     return import_id
 
@@ -2077,7 +2076,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     channel: str,
     proposal_state: str,
 ) -> None:
-    from moneybin.loaders import import_log
+    from moneybin.repositories.import_log_repo import ImportLogRepo
     from moneybin.services.import_service import ImportResult, ImportService
 
     source = tmp_path / ("statement.csv" if channel == "tabular" else "statement.pdf")
@@ -2117,8 +2116,9 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
         calls += 1
         if calls == 1:
             raise _coarse_sign_error(proposal_channel)
-        import_id = import_log.begin_import(
-            service._db,  # pyright: ignore[reportPrivateUsage]
+        import_id = ImportLogRepo(
+            service._db  # pyright: ignore[reportPrivateUsage]
+        ).begin_import(
             source_file=str(source),
             source_type="pdf",
             source_origin="rollback_probe",
@@ -2185,7 +2185,7 @@ async def test_import_confirm_sign_revalidation_rolls_back_all_raw_rows(
     from moneybin.repositories.import_previews_repo import ImportPreviewsRepo
 
     with get_database(read_only=True) as db:
-        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        import_log_count = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         seed_count = db.execute("SELECT COUNT(*) FROM raw.pdf_seeds").fetchone()
         assert import_log_count is not None and import_log_count[0] == 0
         assert seed_count is not None and seed_count[0] == 0
@@ -2634,7 +2634,7 @@ async def test_import_confirm_bridge_token_is_bound_to_exact_response(
     from moneybin.database import get_database
 
     with get_database(read_only=True) as db:
-        import_log_count = db.execute("SELECT COUNT(*) FROM raw.import_log").fetchone()
+        import_log_count = db.execute("SELECT COUNT(*) FROM app.import_log").fetchone()
         assert import_log_count is not None and import_log_count[0] == 0
 
 
@@ -3074,7 +3074,7 @@ async def test_import_confirm_tabular_transform_failures_observed_after_rollback
         fail_transform,
     )
     monkeypatch.setattr(
-        "moneybin.extractors.tabular.extractor.TABULAR_IMPORT_BATCHES",
+        "moneybin.services.import_service.TABULAR_IMPORT_BATCHES",
         batch_failure,
     )
     monkeypatch.setattr(
@@ -3980,7 +3980,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4012,7 +4012,7 @@ async def test_import_status_coarse_paginates_exactly_with_total_order(
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status, started_at
             ) VALUES (
@@ -4051,7 +4051,7 @@ async def test_import_status_mixed_cursor_carries_full_initial_total(
         for import_id in ("imp_a", "imp_b"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (
@@ -4092,7 +4092,7 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4111,7 +4111,7 @@ async def test_import_status_coarse_allows_multiple_canonical_prepends(
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4145,7 +4145,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4165,7 +4165,7 @@ async def test_import_status_coarse_allows_prepends_tied_with_snapshot_head(
         for import_id in ("imp_y", "imp_z"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4202,7 +4202,7 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
         ):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4214,10 +4214,10 @@ async def test_import_status_coarse_survives_removal_and_prepend_without_skippin
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_c'")
+        db.execute("DELETE FROM app.import_log WHERE import_id = 'imp_c'")
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status, started_at
             ) VALUES (
@@ -4246,7 +4246,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
         for import_id in ("imp_a", "imp_b", "imp_c"):
             db.execute(
                 """
-                INSERT INTO raw.import_log (
+                INSERT INTO app.import_log (
                     import_id, source_file, source_type, source_origin,
                     account_names, status, started_at
                 ) VALUES (?, ?, 'csv', 'test', '[]', 'complete', ?)
@@ -4262,7 +4262,7 @@ async def test_import_status_coarse_survives_unserved_row_removal_without_duplic
     assert first.next_cursor is not None
 
     with get_database(read_only=False) as db:
-        db.execute("DELETE FROM raw.import_log WHERE import_id = 'imp_b'")
+        db.execute("DELETE FROM app.import_log WHERE import_id = 'imp_b'")
 
     response = await import_status_coarse(
         sections=["imports"],
@@ -4295,7 +4295,7 @@ async def test_import_status_coarse_rejects_invalid_key_types_before_data_access
         raise AssertionError("data access must follow cursor validation")
 
     monkeypatch.setattr(
-        "moneybin.loaders.import_log.get_import_history_page",
+        "moneybin.repositories.import_log_repo.ImportLogRepo.get_import_history_page",
         fail_if_accessed,
     )
 
@@ -4315,7 +4315,7 @@ async def test_import_status_coarse_import_id_returns_one_exact_record(
     with get_database(read_only=False) as db:
         db.execute(
             """
-            INSERT INTO raw.import_log (
+            INSERT INTO app.import_log (
                 import_id, source_file, source_type, source_origin,
                 account_names, status
             ) VALUES ('imp_exact', '/tmp/exact.csv', 'csv', 'test', '[]', 'complete')

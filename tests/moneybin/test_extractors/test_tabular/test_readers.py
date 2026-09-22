@@ -11,7 +11,9 @@ from moneybin.extractors.tabular.column_mapper import map_columns
 from moneybin.extractors.tabular.format_detector import FormatInfo
 from moneybin.extractors.tabular.readers import (
     _classify_excel_headerless_via_fastexcel,  # pyright: ignore[reportPrivateUsage]
+    _classify_header_rows,  # pyright: ignore[reportPrivateUsage]
     _detect_header,  # pyright: ignore[reportPrivateUsage]
+    _looks_like_data_row,  # pyright: ignore[reportPrivateUsage]
     _row_looks_like_data_at,  # pyright: ignore[reportPrivateUsage]
     normalize_excel_date_columns_after_mapping,
     normalize_excel_date_columns_for_detection,
@@ -128,6 +130,115 @@ class TestCSVReader:
         )
         info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
         result = read_file(f, info)
+        assert len(result.df) == 3
+
+    def test_headerless_csv_declared_date_format_keeps_first_row(
+        self, tmp_path: Path
+    ) -> None:
+        """A declared date format outside ``_DATE_FORMATS`` must be recognized.
+
+        Issue #604: ``_looks_like_data_row`` only recognized a date via the
+        built-in ``_DATE_FORMATS`` list, so a genuinely headerless file whose
+        dates use a format outside it (``%Y%m%d``) had no row that read as
+        data — ``_classify_header_rows`` fell back to ``(0, True)`` and ate
+        row 0 as a header with no way to recover it. Without the declared
+        format this same file loses row 0; passing it through recognizes the
+        row as data instead.
+        """
+        f = _write_csv(
+            tmp_path / "headerless_yyyymmdd.csv",
+            "20260105,42.50,Coffee\n20260106,10.00,Tea\n20260107,-20.00,Groceries\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+
+        # Baseline: with no declared format, the pre-existing gap this issue
+        # tracks still applies — row 0 is eaten as a header.
+        baseline = read_file(f, info)
+        assert baseline.has_header is True
+        assert len(baseline.df) == 2
+
+        result = read_file(f, info, declared_date_format="%Y%m%d")
+        assert result.has_header is False
+        assert len(result.df) == 3
+
+    def test_declared_date_format_does_not_break_header_detection(
+        self, tmp_path: Path
+    ) -> None:
+        """A declared format must not make a real header row look like data.
+
+        Header labels (``Date``, ``Amount``, ``Description``) never parse as
+        a date under any format, so passing a caller's ``--date-format``
+        alongside a normally-headered file must leave detection unchanged.
+        """
+        f = _write_csv(
+            tmp_path / "headered_yyyymmdd.csv",
+            "Date,Amount,Description\n20260105,42.50,Coffee\n20260106,10.00,Tea\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info, declared_date_format="%Y%m%d")
+        assert result.has_header is True
+        assert list(result.df.columns) == ["Date", "Amount", "Description"]
+        assert len(result.df) == 2
+
+    def test_declared_date_format_single_cell_is_not_both_date_and_amount(
+        self,
+    ) -> None:
+        """A declared compact format must not double-count one cell.
+
+        Review finding on #604's fix: under a declared ``%Y%m%d``, a value like
+        ``20260105`` parses as both a date AND an amount (unlike any
+        built-in ``_DATE_FORMATS`` value, none of which parses as an
+        amount), so a row carrying a date with no real amount elsewhere must
+        not read as data merely because that one cell satisfies both tests.
+        """
+        assert _looks_like_data_row(["20260105", "Coffee"], "%Y%m%d") is False
+        # Unchanged without the declaration -- documents the pre-existing,
+        # still-correct behavior this fix must not disturb.
+        assert _looks_like_data_row(["20260105", "Coffee"]) is False
+
+    def test_declared_date_format_preamble_line_is_not_ambiguous(self) -> None:
+        """A one-cell preamble line must not trigger a spurious confirm.
+
+        Companion to the single-cell case above at the ``_classify_header_
+        rows`` level: a "Statement date,20260131" preamble line above a real
+        header must not be flagged as ambiguous data just because its date
+        cell also parses as an amount under the declared format.
+        """
+        rows = [
+            ["Statement date", "20260131"],
+            ["Date", "Amount", "Description"],
+            ["20260105", "42.50", "Coffee"],
+            ["20260106", "-12.00", "Lunch"],
+        ]
+        assert _classify_header_rows(rows, "%Y%m%d") == (1, True, False, (), ())
+
+    def test_declared_date_format_row_with_real_amount_still_counts_as_data(
+        self,
+    ) -> None:
+        """A genuine data row (distinct date and amount cells) still counts.
+
+        Guards the fix itself: requiring distinct cells must not regress the
+        headerless case #604 exists to fix.
+        """
+        assert _looks_like_data_row(["20260105", "42.50", "Coffee"], "%Y%m%d") is True
+
+    def test_declared_date_format_amount_colliding_with_date_still_counts(
+        self,
+    ) -> None:
+        """An amount that also parses as the declared date still counts as data."""
+        assert _looks_like_data_row(["260105", "151215", "x"], "%y%m%d") is True
+
+    def test_headerless_csv_amount_colliding_with_declared_date_keeps_row0(
+        self, tmp_path: Path
+    ) -> None:
+        """A headerless row 0 whose amount parses as the declared date is kept."""
+        f = _write_csv(
+            tmp_path / "headerless_yymmdd_colliding_amount.csv",
+            "260105,151215,Coffee\n260106,20.00,Tea\n260107,-5.00,Lunch\n",
+        )
+        info = FormatInfo(file_type="csv", delimiter=",", encoding="utf-8")
+        result = read_file(f, info, declared_date_format="%y%m%d")
+        assert result.has_header is False
         assert len(result.df) == 3
 
     def test_summary_row_above_header_not_headerless(self, tmp_path: Path) -> None:
@@ -596,6 +707,38 @@ class TestExcelReader:
         assert result.header_row_looks_like_data is False
         assert len(result.df) == 2
         assert result.rows_in_file == 2
+
+    def test_headerless_excel_declared_date_format_keeps_row0(
+        self, tmp_path: Path
+    ) -> None:
+        """Excel mirrors the CSV fix for a declared date format (#604).
+
+        A compact numeric date like ``20260105`` written as a plain number
+        (not a native Excel date cell) reaches the classifier as literal
+        text via ``_excel_cell_text`` (``str(value)``, since it is neither
+        ``datetime.datetime`` nor ``datetime.date``) — ``%Y%m%d`` is outside
+        ``_DATE_FORMATS``, so without the declared format this file loses
+        row 0 the same way the CSV case does.
+        """
+        import openpyxl
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        assert ws is not None
+        ws.append([20260105, 42.50, "Coffee"])
+        ws.append([20260106, 10.00, "Tea"])
+        path = tmp_path / "headerless_yyyymmdd.xlsx"
+        wb.save(path)
+
+        baseline = read_file(path, FormatInfo(file_type="excel"))
+        assert baseline.has_header is True
+        assert len(baseline.df) == 1
+
+        result = read_file(
+            path, FormatInfo(file_type="excel"), declared_date_format="%Y%m%d"
+        )
+        assert result.has_header is False
+        assert len(result.df) == 2
 
     def test_blank_spacer_column_before_a_native_date_column_imports_correctly(
         self, tmp_path: Path

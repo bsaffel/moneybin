@@ -85,7 +85,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 
 10. **Pre-refresh hook.** The default is `gsheet → match → transform → categorize → identity → rates` — gsheet pulls first, then the rest of the pipeline operates on the updated raw data.
 11. **Explicit pull** via `moneybin gsheet pull [<id>]` (CLI) and `gsheet_pull(connection_id=None)` (MCP). With no ID → pulls all healthy connections. With ID → pulls one. CLI pull refreshes downstream by default through `match → transform → categorize → rates`; `--no-refresh` disables that follow-up. A pulled sheet can carry foreign-currency rows, so `rates` is named explicitly — an explicit step list is never widened by a later canonical addition. MCP `gsheet_pull` is pull-only; call `refresh_run(steps=["match", "transform", "categorize", "identity", "rates"])` separately when derived state must catch up. The `gsheet` stage inside unscoped `refresh_run()` uses the pull-only service directly and therefore does not recurse.
-12. **Per-connection isolation.** A failure on connection A does not block connection B or downstream refresh steps. Each pull writes its own `raw.import_log` row.
+12. **Per-connection isolation.** A failure on connection A does not block connection B or downstream refresh steps. Each pull writes its own `app.import_log` row.
 13. **Live mirror with soft-delete.** Each pull computes the diff vs. the connection's currently-active rows. Rows in current pull but absent from active → INSERT OR REPLACE (or undelete via `deleted_from_source_at = NULL`). Rows previously active but absent from current pull → `UPDATE deleted_from_source_at = CURRENT_TIMESTAMP`.
 14. **`fct_transactions` reflects the current sheet.** `stg_tabular__transactions` filters `WHERE deleted_from_source_at IS NULL`. Reports, balances, and matching operate on live data automatically.
 15. **Audit retained in raw.** Soft-deleted rows stay in `raw.tabular_transactions` for diagnostic and revert purposes. Visible via direct SQL or `import history`.
@@ -132,7 +132,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
     - Row count changes (handled by soft-delete diff).
     - Tab renamed (we fetch by `gid`, which is stable).
     - Workbook moved or renamed (`spreadsheet_id` is stable).
-23. **Drift response.** Set `connection.status='drift_detected'`, populate `last_drift_reason` with a human-readable explanation, mark the pull's `raw.import_log.status='failed'`. Skip this connection's pull. **Do not** trigger soft-deletes. **Do not** abort `refresh_run` or other connections.
+23. **Drift response.** Set `connection.status='drift_detected'`, populate `last_drift_reason` with a human-readable explanation, mark the pull's `app.import_log.status='failed'`. Skip this connection's pull. **Do not** trigger soft-deletes. **Do not** abort `refresh_run` or other connections.
 24. **Drift recovery.** `moneybin gsheet status <id>` surfaces the drift detail. `moneybin gsheet reconnect <id>` re-runs detection against the sheet's current state, presents a diff vs. the pinned mapping, and (on confirmation) updates the pinned mapping and clears drift state. `moneybin gsheet disconnect <id>` stops trying.
 
 ### Failure modes
@@ -141,7 +141,7 @@ gsheet inverts that model. The client speaks Google's API directly. moneybin-syn
 26. **Sheet unshared / deleted / 404.** Mark connection `status='unreachable'`. Refresh continues for other connections. Recovery: `reconnect` if the sheet was renamed/moved (`spreadsheet_id` stable); `disconnect` otherwise.
 27. **Rate limit (429).** Retry up to 3x with exponential backoff within the pull call. If still failing → skip, log warning. Self-resolves on next pull.
 28. **Network error.** Same as rate-limit: retry within call, then skip.
-29. **Per-row validation errors.** Reuse the existing tabular pipeline behavior — reject bad rows, log them in `raw.import_log.rows_rejected`, ingest valid rows, set status `partial`.
+29. **Per-row validation errors.** Reuse the existing tabular pipeline behavior — reject bad rows, log them in `app.import_log.rows_rejected`, ingest valid rows, set status `partial`.
 
 ### Observability
 
@@ -199,7 +199,7 @@ flowchart TB
         Tabular["extractors/tabular/<br/>Stages 1-5 detection + transform + load"]
         Refresh["orchestration/refresh.py<br/>refresh_run umbrella"]
         Repo["GSheetConnectionsRepo<br/>+ app.audit_log"]
-        DB[("DuckDB<br/>raw.tabular_transactions<br/>raw.gsheet_seeds<br/>app.gsheet_connections<br/>raw.import_log")]
+        DB[("DuckDB<br/>raw.tabular_transactions<br/>raw.gsheet_seeds<br/>app.gsheet_connections<br/>app.import_log")]
         Secrets["SecretStore<br/>(keyring)"]
     end
 
@@ -273,11 +273,11 @@ sequenceDiagram
     participant API as SheetsClient
     participant Adapter as TransactionsAdapter
     participant DB as Database
-    participant Log as raw.import_log
+    participant Log as app.import_log
 
     Caller->>Pull: pull_all_healthy() or pull_connection(id)
     loop For each connection (isolated)
-        Pull->>Log: INSERT raw.import_log (status='importing')
+        Pull->>Log: INSERT app.import_log (status='importing')
         Pull->>API: read_sheet_values(spreadsheet_id, sheet_name)
         alt Auth expired
             API-->>Pull: GSheetAuthError
@@ -377,7 +377,7 @@ CREATE TABLE app.gsheet_connections (
         CHECK (status IN ('healthy', 'auth_expired', 'unreachable',
                           'drift_detected', 'rate_limited', 'disconnected')),
     last_pull_at TIMESTAMP,                      -- Last pull attempt (success or failure)
-    last_pull_import_id VARCHAR,                 -- FK to raw.import_log.import_id for most recent attempt
+    last_pull_import_id VARCHAR,                 -- FK to app.import_log.import_id for most recent attempt
     last_success_at TIMESTAMP,                   -- Last pull that ingested cleanly
     last_drift_reason TEXT,                      -- Human-readable when status='drift_detected'
     consecutive_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -408,7 +408,7 @@ CREATE TABLE raw.gsheet_seeds (
     row_hash VARCHAR NOT NULL,                   -- SHA-256(connection_id|row_number|canonical_json(data))[:16]; stable per-row key for diff
     data JSON NOT NULL,                          -- {header: cell_value, ...} JSON object; cell values are strings (typed extraction happens in views)
     deleted_from_source_at TIMESTAMP NULL,       -- Set when row absent from latest pull; NULL when present in source
-    import_id VARCHAR NOT NULL,                  -- FK to raw.import_log.import_id; the pull that last touched this row
+    import_id VARCHAR NOT NULL,                  -- FK to app.import_log.import_id; the pull that last touched this row
     loaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (connection_id, row_hash)
@@ -469,22 +469,22 @@ Downstream `fct_transactions`, `core.bridge_*`, reports, and balances automatica
 
 | Table | gsheet usage |
 |---|---|
-| `raw.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
+| `app.import_log` | One row per pull. `source_type='gsheet'`, `source_origin=<connection_id>`, `source_file='gsheet://<spreadsheet_id>/<gid>'`, `format_name='gsheet:<workbook>/<sheet>'`, `format_source='gsheet'`. |
 | `raw.tabular_accounts` | Accounts inferred from multi-account sheets land here as today, with `source_type='gsheet'`. One row per distinct account the sheet names, keyed on first sight by `label_account_key(label)` — the tabular path's derivation for a named account, which unlike bare `slugify` survives a label in a non-Latin script. The key is then remembered against its label and looked up before it is re-derived, because `transaction_id` folds it: recomputing it from an edited label would soft-delete and re-insert every row the account owns. That lookup holds only **while the sheet still shows the account**: every pull soft-deletes the rows it no longer carries, so an account dropped from the sheet is left with none active, and its label — remembered for as long as the connection lives — has to earn the key back from its rows like any other arrival. Without that, closing an account and giving its replacement the same name would file the new account's transactions under the closed one, since `label_account_key` is a pure function of the label and re-derives the very key the closed account owns. An arrival that claims no departed key and whose derived key a stored account already answers to takes the next free key instead of colliding with it. A label that arrives is matched against the accounts that departed **by the transactions it carries**, never by counting labels — renaming an account, and closing one to open another, both leave exactly one label gone and one arrived, and only the shared rows tell them apart. A match requires at least two transactions in common *and* a majority of the departed account's stored history, and must be unambiguous in both directions; anything else mints a fresh key. So a rename re-labels the account instead of minting a twin, while a newly opened account never inherits a closed one's transactions — and an unnecessary second account, which a person can see and merge, is the failure this errs toward. Comparison uses the date, amount and description strings the store keeps verbatim (`original_source_strings`), so it never depends on parsing a value the same way twice. Each key is resolved through `AccountResolver`, so an account already known from another source is proposed for merge in the account-link review queue instead of becoming a silent duplicate. |
 | `app.audit_log` | `GSheetConnectionsRepo` emits paired audit rows on every mutation. New `entity_type='gsheet_connection'`. |
 | `SecretStore` (keyring) | New keys: `gsheet:refresh_token`, `gsheet:access_token`, `gsheet:access_token_expires_at`, `gsheet:granted_scopes`, `gsheet:client_id` (plus the `gsheet:write_*` twin of each). `gsheet:client_id` records which OAuth client obtained the grant, because Google will not refresh a token under a different client than issued it. Single identity per profile in v1. |
 
-### Possible small extension to `raw.import_log`
+### Possible small extension to `app.import_log`
 
 If the existing schema doesn't already include a granular `error_reason` field (parallel to `error_message`), add one during implementation:
 
 ```sql
-ALTER TABLE raw.import_log
+ALTER TABLE app.import_log
   ADD COLUMN error_reason VARCHAR NULL;
 -- Values: 'drift_detected', 'auth_expired', 'unreachable', 'rate_limited', 'partial_validation'
 ```
 
-Verify against the current `raw_import_log.sql` schema at implementation time. Prefer extending existing columns over adding new ones.
+Verify against the current `app_import_log.sql` schema at implementation time. Prefer extending existing columns over adding new ones.
 
 ---
 

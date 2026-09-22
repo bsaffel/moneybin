@@ -219,6 +219,11 @@ def _stored_text(value: str | None) -> str | None:
 # NULL account_subtype. MCP/CLI consumers see this string in the dict keys.
 _UNSET_LABEL = "<unset>"
 
+# Audit context key: the caller named include_in_net_worth in this write.
+# A full-row snapshot cannot tell an explicit value from an untouched one;
+# doctor's account_archive_intent_ambiguous reads this to settle an account.
+INCLUDE_DECISION_MARKER = "confirms_include_in_net_worth"
+
 
 @dataclass(frozen=True, slots=True)
 class AccountSettings:
@@ -870,6 +875,11 @@ class AccountService:
             include_in_net_worth=target.include_in_net_worth,
             default_cost_basis_method=target.default_cost_basis_method,
             actor=actor,
+            context=(
+                {INCLUDE_DECISION_MARKER: True}
+                if include_in_net_worth is not None
+                else None
+            ),
         )
         logger.info(
             f"Updated settings for account {account_id}: fields={sorted(diff.keys())}"

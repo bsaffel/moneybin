@@ -361,6 +361,41 @@ def test_preview_says_when_tabular_flags_are_ignored_on_a_pdf(
     assert "--delimiter" not in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("passed", "not_passed"),
+    [
+        ("--no-row-limit", "--no-size-limit"),
+        ("--no-size-limit", "--no-row-limit"),
+    ],
+)
+def test_preview_says_when_limit_overrides_are_ignored_on_a_pdf(
+    statement: Path,
+    mocker: MockerFixture,
+    caplog: pytest.LogCaptureFixture,
+    passed: str,
+    not_passed: str,
+) -> None:
+    """The limit overrides drop here as completely as the six tabular flags.
+
+    `_preview_pdf` takes the source and nothing else, so neither can reach a
+    gate on this branch — and both are documented as carrying over from
+    `import files`, which is exactly the inference this warning exists to
+    stop. They were accepted in silence when `import preview` learned them.
+    """
+    _patch_service(
+        mocker, pdf_preview=MagicMock(return_value=_preview_result(statement))
+    )
+
+    with caplog.at_level("WARNING"):
+        result = runner.invoke(app, ["preview", str(statement), passed])
+
+    assert result.exit_code == 0, result.output
+    assert "Ignored for a PDF" in caplog.text
+    assert passed in caplog.text
+    # The flag that was NOT passed must not be named.
+    assert not_passed not in caplog.text
+
+
 def test_preview_stays_quiet_when_no_tabular_flags_are_passed(
     statement: Path, mocker: MockerFixture, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -891,8 +891,12 @@ def test_run_all_returns_expected_invariants(
     # protected app.* table, so its writes carry the same coverage check)
     # + dim_accounts_reserved_label (the same fold reached through a source's
     # own account_label, which never touches app.*).
-    assert len(report.invariants) == 62
+    # + investment_match_decisions audit coverage for durable review Proposals.
+    # + account_archive_intent_ambiguous (M2B.2: cascade-written exclusions
+    # V063 could not tell from a chosen one).
+    assert len(report.invariants) == 64
     names = [r.name for r in report.invariants]
+    assert "app_audit_coverage_investment_match_decisions" in names
     assert "app_audit_coverage_rule_conflicts" in names
     assert "fct_transactions_fk_integrity" in names
     assert "fct_transactions_sign_convention" in names
@@ -925,6 +929,7 @@ def test_run_all_returns_expected_invariants(
     assert "app_match_decisions_account_fk" in names
     assert "app_transaction_splits_fk" in names
     assert "orphan_app_state" in names
+    assert "account_archive_intent_ambiguous" in names
 
 
 _UNCOVERED_REPO_TABLES: Final = {
