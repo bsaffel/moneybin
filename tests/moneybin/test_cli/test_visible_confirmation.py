@@ -109,7 +109,6 @@ def test_transform_restate_refuses_when_prompt_output_is_redirected(
             start="2026-01-01",
             end=None,
             yes=False,
-            output=OutputFormat.TEXT,
         )
 
     assert exit_info.value.exit_code == 2

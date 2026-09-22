@@ -120,4 +120,3 @@ Usage: `moneybin transform restate [OPTIONS]`
 | `--start` | text |  | Required. Start date for restatement (YYYY-MM-DD) |
 | `--end` | text |  | End date (defaults to today) |
 | `--yes, -y` | flag |  | Skip confirmation |
-| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

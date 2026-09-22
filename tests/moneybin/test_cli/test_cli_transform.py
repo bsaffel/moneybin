@@ -333,8 +333,16 @@ def test_plan_has_no_pager_option() -> None:
     assert result.exit_code == 2
 
 
-def test_restate_json_refusal_is_structured() -> None:
-    """JSON cannot satisfy the restate confirmation contract interactively."""
+def test_restate_help_does_not_advertise_output() -> None:
+    """Restate is an operator-only text command with no JSON success contract."""
+    result = runner.invoke(app, ["restate", "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--output" not in result.stdout
+
+
+def test_restate_rejects_unsupported_output() -> None:
+    """A caller cannot request a JSON response whose success shape is undefined."""
     result = runner.invoke(
         app,
         [
@@ -349,7 +357,7 @@ def test_restate_json_refusal_is_structured() -> None:
     )
 
     assert result.exit_code == 2
-    assert '"error"' in result.stdout
+    assert "No such option: --output" in result.output
 
 
 def test_seed_interruption_reports_unknown_saved_scope() -> None:
@@ -434,7 +442,7 @@ class TestTransformRestate:
         self, mock_ctx_factory: MagicMock, _mock_get_db: MagicMock
     ) -> None:
         """Transform restate --yes skips confirmation."""
-        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
+        ctx_fn, mock_ctx = _mock_sqlmesh_context()
         mock_ctx_factory.side_effect = ctx_fn
         result = runner.invoke(
             app,
@@ -448,3 +456,10 @@ class TestTransformRestate:
             ],
         )
         assert result.exit_code == 0
+        mock_ctx.plan.assert_called_once_with(
+            restate_models=["core.fct_transactions"],
+            start="2026-01-01",
+            end=None,
+            auto_apply=True,
+            no_prompts=True,
+        )

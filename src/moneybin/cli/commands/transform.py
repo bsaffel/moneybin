@@ -402,26 +402,11 @@ def transform_restate(
     ),
     end: str | None = typer.Option(None, "--end", help="End date (defaults to today)"),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
-    output: OutputFormat = output_option,
 ) -> None:
     """Force recompute a model for a date range."""
-    if output == OutputFormat.JSON or (
-        not yes and not get_terminal_policy().interactive
-    ):
+    if not yes and not get_terminal_policy().interactive:
         message = "Restate requires an interactive confirmation or --yes."
-        if output == OutputFormat.JSON:
-            from moneybin.cli.utils import emit_json_failure
-
-            emit_json_failure(
-                UserError(
-                    "Restate confirmation is required",
-                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
-                    hint=message,
-                ),
-                cli_actor="transform_restate",
-            )
-        else:
-            typer.echo(message, err=True)
+        typer.echo(message, err=True)
         raise typer.Exit(2)
     if not yes:
         confirm = typer.confirm(
