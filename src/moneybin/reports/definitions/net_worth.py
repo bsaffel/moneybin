@@ -127,7 +127,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
     columns=(
         OutputColumn(
             "home_currency_code",
-            "The profile's home currency; null until chosen.",
+            "Currency of this row's amounts: the profile's home currency, or "
+            "the display currency on a converted read. Null until chosen.",
             DataClass.CURRENCY,
         ),
         OutputColumn("balance_date", "Calendar date.", DataClass.TXN_DATE),

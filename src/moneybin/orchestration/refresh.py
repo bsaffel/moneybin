@@ -219,6 +219,24 @@ def _rates_stage(
     )
 
 
+def _restate_rate_spine(db: Database) -> str | None:
+    """Rebuild the rate spine after a rates-only refresh wrote into it.
+
+    `core.fct_exchange_rates_daily` is kind FULL: the full cascade picks new
+    rates up with its second apply, but `steps=["rates"]` runs no apply, so
+    without this the net-worth reports keep pricing at the old carried-forward
+    rate. The same narrow restatement `fx set` runs.
+    """
+    from moneybin.services.fx_accounting_refresh import restate_fx_accounting
+
+    try:
+        restate_fx_accounting(db, committed_change="exchange rate")
+    except UserError as exc:
+        logger.error(f"Rate spine restatement failed: {exc.code}")
+        return exc.message
+    return None
+
+
 def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
     """Resolve a steps list (or None) to the canonical frozenset.
 
@@ -433,6 +451,8 @@ def refresh(
         rate_backfill = None
         if "rates" in requested:
             rate_backfill, rate_backfill_error = _run_rates_step(db)
+            if rate_backfill is not None and rate_backfill.rates_written > 0:
+                rate_backfill_error = _restate_rate_spine(db)
             stages.append(_rates_stage(rate_backfill, rate_backfill_error))
         return RefreshResult(
             applied=False,

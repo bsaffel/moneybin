@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
+from typing import Any
 
 import pytest
 import typer
@@ -574,6 +575,67 @@ def test_net_worth_runner_converted_read_keeps_its_identity(
         assert row["net_worth"] == row["total_assets"] + row["total_liabilities"]
     envelope = result.to_envelope()
     assert envelope.summary.home_currency == "USD"
+
+
+def test_net_worth_currencies_converted_read_keeps_both_identities(
+    model_db: Database,
+) -> None:
+    """Each converted net worth still equals its converted components.
+
+    At 0.5, 1.00 and -0.99 round half-up to 0.50 and -0.50, while their net
+    of 0.01 rounds to 0.01 — so without `on_converted`
+    (`_recompute_segment_totals`) net_worth reads 0.01 against components
+    summing to 0.00, on both the native and the home-basis side.
+    """
+    _install_net_worth_sources(model_db)
+    _account(model_db, "acct-a", "Euro Checking", "EUR")
+    _account(model_db, "acct-l", "Euro Card", "EUR")
+    _home(model_db, "USD")
+    _balance(model_db, "acct-a", "2026-01-05", "1.00", "EUR")
+    _balance(model_db, "acct-l", "2026-01-05", "-0.99", "EUR")
+    _rate(model_db, "EUR", "USD", "2026-01-05", "1.0")
+    _install_report(model_db, "net_worth_currencies")
+    _seed_cached_rate(model_db, "EUR", "GBP", date(2026, 1, 5), Decimal("0.5"))
+    _seed_cached_rate(model_db, "USD", "GBP", date(2026, 1, 5), Decimal("0.5"))
+
+    result = get_report_catalog().execute(
+        model_db,
+        report_id="core:net_worth_currencies",
+        parameters={"from_date": "2026-01-05", "to_date": "2026-01-05"},
+        limit=100,
+        display_currency="GBP",
+        home_currency="USD",
+    )
+
+    assert result.applied_rates
+    (row,) = result.records
+    assert row["total_assets"] == Decimal("0.50")
+    assert row["total_liabilities"] == Decimal("-0.50")
+    assert row["net_worth"] == Decimal("0.00")
+    assert row["net_worth_home"] == (
+        row["total_assets_home"] + row["total_liabilities_home"]
+    )
+
+
+def test_net_worth_currencies_repair_leaves_an_unpriced_segment_null() -> None:
+    """An unpriced currency's home side stays NULL rather than becoming zero."""
+    from moneybin.reports.definitions.net_worth_currencies import (
+        _recompute_segment_totals,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    row: dict[str, Any] = {
+        "total_assets": Decimal("0.50"),
+        "total_liabilities": Decimal("-0.50"),
+        "net_worth": Decimal("0.01"),
+        "total_assets_home": None,
+        "total_liabilities_home": None,
+        "net_worth_home": None,
+    }
+
+    _recompute_segment_totals([row], "GBP")
+
+    assert row["net_worth"] == Decimal("0.00")
+    assert row["net_worth_home"] is None
 
 
 def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> None:

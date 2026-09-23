@@ -24,6 +24,7 @@ import duckdb
 import pytest
 import time_machine
 
+from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.orchestration.refresh import (
@@ -514,6 +515,89 @@ def test_rates_can_run_surgically(monkeypatch: pytest.MonkeyPatch) -> None:
     refresh(MagicMock(), steps=["rates"])
 
     assert calls == ["rates"]
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_restates_the_spine_it_wrote_into(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No apply runs on this path, so the FULL spine is restated narrowly."""
+    calls: list[str] = []
+    patch_all_refresh_stages(monkeypatch, calls)
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        calls.append("rates")
+        return RateBackfillResult(rates_written=2, pairs_failed=()), None
+
+    restated: list[str] = []
+
+    def _restate(_db: Database, *, committed_change: str) -> None:
+        restated.append(committed_change)
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", _restate
+    )
+
+    result = refresh(MagicMock(), steps=["rates"])
+
+    assert calls == ["rates"]
+    assert restated == ["exchange rate"]
+    assert result.stage("rates") == StageOutcome(
+        step="rates", ran=True, counts={"rates_written": 2}
+    )
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_skips_the_restatement_when_nothing_was_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unchanged spine needs no rebuild."""
+    patch_all_refresh_stages(monkeypatch, [])
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        return RateBackfillResult(rates_written=0, pairs_failed=()), None
+
+    restate = MagicMock()
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", restate
+    )
+
+    refresh(MagicMock(), steps=["rates"])
+
+    restate.assert_not_called()
+
+
+@pytest.mark.unit
+def test_rates_only_refresh_reports_a_failed_restatement_on_the_rates_stage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Written rates the reports cannot see yet must not read as success."""
+    patch_all_refresh_stages(monkeypatch, [])
+
+    def _rates(_db: Database) -> tuple[RateBackfillResult, None]:
+        return RateBackfillResult(rates_written=1, pairs_failed=()), None
+
+    def _fail(_db: Database, *, committed_change: str) -> None:
+        raise UserError(
+            "The exchange rate was saved, but derived FX accounting could not be rebuilt.",
+            code=error_codes.REFRESH_MODEL_FAILED,
+        )
+
+    monkeypatch.setattr("moneybin.orchestration.refresh._run_rates_step", _rates)
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.restate_fx_accounting", _fail
+    )
+
+    result = refresh(MagicMock(), steps=["rates"])
+
+    stage = result.stage("rates")
+    assert stage is not None
+    assert stage.ran is True
+    assert stage.error == (
+        "The exchange rate was saved, but derived FX accounting could not be rebuilt."
+    )
 
 
 @pytest.mark.unit

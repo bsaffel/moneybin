@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
+
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
@@ -14,6 +17,28 @@ from moneybin.reports.definitions._shared import resolve_date_range
 from moneybin.tables import REPORTS_NET_WORTH_CURRENCIES
 
 _REPORT_ID = "core:net_worth_currencies"
+
+#: Each headline and the two converted components it must keep equalling.
+_TOTALS = (
+    ("net_worth", "total_assets", "total_liabilities"),
+    ("net_worth_home", "total_assets_home", "total_liabilities_home"),
+)
+
+
+def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> None:
+    """Restate each net worth from its converted components.
+
+    Conversion rounds every money column on its own, so a converted
+    `net_worth` can drift a cent from `total_assets + total_liabilities`.
+    """
+    for row in rows:
+        for total, assets_key, liabilities_key in _TOTALS:
+            assets = row.get(assets_key)
+            liabilities = row.get(liabilities_key)
+            if isinstance(assets, Decimal) and isinstance(liabilities, Decimal):
+                row[total] = assets + liabilities
+            else:
+                row[total] = None
 
 
 @report(
@@ -139,6 +164,7 @@ _REPORT_ID = "core:net_worth_currencies"
         ),
     ),
     default_columns=("currency_code", "balance_date", "net_worth", "net_worth_home"),
+    on_converted=_recompute_segment_totals,
 )
 def net_worth_currencies(
     db: Database,  # contract handle; this runner builds pure SQL
