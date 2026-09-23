@@ -69,7 +69,7 @@ Usage: `moneybin investments list [OPTIONS]`
 | `--from` | text |  | Start trade date YYYY-MM-DD (inclusive) |
 | `--to` | text |  | End trade date YYYY-MM-DD (inclusive) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments holdings
@@ -98,7 +98,7 @@ Usage: `moneybin investments holdings [OPTIONS]`
 |---|---|---|---|
 | `--account` | text |  | Account ID or free-text reference |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -133,7 +133,7 @@ Usage: `moneybin investments gains [OPTIONS]`
 | `--to` | text |  | End disposal date YYYY-MM-DD (inclusive) |
 | `--term` | text |  | Filter by holding term: short or long |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -178,7 +178,7 @@ Usage: `moneybin investments lots list [OPTIONS]`
 | `--security` | text |  | Ticker, CUSIP, ISIN, or catalog name |
 | `--open / --all` | flag | `true` | Show only open lots (default) or the full open+closed history |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -237,7 +237,7 @@ Usage: `moneybin investments matches pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -252,7 +252,7 @@ Usage: `moneybin investments matches history [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -267,7 +267,7 @@ Usage: `moneybin investments matches run [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin investments prices
 
@@ -310,7 +310,7 @@ Usage: `moneybin investments prices pull [OPTIONS]`
 | `--since` | text |  | Fetch closes from this ISO date forward. Default: the last few days. |
 | `--refresh` | flag |  | Rebuild the price models so the new closes value holdings right away |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin investments prices set
 
@@ -401,7 +401,7 @@ Usage: `moneybin investments prices list [OPTIONS] SECURITY`
 | `--since` | text |  | Only show prices from this ISO date forward |
 | `--source` | one of `plaid`, `tiingo`, `coingecko`, `override`, `trade_implied` |  | Filter by the source that supplied each close |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments prices token
@@ -449,7 +449,7 @@ Usage: `moneybin investments securities list [OPTIONS]`
 |---|---|---|---|
 | `--type` | text |  | Filter by security_type (equity, etf, mutual_fund, bond, crypto, cash, other) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments securities add
@@ -547,7 +547,7 @@ Usage: `moneybin investments securities links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin investments securities links set
@@ -618,5 +618,5 @@ Usage: `moneybin investments securities links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

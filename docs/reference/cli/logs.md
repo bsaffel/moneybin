@@ -24,7 +24,7 @@ Usage: `moneybin logs [OPTIONS] [STREAM]`
 | `--until` | text |  | Upper time bound: duration ago or absolute timestamp |
 | `--grep` | text |  | Regex pattern to filter log messages |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--print-path` | flag |  | Print the log directory and exit (no stream required) |
 | `--prune` | flag |  | Delete old log files instead of viewing (no stream required) |
 | `--older-than` | text |  | With --prune: delete logs older than this duration (e.g., 30d) |

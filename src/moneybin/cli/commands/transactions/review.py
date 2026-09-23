@@ -215,6 +215,7 @@ def _review_matches_noninteractive(
                 selection = svc.preview_pending(limit=limit)
                 if output == OutputFormat.TEXT:
                     from moneybin.cli.render import render_summary
+                    from moneybin.cli.utils import confidence_cell
 
                     render_summary(
                         [
@@ -225,7 +226,8 @@ def _review_matches_noninteractive(
                                     item.match_id,
                                     f"{item.match_type}: "
                                     f"{item.source_transaction_id_a} ↔ "
-                                    f"{item.source_transaction_id_b}",
+                                    f"{item.source_transaction_id_b}; "
+                                    f"confidence {confidence_cell(item.confidence_score)}",
                                 )
                                 for item in selection.items
                             ],
@@ -253,40 +255,46 @@ def _review_matches_noninteractive(
                         ),
                         sensitivity="low",
                     )
-                    if bulk.reversed_by_reconciliation:
+                    if bulk.reversed_by_reconciliation or bulk.accounting_stale:
                         envelope = envelope.with_error(
                             ErrorDetail(
                                 message=(
                                     f"{bulk.reversed_by_reconciliation} requested "
                                     "match decision(s) were reversed by reconciliation."
+                                    if bulk.reversed_by_reconciliation
+                                    else "Match decisions were saved, but FX accounting is stale."
                                 ),
                                 code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
                             )
                         )
                     render_or_json(envelope, output, cli_actor="review")
                 else:
+                    stale_disclosures = ()
+                    if bulk.accounting_stale:
+                        stale_disclosures = (
+                            "! Match decisions were saved, but FX accounting is stale. "
+                            f"{bulk.accounting_hint or 'Refresh before relying on FX reports.'}",
+                        )
                     emit_human_result(
-                        compose_human_result([
-                            build_summary(
-                                [
-                                    ("Requested", str(len(selection.ids))),
-                                    ("Accepted", str(bulk.accepted)),
-                                    (
-                                        "Review scope",
-                                        f"First {selection.limit} in review order",
-                                    ),
-                                ],
-                                title="Match decisions saved",
-                            )
-                        ]),
+                        compose_human_result(
+                            [
+                                build_summary(
+                                    [
+                                        ("Requested", str(len(selection.ids))),
+                                        ("Accepted", str(bulk.accepted)),
+                                        (
+                                            "Review scope",
+                                            f"First {selection.limit} in review order",
+                                        ),
+                                    ],
+                                    title="Match decisions saved",
+                                )
+                            ],
+                            disclosures=stale_disclosures,
+                        ),
                         policy=get_terminal_policy(),
                         finite_read=False,
                         receipt=True,
-                    )
-                if bulk.accounting_stale:
-                    logger.warning(
-                        "! Match decisions were saved, but FX accounting is stale. "
-                        f"{bulk.accounting_hint or 'Refresh before relying on FX reports.'}"
                     )
                 if bulk.reversed_by_reconciliation:
                     # Named separately from the retirement warning below: that
@@ -307,7 +315,7 @@ def _review_matches_noninteractive(
                 # cli.md reads as a failed operation. --confirm-all is the
                 # surface most likely to run unattended, so the status is the
                 # only signal some callers will ever check.
-                if bulk.reversed_by_reconciliation:
+                if bulk.reversed_by_reconciliation or bulk.accounting_stale:
                     raise typer.Exit(1)
                 return
             # Independent ifs (not elif): `--confirm X --reject Y` targets two

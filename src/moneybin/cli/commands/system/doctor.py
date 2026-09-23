@@ -48,7 +48,7 @@ def doctor_command(
     verbose: bool = verbose_option,
     full: bool = full_option,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # diagnostics and required recovery are results
 ) -> None:
     """Run pipeline integrity checks across all invariants.
 
@@ -143,12 +143,7 @@ def doctor_command(
             lines.append(f"   Affected: {', '.join(result.affected_ids)}")
         # Affected IDs and recovery actions remain visible for non-pass checks;
         # the five-action cap bounds guidance for checks with many affected rows.
-        #
-        # They are the one thing `-q` does silence, which is the same line
-        # `echo_report_notes` draws: quiet reaches next-step hints and nothing
-        # else. A 💡 suggests a command to run next; the invariant above it and
-        # the summary below it are the answer, and a flag asking for less
-        # chatter is not a claim that anything stopped being wrong.
+        # Quiet preserves recovery guidance needed to act on a failed check.
         recovery = result.recovery_actions or []
         for action in recovery:
             lines.append(

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
 from moneybin import error_codes
@@ -26,6 +27,7 @@ from moneybin.cli.commands.accounts.links import (
     _merge_preview,  # pyright: ignore[reportPrivateUsage]
     app,
 )
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.errors import UserError
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.orchestration.refresh import RefreshResult
@@ -40,6 +42,23 @@ from moneybin.services.review_decisions_service import (
 )
 
 runner = CliRunner()
+
+
+def _terminal_policy(*, interactive: bool) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=interactive,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +476,39 @@ class TestLinksPending:
 
 class TestLinksSet:
     """Tests for `accounts links set`."""
+
+    @pytest.fixture(autouse=True)
+    def interactive_merge_confirmation(self, mocker: MockerFixture) -> None:
+        """Default prompt tests to an interactive text terminal."""
+        mocker.patch(
+            "moneybin.cli.commands.accounts.links.get_terminal_policy",
+            return_value=_terminal_policy(interactive=True),
+        )
+
+    @patch("moneybin.cli.commands.accounts.links.get_database")
+    @patch("moneybin.cli.commands.accounts.links._merge_preview")
+    @patch("moneybin.services.account_links_service.AccountLinksService.set")
+    def test_set_into_refuses_piped_yes_without_yes_flag(
+        self,
+        mock_set: MagicMock,
+        mock_preview: MagicMock,
+        mock_get_db: MagicMock,
+        mocker: MockerFixture,
+    ) -> None:
+        """Piped input cannot satisfy the destructive merge confirmation."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_preview.return_value = _previewed_merge()
+        mock_set.return_value = _clean_rematch()
+        mocker.patch(
+            "moneybin.cli.commands.accounts.links.get_terminal_policy",
+            return_value=_terminal_policy(interactive=False),
+        )
+
+        result = runner.invoke(app, ["set", "dec001", "--into", "CAND001"], input="y\n")
+
+        assert result.exit_code == 1
+        assert "requires an interactive terminal" in result.output
+        mock_set.assert_not_called()
 
     @patch("moneybin.cli.commands.accounts.links.get_database")
     @patch("moneybin.services.account_links_service.AccountLinksService.set")

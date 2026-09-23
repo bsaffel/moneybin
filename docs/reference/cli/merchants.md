@@ -26,7 +26,7 @@ Usage: `moneybin merchants list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants create
@@ -79,7 +79,7 @@ Usage: `moneybin merchants links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants links set
@@ -127,7 +127,7 @@ Usage: `moneybin merchants links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin merchants links run

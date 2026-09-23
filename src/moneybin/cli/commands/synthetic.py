@@ -131,6 +131,22 @@ def _render_interrupted(profile: str, *, terminal: TerminalPolicy) -> None:
     )
 
 
+def _render_reset_interrupted(profile: str, *, terminal: TerminalPolicy) -> None:
+    """Report reset interruption after destructive work may have started."""
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [("Profile", profile), ("Saved state", "Saved scope is unknown.")],
+                title="Synthetic reset cancelled",
+            )
+        ]),
+        policy=terminal,
+        finite_read=False,
+        no_pager=True,
+        receipt=True,
+    )
+
+
 def _reset_safety_check(db: Database, profile: str) -> None:
     """Refuse a target whose provenance does not make reset safe."""
     from moneybin.synthetic.reset import (
@@ -335,6 +351,7 @@ def synthetic_reset(
         original_profile = None
     set_current_profile(target_profile)
 
+    reset_started = False
     try:
         with handle_cli_errors(cli_actor="synthetic_reset"):
             if not yes and not terminal.interactive:
@@ -358,24 +375,27 @@ def synthetic_reset(
             with get_database(read_only=False) as db:
                 _reset_safety_check(db, target_profile)
                 SYNTHETIC_RESET_TOTAL.labels(persona=persona).inc()
+                reset_started = True
                 reset_synthetic_rows(db)
 
-        try:
-            receipt = _run_generate(
-                persona=persona,
-                profile=target_profile,
-                years=years,
-                seed=seed,
-                skip_transform=skip_transform,
-                terminal=terminal,
-                cli_actor="synthetic_reset",
-            )
-        except KeyboardInterrupt:
-            _render_interrupted(target_profile, terminal=terminal)
-            raise typer.Exit(130) from None
+        receipt = _run_generate(
+            persona=persona,
+            profile=target_profile,
+            years=years,
+            seed=seed,
+            skip_transform=skip_transform,
+            terminal=terminal,
+            cli_actor="synthetic_reset",
+        )
         _render_generation_receipt(receipt, terminal=terminal)
         if receipt.partial:
             raise typer.Exit(1)
+    except KeyboardInterrupt:
+        if reset_started:
+            _render_reset_interrupted(target_profile, terminal=terminal)
+        else:
+            _render_reset_cancelled(target_profile, terminal=terminal)
+        raise typer.Exit(130) from None
     finally:
         if original_profile is None:
             clear_current_profile()

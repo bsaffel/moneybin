@@ -47,7 +47,17 @@ class _ConsoleNoiseFilter(logging.Filter):
         if record.levelno >= logging.WARNING:
             return True
         if self._stream == "mcp":
-            return not (record.name == "sqlmesh" or record.name.startswith("sqlmesh."))
+            suppressed_prefixes = (
+                "sqlmesh",
+                "httpx",
+                "httpcore",
+                "moneybin.matching.engine",
+                "moneybin.extractors.plaid",
+            )
+            return not any(
+                record.name == prefix or record.name.startswith(f"{prefix}.")
+                for prefix in suppressed_prefixes
+            )
         if self._stream != "cli":
             return True
         return self._verbose

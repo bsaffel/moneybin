@@ -78,7 +78,7 @@ _CLI_ENCRYPTION_KEY_ENV_VAR = "MONEYBIN_DATABASE__ENCRYPTION_KEY"
 
 def _require_interactive_prompt(*, action: str, guidance: str) -> None:
     """Refuse prompts when redirected streams cannot express a real choice."""
-    if sys.stdin.isatty() and sys.stdout.isatty():
+    if get_terminal_policy().interactive:
         return
     typer.echo(f"{action} requires an interactive terminal. {guidance}", err=True)
     raise typer.Exit(1)
@@ -1021,6 +1021,7 @@ def db_key_rotate(
     original_archived = False
     replacement_move_started = False
     database_rotated = False
+    keychain_updated = False
     try:
         with operation_progress(get_terminal_policy()) as report:
             with _load_encryption_key() as old_key:
@@ -1035,6 +1036,9 @@ def db_key_rotate(
                         build_attach_sql(rotated_path, new_key, alias="new_db")
                     )
                     conn.execute("COPY FROM DATABASE old_db TO new_db")
+                except KeyboardInterrupt:
+                    rotated_path.unlink(missing_ok=True)
+                    raise
                 except (
                     Exception
                 ) as e:  # duckdb raises untyped errors on ATTACH/COPY failure
@@ -1060,6 +1064,7 @@ def db_key_rotate(
 
             report(ProgressEvent("Updating encryption keychain entry"))
             store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
+            keychain_updated = True
     except Exception as e:  # keyring backends may raise non-specific errors
         if not database_rotated:
             if original_archived:
@@ -1067,6 +1072,13 @@ def db_key_rotate(
                     "Key rotation could not replace the database. The original database "
                     f"was archived at {old_backup}; replacement state is unknown. Inspect "
                     "both files before retrying.",
+                    err=True,
+                )
+                raise typer.Exit(1) from e
+            if original_move_started or replacement_move_started:
+                typer.echo(
+                    "Key rotation failed during the database swap; file state is "
+                    "unknown. Inspect the database and retained backup before retrying.",
                     err=True,
                 )
                 raise typer.Exit(1) from e
@@ -1086,16 +1098,23 @@ def db_key_rotate(
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
         if database_rotated:
-            typer.echo(
-                "Key rotation interrupted after the database swap began; the keychain "
-                "update is unconfirmed. Keep the old database backup until access is restored.",
-                err=True,
-            )
-            typer.echo(
-                "Recovery: set the following env var to regain access:", err=True
-            )
-            typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
-            typer.echo(f"  (old database backup: {old_backup})", err=True)
+            if keychain_updated:
+                typer.echo(
+                    "Key rotation interrupted after the keychain update completed. "
+                    "Keep the old database backup until access is verified.",
+                    err=True,
+                )
+            else:
+                typer.echo(
+                    "Key rotation interrupted after the database swap began; the keychain "
+                    "update is unconfirmed. Keep the old database backup until access is restored.",
+                    err=True,
+                )
+                typer.echo(
+                    "Recovery: set the following env var to regain access:", err=True
+                )
+                typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+                typer.echo(f"  (old database backup: {old_backup})", err=True)
         elif original_archived:
             typer.echo(
                 "Key rotation interrupted after the original database was archived. The "

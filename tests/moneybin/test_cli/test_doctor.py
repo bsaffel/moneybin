@@ -122,15 +122,10 @@ def test_quiet_never_hides_a_failing_invariant(
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
 @patch("moneybin.cli.commands.system.doctor.DoctorService")
-def test_quiet_silences_the_next_step_hints_and_nothing_else(
+def test_quiet_preserves_required_recovery_actions(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """The one thing `-q` takes, on the line `echo_report_notes` already draws.
-
-    A 💡 suggests a command to run next, which is the informational status the
-    flag is for. The invariant above it and the summary below it are the
-    answer.
-    """
+    """Quiet preserves the failing result and the actions needed to recover."""
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
     result = runner.invoke(app, ["system", "doctor", "-q"])

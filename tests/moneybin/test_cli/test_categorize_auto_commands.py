@@ -145,6 +145,32 @@ def _confirm_result(
 @patch("moneybin.services.auto_rule_service.AutoRuleService")
 @patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
 @patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_accept_skips_are_partial_failures_in_text_and_json(
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """A skipped proposal is preserved in the receipt but makes the batch nonzero."""
+    mock_db_ctx.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.accept.return_value = _confirm_result(
+        approved=1, skipped=1
+    )
+
+    text_result = runner.invoke(app, ["auto", "accept", "--accept", "a1"])
+    json_result = runner.invoke(
+        app, ["auto", "accept", "--accept", "a1", "--output", "json"]
+    )
+
+    assert text_result.exit_code == 1, text_result.output
+    assert "partially completed" in text_result.stdout
+    assert json_result.exit_code == 1, json_result.output
+    body = json.loads(json_result.stdout)
+    assert body["status"] == "error"
+    assert body["data"]["approved"] == 1
+    assert body["data"]["skipped"] == 1
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
 def test_auto_accept_explicit_accept(
     mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:

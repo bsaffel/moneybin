@@ -25,6 +25,7 @@ from moneybin.cli.commands.reports import user_reports
 from moneybin.cli.main import app
 from moneybin.cli.output import CLI_MAX_ROWS
 from moneybin.cli.report_params import parse_parameter_value
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass, Tier
@@ -47,6 +48,40 @@ _ROW: dict[str, Any] = {
     # so the approval cannot land on a revision the user never saw.
     "class_fingerprint": "fp-at-prompt-time",
 }
+
+
+def _noninteractive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
+def _interactive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 def _service(**attributes: Any) -> MagicMock:
@@ -665,7 +700,14 @@ def test_create_reads_the_query_from_a_file(tmp_path: Path) -> None:
     query.write_text("SELECT account_id FROM core.dim_accounts\n")
     service = _service(create=_save_outcome())
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app, ["reports", "create", "my_accounts", "--sql-file", str(query)]
         )
@@ -774,7 +816,14 @@ def test_set_routes_a_missing_sql_file_through_the_json_error_boundary(
 def test_create_declares_a_typed_parameter_with_a_default() -> None:
     service = _service(create=_save_outcome())
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1096,7 +1145,14 @@ def test_delete_aborts_when_the_prompt_is_declined() -> None:
     """
     service = _service()
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(app, ["reports", "delete", "my_accounts"], input="n\n")
 
     assert result.exit_code == 0
@@ -1133,6 +1189,33 @@ def test_delete_reports_an_unaskable_confirmation_through_the_envelope() -> None
     # the combined stream would put that text in front of the JSON.
     payload = json.loads(result.stdout)
     assert payload["error"]["code"] == "mutation_confirmation_required"
+    service.delete.assert_not_called()
+
+
+def test_delete_refuses_piped_yes_without_elicitation() -> None:
+    """A redirected answer cannot authorize deletion when the prompt was hidden."""
+    service = _service()
+
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_noninteractive_policy(),
+        ),
+        patch("typer.confirm") as confirm,
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "delete", "my_accounts", "--output", "json"],
+            input="y\n",
+        )
+
+    assert result.exit_code == 1, result.output
+    assert (
+        json.loads(result.stdout)["error"]["code"] == "mutation_confirmation_required"
+    )
+    confirm.assert_not_called()
     service.delete.assert_not_called()
 
 
@@ -1183,7 +1266,14 @@ def test_reclassify_passes_the_prompt_answer_through_to_the_service(
         )
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         runner.invoke(
             app,
             [
@@ -1232,7 +1322,14 @@ def test_reclassify_asks_about_the_class_derivation_produces_now() -> None:
         ),
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1337,6 +1434,46 @@ def test_reclassify_reports_that_it_could_not_ask_rather_than_aborting() -> None
     assert "Aborted" not in result.output
 
 
+def test_reclassify_piped_yes_keeps_no_elicitation_semantics() -> None:
+    """A hidden prompt passes None to the service instead of consuming input."""
+    service = _service(
+        reclassify=ReclassifyOutcome(
+            report_id=_ROW["report_id"],
+            column="spend",
+            from_class=DataClass.TXN_AMOUNT,
+            to_class=DataClass.AGGREGATE,
+        )
+    )
+
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_noninteractive_policy(),
+        ),
+        patch("typer.confirm") as confirm,
+    ):
+        runner.invoke(
+            app,
+            [
+                "reports",
+                "reclassify",
+                "my_accounts",
+                "--column",
+                "spend",
+                "--to",
+                "aggregate",
+                "--reason",
+                "A single total reveals no transaction amount.",
+            ],
+            input="y\n",
+        )
+
+    assert service.reclassify.call_args.kwargs["confirmed"] is None
+    confirm.assert_not_called()
+
+
 def test_reclassify_routes_a_decline_through_the_service_not_an_early_exit() -> None:
     """The decline reaches the service, unlike ``delete``'s exit-0 cancel.
 
@@ -1361,7 +1498,14 @@ def test_reclassify_routes_a_decline_through_the_service_not_an_early_exit() -> 
         code=error_codes.REPORT_CLASS_CONFIRM_REQUIRED,
     )
 
-    with _patch_database(), _patch_service(service):
+    with (
+        _patch_database(),
+        _patch_service(service),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
+    ):
         result = runner.invoke(
             app,
             [
@@ -1849,6 +1993,10 @@ def test_a_confirm_prompt_is_never_held_open_over_the_writer_lock(
         ),
         patch("typer.confirm", side_effect=_decline),
         _patch_service(_service()),
+        patch(
+            "moneybin.cli.commands.reports.user_reports.get_terminal_policy",
+            return_value=_interactive_policy(),
+        ),
     ):
         runner.invoke(app, argv)
 

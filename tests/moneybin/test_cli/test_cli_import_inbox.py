@@ -323,6 +323,36 @@ def test_inbox_drain_busy_is_nonzero_in_json_with_the_service_payload(
     ]
 
 
+def test_inbox_drain_interrupt_reports_unknown_saved_scope(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """Ctrl-C during a drain cannot claim that earlier file work was rolled back."""
+    patch_inbox.sync.side_effect = KeyboardInterrupt
+
+    result = runner.invoke(app, ["import", "inbox"])
+
+    assert result.exit_code == 130, result.output
+    assert "Inbox drain cancelled" in result.stdout
+    assert "Saved scope is unknown" in result.stdout
+
+
+def test_inbox_drain_interrupt_returns_json_failure(
+    runner: CliRunner, patch_inbox: MagicMock
+) -> None:
+    """A script receives a parseable cancellation envelope, not a text receipt."""
+    patch_inbox.sync.side_effect = KeyboardInterrupt
+
+    result = runner.invoke(app, ["import", "inbox", "--output", "json"])
+
+    assert result.exit_code == 130, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "import_interrupted"
+    assert payload["error"]["details"] == {
+        "outcome": "cancelled",
+        "saved_scope": "unknown",
+    }
+
+
 def test_inbox_drain_receipt_never_opens_a_pager(
     runner: CliRunner, patch_inbox: MagicMock, mocker: MockerFixture
 ) -> None:

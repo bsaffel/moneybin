@@ -143,6 +143,7 @@ class PendingMatchPreview:
     match_type: str
     source_transaction_id_a: str
     source_transaction_id_b: str
+    confidence_score: float | None
 
 
 def _non_pending_recovery(
@@ -644,6 +645,11 @@ class MatchingService:
                 match_type=str(row["match_type"]),
                 source_transaction_id_a=str(row["source_transaction_id_a"]),
                 source_transaction_id_b=str(row["source_transaction_id_b"]),
+                confidence_score=(
+                    float(row["confidence_score"])
+                    if row["confidence_score"] is not None
+                    else None
+                ),
             )
             for row in rows
         )

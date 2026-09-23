@@ -238,7 +238,7 @@ def matches_run(
                     )
                     raise
                 _emit_match_receipt(
-                    "Matching complete" if result.has_matches else "Matching complete",
+                    "Matching complete",
                     result.summary() if result.has_matches else "No new matches found",
                     pending=result.has_pending,
                 )

@@ -21,10 +21,12 @@ from moneybin.privacy.payloads.accounts import (
 from moneybin.services.account_service import CLEAR
 
 
-def _terminal(width: int, *, style: bool = False) -> TerminalPolicy:
+def _terminal(
+    width: int, *, style: bool = False, interactive: bool = False
+) -> TerminalPolicy:
     return TerminalPolicy(
         output="text",
-        interactive=False,
+        interactive=interactive,
         page=False,
         color=style,
         style=style,
@@ -947,9 +949,10 @@ class TestAccountsSet:
     def test_set_unknown_subtype_tty_confirm_yes(self, runner: CliRunner) -> None:
         from unittest.mock import MagicMock, patch
 
-        # Patch at the module level where sys is imported
-        with patch("moneybin.cli.commands.accounts.sys") as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
+        with patch(
+            "moneybin.cli.commands.accounts.get_terminal_policy",
+            return_value=_terminal(80, interactive=True),
+        ):
             with (
                 patch("moneybin.cli.commands.accounts.get_database"),
                 patch(
@@ -980,9 +983,10 @@ class TestAccountsSet:
     def test_set_unknown_subtype_tty_confirm_no(self, runner: CliRunner) -> None:
         from unittest.mock import patch
 
-        # Patch at the module level where sys is imported
-        with patch("moneybin.cli.commands.accounts.sys") as mock_sys:
-            mock_sys.stdin.isatty.return_value = True
+        with patch(
+            "moneybin.cli.commands.accounts.get_terminal_policy",
+            return_value=_terminal(80, interactive=True),
+        ):
             with patch(
                 "moneybin.cli.commands.accounts.AccountService"
             ) as mock_service_class:
@@ -993,6 +997,35 @@ class TestAccountsSet:
                 )
         assert result.exit_code == 2
         mock_service_class.return_value.settings_update.assert_not_called()
+
+    @pytest.mark.unit
+    def test_set_unknown_subtype_refuses_when_stdout_is_redirected(self) -> None:
+        """A readable piped answer cannot authorize a non-canonical write."""
+        from unittest.mock import MagicMock, patch
+
+        from moneybin.cli.commands.accounts import (
+            _maybe_prompt_soft_validation,  # pyright: ignore[reportPrivateUsage]
+        )
+
+        with (
+            patch(
+                "moneybin.cli.commands.accounts.get_terminal_policy",
+                return_value=MagicMock(interactive=False),
+            ),
+            patch(
+                "moneybin.cli.commands.accounts.typer.confirm", return_value=True
+            ) as confirm,
+        ):
+            approved = _maybe_prompt_soft_validation(
+                "Plaid subtype",
+                "chequing",
+                is_canonical=False,
+                suggestion="checking",
+                yes=False,
+            )
+
+        assert not approved
+        confirm.assert_not_called()
 
 
 class TestAccountsResolve:

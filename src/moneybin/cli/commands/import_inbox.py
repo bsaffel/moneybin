@@ -8,6 +8,7 @@ from typing import Any, cast
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -339,9 +340,42 @@ def inbox_default(
     from moneybin.config import get_settings
     from moneybin.database import get_database
 
-    with handle_cli_errors(cli_actor="inbox_default"):
-        with get_database(read_only=False) as db:
-            result = InboxService(db=db, settings=get_settings()).sync()
+    try:
+        with handle_cli_errors(cli_actor="inbox_default"):
+            with get_database(read_only=False) as db:
+                result = InboxService(db=db, settings=get_settings()).sync()
+    except KeyboardInterrupt:
+        if output == OutputFormat.JSON:
+            from moneybin.cli.utils import emit_json_failure
+            from moneybin.errors import UserError
+
+            emit_json_failure(
+                UserError(
+                    "Inbox drain cancelled; saved scope is unknown",
+                    code=error_codes.IMPORT_INTERRUPTED,
+                    hint="Run 'moneybin import inbox list' to inspect remaining files.",
+                    details={"outcome": "cancelled", "saved_scope": "unknown"},
+                ),
+                cli_actor="inbox_default",
+            )
+        else:
+            from moneybin.cli.utils import get_terminal_policy
+
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [
+                            ("Saved state", "Saved scope is unknown."),
+                            ("Next step", "`moneybin import inbox list`"),
+                        ],
+                        title="Inbox drain cancelled",
+                    )
+                ]),
+                policy=get_terminal_policy(),
+                finite_read=False,
+                receipt=True,
+            )
+        raise typer.Exit(130) from None
 
     # Ahead of both output branches: -q drops informational output and the JSON
     # branch returns before ever reaching the text path, but a reversal of the

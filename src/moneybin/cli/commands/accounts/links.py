@@ -579,6 +579,13 @@ def _confirm_merge(decision_id: str, target_account_id: str) -> _ApprovedMerge |
     itself to them. A merge that turns out to move nothing — the decision is
     already settled — returns ``None`` and asks nothing.
     """
+    if not get_terminal_policy().interactive:
+        typer.echo(
+            "Merge confirmation requires an interactive terminal. "
+            "Use --yes only after reviewing the merge.",
+            err=True,
+        )
+        raise typer.Exit(1)
     preview = _merge_preview(decision_id, target_account_id)
     if preview is None:
         return None

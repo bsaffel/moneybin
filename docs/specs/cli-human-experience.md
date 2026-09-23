@@ -46,7 +46,8 @@ contract. Do not build a custom terminal toolkit or add dependencies for decorat
 4. `--wide` reveals additional table columns. `--verbose` reveals diagnostics and
    stage timings. JSON retains its existing full-data/field-projection contract.
 5. Quiet suppresses progress and optional chatter, never requested results,
-   failures, truncation, incomplete-data warnings, or conversion disclosures.
+   failures, required recovery actions, truncation, incomplete-data warnings, or
+   conversion disclosures.
 6. Empty results explain the searched scope and an appropriate next step.
    Distinguish no records, no matches for filters, and unavailable data.
 7. Suggestions use executable CLI commands with known arguments and relevant

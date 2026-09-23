@@ -566,13 +566,15 @@ def _confirm_delete(name: object, report_id: str) -> bool:
     one. Raised as a ``UserError`` instead, the same way
     :func:`_prompt_for_downgrade` routes its own unaskable case.
 
-    PATTERN: confirm-abort-envelope — the target shape for every CLI confirm.
-    The other 29 `typer.confirm` call sites (31 total across 18 modules; find them
-    with `grep -rn "typer.confirm" src/moneybin/cli/commands/`) still let `Abort`
-    escape, so a piped invocation without `--yes` gets a bare `Aborted.` there.
-    Each is a mechanical change, but 18 modules of unrelated commands do not
-    belong in this milestone's diff, so the migration is filed instead.
+    PATTERN: confirm-abort-envelope — confirmations must refuse when the active
+    terminal policy cannot elicit an answer, before reading standard input.
     """
+    if not get_terminal_policy().interactive:
+        raise UserError(
+            "Deleting a saved report needs explicit confirmation.",
+            code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+            hint="This surface had no way to ask. Re-run with --yes to confirm.",
+        )
     try:
         return typer.confirm(f"Delete saved report {name} ({report_id})?", err=True)
     except click.Abort as e:
@@ -601,6 +603,8 @@ def _prompt_for_downgrade(
     fingerprint still matches, and a downgrade read as ``txn_amount → aggregate``
     could be ``routing_number → aggregate``.
     """
+    if not get_terminal_policy().interactive:
+        return None
     try:
         return typer.confirm(
             f"Permanently lower masking of {column!r} from {from_class.value} to "

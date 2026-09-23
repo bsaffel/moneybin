@@ -34,7 +34,7 @@ Usage: `moneybin transform plan [OPTIONS]`
 |---|---|---|---|
 | `--apply, -a` | flag |  | Automatically apply the plan |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transform apply
 
@@ -50,7 +50,7 @@ Usage: `moneybin transform apply [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transform seed
 
@@ -73,7 +73,7 @@ Usage: `moneybin transform status [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform validate
@@ -87,7 +87,7 @@ Usage: `moneybin transform validate [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform audit
@@ -103,7 +103,7 @@ Usage: `moneybin transform audit [OPTIONS]`
 | `--start` | text |  | Required. Start date for audit window (YYYY-MM-DD) |
 | `--end` | text |  | Required. End date for audit window (YYYY-MM-DD) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transform restate

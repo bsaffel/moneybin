@@ -244,7 +244,7 @@ quiet_option: bool = typer.Option(
     False,
     "-q",
     "--quiet",
-    help="Suppress informational output (status lines, progress, ✅).",
+    help="Suppress optional status lines and progress; preserve results and recovery.",
     callback=_set_quiet_flag,
 )
 

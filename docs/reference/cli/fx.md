@@ -43,7 +43,7 @@ Usage: `moneybin fx rate [OPTIONS] FROM_CURRENCY TO_CURRENCY [RATE_DATE]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin fx list
 
@@ -72,7 +72,7 @@ Usage: `moneybin fx list [OPTIONS] FROM_CURRENCY TO_CURRENCY`
 |---|---|---|---|
 | `--since` | text |  | Only show rates from this ISO date forward |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin fx set
@@ -107,7 +107,7 @@ Usage: `moneybin fx set [OPTIONS] FROM_CURRENCY TO_CURRENCY RATE_DATE RATE`
 |---|---|---|---|
 | `--note` | text |  | Why this rate was recorded (e.g. the bank's own rate) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin fx delete
 
@@ -134,4 +134,4 @@ Usage: `moneybin fx delete [OPTIONS] FROM_CURRENCY TO_CURRENCY RATE_DATE`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

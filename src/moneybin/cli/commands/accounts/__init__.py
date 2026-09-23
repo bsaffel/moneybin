@@ -11,7 +11,6 @@ include_in_net_worth, and is_archived fold in via flags (see
 from __future__ import annotations
 
 import logging
-import sys
 from collections.abc import Callable
 from decimal import Decimal
 
@@ -255,7 +254,7 @@ def _maybe_prompt_soft_validation(
     if yes:
         typer.echo(msg, err=True)
         return True
-    if sys.stdin.isatty():
+    if get_terminal_policy().interactive:
         typer.echo(msg, err=True)
         return typer.confirm("Proceed anyway?", default=False)
     # Non-TTY without --yes: refuse.

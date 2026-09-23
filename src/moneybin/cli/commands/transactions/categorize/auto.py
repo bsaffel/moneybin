@@ -140,6 +140,7 @@ def categorize_auto_accept(
             "many transactions at once."
         ),
     ),
+    output: OutputFormat = output_option,
 ) -> None:
     """Batch accept/reject auto-rule proposals."""
     from moneybin.services.auto_rule_service import AutoRuleService
@@ -150,7 +151,7 @@ def categorize_auto_accept(
         )
         raise typer.Exit(2)
 
-    with handle_cli_errors():
+    with handle_cli_errors(cli_actor="transactions_categorize_auto_accept"):
         with get_database(read_only=False) as db:
             svc = AutoRuleService(db)
             if accept_all or reject_all:
@@ -175,29 +176,50 @@ def categorize_auto_accept(
                 allow_broad=allow_broad,
             )
 
-    emit_human_result(
-        compose_human_result([
-            build_summary(
-                [
-                    ("Accepted", str(result.approved)),
-                    ("Rejected", str(result.rejected)),
-                    ("Skipped", str(result.skipped)),
-                    (
-                        "Existing transactions categorized",
-                        str(result.newly_categorized),
-                    ),
-                ],
-                title=(
-                    "Auto-rule decision partially completed"
-                    if result.skipped
-                    else "Auto-rule decisions applied"
-                ),
+    if output == OutputFormat.JSON:
+        from moneybin import error_codes
+        from moneybin.adapters.categorize_adapters import auto_accept_envelope
+        from moneybin.errors import ErrorDetail
+
+        envelope = auto_accept_envelope(result)
+        if result.skipped:
+            envelope = envelope.with_error(
+                ErrorDetail(
+                    message=f"{result.skipped} proposal(s) were skipped.",
+                    code=error_codes.MUTATION_CONSTRAINT_VIOLATION,
+                )
             )
-        ]),
-        policy=get_terminal_policy(),
-        finite_read=False,
-        receipt=True,
-    )
+        render_or_json(
+            envelope,
+            output,
+            cli_actor="transactions_categorize_auto_accept",
+        )
+    else:
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Accepted", str(result.approved)),
+                        ("Rejected", str(result.rejected)),
+                        ("Skipped", str(result.skipped)),
+                        (
+                            "Existing transactions categorized",
+                            str(result.newly_categorized),
+                        ),
+                    ],
+                    title=(
+                        "Auto-rule decision partially completed"
+                        if result.skipped
+                        else "Auto-rule decisions applied"
+                    ),
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
+    if result.skipped:
+        raise typer.Exit(1)
 
 
 @app.command("stats")

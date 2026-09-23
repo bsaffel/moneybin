@@ -14,5 +14,5 @@ Usage: `moneybin stats [OPTIONS]`
 | `--since` | text |  | Time window (e.g., 7d, 24h) |
 | `--metric` | text |  | Filter to a metric family (e.g., import) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

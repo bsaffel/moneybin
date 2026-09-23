@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Generator
+from collections.abc import Generator, Iterable, Sequence
 from pathlib import Path
 
 import pytest
@@ -80,6 +80,33 @@ def test_system_audit_history_serializes_recovery_actions(
     action = blocked[0]["recovery_actions"][0]
     assert action["tool"] == "system_audit_undo"
     assert "operation_id" in action["arguments"]
+
+
+def test_system_audit_history_names_unblocked_refusals_not_undoable(
+    runner: CliRunner, db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An already-undone operation has no blocking operation to name."""
+    note = TransactionService(db).add_note("T1", "alpha", actor="cli")
+    operation_id = next(
+        iter(AuditService(db).list_events(target_id=note.note_id))
+    ).operation_id
+    undone = runner.invoke(app, ["system", "audit", "undo", operation_id, "--yes"])
+    assert undone.exit_code == 0, undone.output
+
+    rendered_rows: list[tuple[object, ...]] = []
+
+    def capture_rows(
+        _columns: Sequence[str], rows: Iterable[Sequence[object]], **_kwargs: object
+    ) -> str:
+        rendered_rows.extend(tuple(row) for row in rows)
+        return "history"
+
+    monkeypatch.setattr("moneybin.cli.commands.system.audit.build_rows", capture_rows)
+    result = runner.invoke(app, ["system", "audit", "history", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert rendered_rows
+    assert rendered_rows[0][-1] == "not undoable"
 
 
 def test_system_audit_show_returns_chain(runner: CliRunner, db: Database) -> None:

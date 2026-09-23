@@ -30,7 +30,7 @@ Usage: `moneybin accounts list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--include-archived` | flag |  | Include archived accounts in the listing |
 | `--type` | text |  | Filter by account_type (canonical: depository, credit, loan, investment, other) or account_subtype (source detail: checking, savings, credit card, ...); case-insensitive |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
@@ -46,7 +46,7 @@ Usage: `moneybin accounts summary [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts get
@@ -66,7 +66,7 @@ Usage: `moneybin accounts get [OPTIONS] ACCOUNT_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts set
@@ -140,7 +140,7 @@ Usage: `moneybin accounts resolve [OPTIONS] QUERY`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 1) | `5` | Maximum number of candidates to return |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance
@@ -171,7 +171,7 @@ Usage: `moneybin accounts balance show [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--account` | text |  | Filter to a single account_id |
 | `--as-of` | text |  | ISO date (YYYY-MM-DD); shows balance on or before |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
@@ -190,7 +190,7 @@ Usage: `moneybin accounts balance history [OPTIONS]`
 | `--from` | text |  |  |
 | `--to` | text |  |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance assert
@@ -226,7 +226,7 @@ Usage: `moneybin accounts balance list [OPTIONS]`
 |---|---|---|---|
 | `--account` | text |  |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts balance assertion-delete
@@ -261,7 +261,7 @@ Usage: `moneybin accounts balance reconcile [OPTIONS]`
 | `--account` | text |  |  |
 | `--threshold` | text | `0.01` |  |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links
@@ -295,7 +295,7 @@ Usage: `moneybin accounts links pending [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links set
@@ -336,7 +336,7 @@ Usage: `moneybin accounts links set [OPTIONS] DECISION_ID`
 | `--into` | text |  | Merge: the candidate account_id to adopt (from the pending group) |
 | `--standalone` | flag |  | Standalone-reject: keep the provisional account as its own canonical entity |
 | `--yes, -y` | flag |  | Skip the merge confirmation prompt (--into only; --standalone never asks) |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin accounts links history
 
@@ -350,7 +350,7 @@ Usage: `moneybin accounts links history [OPTIONS]`
 |---|---|---|---|
 | `--limit, -n` | int (≥ 0) | `50` | Max records to show |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin accounts links run

@@ -42,7 +42,7 @@ Usage: `moneybin transactions review [OPTIONS]`
 | `--limit` | int | `50` | Cap items per session |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions create
 
@@ -93,7 +93,7 @@ Usage: `moneybin transactions audit [OPTIONS] TRANSACTION_ID`
 |---|---|---|---|
 | `--limit` | int | `100` | Max events to return |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions list
@@ -117,7 +117,7 @@ Usage: `moneybin transactions list [OPTIONS]`
 | `--limit` | int | `50` | Maximum rows to return. |
 | `--cursor` | text |  | Pagination token from previous call. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
@@ -229,7 +229,7 @@ Usage: `moneybin transactions categorize pending [OPTIONS]`
 | `--min-amount` | text | `0` | Filter to ABS(amount) >= this value. |
 | `--account` | text |  | Filter to an account: accepts account_id or display_name (ambiguous matches error). |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions categorize commit
@@ -356,7 +356,7 @@ Usage: `moneybin transactions categorize stats [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions categorize rules
@@ -387,7 +387,7 @@ Usage: `moneybin transactions categorize rules list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions categorize rules apply
@@ -430,7 +430,7 @@ Usage: `moneybin transactions categorize rules create [OPTIONS] [NAME]`
 | `--reapply` | flag |  | Apply newly-created rules to uncategorized rows after insert |
 | `--allow-broad` | flag |  | Allow a 'contains' rule whose pattern is too short to discriminate (e.g. 'TO', which matches STORE/AUTO/TOTAL). Without this flag such rules are refused, not created. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions categorize rules delete
 
@@ -454,7 +454,7 @@ Usage: `moneybin transactions categorize rules delete [OPTIONS] RULE_ID`
 |---|---|---|---|
 | `--reapply` | flag |  | Re-evaluate transactions previously categorized by this rule |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions categorize rules list-conflicts
 
@@ -467,7 +467,7 @@ Usage: `moneybin transactions categorize rules list-conflicts [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -500,7 +500,7 @@ Usage: `moneybin transactions categorize rules resolve [OPTIONS] [CONFLICT_ID]`
 | `--from-file` | path |  | JSON file with a list of {"conflict_id", "resolution", "priority"} dicts |
 | `--yes, -y` | flag |  | Skip confirmation |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions categorize auto
 
@@ -528,7 +528,7 @@ Usage: `moneybin transactions categorize auto review [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--limit` | int (≥ 1) |  | Maximum number of proposals to display (defaults to configured limit) |
 
@@ -547,6 +547,7 @@ Usage: `moneybin transactions categorize auto accept [OPTIONS]`
 | `--accept-all` | flag |  | Accept all pending proposals |
 | `--reject-all` | flag |  | Reject all pending proposals |
 | `--allow-broad` | flag |  | Accept proposals flagged broad (match count far exceeds evidence). Review the estimated match count first — a broad rule recategorizes many transactions at once. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin transactions categorize auto stats
 
@@ -559,7 +560,7 @@ Usage: `moneybin transactions categorize auto stats [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions categorize auto rules
@@ -573,7 +574,7 @@ Usage: `moneybin transactions categorize auto rules [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--limit` | int (≥ 1) |  | Maximum number of auto-rules to display (defaults to configured limit) |
 
@@ -608,7 +609,7 @@ Usage: `moneybin transactions matches pending [OPTIONS]`
 | `--limit, -n` | int | `50` | Max records to show |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions matches run
 
@@ -637,7 +638,7 @@ Usage: `moneybin transactions matches history [OPTIONS]`
 | `--type` | text |  | Filter by match type: dedup or transfer |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin transactions matches undo
 
@@ -739,7 +740,7 @@ Usage: `moneybin transactions notes list [OPTIONS] TRANSACTION_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions notes edit
@@ -850,7 +851,7 @@ Usage: `moneybin transactions tags list [OPTIONS] [TRANSACTION_ID]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions tags rename
@@ -926,7 +927,7 @@ Usage: `moneybin transactions splits list [OPTIONS] TRANSACTION_ID`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin transactions splits remove

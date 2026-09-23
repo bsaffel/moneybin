@@ -409,8 +409,10 @@ def transform_restate(
         typer.echo(message, err=True)
         raise typer.Exit(2)
     if not yes:
+        effective_end = end or "today"
         confirm = typer.confirm(
-            f"Restate {model} from {start}? This will recompute all affected data."
+            f"Restate {model} from {start} through {effective_end}? "
+            "This will recompute all affected data."
         )
         if not confirm:
             _emit_transform_text(

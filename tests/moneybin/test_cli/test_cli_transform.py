@@ -463,3 +463,50 @@ class TestTransformRestate:
             auto_apply=True,
             no_prompts=True,
         )
+
+    @patch("moneybin.database.get_database")
+    @patch("moneybin.cli.commands.transform.sqlmesh_context")
+    @patch("moneybin.cli.commands.transform.typer.confirm", return_value=False)
+    @patch("moneybin.cli.commands.transform.get_terminal_policy")
+    def test_restate_confirmation_includes_effective_end_date(
+        self,
+        terminal_policy: MagicMock,
+        confirm: MagicMock,
+        mock_ctx_factory: MagicMock,
+        _mock_get_db: MagicMock,
+    ) -> None:
+        """The destructive confirmation must name the requested closed range."""
+        terminal_policy.return_value = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        ctx_fn, _mock_ctx = _mock_sqlmesh_context()
+        mock_ctx_factory.side_effect = ctx_fn
+
+        result = runner.invoke(
+            app,
+            [
+                "restate",
+                "--model",
+                "core.fct_transactions",
+                "--start",
+                "2026-01-01",
+                "--end",
+                "2026-01-31",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "2026-01-01 through 2026-01-31" in confirm.call_args.args[0]

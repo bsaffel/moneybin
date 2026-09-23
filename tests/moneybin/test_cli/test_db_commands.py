@@ -1113,6 +1113,27 @@ class TestDbRotateKeyCommand:
         assert result.exit_code == 1
         mock_store.set_key.assert_not_called()
 
+    def test_rotate_key_copy_interrupt_removes_partial_candidate(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupted COPY leaves no temporary rotated database behind."""
+        mock_store, mock_conn = self._mock_rotate_deps(mocker, tmp_path)
+        rotated_path = tmp_path / "moneybin.rotated.duckdb"
+
+        def interrupt_copy(sql: str, *_args: object, **_kwargs: object) -> MagicMock:
+            if "COPY FROM DATABASE" in sql:
+                rotated_path.write_bytes(b"partial")
+                raise KeyboardInterrupt
+            return MagicMock()
+
+        mock_conn.execute.side_effect = interrupt_copy
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        assert not rotated_path.exists()
+        mock_store.set_key.assert_not_called()
+
     def test_rotate_key_keychain_update_fails_exits_1(
         self,
         runner: CliRunner,
@@ -1142,6 +1163,35 @@ class TestDbRotateKeyCommand:
         assert result.exit_code == 130
         assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" in result.output
         assert "keychain update is unconfirmed" in result.output
+
+    def test_rotate_key_interrupt_after_keychain_update_reports_completed_write(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """An interrupt after set_key returns must not describe it as unconfirmed."""
+        import contextlib
+
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+
+        def report_event(_event: object) -> None:
+            return None
+
+        @contextlib.contextmanager
+        def interrupt_after_rotation_progress(*_args: object, **_kwargs: object) -> Any:
+            yield report_event
+            raise KeyboardInterrupt
+
+        mocker.patch(
+            "moneybin.cli.commands.db.operation_progress",
+            interrupt_after_rotation_progress,
+        )
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 130
+        mock_store.set_key.assert_called_once()
+        assert "keychain update completed" in result.output.lower()
+        assert "keychain update is unconfirmed" not in result.output.lower()
+        assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in result.output
 
     def test_rotate_key_interrupt_before_replacement_retains_recovery_artifacts(
         self,
@@ -1251,6 +1301,23 @@ class TestDbRotateKeyCommand:
         assert "original database was archived" in result.output.lower()
         assert "replacement state is unknown" in result.output.lower()
         assert "MONEYBIN_DATABASE__ENCRYPTION_KEY" not in result.output
+        mock_store.set_key.assert_not_called()
+
+    def test_rotate_key_first_move_failure_has_recovery_guidance(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A failed first swap move must not surface as an uncontextualized error."""
+        mock_store, _ = self._mock_rotate_deps(mocker, tmp_path)
+        mocker.patch(
+            "moneybin.cli.commands.db.shutil.move",
+            side_effect=OSError("synthetic archive move failure"),
+        )
+
+        result = runner.invoke(app, ["key", "rotate", "--yes"])
+
+        assert result.exit_code == 1
+        assert "file state is unknown" in result.output.lower()
+        assert "inspect" in result.output.lower()
         mock_store.set_key.assert_not_called()
 
     def test_rotate_key_confirmation_prompt_declined_exits_0(

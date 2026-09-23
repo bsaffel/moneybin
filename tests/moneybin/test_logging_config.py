@@ -361,6 +361,23 @@ class TestMcpStreamKeepsInfoOnStderr(_LoggingSetupTestBase):
 
         assert handler.filter(self._record("moneybin.mcp.server", logging.INFO))
 
+    @pytest.mark.parametrize(
+        "logger_name",
+        [
+            "httpx",
+            "httpcore.connection",
+            "moneybin.matching.engine",
+            "moneybin.extractors.plaid.extractor",
+        ],
+    )
+    def test_mcp_stream_suppresses_targeted_dependency_noise(
+        self, logger_name: str
+    ) -> None:
+        """MCP retains application INFO while hiding request and engine chatter."""
+        handler = self._console_handler("mcp")
+
+        assert not handler.filter(self._record(logger_name, logging.INFO))
+
     @pytest.mark.unit
     def test_mcp_stream_still_suppresses_sqlmesh_noise(self) -> None:
         """SQLMesh has its own log file and has never belonged on stderr."""

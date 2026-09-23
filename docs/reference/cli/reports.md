@@ -41,7 +41,7 @@ Usage: `moneybin reports list [OPTIONS]`
 | `--include-archived` | flag |  | Include archived saved reports, marked as archived in the listing. |
 | `--tier` | text |  | Show one tier only: builtin, extension, or user. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin reports run
@@ -64,7 +64,7 @@ Usage: `moneybin reports run [OPTIONS] HANDLE`
 | `--limit` | int |  | Maximum rows to return. Default: 1,000,000. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
@@ -92,7 +92,7 @@ Usage: `moneybin reports explain [OPTIONS] HANDLE`
 |---|---|---|---|
 | `--param` | text, repeatable |  | Parameter value as key=value; repeat for multiple values. Values are coerced to the report's declared type. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin reports create
@@ -216,7 +216,7 @@ Usage: `moneybin reports networth [OPTIONS]`
 | `--account` | text, repeatable |  | Filter per-account breakdown to specific account_id(s); repeatable |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin reports networth-history
@@ -234,7 +234,7 @@ Usage: `moneybin reports networth-history [OPTIONS]`
 | `--interval` | text | `monthly` | daily \| weekly \| monthly |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin reports spending-trend
@@ -256,7 +256,7 @@ Usage: `moneybin reports spending-trend [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports cash-flow
@@ -277,7 +277,7 @@ Usage: `moneybin reports cash-flow [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports recurring-subscriptions
@@ -300,7 +300,7 @@ Usage: `moneybin reports recurring-subscriptions [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports merchant-activity
@@ -322,7 +322,7 @@ Usage: `moneybin reports merchant-activity [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports large-transactions
@@ -346,7 +346,7 @@ Usage: `moneybin reports large-transactions [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports balance-drift
@@ -369,7 +369,7 @@ Usage: `moneybin reports balance-drift [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
 
 ## moneybin reports realized-fx
@@ -391,5 +391,5 @@ Usage: `moneybin reports realized-fx [OPTIONS]`
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |

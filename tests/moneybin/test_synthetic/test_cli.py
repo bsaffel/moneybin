@@ -181,6 +181,28 @@ class TestGenerateCommand:
         assert "Report materialization failed (RuntimeError)" in caplog.text
         assert "private exception detail" not in caplog.text
 
+    def test_generate_count_mismatch_reports_partial_receipt_and_exits_one(
+        self,
+        runner: CliRunner,
+        mock_get_database: MagicMock,
+        mock_engine: MagicMock,
+        mock_writer: MagicMock,
+        mock_run_transforms: MagicMock,
+    ) -> None:
+        """Writer-confirmed counts, rather than generation success, decide completion."""
+        mock_writer.return_value.write.return_value = {
+            "ofx_accounts": 0,
+            "ofx_transactions": 80,
+            "tabular_transactions": 20,
+            "ground_truth": 100,
+        }
+
+        result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
+
+        assert result.exit_code == 1, result.output
+        assert "Generation partially completed" in result.stdout
+        assert "Only 0 of 1 generated accounts were saved." in result.stdout
+
     def test_generate_skip_transform_is_an_intentional_complete_mode(
         self,
         runner: CliRunner,
@@ -388,6 +410,55 @@ class TestResetCommand:
         assert "profile 'alice'" in result.output
         assert "No reset was started." in result.output
         reset_rows.assert_not_called()
+
+    def test_reset_confirmation_interrupt_reports_no_reset_started(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """Ctrl-C at confirmation occurs before any destructive work."""
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        mock_db.execute.return_value.fetchone.return_value = (1,)
+        mock_db.path = Path("/tmp/test.duckdb")
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch(
+            "moneybin.synthetic.reset.has_non_synthetic_data", return_value=False
+        )
+        mocker.patch(
+            "moneybin.cli.commands.synthetic.get_terminal_policy",
+            return_value=_terminal(interactive=True),
+        )
+        mocker.patch("typer.confirm", side_effect=KeyboardInterrupt)
+
+        result = runner.invoke(app, ["reset", "--persona", "basic"])
+
+        assert result.exit_code == 130, result.output
+        assert "Synthetic reset cancelled" in result.stdout
+        assert "No reset was started." in result.stdout
+
+    def test_reset_delete_interrupt_reports_unknown_saved_scope(
+        self, runner: CliRunner, mocker: Any
+    ) -> None:
+        """Ctrl-C while deleting may leave a partially reset generated profile."""
+        mock_db = MagicMock()
+        mock_db.__enter__ = MagicMock(return_value=mock_db)
+        mock_db.__exit__ = MagicMock(return_value=False)
+        mock_db.execute.return_value.fetchone.return_value = (1,)
+        mock_db.path = Path("/tmp/test.duckdb")
+        mocker.patch("moneybin.database.get_database", return_value=mock_db)
+        mocker.patch(
+            "moneybin.synthetic.reset.has_non_synthetic_data", return_value=False
+        )
+        mocker.patch(
+            "moneybin.synthetic.reset.reset_synthetic_rows",
+            side_effect=KeyboardInterrupt,
+        )
+
+        result = runner.invoke(app, ["reset", "--persona", "basic", "--yes"])
+
+        assert result.exit_code == 130, result.output
+        assert "Synthetic reset cancelled" in result.stdout
+        assert "Saved scope is unknown." in result.stdout
 
     @pytest.mark.parametrize(
         ("outcome", "exit_code"),

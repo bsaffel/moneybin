@@ -375,8 +375,11 @@ def system_audit_history(
                         (
                             "undoable"
                             if operation.can_undo
-                            else "blocked by "
-                            + ", ".join(operation.undo_blocked_by or [])
+                            else (
+                                "blocked by " + ", ".join(operation.undo_blocked_by)
+                                if operation.undo_blocked_by
+                                else "not undoable"
+                            )
                         ),
                     )
                     for operation in operations

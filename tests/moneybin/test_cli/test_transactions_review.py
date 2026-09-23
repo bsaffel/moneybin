@@ -196,6 +196,7 @@ def _bulk_outcome(*, accepted: int, reversed_: int, retired: int) -> MagicMock:
     outcome.reversed_by_reconciliation = reversed_
     outcome.transfers_retired = retired
     outcome.accounting_stale = False
+    outcome.accounting_error_code = None
     return outcome
 
 
@@ -209,10 +210,29 @@ def _selection(*ids: str, limit: int = 50) -> MagicMock:
             match_type="dedup",
             source_transaction_id_a=f"{match_id}-a",
             source_transaction_id_b=f"{match_id}-b",
+            confidence_score=0.85,
         )
         for match_id in ids
     )
     return selection
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_preview_shows_existing_match_confidence(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Bulk confirmation exposes the matcher score already fetched for each row."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    mock_service.return_value.accept_previewed.return_value = _bulk_outcome(
+        accepted=1, reversed_=0, retired=0
+    )
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 0, result.output
+    assert "confidence 0.85" in result.stdout
 
 
 @patch("moneybin.services.matching_service.MatchingService")
@@ -510,6 +530,57 @@ def test_confirm_all_json_reports_committed_counts_and_stale_accounting(
         "accounting_stale": True,
         "accounting_hint": "Refresh FX accounting before relying on FX reports.",
     }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_json_stale_accounting_is_an_error_without_reversals(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """Committed matches do not make stale accounting a successful bulk result."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    bulk = _bulk_outcome(accepted=1, reversed_=0, retired=0)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(
+        app,
+        ["review", "--type", "matches", "--confirm-all", "--output", "json"],
+    )
+
+    assert result.exit_code == 1, result.output
+    body = json.loads(result.stdout)
+    assert body["status"] == "error"
+    assert body["data"] == {
+        "requested": 1,
+        "accepted": 1,
+        "reversed_by_reconciliation": 0,
+        "transfers_retired": 0,
+        "accounting_stale": True,
+        "accounting_hint": "Refresh FX accounting before relying on FX reports.",
+    }
+
+
+@patch("moneybin.services.matching_service.MatchingService")
+@patch("moneybin.cli.commands.transactions.review.get_database")
+def test_confirm_all_text_keeps_stale_accounting_in_the_receipt(
+    mock_get_db: MagicMock, mock_service: MagicMock
+) -> None:
+    """A saved but stale bulk result is visible even when stderr is redirected."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service.return_value.preview_pending.return_value = _selection("match-1")
+    bulk = _bulk_outcome(accepted=1, reversed_=0, retired=0)
+    bulk.accounting_stale = True
+    bulk.accounting_hint = "Refresh FX accounting before relying on FX reports."
+    mock_service.return_value.accept_previewed.return_value = bulk
+
+    result = runner.invoke(app, ["review", "--type", "matches", "--confirm-all"])
+
+    assert result.exit_code == 1, result.output
+    assert "FX accounting is stale" in result.stdout
+    assert "Refresh FX accounting" in result.stdout
 
 
 @patch("moneybin.services.matching_service.MatchingService")
