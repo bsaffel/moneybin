@@ -568,6 +568,38 @@ def test_link_no_pull_returns_without_pull_result(
     mock_client.trigger_sync.assert_not_called()
 
 
+def test_link_keeps_connection_result_when_default_auto_pull_raises(
+    mock_client: MagicMock,
+    db: Database,
+    loader: PlaidExtractor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed follow-up pull leaves the completed link available to the CLI."""
+    mock_client.initiate_link.return_value = LinkInitiateResponse(
+        session_id="sess_x",
+        link_url="https://hosted.plaid.com/link/x",
+        link_type="widget_flow",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    mock_client.poll_link_status.return_value = LinkStatusResponse(
+        session_id="sess_x",
+        status="linked",
+        provider_item_id="item_new",
+        institution_name="Bank",
+        expiration=datetime(2026, 5, 13, 13, 30, tzinfo=UTC),
+    )
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    pull = MagicMock(side_effect=RuntimeError("unavailable"))
+    monkeypatch.setattr(service, "pull", pull)
+
+    result = service.link(auto_pull=True)
+
+    pull.assert_called_once_with(provider_item_id="item_new")
+    assert result.provider_item_id == "item_new"
+    assert result.institution_name == "Bank"
+    assert result.pull_result is None
+
+
 def test_link_re_auth_resolves_institution_name(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
@@ -925,6 +957,35 @@ class TestPullAutoRefreshes:
         result = service.pull()
 
         assert result.transfers_retired == 2
+
+    def test_pull_forwards_progress_to_refresh(
+        self,
+        mock_client: MagicMock,
+        db: Database,
+        loader: PlaidExtractor,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from moneybin.orchestration.refresh import RefreshResult
+        from moneybin.services import sync_service as mod
+
+        received: list[object] = []
+
+        def fake_refresh(_db: object, *, progress: object) -> RefreshResult:
+            received.append(progress)
+            return RefreshResult(applied=True, duration_seconds=0.05)
+
+        monkeypatch.setattr(mod, "_refresh", fake_refresh)
+        events: list[str] = []
+        service = SyncService(client=mock_client, db=db, loader=loader)
+
+        service.pull(progress=lambda event: events.append(event.stage))
+
+        assert received
+        assert events[:3] == [
+            "Syncing institutions",
+            "Loading synced data",
+            "Refreshing reports",
+        ]
 
     def test_pull_no_refresh_skips_pipeline(
         self,

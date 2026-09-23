@@ -21,9 +21,6 @@ from moneybin.cli.commands.stubs import (
     _not_implemented,  # pyright: ignore[reportPrivateUsage]
 )
 from moneybin.cli.main import app
-from moneybin.logging.config import (
-    _CONSOLE_SUPPRESSED_PREFIXES,  # pyright: ignore[reportPrivateUsage]
-)
 from tests.moneybin.test_mcp.test_capability_parity import (
     UNIMPLEMENTED_CLI_INVOCATIONS,
     UNIMPLEMENTED_EXIT_ONE_CLI_INVOCATIONS,
@@ -366,28 +363,10 @@ def _user_facing_strings(module: Path) -> list[tuple[str, bool]]:
     return emitted
 
 
-def _logger_name(module: Path) -> str:
-    """The logger name ``logging.getLogger(__name__)`` produces in this module."""
-    relative = module.relative_to(SRC_ROOT.parent).with_suffix("")
-    parts = relative.parts
-    if parts[-1] == "__init__":
-        parts = parts[:-1]
-    return ".".join(parts)
-
-
 def _reaches_the_console(module: Path) -> bool:
-    """Whether this module's log records survive to the user's stderr.
-
-    ``_CONSOLE_SUPPRESSED_PREFIXES`` is a denylist, so a module is visible
-    unless it is named there. Deriving the exemption from that tuple rather
-    than from a second hand-written list is what keeps the two in step: adding
-    a prefix there silences this check for the same module, and nothing else.
-    """
-    name = _logger_name(module)
-    return not any(
-        name == prefix or name.startswith(f"{prefix}.")
-        for prefix in _CONSOLE_SUPPRESSED_PREFIXES
-    )
+    """Logger warnings remain visible even though normal CLI INFO is hidden."""
+    _ = module
+    return True
 
 
 def test_runtime_messages_name_no_internal_dependency() -> None:

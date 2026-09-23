@@ -5,11 +5,39 @@ import logging
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
-from moneybin.cli.commands.transactions.matches import app
+from moneybin.cli.commands.transactions.matches import app, matches_undo
 
 runner = CliRunner()
+
+
+@patch("moneybin.cli.commands.transactions.matches.get_database")
+@patch("moneybin.services.matching_service.MatchingService.undo")
+def test_undo_declined_confirmation_has_a_visible_receipt(
+    mock_undo: MagicMock,
+    mock_get_db: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A declined match reversal must not disappear with INFO suppression."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+
+    with patch(
+        "moneybin.cli.commands.transactions.matches.typer.confirm", return_value=False
+    ):
+        with pytest.raises(typer.Exit) as exit_info:
+            matches_undo("match_123", yes=False)
+
+    assert exit_info.value.exit_code == 0
+    receipt = capsys.readouterr().out
+    assert "Undo cancelled" in receipt
+    assert "No match decision changed" in receipt
+    mock_undo.assert_not_called()
 
 
 def _warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
@@ -240,7 +268,7 @@ class TestMatchesRun:
         )
         assert result.exit_code == 1
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(m.startswith("❌") for m in errors), errors
+        assert any(m.startswith(("×", "X")) for m in errors), errors
         assert not any("Binder Error" in m for m in errors), errors
 
 
@@ -366,7 +394,7 @@ class TestMatchesBackfill:
         )
         assert result.exit_code == 1
         errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
-        assert any(m.startswith("❌") for m in errors), errors
+        assert any(m.startswith(("×", "X")) for m in errors), errors
         assert not any("Binder Error" in m for m in errors), errors
 
 
@@ -381,9 +409,86 @@ class TestMatchesHistory:
         result = runner.invoke(app, ["history"])
         assert result.exit_code == 0
 
+    def test_history_help_offers_no_pager(self) -> None:
+        """A finite decision history keeps the shared pager escape hatch."""
+        result = runner.invoke(app, ["history", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-pager" in result.stdout
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.get_log")
+    def test_history_keeps_the_full_actionable_match_id(
+        self, mock_log: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """Undo requires the displayed ID exactly as stored, not a prefix."""
+        match_id = "match_0123456789abcdef"
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_log.return_value = [
+            {
+                "match_id": match_id,
+                "match_type": "dedup",
+                "match_status": "accepted",
+                "match_tier": "3",
+                "confidence_score": 0.95,
+                "decided_by": "user",
+                "source_type_a": "csv",
+                "source_type_b": "ofx",
+            }
+        ]
+
+        result = runner.invoke(app, ["history"])
+
+        assert result.exit_code == 0, result.output
+        assert match_id in result.stdout
+
 
 class TestMatchesPending:
     """Tests for the matches pending command (grouped pending display)."""
+
+    def test_pending_collects_the_total_before_its_database_context_closes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Text framing must not execute through a service after its DB closes."""
+
+        class ClosingDatabase:
+            closed = False
+
+            def __enter__(self) -> "ClosingDatabase":
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                self.closed = True
+
+        class ContextBoundService:
+            def __init__(self, database: ClosingDatabase) -> None:
+                self.database = database
+
+            def get_pending(self, **_kwargs: object) -> list[dict[str, object]]:
+                assert not self.database.closed
+                return [_pending_row(confidence=0.95)]
+
+            def count_pending(self, **_kwargs: object) -> int:
+                assert not self.database.closed, "count ran after the DB context closed"
+                return 1
+
+        database = ClosingDatabase()
+
+        def _database_factory(**_kwargs: object) -> ClosingDatabase:
+            return database
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.transactions.matches.get_database",
+            _database_factory,
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.transactions.matches.MatchingService",
+            ContextBoundService,
+        )
+
+        result = runner.invoke(app, ["pending"])
+
+        assert result.exit_code == 0, result.output
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.get_pending")
@@ -394,6 +499,102 @@ class TestMatchesPending:
         mock_pending.return_value = []
         result = runner.invoke(app, ["pending"])
         assert result.exit_code == 0
+        assert "No pending matches" in result.stdout
+
+        quiet_result = runner.invoke(app, ["pending", "--quiet"])
+        assert quiet_result.exit_code == 0
+        assert "No pending matches" in quiet_result.stdout
+
+    def test_pending_help_offers_no_pager(self) -> None:
+        """A finite pending queue can be printed directly for review logs."""
+        result = runner.invoke(app, ["pending", "--help"])
+
+        assert result.exit_code == 0
+        assert "--no-pager" in result.stdout
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.count_pending")
+    @patch("moneybin.services.matching_service.MatchingService.get_pending")
+    def test_pending_pages_the_complete_answer_unless_no_pager_is_requested(
+        self,
+        mock_pending: MagicMock,
+        mock_count: MagicMock,
+        mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Paging receives the whole framed answer; --no-pager prints it once."""
+        from moneybin.cli import pager
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        policy = TerminalPolicy(
+            output="text",
+            interactive=True,
+            page=True,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=True,
+            ascii=True,
+            width=20,
+            height=1,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus="-",
+        )
+
+        def _pager_policy(**_kwargs: object) -> TerminalPolicy:
+            return policy
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.transactions.matches.get_terminal_policy",
+            _pager_policy,
+        )
+        paged: list[str] = []
+
+        def _capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            del color, wide
+            paged.append(text)
+            return True
+
+        monkeypatch.setattr(
+            pager,
+            "page_text",
+            _capture_page,
+        )
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_count.return_value = 1
+        mock_pending.return_value = [_pending_row(confidence=0.95)]
+
+        paged_result = runner.invoke(app, ["pending"])
+        direct_result = runner.invoke(app, ["pending", "--no-pager"])
+
+        assert paged_result.exit_code == 0, paged_result.output
+        assert "Pending matches" in paged[0]
+        assert "decide a match" in paged[0]
+        assert direct_result.exit_code == 0, direct_result.output
+        assert "Pending matches" in direct_result.stdout
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.count_pending")
+    @patch("moneybin.services.matching_service.MatchingService.get_pending")
+    def test_pending_names_the_limited_scope_and_preserves_full_match_id(
+        self,
+        mock_pending: MagicMock,
+        mock_count: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """A bounded review answer says how much remains and keeps a usable ID."""
+        match_id = "match_0123456789abcdef"
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_count.return_value = 2
+        mock_pending.return_value = [
+            {**_pending_row(confidence=0.95), "match_id": match_id}
+        ]
+
+        result = runner.invoke(app, ["pending", "--limit", "1"])
+
+        assert result.exit_code == 0, result.output
+        assert match_id in result.stdout
+        assert "Showing 1 of 2 pending matches" in result.stdout
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.get_pending")
@@ -402,38 +603,43 @@ class TestMatchesPending:
     ) -> None:
         """Text output shows one header per component_key group."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_pending.return_value = [
-            {
-                "match_id": "m_ab",
-                "match_type": "dedup",
-                "match_tier": "3",
-                "confidence_score": 0.95,
-                "source_type_a": "csv",
-                "source_transaction_id_a": "t1",
-                "source_type_b": "ofx",
-                "source_transaction_id_b": "t2",
-                "match_status": "pending",
-                "component_key": "csv|t1",
-                "account_id": "acc1",
-            },
-            {
-                "match_id": "m_bc",
-                "match_type": "dedup",
-                "match_tier": "3",
-                "confidence_score": 0.92,
-                "source_type_a": "ofx",
-                "source_transaction_id_a": "t2",
-                "source_type_b": "tiller",
-                "source_transaction_id_b": "t3",
-                "match_status": "pending",
-                "component_key": "csv|t1",
-                "account_id": "acc1",
-            },
-        ]
-        result = runner.invoke(app, ["pending"])
+        mock_count = patch(
+            "moneybin.services.matching_service.MatchingService.count_pending",
+            return_value=2,
+        )
+        with mock_count:
+            mock_pending.return_value = [
+                {
+                    "match_id": "m_ab",
+                    "match_type": "dedup",
+                    "match_tier": "3",
+                    "confidence_score": 0.95,
+                    "source_type_a": "csv",
+                    "source_transaction_id_a": "t1",
+                    "source_type_b": "ofx",
+                    "source_transaction_id_b": "t2",
+                    "match_status": "pending",
+                    "component_key": "csv|t1",
+                    "account_id": "acc1",
+                },
+                {
+                    "match_id": "m_bc",
+                    "match_type": "dedup",
+                    "match_tier": "3",
+                    "confidence_score": 0.92,
+                    "source_type_a": "ofx",
+                    "source_transaction_id_a": "t2",
+                    "source_type_b": "tiller",
+                    "source_transaction_id_b": "t3",
+                    "match_status": "pending",
+                    "component_key": "csv|t1",
+                    "account_id": "acc1",
+                },
+            ]
+            result = runner.invoke(app, ["pending"])
         assert result.exit_code == 0
         # One component header appears; both match IDs are in the output
-        assert "component csv|t1" in result.output
+        assert "Component: csv|t1" in result.output
         assert "m_ab" in result.output
         assert "m_bc" in result.output
 
@@ -531,26 +737,27 @@ class TestMatchesPending:
     @patch("moneybin.services.matching_service.MatchingService.count_pending")
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.get_pending")
-    def test_text_path_does_not_rescan_the_queue_for_counts_it_never_renders(
+    def test_text_path_counts_rows_without_rebuilding_dedup_groups(
         self,
         mock_pending: MagicMock,
         mock_get_db: MagicMock,
         mock_count: MagicMock,
         mock_groups: MagicMock,
     ) -> None:
-        """Both counts exist for the envelope; the text table shows neither.
+        """Text framing needs the total, but not the expensive group recount.
 
         `count_pending_dedup_groups` reloads the entire pending queue and
         rebuilds the component graph `get_pending` has already walked, so
         computing it unconditionally doubled the work of every text-mode run.
         """
         mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_count.return_value = 1
         mock_pending.return_value = [_pending_row(confidence=0.95)]
 
         result = runner.invoke(app, ["pending"])
 
         assert result.exit_code == 0
-        mock_count.assert_not_called()
+        mock_count.assert_called_once_with(match_type=None)
         mock_groups.assert_not_called()
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
@@ -650,7 +857,6 @@ class TestMatchesSet:
         self,
         mock_set_status: MagicMock,
         mock_get_db: MagicMock,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         from moneybin.services.matching_service import MatchDecisionOutcome
 
@@ -659,11 +865,44 @@ class TestMatchesSet:
             match_status="accepted", transfers_retired=0
         )
 
-        with caplog.at_level(logging.INFO):
-            result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
+        result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
 
         assert result.exit_code == 0
-        assert any("✅" in m for m in caplog.messages)
+        assert "Set match dd_100000001 to accepted" in result.stdout
+
+    @patch("moneybin.cli.commands.transactions.matches.get_database")
+    @patch("moneybin.services.matching_service.MatchingService.set_status")
+    def test_set_receipt_never_opens_a_pager(
+        self,
+        mock_set_status: MagicMock,
+        mock_get_db: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A mutation receipt remains direct even when a pager is installed."""
+        from moneybin.cli import pager
+        from moneybin.services.matching_service import MatchDecisionOutcome
+
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_set_status.return_value = MatchDecisionOutcome(
+            match_status="accepted", transfers_retired=0
+        )
+        paged: list[str] = []
+
+        def _capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            del color, wide
+            paged.append(text)
+            return True
+
+        monkeypatch.setattr(
+            pager,
+            "page_text",
+            _capture_page,
+        )
+
+        result = runner.invoke(app, ["set", "dd_100000001", "--status", "accepted"])
+
+        assert result.exit_code == 0, result.output
+        assert paged == []
 
     @patch("moneybin.cli.commands.transactions.matches.get_database")
     @patch("moneybin.services.matching_service.MatchingService.set_status")

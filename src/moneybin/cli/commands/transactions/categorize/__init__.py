@@ -16,10 +16,21 @@ import typer
 from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
+    render_or_json,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    Money,
+    MoneyWithCurrency,
+    build_rows,
+    build_summary,
+    compose_human_result,
+    format_money,
+)
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import ErrorDetail
 
@@ -64,6 +75,7 @@ def categorize_pending(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List uncategorized transactions.
 
@@ -73,7 +85,6 @@ def categorize_pending(
       moneybin transactions categorize pending --sort impact
       moneybin transactions categorize pending --min-amount 20 --output json
     """
-    from moneybin.cli.output import render_or_json
     from moneybin.privacy.payloads.categorize import CatPendingPayload, PendingTxnRow
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.account_service import AccountService
@@ -82,12 +93,23 @@ def categorize_pending(
     try:
         min_amount_dec = Decimal(min_amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid --min-amount: {min_amount}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_pending",
+            payload_type=CatPendingPayload,
+            message=f"Invalid --min-amount: {min_amount}",
+        )
 
     if sort not in {"date", "impact"}:
-        typer.echo("❌ --sort must be 'date' or 'impact'.", err=True)
-        raise typer.Exit(2)
+        abort_cli_error(
+            ValueError("--sort must be 'date' or 'impact'."),
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_pending",
+            payload_type=CatPendingPayload,
+        )
 
     with handle_cli_errors(cli_actor="categorize_pending"):
         with get_database(read_only=True) as db:
@@ -104,6 +126,24 @@ def categorize_pending(
     if records is None:
         typer.echo("No data — import transactions first.", err=True)
         raise typer.Exit(0)
+
+    effective_limit = min(limit, 1000)
+    scope_terms = ["active, non-transfer transactions"]
+    if account_id is not None:
+        scope_terms.append(f"account {account_id}")
+    if min_amount_dec:
+        scope_terms.append(f"minimum amount {min_amount_dec}")
+    if sort != "date":
+        scope_terms.append(f"sort {sort}")
+    scope = "Scope: " + "; ".join(scope_terms) + "."
+    has_filter = account_id is not None or bool(min_amount_dec) or sort != "date"
+    next_action = (
+        "Next: moneybin transactions categorize pending --min-amount 0"
+        if min_amount_dec
+        else "Next: moneybin transactions categorize pending"
+        if has_filter
+        else "Next: moneybin transactions categorize stats"
+    )
 
     # Wrap raw rows in the typed CatPendingPayload so the JSON path sees the
     # account_id's active transform and redact_typed masks it — a bare list[dict]
@@ -129,16 +169,120 @@ def categorize_pending(
     envelope = build_envelope(data=payload)
 
     def _render_table(_: object) -> None:
+        policy = get_terminal_policy(no_pager=no_pager)
         if not records:
-            logger.info("No uncategorized transactions.")
+            emit_human_result(
+                compose_human_result(
+                    [build_summary([("Result", "No uncategorized transactions.")])],
+                    disclosures=(
+                        scope,
+                        next_action,
+                    ),
+                ),
+                policy=policy,
+                finite_read=True,
+                no_pager=no_pager,
+            )
             return
-        from moneybin.cli.render import Money, render_rows
-
-        cols = list(records[0].keys())
-        rows = [tuple(r.values()) for r in records]
-        # `priority_score` is deliberately absent: it is ABS(amount) * age_days,
-        # a ranking weight in no currency, and pricing it would read as one.
-        render_rows(cols, rows, money={"amount": Money("flow")})
+        # A selection queue's mandatory text facts are the actionable transaction
+        # ID and its complete monetary value. Measure the complete, curated
+        # projection before choosing its compact table; otherwise use stacked
+        # records so no terminal width can elide either fact.
+        columns = (
+            "Transaction ID",
+            "Amount",
+            "Date",
+            "Description",
+            "Account",
+            "Age days",
+        )
+        table_rows = [
+            (
+                str(r["transaction_id"]),
+                MoneyWithCurrency(
+                    r.get("amount"), str(r.get("currency_code") or "n/a")
+                ),
+                str(r.get("txn_date") or "-"),
+                str(r.get("description") or "-"),
+                str(r.get("account_id") or "-"),
+                str(r.get("age_days") or "-"),
+            )
+            for r in records
+        ]
+        measured_rows = [
+            (
+                transaction_id,
+                f"{format_money(amount.amount, 'flow', minus=policy.minus)} "
+                f"{amount.currency}",
+                date,
+                description,
+                account,
+                age_days,
+            )
+            for transaction_id, amount, date, description, account, age_days in table_rows
+        ]
+        # UTF-8 length is a conservative bound for terminal cell width and is
+        # exact for the common ASCII identifiers, dates, amounts, and codes.
+        # Rich adds one padding cell either side of every column plus its frame.
+        table_width = (
+            sum(
+                max(
+                    len(column.encode()),
+                    *(len(str(value).encode()) for value in column_values),
+                )
+                for column, column_values in zip(
+                    columns, zip(*measured_rows, strict=True), strict=True
+                )
+            )
+            + 3 * len(columns)
+            + 1
+        )
+        queue_part = (
+            build_rows(
+                columns,
+                table_rows,
+                money={"Amount": Money("flow")},
+                terminal=policy,
+            )
+            if table_width <= policy.width
+            else None
+        )
+        stacked_records = [
+            build_summary(
+                [
+                    ("Transaction ID", str(r["transaction_id"])),
+                    (
+                        "Amount",
+                        f"{format_money(r.get('amount'), 'flow', minus=policy.minus)} "
+                        f"{r.get('currency_code') or 'n/a'}",
+                    ),
+                    ("Date", str(r.get("txn_date") or "-")),
+                    ("Description", str(r.get("description") or "-")),
+                    ("Account", str(r.get("account_id") or "-")),
+                    ("Age days", str(r.get("age_days") or "-")),
+                ],
+                title=f"Transaction {index}",
+            )
+            for index, r in enumerate(records, start=1)
+        ]
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Transactions", f"{len(records):,}")],
+                        title="Uncategorized queue",
+                    ),
+                    *([queue_part] if queue_part is not None else stacked_records),
+                ],
+                disclosures=(
+                    scope,
+                    f"Showing {len(records):,} (limit {effective_limit:,}; total unknown).",
+                ),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_pending"
@@ -207,17 +351,26 @@ def categorize_commit(
         else:
             raw = json.load(sys.stdin)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {input_path}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_commit",
+            message=f"File not found: {input_path}",
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit",
+            message=f"Invalid JSON: {e}",
+        )
 
     try:
         items, parse_errors = validate_items(raw)
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(e, output=output, exit_code=1, cli_actor="categorize_commit")
 
     if items:
         with handle_cli_errors(cli_actor="categorize_commit"):
@@ -228,13 +381,34 @@ def categorize_commit(
     result.merge_parse_errors(parse_errors)
 
     def _render_table(_: object) -> None:
-        logger.info(
-            f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
-        )
+        details = [
+            ("Applied", str(result.applied)),
+            ("Skipped", str(result.skipped)),
+            ("Failed", str(result.errors)),
+        ]
         if result.merchants_created:
-            logger.info(f"   Created {result.merchants_created} merchant mappings")
-        for err in result.error_details:
-            logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+            details.append(("Merchant mappings created", str(result.merchants_created)))
+        disclosures = tuple(
+            f"{err['transaction_id']}: {err['reason']}" for err in result.error_details
+        )
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        details,
+                        title=(
+                            "Categorization partially completed"
+                            if result.errors or result.skipped
+                            else "Categorizations committed"
+                        ),
+                    )
+                ],
+                disclosures=disclosures,
+            ),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     from moneybin.protocol.envelope import build_envelope
 
@@ -282,7 +456,6 @@ def categorize_run(
     """
     from typing import Literal
 
-    from moneybin.cli.output import render_or_json
     from moneybin.privacy.payloads.categorize import CategorizeRunPayload
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
@@ -299,11 +472,14 @@ def categorize_run(
         else:
             bad.append(name)
     if bad:
-        typer.echo(
-            f"❌ Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}.",
-            err=True,
+        abort_cli_error(
+            ValueError(
+                f"Unknown method(s): {', '.join(bad)}. Valid: {', '.join(sorted(valid))}."
+            ),
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_run",
         )
-        raise typer.Exit(2)
 
     with handle_cli_errors(cli_actor="categorize_run"):
         with get_database(read_only=False) as db:
@@ -316,9 +492,21 @@ def categorize_run(
     envelope = build_envelope(data=payload, sensitivity="medium")
 
     def _render_table(_: object) -> None:
-        for method, count in payload.applied_by_method.items():
-            logger.info(f"  {method}: {count}")
-        logger.info(f"✅ Applied {payload.total_applied} total")
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        (method, f"{count:,}")
+                        for method, count in payload.applied_by_method.items()
+                    ]
+                    + [("Total applied", f"{payload.total_applied:,}")],
+                    title="Categorization run complete",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_run"
@@ -339,7 +527,6 @@ def categorize_improve_ai(output: OutputFormat = output_option) -> None:
       moneybin transactions categorize improve-ai
       moneybin transactions categorize improve-ai --output json
     """
-    from moneybin.cli.output import render_or_json
     from moneybin.privacy.payloads.categorize import ImproveAiPayload
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
@@ -352,8 +539,19 @@ def categorize_improve_ai(output: OutputFormat = output_option) -> None:
     envelope = build_envelope(data=payload, sensitivity="low")
 
     def _render_table(_: object) -> None:
-        logger.info(
-            f"✅ Upgraded {payload.upgraded_count} transaction(s) to provider_native"
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Upgraded", f"{payload.upgraded_count:,}"),
+                        ("Method", "provider-native"),
+                    ],
+                    title="AI categorizations improved",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
         )
 
     render_or_json(
@@ -377,6 +575,7 @@ def categorize_assist(
         help="Date range as START,END (ISO dates, inclusive).",
     ),
     output: OutputFormat = output_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Return uncategorized transactions as PII-scrubbed records for LLM categorization.
 
@@ -391,7 +590,6 @@ def categorize_assist(
     Pipe the JSON output into an LLM workflow; commit decisions back via
     `moneybin transactions categorize commit`.
     """
-    from moneybin.cli.output import render_or_json
     from moneybin.metrics.registry import CATEGORIZE_ASSIST_CALLS_TOTAL
     from moneybin.privacy.payloads.categorize import AssistRow, CatAssistPayload
     from moneybin.privacy.sensitivity import audit_log
@@ -407,8 +605,12 @@ def categorize_assist(
     if date_range:
         parts = [p.strip() for p in date_range.split(",")]
         if len(parts) != 2:
-            typer.echo("❌ --date-range must be START,END (ISO dates).", err=True)
-            raise typer.Exit(2)
+            abort_cli_error(
+                ValueError("--date-range must be START,END (ISO dates)."),
+                output=output,
+                exit_code=2,
+                cli_actor="categorize_assist",
+            )
         date_tuple = (parts[0], parts[1])
 
     with handle_cli_errors(cli_actor="categorize_assist"):
@@ -446,7 +648,34 @@ def categorize_assist(
     envelope = build_envelope(data=payload, sensitivity="medium")
 
     def _render_table(_: object) -> None:
-        logger.info(f"Returned {len(payload.transactions)} redacted record(s).")
+        policy = get_terminal_policy(no_pager=no_pager)
+        if not payload.transactions:
+            parts = [
+                build_summary([
+                    (
+                        "Result",
+                        "No uncategorized transactions are available for assist.",
+                    )
+                ])
+            ]
+            disclosures = ("Next: moneybin transactions categorize run",)
+        else:
+            parts = [
+                build_summary(
+                    [("Redacted records", f"{len(payload.transactions):,}")],
+                    title="Categorization assist",
+                )
+            ]
+            disclosures = (
+                f"Showing {len(payload.transactions):,} (limit {limit:,}; total unknown).",
+                "Use --output json when sending this data to an LLM.",
+            )
+        emit_human_result(
+            compose_human_result(parts, disclosures=disclosures),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         envelope, output, render_fn=_render_table, cli_actor="categorize_assist"
@@ -457,9 +686,9 @@ def categorize_assist(
 def stats(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # summary has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show categorization coverage summary."""
-    from moneybin.cli.output import render_or_json
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.categorization import CategorizationService
 
@@ -483,20 +712,28 @@ def stats(
     # `moneybin review` will offer, so transfer legs and archived accounts are
     # out. Without it "Transactions" reads as the whole ledger and the number
     # looks wrong.
-    logger.info(
-        "Categorization coverage (excludes transfers, archived and "
-        "unresolved accounts):"
-    )
-    logger.info(f"  Transactions:         {coverage.total}")
-    logger.info(
-        f"  Categorized:          {coverage.categorized} "
-        f"({coverage.percent_categorized:.1f}%)"
-    )
-    logger.info(f"  Uncategorized:        {coverage.uncategorized}")
-
-    # Show breakdown by source
-    for source, value in coverage.by_source.items():
-        logger.info(f"  By {source}:  {value}")
-
+    pairs = [
+        ("Transactions", f"{coverage.total:,}"),
+        (
+            "Categorized",
+            f"{coverage.categorized:,} ({coverage.percent_categorized:.1f}%)",
+        ),
+        ("Uncategorized", f"{coverage.uncategorized:,}"),
+        *[
+            (f"By {source}", f"{value:,}")
+            for source, value in coverage.by_source.items()
+        ],
+    ]
     if coverage.plaid_unmapped is not None:
-        logger.info(f"  Plaid unmapped (no bridge mapping): {coverage.plaid_unmapped}")
+        pairs.append(("Plaid unmapped", f"{coverage.plaid_unmapped:,}"))
+    emit_human_result(
+        compose_human_result(
+            [build_summary(pairs, title="Categorization coverage")],
+            disclosures=(
+                "Scope: excludes transfers, archived and unresolved accounts.",
+            ),
+        ),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+    )

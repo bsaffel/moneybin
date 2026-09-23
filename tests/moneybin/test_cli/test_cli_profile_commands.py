@@ -8,8 +8,52 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.profile import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _interactive_profile_terminal(  # pyright: ignore[reportUnusedFunction]  # pytest autouse fixture
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Profile tests default to the runner's noninteractive text contract."""
+    policy = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+    def get_policy(**_kwargs: object) -> TerminalPolicy:
+        return policy
+
+    monkeypatch.setattr("moneybin.cli.commands.profile.get_terminal_policy", get_policy)
+
+
+def _interactive_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
 
 
 class TestProfileCreate:
@@ -70,8 +114,8 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Completed setup" in caplog.text
-        assert "Created profile" not in caplog.text
+        assert "Profile setup completed" in result.stdout
+        assert "Profile created" not in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_says_created_for_a_fresh_profile(
@@ -85,7 +129,7 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Created profile" in caplog.text
+        assert "Profile created" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_does_not_claim_to_preserve_a_database_that_never_existed(
@@ -106,8 +150,8 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "Completed setup" in caplog.text
-        assert "left untouched" not in caplog.text
+        assert "Profile setup completed" in result.stdout
+        assert "preserved" not in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_create_reports_a_preserved_database_when_one_was_adopted(
@@ -122,7 +166,7 @@ class TestProfileCreate:
             result = runner.invoke(app, ["create", "alice"])
 
         assert result.exit_code == 0
-        assert "left untouched" in caplog.text
+        assert "preserved" in result.stdout
 
 
 class TestProfileList:
@@ -140,7 +184,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "alice" in caplog.text
+        assert "alice" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_list_empty(
@@ -151,7 +195,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "No profiles found" in caplog.text
+        assert "No profiles found" in result.stdout
 
     @patch("moneybin.cli.commands.profile.ProfileService")
     def test_list_marks_active(
@@ -165,7 +209,7 @@ class TestProfileList:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["list"])
         assert result.exit_code == 0
-        assert "(active)" in caplog.text
+        assert "(active)" in result.stdout
 
 
 class TestProfileSwitch:
@@ -192,8 +236,13 @@ class TestProfileDelete:
     """Tests for 'profile delete' command."""
 
     @patch("moneybin.cli.commands.profile.ProfileService")
-    def test_delete_requires_confirmation(self, mock_cls: MagicMock) -> None:
+    def test_delete_requires_confirmation(
+        self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mock_svc = mock_cls.return_value
+        monkeypatch.setattr(
+            "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
+        )
         result = runner.invoke(app, ["delete", "alice"], input="n\n")
         assert result.exit_code == 0
         mock_svc.delete.assert_not_called()
@@ -206,8 +255,13 @@ class TestProfileDelete:
         mock_svc.delete.assert_called_once_with("alice")
 
     @patch("moneybin.cli.commands.profile.ProfileService")
-    def test_delete_confirmed_interactively(self, mock_cls: MagicMock) -> None:
+    def test_delete_confirmed_interactively(
+        self, mock_cls: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         mock_svc = mock_cls.return_value
+        monkeypatch.setattr(
+            "moneybin.cli.commands.profile.get_terminal_policy", _interactive_policy
+        )
         result = runner.invoke(app, ["delete", "alice"], input="y\n")
         assert result.exit_code == 0
         mock_svc.delete.assert_called_once_with("alice")
@@ -241,7 +295,7 @@ class TestProfileShow:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
-        assert "alice" in caplog.text
+        assert "alice" in result.stdout
         # CLI resolves the current profile before delegating to the service
         mock_svc.show.assert_called_once()
 
@@ -296,7 +350,7 @@ class TestProfileShow:
         with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.profile"):
             result = runner.invoke(app, ["show"])
         assert result.exit_code == 0
-        assert "not created" in caplog.text
+        assert "not created" in result.stdout
 
 
 class TestProfileSet:

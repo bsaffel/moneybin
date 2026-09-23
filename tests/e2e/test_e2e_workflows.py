@@ -497,11 +497,11 @@ class TestSingleAccountConfirmPipeline:
             "json",
             env=env,
         )
-        # import files exits 0 even on confirmation_required in --output json mode;
-        # the body's data.status is the discriminant.
-        assert result.exit_code == 0, (
-            f"Expected exit 0 from import files (confirmation_required exits 0 "
-            f"in JSON mode)\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        # The JSON envelope remains machine-readable, but requested work is
+        # incomplete until this account identity confirmation is resolved.
+        assert result.exit_code == 1, (
+            f"Expected exit 1 from incomplete import confirmation\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         payload = json.loads(result.stdout)
         data = payload["data"]
@@ -528,6 +528,7 @@ class TestSingleAccountConfirmPipeline:
         )
         ref = proposals[0]["proposal_ref"]
         assert ref == "@0", f"the first proposal's ref must be @0, got {ref!r}"
+        assert any("moneybin import confirm" in action for action in payload["actions"])
 
         # Step 2: Resolve — accept the mapping and bind by the positional ref so
         # the import can complete. Binding the masked key instead is refused; that
@@ -677,19 +678,28 @@ class TestAutoRulePipeline:
         result = run_cli("transform", "apply", env=env, timeout=180)
         result.assert_success()
 
-        # auto-review surfaces the seeded proposal
-        result = run_cli("transactions", "categorize", "auto", "review", env=env)
-        result.assert_success()
-        assert "COFFEE SHOP" in result.output, (
-            f"Expected COFFEE SHOP pattern in auto-review output: {result.output}"
+        # JSON preserves full proposals regardless of the terminal's table width.
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "auto",
+            "review",
+            "--output",
+            "json",
+            env=env,
         )
+        result.assert_success()
+        proposals = json.loads(result.stdout)["data"]["proposals"]
+        assert any(
+            proposal["merchant_pattern"] == "COFFEE SHOP" for proposal in proposals
+        ), f"Expected COFFEE SHOP pattern in auto-review output: {result.stdout}"
 
         # auto-accept promotes the proposal to an active rule
         result = run_cli(
             "transactions", "categorize", "auto", "accept", "--accept-all", env=env
         )
         result.assert_success()
-        assert "Accepted 1" in result.output, (
+        assert "Accepted: 1" in " ".join(result.output.split()), (
             f"auto-accept did not approve the proposal: {result.output}"
         )
 

@@ -90,7 +90,7 @@ Usage: `moneybin gsheet pull [OPTIONS] [CONNECTION_ID]`
 |---|---|---|---|
 | `--refresh / --no-refresh` | flag | `true` | Run the refresh pipeline (match → transform → categorize → rates) after the pull. Default: on. Pass --no-refresh to defer. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin gsheet list
 
@@ -103,6 +103,8 @@ Usage: `moneybin gsheet list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin gsheet status
 
@@ -121,6 +123,8 @@ Usage: `moneybin gsheet status [OPTIONS] [CONNECTION_ID]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin gsheet reconnect
 

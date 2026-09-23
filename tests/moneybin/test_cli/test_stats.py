@@ -6,6 +6,7 @@ given set of `app.metrics` rows, not about how the rows get there.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -16,7 +17,9 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from moneybin.cli import pager
 from moneybin.cli.commands.stats import stats_command
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
 runner = CliRunner()
 
@@ -28,6 +31,35 @@ def _app() -> typer.Typer:
     app = typer.Typer()
     app.command(name="stats")(stats_command)
     return app
+
+
+def _paging_policy() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=40,
+        height=2,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def _policy_factory(**_kwargs: object) -> TerminalPolicy:
+    return _paging_policy()
+
+
+def _capture_page(pages: list[str]):
+    def capture(text: str, *, color: bool, wide: bool) -> bool:
+        pages.append(text)
+        return True
+
+    return capture
 
 
 def _patch_rows(
@@ -42,6 +74,69 @@ def _patch_rows(
         yield db
 
     monkeypatch.setattr("moneybin.cli.commands.stats.get_database", fake_get_database)
+
+
+def test_stats_pages_all_metric_domains_as_one_answer_and_no_pager_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A long stats read pages its full grouped answer while JSON remains separate."""
+    _patch_rows(
+        monkeypatch,
+        [
+            ("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED),
+            ("moneybin_export_runs", "counter", "{}", 7.0, 1, _RECORDED),
+        ],
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.stats.get_terminal_policy", _policy_factory
+    )
+    pages: list[str] = []
+    monkeypatch.setattr(pager, "page_text", _capture_page(pages))
+
+    paged = runner.invoke(_app(), [])
+    direct = runner.invoke(_app(), ["--no-pager"])
+
+    assert paged.exit_code == 0, paged.output
+    assert direct.exit_code == 0, direct.output
+    assert len(pages) == 1
+    assert "Import pipeline" in pages[0]
+    assert "Export delivery" in pages[0]
+    assert (
+        pages[0].replace("\n\nq return to shell\n", "").rstrip()
+        == direct.stdout.rstrip()
+    )
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_empty_stats_keeps_scope_and_action_when_quiet(
+    monkeypatch: pytest.MonkeyPatch, quiet: bool
+) -> None:
+    """Quiet cannot erase a requested empty stats result or its next action."""
+    _patch_rows(monkeypatch, [])
+
+    result = runner.invoke(_app(), [*(["--quiet"] if quiet else [])])
+
+    assert result.exit_code == 0, result.output
+    assert "Metrics" in result.stdout
+    assert "No metrics recorded yet." in result.stdout
+    assert "Run an import, refresh, or report" in result.stdout
+
+
+def test_stats_json_remains_unpaged_operation_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The text pager does not wrap or reshape stats' declared JSON exemption."""
+    _patch_rows(
+        monkeypatch,
+        [("moneybin_import_records", "counter", "{}", 40.0, 1, _RECORDED)],
+    )
+
+    result = runner.invoke(_app(), ["--output", "json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["metrics"][0]["name"] == "moneybin_import_records"
+    assert "Metrics" not in result.stdout
 
 
 def test_two_label_sets_of_one_metric_render_as_distinguishable_lines(

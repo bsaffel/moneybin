@@ -27,12 +27,19 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors, parse_cli_date, parse_cli_decimal
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    get_terminal_policy,
+    handle_cli_errors,
+    parse_cli_date,
+    parse_cli_decimal,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentFailedSourceEntry,
@@ -79,29 +86,24 @@ def _report_refresh_failure(error: str | None) -> None:
     if not error:
         return
     logger.warning(
-        f"⚠️  transforms failed ({error}); the new closes landed in raw and are "
+        f"transforms failed ({error}); the new closes landed in raw and are "
         "not valuing holdings yet. Retry with 'moneybin refresh'."
     )
     raise typer.Exit(1)
 
 
-def _echo_refresh_hint(what: str, *, stale: bool) -> None:
-    """Name the apply that makes a just-written price visible.
-
-    Every write in this group lands in raw or app while every consumer reads
-    ``core.fct_security_prices``, so without this a user who writes and
-    immediately lists sees the pre-write series with nothing explaining why.
-    One construction for all three commands: the boundary is the same, and two
-    hint strings for one condition drift.
-
-    Silent when the command already propagated the change, and when nothing
-    changed — a hint naming work with no effect is noise.
-    """
-    if not stale:
-        return
-    typer.echo(
-        f"💡 {what} once the models rebuild — run 'moneybin refresh', "
-        "or pass --refresh next time"
+def _emit_receipt(
+    title: str, pairs: list[tuple[str, str]], *, disclosures: list[str] | None = None
+) -> None:
+    """Render a compact, unpaged mutation receipt."""
+    policy = get_terminal_policy()
+    emit_human_result(
+        compose_human_result(
+            [build_summary(pairs, title=title)], disclosures=disclosures or ()
+        ),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
     )
 
 
@@ -182,30 +184,53 @@ def investments_prices_pull(
         )
         _report_refresh_failure(payload.refresh_error)
         return
-    if not quiet:
-        typer.echo(
-            f"✅ {result.rows_written} new price rows "
-            f"({result.securities_priced} securities priced)"
+    disclosures: list[str] = []
+    if result.queued_for_review:
+        disclosures.append(
+            "Next: review feed keys with moneybin investments securities links pending."
         )
-        if result.queued_for_review:
-            typer.echo(
-                f"👀 {result.queued_for_review} feed key(s) need review — "
-                "run 'moneybin investments securities links pending'"
-            )
-        _echo_refresh_hint(
-            "These closes value holdings",
-            stale=bool(result.rows_written) and refreshed is None,
+    if result.rows_written and refreshed is None and not quiet:
+        disclosures.append("Prices will value holdings after moneybin refresh.")
+    disclosures.extend([
+        f"Attention: {failure.source_type}: {failure.message}"
+        for failure in result.failed_sources
+    ])
+    parts: list[object] = [
+        build_summary(
+            [
+                ("Outcome", "partial" if result.failed_sources else "complete"),
+                ("New price rows", str(result.rows_written)),
+                ("Securities priced", str(result.securities_priced)),
+                ("Feed keys awaiting review", str(result.queued_for_review)),
+            ],
+            title="Price refresh",
         )
-    # A whole-source failure no longer aborts the run, so it has to be visible
-    # here or the only trace is every one of that source's securities reporting
-    # 'price_feed_error' with nothing saying what to fix. stderr because it is a
-    # diagnostic about a degraded run, not part of the refresh's result.
-    for failure in result.failed_sources:
-        typer.echo(f"⚠️  {failure.source_type}: {failure.message}", err=True)
+    ]
     if result.unpriced:
-        render_rows(
-            ["unpriced security", "reason"],
-            [(entry.security_id, entry.reason) for entry in result.unpriced],
+        policy = get_terminal_policy()
+        parts.append(
+            build_rows(
+                ["unpriced security", "reason"],
+                [(entry.security_id, entry.reason) for entry in result.unpriced],
+                terminal=policy,
+            )
+        )
+        emit_human_result(
+            compose_human_result(parts, disclosures=disclosures),
+            policy=policy,
+            finite_read=False,
+            receipt=True,
+        )
+    else:
+        _emit_receipt(
+            "Price refresh",
+            [
+                ("Outcome", "partial" if result.failed_sources else "complete"),
+                ("New price rows", str(result.rows_written)),
+                ("Securities priced", str(result.securities_priced)),
+                ("Feed keys awaiting review", str(result.queued_for_review)),
+            ],
+            disclosures=disclosures,
         )
     _report_refresh_failure(payload.refresh_error)
 
@@ -294,10 +319,19 @@ def investments_prices_set(
         )
         _report_refresh_failure(payload.refresh_error)
         return
-    typer.echo(
-        f"✅ Marked {security_id} at {parsed_price} {quote_currency} on {parsed_date}"
+    _emit_receipt(
+        "Price mark saved",
+        [
+            ("Security", security_id),
+            ("Price", f"{parsed_price} {quote_currency}"),
+            ("Date", str(parsed_date)),
+        ],
+        disclosures=(
+            ["Prices will value holdings after moneybin refresh."]
+            if refreshed is None
+            else []
+        ),
     )
-    _echo_refresh_hint("This mark values holdings", stale=refreshed is None)
     _report_refresh_failure(payload.refresh_error)
 
 
@@ -376,15 +410,22 @@ def investments_prices_delete(
         _report_refresh_failure(payload.refresh_error)
         return
     if removed:
-        typer.echo(f"✅ Removed the mark on {security_id} for {parsed_date}")
+        _emit_receipt(
+            "Price mark removed",
+            [("Security", security_id), ("Date", str(parsed_date))],
+            disclosures=(
+                ["Prices will value holdings after moneybin refresh."]
+                if refreshed is None
+                else []
+            ),
+        )
     else:
         # Not an error: the end state the caller wanted already holds. Saying so
         # keeps "the override is gone" from reading as "your mark was deleted".
-        typer.echo(f"No mark existed for {security_id} on {parsed_date}")
-    _echo_refresh_hint(
-        "This date returns to provider pricing",
-        stale=removed and refreshed is None,
-    )
+        _emit_receipt(
+            "Price mark unchanged",
+            [("Security", security_id), ("Date", str(parsed_date))],
+        )
     _report_refresh_failure(payload.refresh_error)
 
 
@@ -403,6 +444,7 @@ def investments_prices_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show the resolved price series for one security, newest first.
 
@@ -434,25 +476,37 @@ def investments_prices_list(
             cli_actor="investments_prices_list",
         )
         return
+    policy = get_terminal_policy(no_pager=no_pager)
     # A close is a per-unit price, not an amount: it is stored `DECIMAL(28, 10)`
     # and `format_money` rounds to two places, which renders a sub-cent crypto
     # price as 0.00. It declares no money column and prints as stored — the same
     # call `fx list` makes about a rate.
+    parts: list[object] = [build_summary([("Security", security_id)], title="Prices")]
     if result.rows:
-        render_rows(
-            ["date", "close", "currency", "source", "basis"],
-            [
-                (
-                    row.price_date,
-                    row.close,
-                    row.quote_currency,
-                    row.source_type,
-                    row.price_basis,
-                )
-                for row in result.rows
-            ],
-            numeric=("close",),
+        parts.append(
+            build_rows(
+                ["date", "close", "currency", "source", "basis"],
+                [
+                    (
+                        row.price_date,
+                        row.close,
+                        row.quote_currency,
+                        row.source_type,
+                        row.price_basis,
+                    )
+                    for row in result.rows
+                ],
+                numeric=("close",),
+                terminal=policy,
+            )
         )
+    else:
+        parts.append(
+            build_summary([("Result", "No prices match this security and filter.")])
+        )
+    emit_human_result(
+        compose_human_result(parts), policy=policy, finite_read=True, no_pager=no_pager
+    )
 
 
 @app.command("token")
@@ -483,4 +537,4 @@ def investments_prices_token(
 
         SecretStore().set_key(TIINGO_API_TOKEN_KEY, value.strip())
     # Never echo the token back, not even masked — the value is now at rest.
-    typer.echo("✅ Stored the Tiingo API token")
+    _emit_receipt("Tiingo token stored", [("Outcome", "complete")])

@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
@@ -36,15 +37,36 @@ from moneybin.services.import_confirmation import (
     TabularReadOptions,
 )
 from moneybin.services.import_service import (
+    BatchImportResult,
     BridgeApplyResult,
     CreatedAccount,
     ImportResult,
+    PerFileResult,
 )
 from moneybin.services.ledger_overlap import LedgerOverlap
 
 runner = CliRunner()
 
 _MINTED = (CreatedAccount(account_id="acct00000001", display_name="WF Checking"),)
+
+
+def test_long_confirm_receipt_never_pages(mocker: Any) -> None:
+    """Mutation receipts print in full even when they exceed terminal height."""
+    from moneybin.cli.commands.import_cmd import (
+        _confirm_receipt,  # pyright: ignore[reportPrivateUsage]  # receipt behavior
+    )
+
+    mocker.patch(
+        "moneybin.cli.commands.import_cmd.get_terminal_policy",
+        return_value=MagicMock(
+            output="text", page=True, width=20, height=1, style=False, color=False
+        ),
+    )
+    pager = mocker.patch("moneybin.cli.pager.page_text")
+
+    _confirm_receipt("Import complete", [("Saved", "row " * 100)])
+
+    pager.assert_not_called()
 
 
 def _account_proposal_dict(
@@ -467,6 +489,52 @@ class TestImportFilesConfirmFlow:
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["confirm"] is True
 
+    def test_batch_receipt_keeps_confirmation_work_visible_and_nonzero(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A batch with saved work and a pending choice is partial, not successful."""
+        saved = tmp_path / "saved.csv"
+        pending = tmp_path / "pending.csv"
+        for path in (saved, pending):
+            path.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        confirmation = _make_confirmation_error().outcome
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.import_files",
+            return_value=BatchImportResult(
+                per_file=[
+                    PerFileResult(
+                        path=str(saved),
+                        status="imported",
+                        source_type="tabular",
+                        rows_loaded=2,
+                    ),
+                    PerFileResult(
+                        path=str(pending),
+                        status="confirmation_required",
+                        source_type=None,
+                        confirmation_payload={
+                            "channel": confirmation.channel,
+                            "reason": confirmation.reason,
+                        },
+                    ),
+                ],
+                transforms_applied=False,
+                transforms_duration_seconds=None,
+            ),
+        )
+
+        result = runner.invoke(
+            app, ["files", str(saved), str(pending), "--output", "json"]
+        )
+
+        assert result.exit_code == 1
+        payload = json.loads(result.stdout)
+        assert payload["data"]["imported_count"] == 1
+        assert payload["data"]["confirmation_required_count"] == 1
+        pending_row = payload["data"]["files"][1]
+        assert pending_row["status"] == "confirmation_required"
+        assert pending_row["confirmation_payload"]["reason"] == "unknown_layout"
+
     def test_a_created_account_is_named_in_the_json_envelope(
         self,
         mock_db: MagicMock,
@@ -784,7 +852,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--account-name", "Checking", "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         data = payload["data"]
         assert data["status"] == "confirmation_required"
@@ -1168,7 +1236,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(ofx_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "moneybin import confirm" in recovery
@@ -1795,7 +1863,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(pdf_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         data = payload["data"]
         assert data["reason"] == "sign_convention"
@@ -1816,7 +1884,7 @@ class TestImportFilesConfirmFlow:
         mock_import_file_raises_confirm: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """When --output json and service raises, emit confirmation_required envelope; exit 0."""
+        """A confirmation envelope retains its shape and exits nonzero."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
 
@@ -1825,7 +1893,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"
@@ -1836,6 +1904,28 @@ class TestImportFilesConfirmFlow:
         assert payload["data"]["channel"] == "tabular"
         assert "proposed_mapping" in payload["data"]
         assert "samples" in payload["data"]
+
+    def test_redirected_text_confirmation_stays_text(
+        self,
+        mock_db: MagicMock,
+        mock_import_file_raises_confirm: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Redirecting text does not silently substitute a JSON envelope."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        mock_sys = mocker.patch("moneybin.cli.commands.import_cmd.sys")
+        mock_sys.stdin.isatty.return_value = False
+        mock_sys.stdout.isatty.return_value = False
+
+        result = runner.invoke(app, ["files", str(csv_file), "--output", "text"])
+
+        assert result.exit_code == 1
+        assert "Confirmation required" in result.output
+        assert "moneybin import files" in result.output
+        assert "--confirm" in result.output
+        assert not result.output.lstrip().startswith("{")
 
     def test_consumed_header_actions_do_not_prescribe_another_mapping(
         self,
@@ -1861,7 +1951,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--format", "acme_fmt", "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "header_row_consumed"
         actions = payload["actions"]
@@ -2234,7 +2324,7 @@ class TestImportFilesConfirmFlow:
 
         result = runner.invoke(app, ["files", str(csv_file), "--output", "json"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         assert payload["data"]["reason"] == "unreadable_date"
         actions = payload["actions"]
@@ -2259,7 +2349,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"
@@ -2297,7 +2387,7 @@ class TestImportFilesConfirmFlow:
             ["files", str(csv_file), "--output", "json"],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 1
         payload = json.loads(result.output)
         # Top-level envelope shape must match MCP (build_envelope output).
         assert payload["status"] == "ok"
@@ -2404,18 +2494,13 @@ class TestImportConfirmCommand:
         assert call_kwargs["confirm"] is True
         assert call_kwargs.get("actor_kind") == "human"
 
-    def test_confirm_forwards_all_six_read_options_to_the_service(
+    def test_confirm_forwards_read_options_and_limit_overrides_to_the_service(
         self,
         mock_db: MagicMock,
         mock_import_file: MagicMock,
         tmp_path: Path,
     ) -> None:
-        """Every file-reading option `import confirm` accepts reaches `import_file`.
-
-        `import confirm` accepts the same six read-shaping options as
-        `import files`. This proves the CLI wiring, not just the
-        printed-command serializer.
-        """
+        """Confirmation replays every option that shapes the tabular read."""
         csv_file = tmp_path / "test.csv"
         csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
 
@@ -2437,10 +2522,12 @@ class TestImportConfirmCommand:
                 ";",
                 "--encoding",
                 "latin-1",
+                "--no-row-limit",
+                "--no-size-limit",
             ],
         )
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         call_kwargs = mock_import_file.call_args.kwargs
         assert call_kwargs["format_name"] == "chase_credit"
         assert call_kwargs["date_format"] == "%Y%m%d"
@@ -2448,6 +2535,216 @@ class TestImportConfirmCommand:
         assert call_kwargs["sheet"] == "Transactions"
         assert call_kwargs["delimiter"] == ";"
         assert call_kwargs["encoding"] == "latin-1"
+        assert call_kwargs["no_row_limit"] is True
+        assert call_kwargs["no_size_limit"] is True
+
+    def test_confirm_interactively_binds_an_existing_account_candidate(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """Prompted and flagged bindings reach the same import service input."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            _make_import_result(),
+        ]
+        choose = mocker.patch("moneybin.cli.commands.import_cmd.choose_required")
+        choose.return_value = "cand87654321"
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                output="text",
+                page=False,
+                width=80,
+                height=24,
+                style=False,
+                color=False,
+            ),
+        )
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 0, result.output
+        assert choose.call_args.kwargs["flag"] == "--account-binding"
+        assert mock_import_file.call_args_list[1].kwargs["account_bindings"] == {
+            "@0": "cand87654321"
+        }
+
+    def test_confirm_prompted_and_explicit_binding_share_service_arguments(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """The prompt only supplies the same binding an explicit flag supplies."""
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        explicit = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(csv_file),
+                "--accept",
+                "--account-binding",
+                "@0=cand87654321",
+            ],
+        )
+        assert explicit.exit_code == 0, explicit.output
+        explicit_arguments: dict[str, Any] = dict(mock_import_file.call_args.kwargs)
+
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.reset_mock()
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            _make_import_result(),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            return_value="cand87654321",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                output="text",
+                page=False,
+                width=80,
+                height=24,
+                style=False,
+                color=False,
+            ),
+        )
+
+        prompted = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert prompted.exit_code == 0, prompted.output
+        assert mock_import_file.call_args_list[1].kwargs == explicit_arguments
+
+    def test_confirm_json_account_gate_never_prompts(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = ImportConfirmationRequiredError(outcome)
+        choose = mocker.patch("moneybin.cli.commands.import_cmd.choose_required")
+
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "json"]
+        )
+
+        assert result.exit_code == 0, result.output
+        choose.assert_not_called()
+
+    def test_confirm_renders_recovery_after_one_stale_candidate_retry(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = [
+            ImportConfirmationRequiredError(outcome),
+            ImportConfirmationRequiredError(outcome),
+        ]
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            return_value="cand87654321",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=MagicMock(
+                interactive=True,
+                output="text",
+                page=False,
+                width=80,
+                height=24,
+                style=False,
+                color=False,
+            ),
+        )
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code == 1
+        assert mock_import_file.call_count == 2
+        assert "Re-run" in result.output
+
+    def test_confirm_cancellation_does_not_retry_the_service(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        csv_file = tmp_path / "test.csv"
+        csv_file.write_text("Date,Amount,Memo\n2025-01-01,-50.00,Coffee\n")
+        outcome = ConfirmationRequired(
+            channel="tabular",
+            confidence=Confidence(
+                score=1.0, tier="high", flagged=(), missing_required=()
+            ),
+            proposed=ProposedMapping({}, {}, ()),
+            reason="account_confirmation",
+            account_proposals=[_account_proposal_dict("source-key")],
+        )
+        mock_import_file.side_effect = ImportConfirmationRequiredError(outcome)
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.choose_required",
+            side_effect=typer.Abort,
+        )
+        mocker.patch("moneybin.cli.commands.import_cmd.get_terminal_policy")
+
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept"])
+
+        assert result.exit_code != 0
+        assert mock_import_file.call_count == 1
 
     def test_confirm_accept_renders_sidecars_disputed_rows(
         self,
@@ -2821,6 +3118,122 @@ class TestImportConfirmCommand:
         }
         assert json.loads(result.output)["data"]["status"] == "applied"
 
+    def test_confirm_redirected_text_confirmation_stays_text(
+        self,
+        mock_db: MagicMock,
+        mock_import_file: MagicMock,
+        mocker: Any,
+        tmp_path: Path,
+    ) -> None:
+        """An explicit text confirm receipt never turns into JSON when redirected."""
+        csv_file = tmp_path / "statement.csv"
+        csv_file.write_text("Date,Amount,Memo\n")
+        mock_import_file.side_effect = _make_confirmation_error()
+        choose = mocker.patch("moneybin.cli.commands.import_cmd.choose_required")
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.sys.stdout.isatty", return_value=False
+        )
+        result = runner.invoke(
+            app, ["confirm", str(csv_file), "--accept", "--output", "text"]
+        )
+        assert result.exit_code == 1
+        assert "Import needs confirmation" in result.stdout
+        assert not result.stdout.lstrip().startswith("{")
+        assert "Re-run" in result.stdout
+        choose.assert_not_called()
+
+    def test_confirm_quiet_success_keeps_receipt(
+        self, mock_db: MagicMock, mock_import_file: MagicMock, tmp_path: Path
+    ) -> None:
+        csv_file = tmp_path / "statement.csv"
+        csv_file.write_text("Date,Amount,Memo\n")
+        mock_import_file.return_value = _make_import_result(
+            import_id="quiet123", transactions=7
+        )
+        result = runner.invoke(app, ["confirm", str(csv_file), "--accept", "--quiet"])
+        assert result.exit_code == 0
+        assert "quiet123" in result.stdout and "7 rows" in result.stdout
+        assert "transform apply" in result.stdout
+
+    def test_confirm_bridge_applied_text_quiet_keeps_receipt(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="applied",
+                import_id="bridge123",
+                rows_loaded=2,
+                format_name=None,
+                expected_row_count=2,
+                actual_row_count=2,
+                rows_diverged=False,
+            ),
+        )
+        mocker.patch(
+            "moneybin.services.inbox_service.InboxService.for_active_profile_no_db"
+        )
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+                "--quiet",
+            ],
+        )
+        assert result.exit_code == 0
+        assert (
+            "bridge123" in result.stdout
+            and "2 rows" in result.stdout
+            and "transform apply" in result.stdout
+        )
+
+    def test_confirm_bridge_invalid_text_keeps_reconciliation_facts(
+        self, mock_db: MagicMock, mocker: Any, tmp_path: Path
+    ) -> None:
+        pdf_file = tmp_path / "statement.pdf"
+        pdf_file.write_bytes(b"%PDF")
+        response_file = tmp_path / "response.json"
+        response_file.write_text('{"recipe": {}, "rows": []}')
+        apply = mocker.patch(
+            "moneybin.services.import_service.ImportService.apply_pdf_bridge_response",
+            return_value=BridgeApplyResult(
+                outcome="invalid",
+                import_id=None,
+                rows_loaded=0,
+                format_name=None,
+                expected_row_count=3,
+                actual_row_count=2,
+                rows_diverged=True,
+                reject_reason="reconciliation_failed",
+            ),
+        )
+        result = runner.invoke(
+            app,
+            [
+                "confirm",
+                str(pdf_file),
+                "--bridge-response",
+                str(response_file),
+                "--confirm",
+            ],
+        )
+        assert result.exit_code == 1
+        assert (
+            "reconciliation_failed" in result.stdout
+            and "3" in result.stdout
+            and "2" in result.stdout
+            and "True" in result.stdout
+        )
+        apply.assert_called_once()
+
     def test_bridge_response_can_answer_the_account_gate_it_raises(
         self, mock_db: MagicMock, mocker: Any, tmp_path: Path
     ) -> None:
@@ -2915,7 +3328,7 @@ class TestImportConfirmCommand:
         payload = json.loads(result.output)
         recovery = next(a for a in payload["actions"] if "--account-binding" in a)
         assert "--bridge-response" in recovery
-        assert str(response_file) in recovery
+        assert response_file.name in recovery
         assert "--confirm" in recovery
         # --accept is refused alongside --bridge-response by this same command.
         assert "--accept" not in recovery
@@ -2980,7 +3393,7 @@ class TestImportConfirmCommand:
             line for line in result.output.splitlines() if "--account-binding" in line
         )
         assert "--bridge-response" in recovery
-        assert str(response_file) in recovery
+        assert response_file.name in recovery
         assert "--confirm" in recovery
         assert "--accept" not in recovery
         assert "--account-binding" not in caplog.text, caplog.text

@@ -23,13 +23,19 @@ from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
     display_currency_option,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    format_cli_attention,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
@@ -65,6 +71,7 @@ def reports_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List every registered report — built-in, extension, and saved."""
     from moneybin.reports._framework.catalog import (
@@ -94,26 +101,45 @@ def reports_list(
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
         if not entries:
-            if not quiet:
-                logger.info("No reports match.")
+            policy = get_terminal_policy(no_pager=no_pager)
+            emit_human_result(
+                build_summary(
+                    [("Reports", "No reports match this scope.")],
+                    title=(
+                        "Try: moneybin reports create --help"
+                        if include_archived
+                        else "Try: moneybin reports list --include-archived"
+                    ),
+                ),
+                policy=policy,
+                finite_read=True,
+                no_pager=no_pager,
+            )
             return
-        render_rows(
-            # `name` leads: it is the handle `run`, `explain`, and `export` take,
-            # and the only one a user typed. `report_id` stays because it is what
-            # survives a rename and what breaks a cross-tier name collision.
-            ["name", "report_id", "tier", "parameters", "description"],
-            [
-                (
-                    entry.name,
-                    entry.report_id,
-                    # The tier column, not a fifth column: archived is a state of
-                    # the user tier, and only a widened listing ever shows one.
-                    f"{entry.tier} [archived]" if entry.archived else entry.tier,
-                    ", ".join(sorted(entry.parameter_classes)) or "-",
-                    entry.description,
-                )
-                for entry in entries
-            ],
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_rows(
+                # `name` leads: it is the handle `run`, `explain`, and `export` take,
+                # and the only one a user typed. `report_id` stays because it is what
+                # survives a rename and what breaks a cross-tier name collision.
+                ["name", "report_id", "tier", "parameters", "description"],
+                [
+                    (
+                        entry.name,
+                        entry.report_id,
+                        # The tier column, not a fifth column: archived is a state of
+                        # the user tier, and only a widened listing ever shows one.
+                        f"{entry.tier} [archived]" if entry.archived else entry.tier,
+                        ", ".join(sorted(entry.parameter_classes)) or "-",
+                        entry.description,
+                    )
+                    for entry in entries
+                ],
+                terminal=policy,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
     render_or_json(
@@ -147,6 +173,7 @@ def reports_run(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Run one registered report by ID or name."""
     from moneybin.cli.report_params import parse_report_parameters
@@ -199,6 +226,7 @@ def reports_run(
         quiet=quiet,
         columns=view.columns,
         fit=view.fit,
+        no_pager=no_pager,
     )
 
 
@@ -207,6 +235,7 @@ def reports_explain(
     param: list[str] | None = typer.Option(None, "--param", help=_PARAM_BIND_HELP),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # the evidence IS the output
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show a report's query, class map, lineage, freshness, and portability.
 
@@ -231,45 +260,55 @@ def reports_explain(
             explanation = explain_spec(db, report, parameters=parameters)
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"{explanation.report_id}  ({explanation.tier})")
-        if explanation.description:
-            typer.echo(explanation.description)
-        render_rows(
-            ["column", "class", "origin", "upstream"],
-            [
-                (
-                    column.column,
-                    column.data_class.value,
-                    column.origin,
-                    column.upstream or "-",
-                )
-                for column in explanation.columns
-            ],
-        )
-        for label, value in (
-            ("Reads", ", ".join(explanation.lineage) or "-"),
-            ("Graduation", explanation.graduation),
-            ("Updated", explanation.updated_at or "-"),
-            ("Fingerprint", explanation.class_fingerprint or "-"),
-        ):
-            typer.echo(f"{label}: {value}")
-        for blocker in explanation.graduation_blockers:
-            typer.echo(f"  ⚠️  {blocker}")
+        policy = get_terminal_policy(no_pager=no_pager)
+        parts: list[object] = [
+            build_summary(
+                [
+                    ("Report", explanation.report_id),
+                    ("Tier", explanation.tier),
+                    ("Description", explanation.description or "-"),
+                    ("Reads", ", ".join(explanation.lineage) or "-"),
+                    ("Graduation", explanation.graduation),
+                    ("Updated", explanation.updated_at or "-"),
+                    ("Fingerprint", explanation.class_fingerprint or "-"),
+                ],
+                title="Report explanation",
+            ),
+            build_rows(
+                ["column", "class", "origin", "upstream"],
+                [
+                    (
+                        column.column,
+                        column.data_class.value,
+                        column.origin,
+                        column.upstream or "-",
+                    )
+                    for column in explanation.columns
+                ],
+                terminal=policy,
+            ),
+        ]
+        disclosures = [
+            format_cli_attention(blocker, policy=policy)
+            for blocker in explanation.graduation_blockers
+        ]
         # Echoed, not logged. The reason names the columns that moved, and a saved
         # report's aliases are user-authored. No safe record is lost by dropping
         # the log call: `_reresolved` already logs the drift where it is detected,
         # in counts, and this path reaches it through `spec_from_row`.
         if explanation.drift_reason:
-            typer.echo(f"  ⚠️  {explanation.drift_reason}")
+            disclosures.append(
+                format_cli_attention(explanation.drift_reason, policy=policy)
+            )
         if explanation.sql_unavailable:
-            typer.echo(f"SQL: {explanation.sql_unavailable}")
+            disclosures.append(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:
-            typer.echo(
+            disclosures.append(
                 "Withheld from the rendered SQL (classed above the lowest tier): "
                 f"{', '.join(explanation.withheld_parameters)}"
             )
         if explanation.sql_suppressed_by:
-            typer.echo(
+            disclosures.append(
                 "No executed form — supply a value for "
                 f"{', '.join(explanation.sql_suppressed_by)} with --param"
             )
@@ -278,7 +317,13 @@ def reports_explain(
             ("Template", explanation.sql_template),
         ):
             if form is not None:
-                typer.echo(f"\n{label}:\n{form}")
+                parts.append(build_summary([(label, form)]))
+        emit_human_result(
+            compose_human_result(parts, disclosures=disclosures),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
     render_or_json(
         build_envelope(
@@ -484,7 +529,17 @@ def reports_delete(
             UserReportsService(db).delete(report_id, actor="cli")
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"✅ Deleted {row['name']} ({report_id})")
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [("Report", str(row["name"])), ("Report ID", report_id)],
+                    title="Report deleted",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     render_or_json(
         build_envelope(
@@ -511,13 +566,15 @@ def _confirm_delete(name: object, report_id: str) -> bool:
     one. Raised as a ``UserError`` instead, the same way
     :func:`_prompt_for_downgrade` routes its own unaskable case.
 
-    PATTERN: confirm-abort-envelope — the target shape for every CLI confirm.
-    The other 29 `typer.confirm` call sites (31 total across 18 modules; find them
-    with `grep -rn "typer.confirm" src/moneybin/cli/commands/`) still let `Abort`
-    escape, so a piped invocation without `--yes` gets a bare `Aborted.` there.
-    Each is a mechanical change, but 18 modules of unrelated commands do not
-    belong in this milestone's diff, so the migration is filed instead.
+    PATTERN: confirm-abort-envelope — confirmations must refuse when the active
+    terminal policy cannot elicit an answer, before reading standard input.
     """
+    if not get_terminal_policy().interactive:
+        raise UserError(
+            "Deleting a saved report needs explicit confirmation.",
+            code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+            hint="This surface had no way to ask. Re-run with --yes to confirm.",
+        )
     try:
         return typer.confirm(f"Delete saved report {name} ({report_id})?", err=True)
     except click.Abort as e:
@@ -546,6 +603,8 @@ def _prompt_for_downgrade(
     fingerprint still matches, and a downgrade read as ``txn_amount → aggregate``
     could be ``routing_number → aggregate``.
     """
+    if not get_terminal_policy().interactive:
+        return None
     try:
         return typer.confirm(
             f"Permanently lower masking of {column!r} from {from_class.value} to "
@@ -650,9 +709,23 @@ def reports_reclassify(
             )
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(
-            f"✅ {outcome.column} on {row['name']}: "
-            f"{outcome.from_class.value} → {outcome.to_class.value}"
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [
+                        ("Report", str(row["name"])),
+                        ("Column", outcome.column),
+                        (
+                            "Change",
+                            f"{outcome.from_class.value} to {outcome.to_class.value}",
+                        ),
+                    ],
+                    title="Report classification updated",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
         )
 
     render_or_json(
@@ -704,16 +777,16 @@ def _render_save(
     """Render one save outcome, including R3's non-blocking notes."""
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
-        typer.echo(f"✅ {verb} {outcome.name} ({outcome.report_id})")
+        disclosures: list[str] = []
         if outcome.unresolved_columns:
-            typer.echo(
-                f"⚠️  Masked — no upstream class could be derived for "
+            disclosures.append(
+                f"Attention: masked because no upstream class could be derived for "
                 f"{', '.join(outcome.unresolved_columns)}. "
                 "Project the underlying column directly to resolve it."
             )
         if outcome.floored_columns:
-            typer.echo(
-                f"⚠️  No declared class for "
+            disclosures.append(
+                f"Attention: no declared class for "
                 f"{', '.join(outcome.floored_columns)}. "
                 "Each value is scanned at run time and masked only when it is "
                 "shaped like an SSN or holds a run of 8 or more digits; a "
@@ -722,11 +795,25 @@ def _render_save(
                 "column's class."
             )
         if outcome.cleared_downgrades:
-            typer.echo(
-                f"⚠️  Cleared the approved downgrade for "
+            disclosures.append(
+                f"Attention: cleared the approved downgrade for "
                 f"{', '.join(outcome.cleared_downgrades)}; the query changed. "
                 "Re-apply with `moneybin reports reclassify`."
             )
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Report", outcome.name), ("Report ID", outcome.report_id)],
+                        title=f"Report {verb.lower()}",
+                    )
+                ],
+                disclosures=disclosures,
+            ),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     # Echoed above, counted here. A saved report's output alias is user-authored
     # text — `amazon_spend` is as plausible a merchant name as a column one, and

@@ -80,10 +80,14 @@ class OperationDetail:
     events: list[AuditEvent]
     can_undo: bool
     undo_blocked_by: list[str] | None
+    # Schema-qualified row targets outside the registered undo surface.
     unresolvable: list[str] | None
-    """``schema.table`` of any row outside the undoable surface — distinguishes a
-    raw-targeted refusal from a marker-only / already-undone one for the surface
-    hint. Not part of the MCP payload; consumed only when building the action."""
+    # Preview facts describe selected source audit events, never inverse-row output.
+    reversible_source_event_count: int
+    source_tables: list[str]
+    undo_refusal_code: str | None
+    undo_refusal_message: str | None
+    undo_recovery_actions: list[RecoveryAction] | None
 
 
 @dataclass(frozen=True)
@@ -210,7 +214,13 @@ class UndoService:
         self._db = db
         self._audit = audit if audit is not None else AuditService(db)
 
-    def undo(self, operation_id: str, *, actor: str) -> UndoResult:
+    def undo(
+        self,
+        operation_id: str,
+        *,
+        actor: str,
+        expected_audit_ids: tuple[str, ...] | None = None,
+    ) -> UndoResult:
         """Reverse every row of ``operation_id`` atomically under a new operation.
 
         Raises ``UserError`` with a recovery action for each refusal:
@@ -227,31 +237,10 @@ class UndoService:
             audit_undo_total.labels(outcome="not_found").inc()
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
-        if u.undone_by is not None:
-            audit_undo_total.labels(outcome="already_undone").inc()
-            raise UserError(
-                f"Operation {operation_id!r} was already undone by {u.undone_by!r}.",
-                code=error_codes.UNDO_ALREADY_UNDONE,
-                recovery_actions=[_undo_action(u.undone_by, confidence="suggested")],
-            )
-        if u.unresolvable:
-            audit_undo_total.labels(outcome="no_path").inc()
-            raise UserError(
-                f"Operation {operation_id!r} touched {', '.join(u.unresolvable)}, "
-                "outside the undoable app.* surface — not reversible via undo.",
-                code=error_codes.RECOVERY_NO_PATH,
-                # Surface any blockers too: the op may be partly recoverable by
-                # undoing later ops first, so don't dead-end the agent.
-                recovery_actions=[_undo_action(b) for b in u.blockers] or None,
-            )
-        if u.blockers:
-            audit_undo_total.labels(outcome="cascade_blocked").inc()
-            raise UserError(
-                f"Operation {operation_id!r} cannot be undone: later operations "
-                f"modified the same rows. Undo those first.",
-                code=error_codes.UNDO_CASCADE_BLOCKED,
-                recovery_actions=[_undo_action(b) for b in u.blockers],
-            )
+        row_events = self._reversible_events(events)
+        if refusal := self._undo_refusal(operation_id, u, events, row_events):
+            self._record_refusal_metric(refusal)
+            raise refusal
 
         # Reverse in the exact reverse of write order inside one transaction under
         # a fresh operation id. ``events`` is write-ordered (events_for_operation
@@ -259,21 +248,21 @@ class UndoService:
         # order a future parent-then-child insert needs. Marker rows (target_id is
         # None, e.g. the tag.rename parent) carry no single-row mutation, so they
         # are skipped — only the per-row children are inverted.
-        row_events = [e for e in events if e.target_id is not None]
-        if not row_events:
-            # All events are markers (target_id None) — e.g. a tag.rename that
-            # matched zero rows. There is nothing to reverse; minting an undo op
-            # here would return an id with no audit rows (not itself queryable or
-            # undoable), so refuse instead.
-            audit_undo_total.labels(outcome="no_path").inc()
-            raise UserError(
-                f"Operation {operation_id!r} has no reversible row mutations "
-                "(only marker events) — nothing to undo.",
-                code=error_codes.RECOVERY_NO_PATH,
-            )
         with operation() as undo_op:
             self._db.begin()
             try:
+                if expected_audit_ids is not None:
+                    current_audit_ids = tuple(
+                        event.audit_id
+                        for event in self._audit.events_for_operation(operation_id)
+                    )
+                    if current_audit_ids != expected_audit_ids:
+                        raise UserError(
+                            "The operation changed after the displayed preview. "
+                            "Inspect it again before undoing.",
+                            code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                            recovery_actions=[_undo_action(operation_id)],
+                        )
                 undone: list[AuditEvent] = []
                 touched: dict[str, BaseRepo] = {}
                 self._validate_identity_selections(row_events)
@@ -314,6 +303,8 @@ class UndoService:
                     audit_undo_total.labels(outcome="no_path").inc()
                 elif e.code == error_codes.UNDO_VALUE_INADMISSIBLE:
                     audit_undo_total.labels(outcome="value_inadmissible").inc()
+                elif e.code == error_codes.MUTATION_CONFIRMATION_MISMATCH:
+                    audit_undo_total.labels(outcome="confirmation_mismatch").inc()
                 raise
             except BaseException:
                 self._db.rollback()
@@ -338,7 +329,7 @@ class UndoService:
                 repo.refresh_pending_gauge()
             except Exception:  # telemetry never fails a committed undo
                 logger.warning(
-                    f"⚠️ Could not refresh the review-queue gauge for "
+                    f"! Could not refresh the review-queue gauge for "
                     f"{type(repo).__name__} after undo {operation_id}; the count "
                     "will correct itself on the next decision."
                 )
@@ -593,13 +584,90 @@ class UndoService:
         if not events:
             raise self._not_found_error(operation_id)
         u = self._undoability(operation_id)
+        source_events = self._reversible_events(events)
+        refusal = self._undo_refusal(operation_id, u, events, source_events)
         return OperationDetail(
             operation_id=operation_id,
             events=events,
-            can_undo=u.can_undo,
+            can_undo=refusal is None,
             undo_blocked_by=u.blockers or None,
             unresolvable=u.unresolvable or None,
+            reversible_source_event_count=len(source_events),
+            source_tables=sorted({
+                f"{event.target_schema}.{event.target_table}"
+                for event in source_events
+                if event.target_schema is not None and event.target_table is not None
+            }),
+            undo_refusal_code=refusal.code if refusal else None,
+            undo_refusal_message=refusal.message if refusal else None,
+            undo_recovery_actions=refusal.recovery_actions if refusal else None,
         )
+
+    @staticmethod
+    def _reversible_events(events: Iterable[AuditEvent]) -> list[AuditEvent]:
+        """Return event rows whose captured images describe a state change."""
+        return [
+            event
+            for event in events
+            if event.target_id is not None and event.before_value != event.after_value
+        ]
+
+    @staticmethod
+    def _undo_refusal(
+        operation_id: str,
+        undoability: _Undoability,
+        events: list[AuditEvent],
+        source_events: list[AuditEvent],
+    ) -> UserError | None:
+        """Build the exact pre-write refusal shared by preview and execution."""
+        if undoability.undone_by is not None:
+            return UserError(
+                f"Operation {operation_id!r} was already undone by "
+                f"{undoability.undone_by!r}.",
+                code=error_codes.UNDO_ALREADY_UNDONE,
+                recovery_actions=[
+                    _undo_action(undoability.undone_by, confidence="suggested")
+                ],
+            )
+        if undoability.unresolvable:
+            return UserError(
+                f"Operation {operation_id!r} touched "
+                f"{', '.join(undoability.unresolvable)}, outside the undoable "
+                "app.* surface — not reversible via undo.",
+                code=error_codes.RECOVERY_NO_PATH,
+                recovery_actions=[_undo_action(b) for b in undoability.blockers]
+                or None,
+            )
+        if undoability.blockers:
+            return UserError(
+                f"Operation {operation_id!r} cannot be undone: later operations "
+                "modified the same rows. Undo those first.",
+                code=error_codes.UNDO_CASCADE_BLOCKED,
+                recovery_actions=[_undo_action(b) for b in undoability.blockers],
+            )
+        if not source_events:
+            if any(event.target_id is not None for event in events):
+                return UserError(
+                    f"Operation {operation_id!r} has no net effect to reverse "
+                    "(all captured rows show before == after).",
+                    code=error_codes.RECOVERY_NO_PATH,
+                )
+            return UserError(
+                f"Operation {operation_id!r} has no reversible row mutations "
+                "(only marker events) — nothing to undo.",
+                code=error_codes.RECOVERY_NO_PATH,
+            )
+        return None
+
+    @staticmethod
+    def _record_refusal_metric(refusal: UserError) -> None:
+        """Record exactly one execution outcome for a shared pre-write refusal."""
+        outcomes = {
+            error_codes.UNDO_ALREADY_UNDONE: "already_undone",
+            error_codes.RECOVERY_NO_PATH: "no_path",
+            error_codes.UNDO_CASCADE_BLOCKED: "cascade_blocked",
+        }
+        audit_undo_total.labels(outcome=outcomes[refusal.code]).inc()
 
     def _summarize(
         self, row: tuple[object, ...], liveness: _UndoLiveness

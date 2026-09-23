@@ -7,16 +7,50 @@ business logic and the same response envelope. ``restate`` keeps the direct
 ``sqlmesh_context()`` path — it's operator-only and has no MCP equivalent.
 """
 
-import logging
+from collections.abc import Sequence
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.utils import handle_cli_errors, sqlmesh_command
+from moneybin import error_codes
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.progress import operation_progress
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import (
+    emit_json_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+    sqlmesh_command,
+)
 from moneybin.database import sqlmesh_context
+from moneybin.errors import UserError
+from moneybin.progress import ProgressEvent
 
 app = typer.Typer(help="Run data transformations", no_args_is_help=True)
-logger = logging.getLogger(__name__)
+
+
+def _emit_transform_text(
+    title: str,
+    pairs: Sequence[tuple[str, object]],
+    *,
+    finite_read: bool,
+    no_pager: bool = False,
+) -> None:
+    """Emit the command result through the shared human-result boundary."""
+    emit_human_result(
+        compose_human_result([
+            build_summary([(key, str(value)) for key, value in pairs], title=title)
+        ]),
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=finite_read,
+        no_pager=no_pager,
+        receipt=not finite_read,
+    )
 
 
 @app.command("plan")
@@ -64,21 +98,24 @@ def transform_plan(
         )
         return
 
-    if quiet:
-        return
     if not plan.has_changes:
-        logger.info("No pending changes")
+        _emit_transform_text(
+            "Transform plan",
+            [("Result", "No pending changes")],
+            finite_read=False,
+        )
         return
-    logger.info("Pending transform changes:")
+    pairs: list[tuple[str, object]] = []
     if plan.directly_modified:
-        logger.info(f"  Directly modified: {', '.join(plan.directly_modified)}")
+        pairs.append(("Directly modified", ", ".join(plan.directly_modified)))
     if plan.indirectly_modified:
-        logger.info(f"  Indirectly modified: {', '.join(plan.indirectly_modified)}")
+        pairs.append(("Indirectly modified", ", ".join(plan.indirectly_modified)))
     if plan.added:
-        logger.info(f"  Added: {', '.join(plan.added)}")
+        pairs.append(("Added", ", ".join(plan.added)))
     if plan.removed:
-        logger.info(f"  Removed: {', '.join(plan.removed)}")
-    logger.info("💡 Run 'moneybin transform apply' to apply these changes")
+        pairs.append(("Removed", ", ".join(plan.removed)))
+    pairs.append(("Next step", "`moneybin transform apply`"))
+    _emit_transform_text("Pending transform changes", pairs, finite_read=False)
 
 
 @app.command("apply")
@@ -96,11 +133,42 @@ def transform_apply(
     from moneybin.protocol.envelope import build_envelope
     from moneybin.services.transform_service import TransformService
 
-    with (
-        handle_cli_errors(cli_actor="transform_apply"),
-        get_database(read_only=False, operation_type="transform_apply") as db,
-    ):
-        result = TransformService(db).apply()
+    terminal = get_terminal_policy()
+    try:
+        with (
+            handle_cli_errors(cli_actor="transform_apply"),
+            get_database(read_only=False, operation_type="transform_apply") as db,
+        ):
+            with operation_progress(terminal, quiet=quiet) as report:
+                report(ProgressEvent("Applying transforms"))
+                result = TransformService(db).apply()
+    except KeyboardInterrupt:
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "Transform apply cancelled; saved scope is unknown",
+                    code=error_codes.REFRESH_MODEL_FAILED,
+                    hint="Run 'moneybin transform status' to inspect derived data.",
+                    details={"saved_scope": "unknown", "outcome": "cancelled"},
+                ),
+                cli_actor="transform_apply",
+            )
+        else:
+            emit_human_result(
+                compose_human_result([
+                    build_summary(
+                        [
+                            ("Saved state", "Saved scope is unknown"),
+                            ("Next step", "`moneybin transform status`"),
+                        ],
+                        title="Transform apply cancelled",
+                    )
+                ]),
+                policy=terminal,
+                finite_read=False,
+                receipt=True,
+            )
+        raise typer.Exit(130) from None
 
     if output == OutputFormat.JSON:
         data: dict[str, object] = {
@@ -120,14 +188,18 @@ def transform_apply(
             raise typer.Exit(1)
         return
 
-    if quiet:
-        if not result.applied:
-            raise typer.Exit(1)
-        return
     if result.applied:
-        logger.info(f"✅ Transforms applied in {result.duration_seconds:.2f}s")
+        _emit_transform_text(
+            "Transforms applied",
+            [("Outcome", "Derived tables rebuilt")],
+            finite_read=False,
+        )
     else:
-        logger.error(f"❌ Transforms failed: {result.error}")
+        _emit_transform_text(
+            "Transforms failed",
+            [("Failure", result.error or "Unknown failure")],
+            finite_read=False,
+        )
         raise typer.Exit(1)
 
 
@@ -149,6 +221,7 @@ def transform_seed() -> None:
 def transform_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Show current model state and environment."""
     from moneybin.cli.output import render_or_json
@@ -191,26 +264,37 @@ def transform_status(
         )
         return
 
-    if quiet:
-        return
     if not status.initialized:
-        logger.info("No transform environment initialized yet")
-        logger.info("💡 Run 'moneybin transform apply' to initialize")
+        _emit_transform_text(
+            "Transform status",
+            [
+                ("Result", "No transform environment initialized yet"),
+                ("Next step", "`moneybin transform apply`"),
+            ],
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
-    logger.info(f"Environment: {status.environment}")
-    if status.last_apply_at is not None:
-        logger.info(f"  Last apply: {status.last_apply_at:%Y-%m-%d %H:%M:%S}")
-    else:
-        logger.info("  Last apply: never finalized")
-    logger.info(f"  Pending: {status.pending}")
+    pairs = [
+        ("Environment", status.environment),
+        (
+            "Last apply",
+            status.last_apply_at.strftime("%Y-%m-%d %H:%M:%S")
+            if status.last_apply_at
+            else "never finalized",
+        ),
+        ("Pending", status.pending),
+    ]
     if status.pending:
-        logger.info("💡 Run 'moneybin transform apply' to refresh derived tables")
+        pairs.append(("Next step", "`moneybin transform apply`"))
+    _emit_transform_text("Transform status", pairs, finite_read=True, no_pager=no_pager)
 
 
 @app.command("validate")
 def transform_validate(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Check that model SQL parses and resolves without errors."""
     from moneybin.cli.output import render_or_json
@@ -235,11 +319,22 @@ def transform_validate(
         return
 
     if result.valid:
-        if not quiet:
-            logger.info("✅ All models valid")
+        _emit_transform_text(
+            "Transform validation",
+            [("Result", "All models valid")],
+            finite_read=True,
+            no_pager=no_pager,
+        )
         return
-    for err in result.errors:
-        logger.error(f"❌ {err.get('model', '<unknown>')}: {err.get('message', '')}")
+    _emit_transform_text(
+        "Transform validation failed",
+        [
+            (str(err.get("model", "<unknown>")), str(err.get("message", "")))
+            for err in result.errors
+        ],
+        finite_read=True,
+        no_pager=no_pager,
+    )
     raise typer.Exit(1)
 
 
@@ -253,6 +348,7 @@ def transform_audit(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Run data quality assertions defined in transform models."""
     from moneybin.cli.output import render_or_json
@@ -280,16 +376,18 @@ def transform_audit(
             raise typer.Exit(1)
         return
 
-    if not quiet:
-        logger.info(f"Audits: {result.passed} passed, {result.failed} failed")
-        for audit_row in result.audits:
-            status_str = audit_row.get("status", "")
-            name = audit_row.get("name", "<unknown>")
-            detail = audit_row.get("detail")
-            if status_str == "failed":
-                logger.error(f"❌ {name}: {detail}")
-            elif not quiet:
-                logger.info(f"  ✅ {name}")
+    pairs: list[tuple[str, object]] = [
+        ("Passed", result.passed),
+        ("Failed", result.failed),
+    ]
+    pairs.extend(
+        (
+            str(row.get("name", "<unknown>")),
+            f"{row.get('status', 'unknown')}: {row.get('detail', '')}",
+        )
+        for row in result.audits
+    )
+    _emit_transform_text("Transform audit", pairs, finite_read=True, no_pager=no_pager)
     if result.failed:
         raise typer.Exit(1)
 
@@ -306,11 +404,22 @@ def transform_restate(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
 ) -> None:
     """Force recompute a model for a date range."""
+    if not yes and not get_terminal_policy().interactive:
+        message = "Restate requires an interactive confirmation or --yes."
+        typer.echo(message, err=True)
+        raise typer.Exit(2)
     if not yes:
+        effective_end = end or "today"
         confirm = typer.confirm(
-            f"Restate {model} from {start}? This will recompute all affected data."
+            f"Restate {model} from {start} through {effective_end}? "
+            "This will recompute all affected data."
         )
         if not confirm:
+            _emit_transform_text(
+                "Restate cancelled",
+                [("Outcome", "No restatement was requested")],
+                finite_read=False,
+            )
             return
     with (
         sqlmesh_command(f"Restating {model}", success=f"Restated {model}") as db,

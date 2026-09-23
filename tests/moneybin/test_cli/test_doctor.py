@@ -116,28 +116,23 @@ def test_quiet_never_hides_a_failing_invariant(
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
-    assert "⚠️  categorization_coverage — 80% uncategorized" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "! categorization_coverage — 80% uncategorized" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
 @patch("moneybin.cli.commands.system.doctor.DoctorService")
-def test_quiet_silences_the_next_step_hints_and_nothing_else(
+def test_quiet_preserves_required_recovery_actions(
     mock_svc_cls: MagicMock, mock_get_db: MagicMock
 ) -> None:
-    """The one thing `-q` takes, on the line `echo_report_notes` already draws.
-
-    A 💡 suggests a command to run next, which is the informational status the
-    flag is for. The invariant above it and the summary below it are the
-    answer.
-    """
+    """Quiet preserves the failing result and the actions needed to recover."""
     mock_get_db.return_value = MagicMock()
     mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
     result = runner.invoke(app, ["system", "doctor", "-q"])
 
     assert result.exit_code == 1
-    assert "💡" not in result.output
-    assert "transactions_notes_delete" not in result.output
+    assert "›" in result.output
+    assert "transactions_notes_delete" in result.output
     assert "invariants checked" in result.output
 
 
@@ -151,7 +146,7 @@ def test_a_failing_invariant_prints_its_name_and_detail(
     mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
     result = runner.invoke(app, ["system", "doctor"])
 
-    assert "❌ fct_transactions_sign_convention — 1 violation(s)" in result.output
+    assert "× fct_transactions_sign_convention — 1 violation(s)" in result.output
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")
@@ -198,7 +193,7 @@ def test_verbose_restores_the_full_roll(
     result = runner.invoke(app, ["system", "doctor", "--verbose"])
 
     assert result.exit_code == 0
-    assert result.output.count("✅") == 5
+    assert result.output.count("✓") == 5
     assert "fct_transactions_fk_integrity" in result.output
 
 
@@ -296,7 +291,7 @@ def test_doctor_renders_skipped_invariant(
     mock_svc_cls.return_value.run_all.return_value = skipped_report
     result = runner.invoke(app, ["system", "doctor"])
     assert result.exit_code == 0  # skipped is not a failure
-    assert "⏭️" in result.output
+    assert "!" in result.output
     assert "dedup_reconciliation" in result.output
     assert "skipped" in result.output
 
@@ -372,6 +367,39 @@ def test_doctor_text_renders_recovery_action_hints(
     assert "transactions_tags_set" in result.output
     # Confidence tag accompanies each action for fast scanning.
     assert "certain" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_text_keeps_affected_ids_in_the_unpaged_diagnostic_receipt(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock
+) -> None:
+    """A non-verbose failure still needs the affected saved-state facts."""
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _RECOVERY_REPORT
+
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert result.exit_code == 1
+    assert "Affected: note:n1, tag:t2" in result.output
+
+
+@patch("moneybin.cli.commands.system.doctor.get_database")
+@patch("moneybin.cli.commands.system.doctor.DoctorService")
+def test_doctor_receipt_never_starts_a_pager(
+    mock_svc_cls: MagicMock, mock_get_db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mock_get_db.return_value = MagicMock()
+    mock_svc_cls.return_value.run_all.return_value = _FAILING_REPORT
+
+    def unexpected_page(text: str, *, color: bool, wide: bool) -> bool:
+        del text, color, wide
+        pytest.fail("doctor is an operation receipt and must not page")
+
+    monkeypatch.setattr("moneybin.cli.pager.page_text", unexpected_page)
+    result = runner.invoke(app, ["system", "doctor"])
+
+    assert result.exit_code == 1
 
 
 @patch("moneybin.cli.commands.system.doctor.get_database")

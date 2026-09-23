@@ -16,4 +16,4 @@ Usage: `moneybin demo [OPTIONS]`
 | `--years` | int (≥ 1, ≤ 10) |  | Years of history (default: the persona's own) |
 | `--yes, -y` | flag |  | Auto-accept the rebuild if the demo profile exists |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

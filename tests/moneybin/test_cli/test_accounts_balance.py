@@ -40,6 +40,39 @@ class TestAccountsBalanceHelp:
             assert cmd in result.stdout
 
 
+class TestAccountsBalanceMutationPresentation:
+    """Human receipts for balance assertion mutations."""
+
+    @pytest.mark.unit
+    def test_assert_prints_an_unpaged_receipt(self, runner: CliRunner) -> None:
+        assertion = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            notes=None,
+            created_at="2026-01-31T00:00:00Z",
+            currency_code="USD",
+        )
+        result_payload = BalanceAssertionPayload(assertion=assertion)
+        mock_service = MagicMock(spec=BalanceService)
+        mock_service.assert_balance.return_value = result_payload
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService",
+                return_value=mock_service,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                ["accounts", "balance", "assert", "acct_a", "2026-01-31", "1234.56"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "Balance asserted" in result.stdout
+        assert "1234.56 USD" in result.stdout
+
+
 class TestAccountsBalanceShow:
     """Tests for `accounts balance show`."""
 
@@ -97,7 +130,7 @@ class TestAccountsBalanceShow:
                 account_id="acct_b",
                 balance_date=date(2026, 1, 31),
                 balance=Decimal("99.00"),
-                is_observed=True,
+                is_observed=False,
                 observation_source="ofx",
                 reconciliation_delta=None,
                 currency_code=None,
@@ -116,13 +149,15 @@ class TestAccountsBalanceShow:
 
         assert result.exit_code == 0, result.stderr
         out = result.stdout + result.stderr
-        known = next(line for line in out.splitlines() if "1234.56" in line)
+        known = next(line for line in out.splitlines() if "1,234.56" in line)
         unknown = next(line for line in out.splitlines() if "99.00" in line)
         # The amount and its currency are asserted as one substring: a separate
         # `"EUR" in line` passes on a currency printed anywhere on the row,
         # including a column that is not the balance's.
-        assert "1234.56 EUR" in known
+        assert "1,234.56 EUR" in known
         assert f"99.00 {UNKNOWN_CURRENCY}" in unknown
+        assert "True" in known
+        assert "False" in unknown
 
 
 class TestAccountsBalanceHistory:
@@ -281,6 +316,29 @@ class TestAccountsBalanceList:
         assert "data" in payload
         assert "assertions" in payload["data"]
 
+    @pytest.mark.unit
+    def test_list_text_accepts_no_pager_and_keeps_money_currency(
+        self, runner: CliRunner
+    ) -> None:
+        row = BalanceAssertionRow(
+            account_id="acct_a",
+            assertion_date=date(2026, 1, 31),
+            balance=Decimal("1234.56"),
+            notes=None,
+            created_at="2026-01-31",
+            currency_code="EUR",
+        )
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.BalanceService") as service,
+        ):
+            service.return_value.list_assertions.return_value = (
+                BalanceAssertionListPayload(assertions=[row])
+            )
+            result = runner.invoke(app, ["accounts", "balance", "list", "--no-pager"])
+        assert result.exit_code == 0, result.output
+        assert "1,234.56 EUR" in result.output
+
 
 class TestAccountsBalanceAssertionDelete:
     """Tests for `accounts balance assertion-delete`."""
@@ -305,12 +363,41 @@ class TestAccountsBalanceAssertionDelete:
                 ],
             )
         assert result.exit_code == 0, result.stderr
+        assert "Balance assertion deleted" in result.stdout
         delete_mock = mock_service_class.return_value.delete_assertion
         delete_mock.assert_called_once()
         # Inspect args so a dropped account_id or actor kwarg can't slip through.
         call = delete_mock.call_args
         assert call.args[0] == "acct_a"
         assert call.kwargs["actor"] == "cli"
+
+    @pytest.mark.unit
+    def test_assertion_delete_reports_an_idempotent_noop(
+        self, runner: CliRunner
+    ) -> None:
+        mock_service = MagicMock(spec=BalanceService)
+        mock_service.delete_assertion.return_value = False
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch(
+                "moneybin.cli.commands.accounts.balance.BalanceService",
+                return_value=mock_service,
+            ),
+        ):
+            result = runner.invoke(
+                app,
+                [
+                    "accounts",
+                    "balance",
+                    "assertion-delete",
+                    "acct_a",
+                    "2026-01-31",
+                    "--yes",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert "No balance assertion found" in result.stdout
 
 
 class TestAccountsBalanceReconcile:
@@ -358,3 +445,30 @@ class TestAccountsBalanceReconcile:
         assert result.exit_code == 0, result.stderr
         call_kwargs = mock_service_class.return_value.reconcile.call_args.kwargs
         assert call_kwargs.get("threshold") == Decimal("5.00")
+
+    @pytest.mark.unit
+    def test_reconcile_text_accepts_no_pager_and_keeps_observation_status(
+        self, runner: CliRunner
+    ) -> None:
+        row = BalanceObservationRow(
+            account_id="acct_a",
+            balance_date=date(2026, 1, 31),
+            balance=Decimal("5.00"),
+            is_observed=False,
+            observation_source="ofx",
+            reconciliation_delta=Decimal("1.00"),
+            currency_code="EUR",
+        )
+        with (
+            patch("moneybin.cli.commands.accounts.balance.get_database"),
+            patch("moneybin.cli.commands.accounts.balance.BalanceService") as service,
+        ):
+            service.return_value.reconcile.return_value = BalanceObservationListPayload(
+                observations=[row]
+            )
+            result = runner.invoke(
+                app, ["accounts", "balance", "reconcile", "--no-pager"]
+            )
+        assert result.exit_code == 0, result.output
+        assert "5.00 EUR" in result.output
+        assert "False" in result.output

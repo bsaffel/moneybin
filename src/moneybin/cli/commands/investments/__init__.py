@@ -30,8 +30,10 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    applied_rates_note,
     currency_label,
-    echo_applied_rates,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
@@ -39,12 +41,13 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import (
     Money,
+    build_rows,
+    build_summary,
     column_view,
+    compose_human_result,
     format_money,
-    render_note,
-    render_rows,
 )
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentEventsPayload,
@@ -173,8 +176,9 @@ def investments_add(
             cli_actor="investments_add",
         )
         return
+    policy = get_terminal_policy()
     for txn_id in ids:
-        typer.echo(f"✅ Recorded {txn_id}")
+        typer.echo(f"{policy.symbols.success} Recorded {txn_id}")
 
 
 _EVENTS_COLUMNS: tuple[tuple[str, Callable[[EventRow], object]], ...] = (
@@ -221,6 +225,7 @@ def investments_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # list has no informational chatter; only data
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List ledger events from the canonical investment-transaction fact table.
 
@@ -253,15 +258,37 @@ def investments_list(
         view = column_view(
             _EVENTS_COLUMNS, result.rows, default=_EVENTS_DEFAULT, wide=False
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # An event's amount is cash moving in or out, so it signs itself. The
-            # quantity is a share count, not an amount, and is left as stored.
-            money={"amount": Money("flow")},
-            numeric=("quantity",),
-            # No `total_columns`: the view is the whole declaration, so there is
-            # no narrowing to disclose and no flag that would widen it.
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_rows(
+                view.names,
+                view.rows,
+                # An event's amount is cash moving in or out, so it signs itself. The
+                # quantity is a share count, not an amount, and is left as stored.
+                money={"amount": Money("flow")},
+                numeric=("quantity",),
+                # No `total_columns`: the view is the whole declaration, so there is
+                # no narrowing to disclose and no flag that would widen it.
+                terminal=policy,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            build_summary(
+                [("Investments", "No ledger events match these filters.")],
+                title=(
+                    "Try: moneybin investments list"
+                    if any((account, security, type_, from_, to))
+                    else "Try: moneybin sync status"
+                ),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
 
@@ -325,6 +352,7 @@ def investments_holdings(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Current positions: what you hold, what it is worth, and whether you are up.
 
@@ -365,7 +393,8 @@ def investments_holdings(
         view = column_view(
             _HOLDINGS_COLUMNS, result.rows, default=_HOLDINGS_DEFAULT, wide=wide
         )
-        render_rows(
+        policy = get_terminal_policy(no_pager=no_pager)
+        table = build_rows(
             view.names,
             view.rows,
             # Both totals are positions, so they render unsigned and uncoloured;
@@ -382,6 +411,7 @@ def investments_holdings(
             # named here for the no-fold guarantee alone.
             numeric=("quantity", "avg cost"),
             total_columns=view.total,
+            terminal=policy,
         )
         # Portfolio-level disclosure, not a status line — `-q` keeps it, the
         # same rule that keeps result rows.
@@ -420,14 +450,43 @@ def investments_holdings(
             )
         else:
             total = "market_value=- (no position is priced)"
-        typer.echo(f"portfolio {total} max_days_since_observed={stalest}")
-        # The originals above say what was converted; this says what converted
-        # it. Not gated on `quiet`, for the same reason the total is not: it is
-        # part of the disclosure, not a status line. Empty unless a rate was
-        # actually applied, so the single-currency case stays silent.
-        echo_applied_rates(result.applied_rates, result.total_market_value_currency)
-    for w in result.warnings:
-        render_note(f"⚠️  {w}", quiet=quiet, warn=True)
+        disclosures = [f"portfolio {total} max_days_since_observed={stalest}"]
+        rate_note = applied_rates_note(
+            result.applied_rates, result.total_market_value_currency
+        )
+        if rate_note is not None:
+            disclosures.append(rate_note)
+        disclosures.extend(result.warnings)
+        emit_human_result(
+            compose_human_result(
+                [table],
+                disclosures=disclosures,
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
+        )
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Holdings", "No positions match this scope.")],
+                        title=(
+                            "Try: moneybin investments holdings"
+                            if account
+                            else "Try: moneybin accounts list"
+                        ),
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 _GAINS_COLUMNS: tuple[tuple[str, Callable[[RealizedGainRow], object]], ...] = (
@@ -485,6 +544,7 @@ def investments_gains(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # the one note here is a disclosure
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Realized gain/loss (the 1099-B surface) from the realized-gains fact table.
 
@@ -532,29 +592,48 @@ def investments_gains(
         view = column_view(
             _GAINS_COLUMNS, result.rows, default=_GAINS_DEFAULT, wide=wide
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # Proceeds and basis are positive by construction; the gain is the
-            # signed answer, and up is the good direction on a realized gain.
-            money={
-                "proceeds": Money("magnitude"),
-                "basis": Money("balance"),
-                "gain": Money("delta", polarity="income"),
-            },
-            numeric=("quantity",),
-            total_columns=view.total,
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_rows(
+                        view.names,
+                        view.rows,
+                        # Proceeds and basis are positive by construction; the gain is the
+                        # signed answer, and up is the good direction on a realized gain.
+                        money={
+                            "proceeds": Money("magnitude"),
+                            "basis": Money("balance"),
+                            "gain": Money("delta", polarity="income"),
+                        },
+                        numeric=("quantity",),
+                        total_columns=view.total,
+                        terminal=policy,
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
         )
-    for w in result.warnings:
-        # Not gated on `quiet`. Both warnings `gains` can raise — that some
-        # row's cost basis is incomplete, and that the account's ledger arrives
-        # from two sources at once — are disclosures about the figures rather
-        # than status lines about the run: `-q` output would otherwise show a
-        # conservative or a double-counted gain as an authoritative one. The
-        # `note` column names which rows, but only under `--wide`, because a
-        # seventh column does not fit 80 columns. `investments lots list` meets
-        # the same requirement with its marker in the default view instead.
-        render_note(f"⚠️  {w}", warn=True)
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Realized gains", "No gains match these filters.")],
+                        title="Try: moneybin investments holdings",
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 app.add_typer(lots.app, name="lots")

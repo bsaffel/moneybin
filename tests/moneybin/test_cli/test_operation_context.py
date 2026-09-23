@@ -98,12 +98,15 @@ def test_sqlmesh_command_hint_reaches_console_not_log(
     retired pattern" — this test is what enforces that, since nothing
     previously did.
     """
-    from moneybin.database import DatabaseLockError
+    from moneybin.errors import UserError
 
-    hint_text = "Run 'moneybin db ps' for details or wait and retry"
+    hint_text = "⚠ Run 'moneybin db ps' for details or wait and retry"
     with caplog.at_level("INFO"), pytest.raises(typer.Exit):
         with sqlmesh_command("Test op"):
-            raise DatabaseLockError("busy")
+            raise UserError(
+                "busy", code="mutation_confirmation_required", hint=hint_text
+            )
 
+    captured = capsys.readouterr()
     assert hint_text not in caplog.text
-    assert hint_text in capsys.readouterr().err
+    assert "! Run 'moneybin db ps' for details or wait and retry" in captured.err

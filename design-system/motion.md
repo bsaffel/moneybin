@@ -31,6 +31,14 @@ never hardcode a duration, easing, or color.
 - **No other looping or ambient motion.** No pulse, no breathing dot, no
   shimmer, no idle drift. A resting screen is still.
 
+### CLI progress
+
+CLI progress may animate only while a running operation has a meaningful stage.
+It uses one in-place indicator and is replaced by a final receipt. Terminal
+policy disables animation for JSON, quiet, redirected output, missing terminal
+stderr, and reduced motion. Reduced motion retains a static stage label; quiet
+suppresses optional stage chatter. Idle terminal loops remain forbidden.
+
 ## Forbidden motion
 
 - **No springs, no bounce, no overshoot.** `--motion-ease` settles once and

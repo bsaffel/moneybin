@@ -8,8 +8,9 @@ from pathlib import Path
 import typer
 
 from moneybin import error_codes
-from moneybin.cli.output import OutputFormat, output_option
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import OutputFormat, emit_human_result, output_option
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.errors import ErrorDetail
 
@@ -74,11 +75,21 @@ def categorize_commit_from_file(
             with input_path.open(encoding="utf-8") as f:
                 raw = json.load(f)
     except FileNotFoundError as e:
-        typer.echo(f"❌ File not found: {input_path}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="categorize_commit_from_file",
+            message=f"File not found: {input_path}",
+        )
     except json.JSONDecodeError as e:
-        typer.echo(f"❌ Invalid JSON: {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit_from_file",
+            message=f"Invalid JSON: {e}",
+        )
 
     # Map export-shape rows into CategorizationItem-shape rows. The export
     # command emits {transaction_id, description_scrubbed, source_type} for the
@@ -101,8 +112,12 @@ def categorize_commit_from_file(
     try:
         items, parse_errors = validate_items(normalized)
     except ValueError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=1,
+            cli_actor="categorize_commit_from_file",
+        )
 
     if items:
         from moneybin.services.categorization import CategorizationService
@@ -117,13 +132,34 @@ def categorize_commit_from_file(
     from moneybin.protocol.envelope import build_envelope
 
     def _render_table(_: object) -> None:
-        logger.info(
-            f"✅ Applied {result.applied} | skipped {result.skipped} | errors {result.errors}"
-        )
+        details = [
+            ("Applied", str(result.applied)),
+            ("Skipped", str(result.skipped)),
+            ("Failed", str(result.errors)),
+        ]
         if result.merchants_created:
-            logger.info(f"   Created {result.merchants_created} merchant mappings")
-        for err in result.error_details:
-            logger.warning(f"⚠️  {err['transaction_id']}: {err['reason']}")
+            details.append(("Merchant mappings created", str(result.merchants_created)))
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        details,
+                        title=(
+                            "File commit partially completed"
+                            if result.errors or result.skipped
+                            else "File categorizations committed"
+                        ),
+                    )
+                ],
+                disclosures=tuple(
+                    f"{err['transaction_id']}: {err['reason']}"
+                    for err in result.error_details
+                ),
+            ),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
+        )
 
     envelope = build_envelope(
         data=result.to_payload(),

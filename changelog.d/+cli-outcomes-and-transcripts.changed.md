@@ -1,0 +1,1 @@
+CLI guides now report nonzero outcomes for incomplete imports, Sheets drift, and requested synthetic transforms that fail after saving raw data. The multi-currency guide uses a reproducible seeded fixture with explicit override rates instead of presenting fixture values as provider rates.

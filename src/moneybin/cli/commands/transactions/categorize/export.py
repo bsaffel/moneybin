@@ -7,7 +7,9 @@ from pathlib import Path
 
 import typer
 
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import emit_human_result
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 
 logger = logging.getLogger(__name__)
@@ -87,8 +89,16 @@ def categorize_export_uncategorized(
 
     if output is not None:
         output.write_text(json_text, encoding="utf-8")
-        logger.info(
-            f"✅ Exported {len(payload)} uncategorized transactions to {output}"
+        emit_human_result(
+            compose_human_result([
+                build_summary(
+                    [("Transactions", str(len(payload))), ("File", str(output))],
+                    title="Uncategorized transactions exported",
+                )
+            ]),
+            policy=get_terminal_policy(),
+            finite_read=False,
+            receipt=True,
         )
     else:
         sys.stdout.write(json_text + "\n")

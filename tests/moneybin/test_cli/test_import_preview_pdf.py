@@ -87,8 +87,8 @@ def test_preview_reports_the_deterministic_verdict_and_row_count(
         result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exit_code == 0, result.output
-    assert "24" in caplog.text  # row count
-    assert "deterministic" in caplog.text.lower()
+    assert "24" in result.stdout  # row count
+    assert "deterministic" in result.stdout.lower()
 
 
 def test_preview_reports_a_non_deterministic_pdf_without_failing(
@@ -116,7 +116,7 @@ def test_preview_reports_a_non_deterministic_pdf_without_failing(
         result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exit_code == 0, result.output
-    assert "no_transaction_table" in caplog.text
+    assert "no_transaction_table" in result.stdout
 
 
 def test_preview_surfaces_a_pending_sign_confirmation(
@@ -288,7 +288,6 @@ def test_preview_on_a_fresh_install_points_at_db_init(
     statement: Path,
     tmp_path: Path,
     mocker: MockerFixture,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """No database has ever existed → "db init", never "db unlock".
 
@@ -302,20 +301,31 @@ def test_preview_on_a_fresh_install_points_at_db_init(
     """
     _patch_key_failure(mocker, tmp_path / "never-created.duckdb")
 
-    with caplog.at_level("INFO"):
-        result = runner.invoke(app, ["preview", str(statement)])
+    result = runner.invoke(app, ["preview", str(statement)])
 
     assert "Traceback" not in result.output
     assert result.exit_code == 1
-    assert "db init" in caplog.text
-    assert "db unlock" not in caplog.text
+    assert "db init" in result.stderr
+    assert "db unlock" not in result.stderr
+
+
+def test_preview_key_recovery_hint_is_written_to_stderr(
+    statement: Path, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The required database recovery remains visible at default log level."""
+    _patch_key_failure(mocker, tmp_path / "never-created.duckdb")
+
+    result = runner.invoke(app, ["preview", str(statement)])
+
+    assert result.exit_code == 1
+    assert "db init" in result.stderr
+    assert "db init" not in result.stdout
 
 
 def test_preview_on_a_locked_database_points_at_db_unlock(
     statement: Path,
     tmp_path: Path,
     mocker: MockerFixture,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """The database exists but its key is unavailable → "db unlock".
 
@@ -327,12 +337,11 @@ def test_preview_on_a_locked_database_points_at_db_unlock(
     existing.write_bytes(b"")
     _patch_key_failure(mocker, existing)
 
-    with caplog.at_level("INFO"):
-        result = runner.invoke(app, ["preview", str(statement)])
+    result = runner.invoke(app, ["preview", str(statement)])
 
     assert result.exit_code == 1
-    assert "db unlock" in caplog.text
-    assert "db init" not in caplog.text
+    assert "db unlock" in result.stderr
+    assert "db init" not in result.stderr
 
 
 def test_preview_says_when_tabular_flags_are_ignored_on_a_pdf(

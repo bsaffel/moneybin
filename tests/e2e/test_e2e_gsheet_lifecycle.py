@@ -213,7 +213,10 @@ def test_gsheet_full_lifecycle(
             ["gsheet", "pull", connection_id, "--no-refresh", "--output", "json"],
             catch_exceptions=False,
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
+        assert "drift_detected" in result.stdout
+        assert "Amount" in result.stdout
+        assert "Account" in result.stdout
         row = repo.get(connection_id)
         assert row is not None
         assert row["status"] == "drift_detected"

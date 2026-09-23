@@ -72,7 +72,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
@@ -83,6 +83,7 @@ from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError, classify_user_error, exception_origin
 from moneybin.matching.engine import MatchRunError
+from moneybin.progress import ProgressEvent
 from moneybin.services.matching_service import PENDING_MATCHES_HINT, MatchingService
 from moneybin.services.refresh_outcome import (
     RefreshStepOutcome,
@@ -231,7 +232,11 @@ def expand_steps(steps: Sequence[str] | None) -> frozenset[str]:
 
 
 def refresh(
-    db: Database, *, steps: list[str] | None = None, actor: str = "system"
+    db: Database,
+    *,
+    steps: list[str] | None = None,
+    actor: str = "system",
+    progress: Callable[[ProgressEvent], None] | None = None,
 ) -> RefreshResult:
     """Run the post-load pipeline through the exchange-rate gather.
 
@@ -261,6 +266,7 @@ def refresh(
             runner), which stay ``"system"``, and a surface re-matching because
             a user just decided something — the post-merge re-match — whose
             decisions are that user's work and say so.
+        progress: Optional callback for actual operation boundaries.
 
     Raises:
         UserError(code=error_codes.REFRESH_UNKNOWN_STEP): if any element of ``steps``
@@ -287,6 +293,8 @@ def refresh(
     stages: list[StageOutcome] = []
 
     if "gsheet" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Refreshing spreadsheets"))
         # _run_gsheet_step catches all exceptions internally and always
         # returns a list — no outer try/except needed here.
         pull_results = _run_gsheet_step(db)
@@ -343,6 +351,8 @@ def refresh(
     transfers_retired = 0
     matching_skipped = False
     if "match" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Matching transactions"))
         try:
             match_result = MatchingService(db).run(actor=actor)
             auto_merged = match_result.auto_merged
@@ -426,12 +436,18 @@ def refresh(
         # signal is honest. Categorize, if also requested, still runs
         # against whatever SQLMesh-built views are already on disk.
         if "categorize" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Categorizing transactions"))
             stages.append(_run_categorize_step(db))
         if "identity" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Resolving identities"))
             identity_stage, identity_errors = _run_identity_step(db)
             stages.append(identity_stage)
         rate_backfill = None
         if "rates" in requested:
+            if progress is not None:
+                progress(ProgressEvent("Refreshing exchange rates"))
             rate_backfill, rate_backfill_error = _run_rates_step(db)
             stages.append(_rates_stage(rate_backfill, rate_backfill_error))
         return RefreshResult(
@@ -443,6 +459,8 @@ def refresh(
             stages=tuple(stages),
         )
 
+    if progress is not None:
+        progress(ProgressEvent("Applying reports"))
     transform_service = TransformService(db)
     apply_result = transform_service.apply()
     # No counts: apply rebuilds models rather than producing a countable
@@ -469,12 +487,18 @@ def refresh(
         )
 
     if "categorize" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Categorizing transactions"))
         stages.append(_run_categorize_step(db))
     if "identity" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Resolving identities"))
         identity_stage, identity_errors = _run_identity_step(db)
         stages.append(identity_stage)
     rate_backfill = None
     if "rates" in requested:
+        if progress is not None:
+            progress(ProgressEvent("Refreshing exchange rates"))
         rate_backfill, rate_backfill_error = _run_rates_step(db)
         stages.append(_rates_stage(rate_backfill, rate_backfill_error))
 

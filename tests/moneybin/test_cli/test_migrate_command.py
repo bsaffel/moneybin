@@ -1,5 +1,6 @@
 """Tests for the db migrate CLI commands."""
 
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -7,9 +8,33 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.migrate import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.migrations import Migration
 
 runner = CliRunner()
+
+
+def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    """Make a synthetic terminal small enough that complete reads page."""
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=not no_pager,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=20,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def _compact(text: str) -> str:
+    """Join renderer wrapping so assertions check content rather than width."""
+    return text.replace("\n", "")
 
 
 @pytest.fixture(autouse=True)
@@ -166,7 +191,7 @@ class TestMigrateApply:
             result = runner.invoke(app, ["apply"])
 
         assert result.exit_code == 0
-        assert any("Checksum mismatch" in r.message for r in caplog.records)
+        assert "Checksum mismatch" in result.stdout
 
     @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
@@ -248,7 +273,7 @@ class TestMigrateApply:
 
         assert result.exit_code == 0
         mock_db.repair_sqlmesh_state.assert_not_called()
-        assert any("ahead" in r.message for r in caplog.records)
+        assert "ahead" in result.stdout
 
     @patch("moneybin.cli.commands.migrate.get_database")
     @patch("moneybin.cli.commands.migrate.MigrationRunner")
@@ -275,7 +300,7 @@ class TestMigrateApply:
         assert result.exit_code == 0
         mock_runner.apply_all.assert_not_called()
         mock_db.migrate_sqlmesh_state.assert_not_called()
-        assert any("behind" in r.message for r in caplog.records)
+        assert "behind" in result.stdout
 
 
 class TestMigrateStatus:
@@ -319,7 +344,7 @@ class TestMigrateStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        messages = " ".join(r.message for r in caplog.records)
+        messages = _compact(result.stdout)
         assert "V001__init.sql" in messages
         assert "V002__new.sql" in messages
 
@@ -346,7 +371,7 @@ class TestMigrateStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert any("No applied migrations" in r.message for r in caplog.records)
+        assert "Applied migrations: 0" in result.stdout
 
     @patch("moneybin.cli.commands.migrate.get_database")
     def test_status_database_key_error_exits_1(self, mock_get_db: MagicMock) -> None:
@@ -386,4 +411,336 @@ class TestMigrateStatus:
             result = runner.invoke(app, ["status"])
 
         assert result.exit_code == 0
-        assert any("migrate apply" in r.message for r in caplog.records)
+        assert "migrate apply" in result.stdout
+
+
+def test_status_pages_complete_migration_state_and_no_pager_prints_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Status is a finite read; quiet retains the requested state and drift."""
+    from moneybin.migrations import AppliedMigration, DriftWarning
+
+    mock_db = MagicMock()
+    mock_runner = MagicMock()
+    mock_runner.applied_details.return_value = [
+        AppliedMigration(
+            version=1,
+            filename="V001__initialize_schema.sql",
+            success=True,
+            execution_ms=42,
+            applied_at=datetime(2026, 1, 1),
+        )
+    ]
+    mock_runner.pending.return_value = [_migration(2, filename="V002__next.sql")]
+    mock_runner.check_drift.return_value = [
+        DriftWarning(1, "V001__initialize_schema.sql", "Checksum mismatch")
+    ]
+    pages: list[str] = []
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    def fake_versions(_db: object) -> dict[str, str]:
+        return {"moneybin": "0.2.0"}
+
+    def capture_page(text: str, **_kwargs: object) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_current_versions",
+        fake_versions,
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.pager.page_text",
+        capture_page,
+    )
+
+    paged = runner.invoke(app, ["status"])
+    direct = runner.invoke(app, ["status", "--quiet", "--no-pager"])
+
+    assert paged.exit_code == direct.exit_code == 0
+    assert len(pages) == 1
+    assert "Migration status" in pages[0]
+    assert "V001__initialize_schema.sql" in _compact(pages[0])
+    assert "Checksum mismatch" in pages[0]
+    assert "Migration status" in direct.stdout
+    assert "V001__initialize_schema.sql" in _compact(direct.stdout)
+    assert "Checksum mismatch" in direct.stdout
+    assert mock_db is not None
+
+
+@pytest.mark.parametrize(
+    ("pending", "expected"),
+    [([_migration()], "Planned migrations"), ([], "No pending migrations")],
+)
+def test_apply_dry_run_is_an_unpaged_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    pending: list[Migration],
+    expected: str,
+) -> None:
+    """A migration preview never opens a pager, including its no-change result."""
+    mock_runner = MagicMock()
+    mock_runner.pending.return_value = pending
+    pages: list[str] = []
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    def capture_page(text: str, **_kwargs: object) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.pager.page_text",
+        capture_page,
+    )
+
+    result = runner.invoke(app, ["apply", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert expected in _compact(result.stdout)
+    assert pages == []
+    mock_runner.apply_all.assert_not_called()
+
+
+def test_interrupted_dry_run_does_not_claim_unknown_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preview can be cancelled before planning without any applied migration."""
+    mock_runner = MagicMock()
+    mock_runner.pending.side_effect = KeyboardInterrupt
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+
+    result = runner.invoke(app, ["apply", "--dry-run"])
+
+    assert result.exit_code == 130
+    assert "Migration preview cancelled" in _compact(result.stdout)
+    assert "No migrations were applied" in _compact(result.stdout)
+    assert "Saved scope is unknown" not in _compact(result.stdout)
+
+
+def test_apply_repair_failure_keeps_known_applied_migrations_in_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later transform-state failure must not erase known saved migrations."""
+    from moneybin.migrations import MigrationResult
+
+    mock_runner = MagicMock()
+    mock_runner.apply_all.return_value = MigrationResult(applied_count=2)
+    mock_runner.check_drift.return_value = []
+    mock_db = MagicMock()
+    mock_db.repair_sqlmesh_state.return_value = False
+    get_db = MagicMock()
+    get_db.return_value.__enter__.return_value = mock_db
+    pages: list[str] = []
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    def fake_assessment(_db: object) -> tuple[str, bool]:
+        return "Transform state is behind", True
+
+    def capture_page(text: str, **_kwargs: object) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", get_db)
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.sqlmesh_state_assessment",
+        fake_assessment,
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+    monkeypatch.setattr("moneybin.cli.pager.page_text", capture_page)
+
+    result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 1
+    assert "2 migration(s) applied" in _compact(result.stdout)
+    assert "Transform state repair" in _compact(result.stdout)
+    assert "Failed" in result.stdout
+    assert "Remaining state" in result.stdout
+    assert pages == []
+
+
+def test_apply_failure_retains_known_applied_migration_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A direct migration failure retains its known applied count."""
+    from moneybin.migrations import MigrationResult
+
+    mock_runner = MagicMock()
+    mock_runner.apply_all.return_value = MigrationResult(
+        applied_count=1,
+        failed_migration="V002__bad.sql",
+        error_message="Migration V002__bad.sql failed",
+    )
+    mock_runner.check_drift.return_value = []
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+
+    failed = runner.invoke(app, ["apply"])
+
+    assert failed.exit_code == 1
+    assert "1 migration(s) applied" in _compact(failed.stdout)
+    assert "V002__bad.sql" in failed.stdout
+
+
+@pytest.mark.parametrize("stage", ["drift", "assessment", "repair"])
+def test_post_apply_classified_error_preserves_known_saved_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    """Each post-result stage reports saved migrations and classified failure."""
+    from moneybin.errors import UserError
+    from moneybin.migrations import MigrationResult
+
+    mock_runner = MagicMock()
+    mock_runner.apply_all.return_value = MigrationResult(applied_count=2)
+    mock_runner.check_drift.return_value = []
+    mock_db = MagicMock()
+    get_db = MagicMock()
+    get_db.return_value.__enter__.return_value = mock_db
+
+    error = UserError(
+        "Transform state could not be inspected",
+        code="infra_io_error",
+        hint="Run moneybin db migrate status",
+    )
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    if stage == "drift":
+        mock_runner.check_drift.side_effect = error
+    elif stage == "assessment":
+        monkeypatch.setattr(
+            "moneybin.cli.commands.migrate.sqlmesh_state_assessment",
+            MagicMock(side_effect=error),
+        )
+    else:
+        monkeypatch.setattr(
+            "moneybin.cli.commands.migrate.sqlmesh_state_assessment",
+            MagicMock(return_value=("Transform state is behind", True)),
+        )
+        mock_db.repair_sqlmesh_state.side_effect = error
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", get_db)
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+
+    result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 1
+    assert "2 migration(s) applied" in _compact(result.stdout)
+    assert "Transform state could not be inspected" in _compact(result.stdout)
+    assert "freshness is unknown" in _compact(result.stdout)
+
+
+@pytest.mark.parametrize("applied_count", [0, 1])
+def test_post_failure_diagnostic_keeps_direct_migration_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    applied_count: int,
+) -> None:
+    """A drift diagnostic cannot replace the already-known migration failure."""
+    from moneybin.errors import UserError
+    from moneybin.migrations import MigrationResult
+
+    mock_runner = MagicMock()
+    mock_runner.apply_all.return_value = MigrationResult(
+        applied_count=applied_count,
+        failed_migration="V002__bad.sql",
+        error_message="Migration V002__bad.sql failed",
+    )
+    mock_runner.check_drift.side_effect = UserError(
+        "Drift inspection failed", code="infra_io_error"
+    )
+    pages: list[str] = []
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    def capture_page(text: str, **_kwargs: object) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+    monkeypatch.setattr("moneybin.cli.pager.page_text", capture_page)
+
+    result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 1
+    assert "Migration apply failed" in _compact(result.stdout)
+    assert f"{applied_count} migration(s) applied" in _compact(result.stdout)
+    assert "V002__bad.sql" in _compact(result.stdout)
+    assert "Migration V002__bad.sql failed" in _compact(result.stdout)
+    assert "Drift inspection failed" in _compact(result.stdout)
+    assert pages == []
+
+
+def test_post_apply_interrupt_preserves_known_count_and_unknown_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation after apply distinguishes known migrations from unknown remainder."""
+    from moneybin.migrations import MigrationResult
+
+    mock_runner = MagicMock()
+    mock_runner.apply_all.return_value = MigrationResult(applied_count=2)
+    mock_runner.check_drift.side_effect = KeyboardInterrupt
+
+    def fake_runner(_db: object) -> MagicMock:
+        return mock_runner
+
+    monkeypatch.setattr("moneybin.cli.commands.migrate.get_database", MagicMock())
+    monkeypatch.setattr("moneybin.cli.commands.migrate.MigrationRunner", fake_runner)
+    monkeypatch.setattr(
+        "moneybin.cli.commands.migrate.get_terminal_policy", _pager_policy
+    )
+
+    result = runner.invoke(app, ["apply"])
+
+    assert result.exit_code == 130
+    assert "2 migration(s) applied" in _compact(result.stdout)
+    assert "Remaining state" in result.stdout
+    assert "freshness is unknown" in _compact(result.stdout)
+
+
+def test_apply_preserves_text_only_success_surface() -> None:
+    """Apply keeps its established text-only interface; status owns JSON."""
+    result = runner.invoke(app, ["apply", "--output", "json"])
+
+    assert result.exit_code == 2

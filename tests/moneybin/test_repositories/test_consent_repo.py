@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from moneybin.database import Database
+from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode
 from moneybin.repositories.consent_repo import ConsentRepo
 from moneybin.tables import AI_CONSENT_GRANTS
@@ -152,6 +155,42 @@ def test_revoke_all(db: Database) -> None:
         ("ml-categorization", "openai"),
     }
     assert repo.list_active() == []
+
+
+def test_revoke_all_refuses_changed_expected_grant_ids_before_auditing(
+    db: Database,
+) -> None:
+    """The repository guard runs inside its transaction before the first update."""
+    repo = ConsentRepo(db)
+    first, _ = repo.grant(
+        feature_category="mcp-data-sharing",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        grant_prompt="p",
+        actor="test",
+    )
+    repo.grant(
+        feature_category="ml-categorization",
+        backend="anthropic",
+        consent_mode=ConsentMode.PERSISTENT,
+        grant_prompt="p",
+        actor="test",
+    )
+    audit_before = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
+    ).fetchone()
+    assert audit_before is not None
+
+    with pytest.raises(UserError, match="Consent selection changed") as exc:
+        repo.revoke_all(actor="test", expected_grant_ids={first.grant_id})
+
+    assert exc.value.code == "mutation_confirmation_mismatch"
+    assert {grant.grant_id for grant in repo.list_active()} >= {first.grant_id}
+    assert len(repo.list_active()) == 2
+    audit_after = db.execute(
+        "SELECT COUNT(*) FROM app.audit_log WHERE action = 'consent.revoke'"
+    ).fetchone()
+    assert audit_after == audit_before
 
 
 def test_grant_revoke_regrant_cycle(db: Database) -> None:

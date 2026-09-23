@@ -178,7 +178,11 @@ A `transactions` connection pins a column mapping. If you rename or remove a col
 
 A `seed` connection pins nothing. It regenerates its view on every pull, so renamed, added, and reordered columns are absorbed silently; only a sheet with no header row at all refuses.
 
-Either way the connection enters `drift_detected` state; the rest of your connections keep pulling normally.
+Either way the connection enters `drift_detected` state; the rest of your
+connections keep pulling normally. A requested `moneybin gsheet pull` that
+detects drift exits nonzero even when another connection completed, so scripts
+and agents can inspect the receipt instead of treating the partial result as
+success.
 
 ```bash
 moneybin gsheet status

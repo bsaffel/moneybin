@@ -12,5 +12,5 @@ Usage: `moneybin refresh [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--step` | one of `match`, `investment_match`, `transform`, `categorize`, `identity`, `rates`, repeatable |  | Limit the cascade to one or more steps (repeatable; choose from match, investment_match, transform, categorize, identity, rates). Default: full cascade. Steps always run in canonical order (match → investment_match → transform → categorize → identity → rates) regardless of flag order. |
