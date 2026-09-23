@@ -586,6 +586,7 @@ def db_info(
                             (row["schema"], row["table"], row["rows"])
                             for row in table_rows
                         ],
+                        numeric=["rows"],
                         terminal=policy,
                     )
                 )

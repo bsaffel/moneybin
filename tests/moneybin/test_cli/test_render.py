@@ -60,6 +60,26 @@ class _Terminal(io.StringIO):
         return True
 
 
+def _ascii_terminal_policy() -> Any:
+    """A non-styled terminal whose stdout accepts only ASCII bytes."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 # --- format_money: separators and precision (requirement 11) ---
 
 
@@ -1308,6 +1328,25 @@ def test_render_summary_honors_the_supplied_terminal_width(
     render_summary([("Long label", "value")], terminal=terminal)
 
     assert capsys.readouterr().out.splitlines() == ["Long label: ", "value"]
+
+
+def test_render_rows_uses_ascii_borders_for_an_ascii_terminal(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ASCII-only stdout must not receive Rich's default Unicode table border."""
+    render_rows(["status"], [("ready",)], terminal=_ascii_terminal_policy())
+
+    output = capsys.readouterr().out
+    output.encode("ascii")
+
+
+def test_render_rows_keeps_unicode_borders_without_ascii_policy(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The fallback does not change the normal Rich table presentation."""
+    render_rows(["status"], [("ready",)])
+
+    assert "┏" in capsys.readouterr().out
 
 
 def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -> None:

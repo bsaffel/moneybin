@@ -1555,6 +1555,51 @@ class TestDbInfoCommand:
         assert result.exit_code == 0
         page.assert_called_once()
 
+    def test_info_keeps_large_row_count_whole_in_a_narrow_table(
+        self, runner: CliRunner, mocker: Any, tmp_path: Path
+    ) -> None:
+        """A row count is numeric data, so narrow rendering cannot split its digits."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        db_path = tmp_path / "moneybin.duckdb"
+        db_path.write_bytes(b"data")
+        _make_settings_mock(db_path, mocker)
+        store = MagicMock()
+        store.get_key.return_value = "synthetic"
+        mocker.patch("moneybin.secrets.SecretStore", return_value=store)
+        database = MagicMock()
+        database.__enter__ = lambda self: self  # type: ignore[assignment]
+        database.execute.side_effect = [
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct")])),
+            MagicMock(fetchall=MagicMock(return_value=[("core", "fct", 123456789)])),
+        ]
+        database.sql.return_value.fetchone.return_value = ("v1",)
+        mocker.patch("moneybin.database.Database", return_value=database)
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=True,
+            width=24,
+            height=24,
+            symbols=TerminalSymbols(
+                success="OK", attention="!", failure="X", action=">"
+            ),
+            minus="-",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.db.get_terminal_policy", return_value=policy
+        )
+
+        result = runner.invoke(app, ["info", "--no-pager"])
+
+        assert result.exit_code == 0, result.output
+        assert "123456789" in result.output
+
     def test_info_fails_when_database_not_found(
         self, runner: CliRunner, mocker: Any, tmp_path: Path
     ) -> None:

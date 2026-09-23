@@ -306,7 +306,7 @@ def test_categorize_pending_uses_a_table_only_when_complete_rows_fit(
     result = runner.invoke(app, ["pending", "--no-pager"])
 
     assert result.exit_code == 0, result.output
-    assert ("┏" in result.stdout) is expects_table
+    assert ("+-" in result.stdout) is expects_table
     assert ("Transaction 1" in result.stdout) is not expects_table
 
 

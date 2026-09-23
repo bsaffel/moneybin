@@ -521,6 +521,7 @@ def build_rows(
     repeated rows; collapsing them here would make the output look right while
     the total stayed wrong, removing the symptom that finds the defect.
     """
+    from rich import box  # defer heavy import
     from rich.console import (
         Console,  # defer heavy import
     )
@@ -603,7 +604,7 @@ def build_rows(
         None,
     )
 
-    table = Table()
+    table = Table(box=box.ASCII if terminal.ascii else box.HEAVY_HEAD)
     for at, i in enumerate(kept):
         name = columns[i]
         is_money = name in declared
