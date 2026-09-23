@@ -364,6 +364,57 @@ class TestReportsNetworth:
         assert "12500.00" not in out
         assert "12,500.00" not in out
 
+    @pytest.mark.parametrize(
+        ("ascii_mode", "minus"),
+        [(True, "-"), (False, "−")],
+    )
+    def test_text_summary_uses_the_terminal_minus_for_negative_positions(
+        self,
+        runner: CliRunner,
+        monkeypatch: pytest.MonkeyPatch,
+        ascii_mode: bool,
+        minus: str,
+    ) -> None:
+        """The summary's net worth and liabilities follow the terminal policy."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        snapshot = _snapshot_result(
+            net_worth=Decimal("-12500.00"),
+            total_assets=Decimal("0.00"),
+            total_liabilities=Decimal("-2500.00"),
+        )
+        policy = TerminalPolicy(
+            output="text",
+            interactive=False,
+            page=False,
+            color=False,
+            style=False,
+            animate_progress=False,
+            stage_chatter=False,
+            ascii=ascii_mode,
+            width=80,
+            height=24,
+            symbols=TerminalSymbols("OK", "!", "X", ">"),
+            minus=minus,
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.reports.networth.get_terminal_policy",
+            lambda *, no_pager=False: policy,
+        )
+        with (
+            patch(
+                "moneybin.cli.commands.reports.networth.get_database",
+                return_value=no_profile_database(),
+            ),
+            patch("moneybin.reports._framework.catalog.get_report_catalog") as catalog,
+        ):
+            catalog.return_value.execute.return_value = snapshot
+            result = runner.invoke(app, ["reports", "networth"])
+
+        assert result.exit_code == 0, result.output
+        assert f"{minus}12,500.00" in result.output
+        assert f"{minus}2,500.00" in result.output
+
     @pytest.mark.unit
     def test_text_render_says_why_a_conversion_fell_back(
         self, runner: CliRunner

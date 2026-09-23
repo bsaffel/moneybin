@@ -99,15 +99,27 @@ def reports_networth(
                         # answer.
                         (
                             "Net worth",
-                            format_money(_summed(rows, "net_worth"), "balance"),
+                            format_money(
+                                _summed(rows, "net_worth"),
+                                "balance",
+                                minus=policy.minus,
+                            ),
                         ),
                         (
                             "Assets",
-                            format_money(_summed(rows, "total_assets"), "balance"),
+                            format_money(
+                                _summed(rows, "total_assets"),
+                                "balance",
+                                minus=policy.minus,
+                            ),
                         ),
                         (
                             "Liabilities",
-                            format_money(_summed(rows, "total_liabilities"), "balance"),
+                            format_money(
+                                _summed(rows, "total_liabilities"),
+                                "balance",
+                                minus=policy.minus,
+                            ),
                         ),
                         ("Accounts", str(_summed(rows, "account_count") or 0)),
                     ],
@@ -143,6 +155,7 @@ def reports_networth(
             classes_returned=result.classes_returned,
         )
         return
+    policy = get_terminal_policy(no_pager=no_pager)
     human = _human_result()
     if human is None:
         human = compose_human_result(
@@ -151,7 +164,7 @@ def reports_networth(
         )
     emit_human_result(
         human,
-        policy=get_terminal_policy(no_pager=no_pager),
+        policy=policy,
         finite_read=True,
         no_pager=no_pager,
     )

@@ -25,6 +25,7 @@ def test_undo_declined_confirmation_has_a_visible_receipt(
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
 
     with patch(
         "moneybin.cli.commands.transactions.matches.typer.confirm", return_value=False

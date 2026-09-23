@@ -152,6 +152,18 @@ def test_no_tty_stderr_disables_progress_animation(
     assert policy.stage_chatter
 
 
+def test_redirected_stderr_refuses_prompts_but_keeps_stdout_paging(
+    streams: dict[str, _Stream], settings: CLISettings
+) -> None:
+    """A hidden confirmation prompt must not block an otherwise visible terminal."""
+    streams["stderr"].tty = False
+
+    policy = _resolve(streams, settings)
+
+    assert not policy.interactive
+    assert policy.page
+
+
 def test_no_color_disables_all_styling(
     monkeypatch: pytest.MonkeyPatch,
     streams: dict[str, _Stream],

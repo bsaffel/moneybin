@@ -104,12 +104,14 @@ def resolve_terminal_policy(
 ) -> TerminalPolicy:
     """Resolve terminal behavior without reading input or application state.
 
-    Colour belongs to stdout because result renderers write there.  Animated
-    progress additionally needs an interactive text session and a terminal
-    stderr; static stages remain available for redirected text runs.
+    Colour belongs to stdout because result renderers write there. Interactive
+    input also needs a terminal stderr because confirmations render there;
+    paging remains available when stdin and stdout are terminals. Animated
+    progress additionally needs that interactive session; static stages remain
+    available for redirected text runs.
     """
     text_output = output == "text"
-    interactive = text_output and _is_tty(stdin) and _is_tty(stdout)
+    interactive = text_output and _is_tty(stdin) and _is_tty(stdout) and _is_tty(stderr)
     color = text_output and _is_tty(stdout) and "NO_COLOR" not in os.environ
     ascii_output = settings.ascii or not _uses_unicode(stdout)
     symbols = (
@@ -125,7 +127,13 @@ def resolve_terminal_policy(
     return TerminalPolicy(
         output=output,
         interactive=interactive,
-        page=interactive and settings.auto_pager and not no_pager,
+        page=(
+            text_output
+            and _is_tty(stdin)
+            and _is_tty(stdout)
+            and settings.auto_pager
+            and not no_pager
+        ),
         color=color,
         style=color,
         animate_progress=animate_progress,
