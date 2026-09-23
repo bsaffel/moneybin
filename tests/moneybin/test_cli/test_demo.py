@@ -168,6 +168,20 @@ def test_demo_json_carries_null_scalar_and_per_currency(mocker: Any) -> None:
 
 
 @pytest.mark.unit
+def test_demo_json_doctor_failure_exits_nonzero(mocker: Any) -> None:
+    """JSON carries the same failed doctor outcome and process signal as text."""
+    _patch_service(
+        mocker,
+        _fake_result(doctor_failing=1, doctor_failing_names=["schema"]),
+    )
+
+    result = runner.invoke(app, ["demo", "--yes", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    assert json.loads(result.stdout)["data"]["doctor_failing"] == 1
+
+
+@pytest.mark.unit
 def test_demo_renders_the_unknown_currency_segment(mocker: Any) -> None:
     """`reports.net_worth` pools unknown-currency accounts into a NULL segment.
 

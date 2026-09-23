@@ -167,6 +167,7 @@ def test_merchants_list_json_envelope(
                 canonical_name="Coffee Shop",
                 category="Food",
                 subcategory="Coffee",
+                category_id="cat_food_coffee",
             )
         ]
     )
@@ -179,8 +180,38 @@ def test_merchants_list_json_envelope(
     assert result.exit_code == 0, result.output
     envelope = json.loads(result.stdout)
     assert envelope["data"]["merchants"][0]["merchant_id"] == "merchant-1"
+    assert envelope["data"]["merchants"][0]["category_id"] == "cat_food_coffee"
     assert envelope["summary"]["sensitivity"] == "medium"
     mock_service_cls.return_value.list_merchants.assert_called_once_with()
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.merchants.get_database")
+def test_merchants_list_text_carries_category_id_with_the_category_label(
+    mock_get_db: MagicMock, mock_service_cls: MagicMock
+) -> None:
+    """A label without its stable ID cannot be safely used by a later command."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_service_cls.return_value.list_merchants.return_value = MerchantsPayload(
+        merchants=[
+            MerchantRow(
+                merchant_id="merchant-1",
+                raw_pattern="COFFEE",
+                match_type="contains",
+                canonical_name="Coffee Shop",
+                category="Food",
+                subcategory="Coffee",
+                category_id="cat_food_coffee",
+            )
+        ]
+    )
+
+    result = runner.invoke(merchants_app, ["list", "--quiet", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "category id" in result.stdout
+    assert "cat_food_coffee" in result.stdout
+    assert "Food / Coffee" in result.stdout
 
 
 @patch("moneybin.services.categorization.CategorizationService")

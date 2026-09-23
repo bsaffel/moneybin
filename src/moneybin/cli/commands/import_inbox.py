@@ -66,6 +66,7 @@ def _drain_needs_attention(result: InboxSyncResult) -> bool:
     return bool(
         result.failed
         or result.pending
+        or result.transforms_error is not None
         or any(item.get("reason") == "inbox_busy" for item in result.skipped)
     )
 
@@ -306,7 +307,7 @@ def _sync_text_result(result: InboxSyncResult, recovery_commands: list[str]) -> 
                 )
             )
 
-    if result.transforms_error:
+    if result.transforms_error is not None:
         parts.append(
             build_summary(
                 [
@@ -329,7 +330,7 @@ def _sync_text_result(result: InboxSyncResult, recovery_commands: list[str]) -> 
 def inbox_default(
     ctx: typer.Context,
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,
+    quiet: bool = quiet_option,  # drain emits only receipt data and disclosures
 ) -> None:
     """Default action: drain the inbox."""
     if ctx.invoked_subcommand is not None:

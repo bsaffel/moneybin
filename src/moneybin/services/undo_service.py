@@ -303,6 +303,8 @@ class UndoService:
                     audit_undo_total.labels(outcome="no_path").inc()
                 elif e.code == error_codes.UNDO_VALUE_INADMISSIBLE:
                     audit_undo_total.labels(outcome="value_inadmissible").inc()
+                elif e.code == error_codes.MUTATION_CONFIRMATION_MISMATCH:
+                    audit_undo_total.labels(outcome="confirmation_mismatch").inc()
                 raise
             except BaseException:
                 self._db.rollback()

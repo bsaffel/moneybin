@@ -309,7 +309,7 @@ def _emit_split_receipt(
     policy = get_terminal_policy()
     rows: list[tuple[object, ...]] = [(split_id, transaction_id, residual)]
     columns = ["split id", "transaction", "residual"]
-    money = {"residual": Money("flow")}
+    money = {"residual": Money("magnitude")}
     if amount is not None:
         columns.insert(2, "amount")
         rows = [(split_id, transaction_id, amount, residual)]

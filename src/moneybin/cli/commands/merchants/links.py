@@ -79,6 +79,8 @@ def links_pending(
             [("Pending decisions", str(n_pending))], title="Merchant-link decisions"
         )
     ]
+    if not groups:
+        parts.append(build_summary([("Result", "No pending decisions.")]))
     for group in groups:
         parts.extend([
             build_summary([
@@ -102,11 +104,14 @@ def links_pending(
                 terminal=policy,
             ),
         ])
-    disclosures = (
-        (("Next: moneybin merchants links set <decision-id> --into <merchant-id>"),)
-        if groups
-        else ("No pending decisions. Next: moneybin merchants links run",)
-    )
+    if quiet:
+        disclosures: tuple[str, ...] = ()
+    elif groups:
+        disclosures = (
+            "Next: moneybin merchants links set <decision-id> --into <merchant-id>",
+        )
+    else:
+        disclosures = ("Next: moneybin merchants links run",)
     emit_human_result(
         compose_human_result(parts, disclosures=disclosures),
         policy=policy,
@@ -242,7 +247,9 @@ def links_history(
         compose_human_result(
             parts,
             disclosures=(
-                () if payload.decisions else ("Next: moneybin merchants links run",)
+                ()
+                if payload.decisions or quiet
+                else ("Next: moneybin merchants links run",)
             ),
         ),
         policy=policy,

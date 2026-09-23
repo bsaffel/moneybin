@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.extractors.account_identity import UNNAMED_ACCOUNT_LABEL
 from moneybin.privacy.payloads.accounts import (
     AccountListPayload,
@@ -18,6 +19,23 @@ from moneybin.privacy.payloads.accounts import (
     AccountSummaryStats,
 )
 from moneybin.services.account_service import CLEAR
+
+
+def _terminal(width: int, *, style: bool = False) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=style,
+        style=style,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=width,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 def _make_account(
@@ -55,6 +73,42 @@ _ACCOUNT_B = _make_account(
 _ACCOUNT_ARCHIVED = _make_account(
     "acct_archived", "Old Account", institution_name="Old Bank", archived=True
 )
+
+
+def test_resolve_keeps_confidence_atomic_in_a_narrow_terminal(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner
+) -> None:
+    """A wrapped score can read as a different confidence value."""
+    import moneybin.cli.commands.accounts as accounts
+
+    payload = AccountResolvePayload(
+        matches=[
+            AccountResolutionItem(
+                account_id="account_identifier_that_is_intentionally_long",
+                display_name="Everyday checking account with a long name",
+                account_subtype="checking",
+                institution_name="Example financial institution",
+                confidence=0.987,
+            )
+        ]
+    )
+    database = MagicMock()
+    get_database = MagicMock()
+    get_database.return_value.__enter__.return_value = database
+    service = MagicMock()
+    service.resolve.return_value = payload
+    account_service = MagicMock(return_value=service)
+    monkeypatch.setattr(accounts, "get_database", get_database)
+    monkeypatch.setattr(
+        accounts, "get_terminal_policy", MagicMock(return_value=_terminal(24))
+    )
+    monkeypatch.setattr(accounts, "AccountService", account_service)
+
+    result = runner.invoke(app, ["accounts", "resolve", "checking"])
+
+    assert result.exit_code == 0, result.output
+    assert "0.987" in result.output
+    assert "0.\n987" not in result.output
 
 
 def _as_account_summary(d: dict[str, object]) -> AccountSummary:

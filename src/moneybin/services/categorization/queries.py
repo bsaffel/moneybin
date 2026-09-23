@@ -267,7 +267,7 @@ class CategorizationQueries:
             rows = self._db.execute(
                 f"""
                 SELECT merchant_id, raw_pattern, match_type,
-                       canonical_name, category, subcategory
+                       canonical_name, category, subcategory, category_id
                 FROM {MERCHANTS.full_name}
                 ORDER BY canonical_name
                 """
@@ -284,6 +284,7 @@ class CategorizationQueries:
                     canonical_name=r[3],
                     category=r[4],
                     subcategory=r[5],
+                    category_id=r[6],
                 )
                 for r in rows
             ]

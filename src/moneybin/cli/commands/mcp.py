@@ -483,7 +483,8 @@ def _confirm_and_merge(
     if not yes:
         confirmed = _confirm_install(config_path)
         if not confirmed:
-            _emit_diagnostic("Installation cancelled.", level="info")
+            logger.info("Installation cancelled.")
+            typer.echo("Installation cancelled.", err=True)
             return False
     if config_path.suffix == ".toml":
         _merge_toml_config(config_path, snippet)

@@ -31,7 +31,11 @@ from moneybin.cli.output import (
     wide_option,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    format_cli_attention,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
@@ -284,13 +288,18 @@ def reports_explain(
                 terminal=policy,
             ),
         ]
-        disclosures = list(explanation.graduation_blockers)
+        disclosures = [
+            format_cli_attention(blocker, policy=policy)
+            for blocker in explanation.graduation_blockers
+        ]
         # Echoed, not logged. The reason names the columns that moved, and a saved
         # report's aliases are user-authored. No safe record is lost by dropping
         # the log call: `_reresolved` already logs the drift where it is detected,
         # in counts, and this path reaches it through `spec_from_row`.
         if explanation.drift_reason:
-            disclosures.append(explanation.drift_reason)
+            disclosures.append(
+                format_cli_attention(explanation.drift_reason, policy=policy)
+            )
         if explanation.sql_unavailable:
             disclosures.append(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:

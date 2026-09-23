@@ -23,6 +23,21 @@ from moneybin.services.profile_service import ProfileService
 runner = CliRunner()
 
 
+def test_delete_refuses_redirected_confirmation_before_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_delete(*args: object, **kwargs: object) -> None:
+        pytest.fail("redirected confirmation must not delete a profile")
+
+    monkeypatch.setattr(ProfileService, "delete", unexpected_delete)
+
+    result = runner.invoke(app, ["delete", "alice"], input="y\n")
+
+    assert result.exit_code == 1, result.output
+    assert "--yes" in result.stderr
+    assert "Deletion cancelled" not in result.stdout
+
+
 def _paging_policy() -> TerminalPolicy:
     return TerminalPolicy(
         output="text",

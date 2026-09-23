@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import pexpect
+import pytest
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,10 @@ class PTYProcess:
 
 
 def spawn_python_pty(
-    program: str, *, env: Mapping[str, str] | None = None
+    program: str,
+    *,
+    request: pytest.FixtureRequest,
+    env: Mapping[str, str] | None = None,
 ) -> PTYProcess:
     """Start a Python program with terminal input and a captured transcript."""
     child_env = {**os.environ, "TERM": "dumb", **(env or {})}
@@ -34,5 +38,6 @@ def spawn_python_pty(
         timeout=30,
         echo=False,
     )
+    request.addfinalizer(lambda: child.close(force=True))
     child.logfile_read = transcript
     return PTYProcess(child=child, transcript=transcript)

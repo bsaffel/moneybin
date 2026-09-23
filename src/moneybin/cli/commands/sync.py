@@ -477,13 +477,28 @@ def sync_link(
         if incomplete:
             raise typer.Exit(1)
     else:
-        _emit_sync_receipt(
-            "Link complete",
-            [
-                ("Institution", result.institution_name or "(no name)"),
-                ("Outcome", "Connected"),
-            ],
-        )
+        if no_pull:
+            _emit_sync_receipt(
+                "Link complete",
+                [
+                    ("Institution", result.institution_name or "(no name)"),
+                    ("Outcome", "Connected"),
+                ],
+            )
+        else:
+            _emit_sync_receipt(
+                "! Link partially completed",
+                [
+                    ("Institution", result.institution_name or "(no name)"),
+                    ("Outcome", "Connected; auto-pull failed"),
+                    (
+                        "Data freshness",
+                        "Core tables and reports may still reflect data before this pull",
+                    ),
+                    ("Recovery", "moneybin sync pull"),
+                ],
+            )
+            raise typer.Exit(1)
 
 
 @app.command("link-status")

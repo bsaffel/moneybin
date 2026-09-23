@@ -32,6 +32,21 @@ pytestmark = pytest.mark.e2e
 PathKey = tuple[str, ...]
 
 
+@pytest.fixture(autouse=True)
+def close_terminal_children(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> None:
+    """Reap each PTY even when an expect call times out before normal cleanup."""
+    spawn = pexpect.spawn
+
+    def tracked_spawn(*args: Any, **kwargs: Any) -> Any:
+        child = spawn(*args, **kwargs)
+        request.addfinalizer(lambda: child.close(force=True))
+        return child
+
+    monkeypatch.setattr(pexpect, "spawn", tracked_spawn)
+
+
 def _paths(text: str) -> frozenset[PathKey]:
     """Keep the full registration classification readable as command paths."""
     return frozenset(

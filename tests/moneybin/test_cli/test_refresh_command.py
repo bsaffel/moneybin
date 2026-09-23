@@ -181,6 +181,19 @@ def test_interrupted_refresh_reports_unknown_saved_scope(runner: CliRunner) -> N
     assert "moneybin transform status" in result.stdout
 
 
+def test_refresh_busy_database_reports_recovery(runner: CliRunner) -> None:
+    """A writer lock is surfaced as a classified refresh failure."""
+    from moneybin.database import DatabaseLockError
+
+    with patch("moneybin.database.get_database") as get_db:
+        get_db.return_value.__enter__.side_effect = DatabaseLockError("database busy")
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 1, result.output
+    assert "database busy" in result.output
+    assert "moneybin db ps" in result.output
+
+
 def test_refresh_step_transform_only(runner: CliRunner) -> None:
     """``--step transform`` runs only the transform step."""
     fake_result = RefreshResult(applied=True, duration_seconds=0.5, error=None)

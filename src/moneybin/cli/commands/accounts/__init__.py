@@ -196,7 +196,7 @@ def accounts_get(
     quiet: bool = quiet_option,
     no_pager: bool = no_pager_option,
 ) -> None:
-    """Show one account's full settings + dim record."""
+    """Show one account's identity and lifecycle summary."""
     with handle_cli_errors(cli_actor="accounts_get", payload_type=AccountDetail):
         with get_database(read_only=True) as db:
             record = AccountService(db).get_account(account_id)
@@ -508,10 +508,11 @@ def accounts_resolve(
                     match.display_name or UNNAMED_ACCOUNT_LABEL,
                     match.account_subtype or "-",
                     match.institution_name or "-",
-                    f"{match.confidence:.3f}",
+                    Decimal(str(match.confidence)).quantize(Decimal("0.001")),
                 )
                 for match in payload.matches
             ],
+            numeric=("confidence",),
             terminal=policy,
         ),
         policy=policy,

@@ -28,7 +28,7 @@ app.add_typer(links.app, name="links")
 @app.command("list")
 def merchants_list(
     output: OutputFormat = output_option,
-    quiet: bool = quiet_option,  # list emits result rows only
+    quiet: bool = quiet_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """List all merchant mappings."""
@@ -51,12 +51,19 @@ def merchants_list(
     if payload.merchants:
         parts.append(
             build_rows(
-                ["merchant id", "canonical name", "pattern", "category"],
+                [
+                    "merchant id",
+                    "canonical name",
+                    "pattern",
+                    "category id",
+                    "category",
+                ],
                 [
                     (
                         row.merchant_id,
                         row.canonical_name,
                         row.raw_pattern or "-",
+                        row.category_id or "-",
                         " / ".join(
                             part for part in (row.category, row.subcategory) if part
                         )
@@ -71,7 +78,7 @@ def merchants_list(
         parts.append(build_summary([("Result", "No merchant mappings found.")]))
     disclosures = (
         ()
-        if payload.merchants
+        if payload.merchants or quiet
         else ("Next: moneybin transactions categorize run --methods merchants",)
     )
     emit_human_result(

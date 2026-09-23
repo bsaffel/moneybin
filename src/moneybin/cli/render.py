@@ -767,7 +767,10 @@ def compose_human_result(
 
 
 def render_summary(
-    pairs: Sequence[tuple[str, str]], *, title: str | None = None
+    pairs: Sequence[tuple[str, str]],
+    *,
+    title: str | None = None,
+    terminal: TerminalPolicy | None = None,
 ) -> None:
     """Render labelled scalars to stdout as aligned pairs (requirement 3).
 
@@ -780,7 +783,19 @@ def render_summary(
     """
     from rich.console import Console
 
-    Console(markup=False, highlight=False).print(build_summary(pairs, title=title))
+    if terminal is None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
+
+    Console(
+        markup=False,
+        highlight=False,
+        no_color=not terminal.style,
+        width=terminal.width,
+        force_terminal=terminal.style,
+        color_system="standard" if terminal.style else None,
+    ).print(build_summary(pairs, title=title))
 
 
 def render_note(message: str, *, quiet: bool = False, warn: bool = False) -> None:

@@ -135,7 +135,9 @@ class TestDBInit:
         result = run_cli("db", "init", "--yes", env=env)
         result.assert_success()
 
-    def test_db_init_passphrase(self, tmp_path: Path) -> None:
+    def test_db_init_passphrase(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
         db_path = tmp_path / "passphrase-e2e.duckdb"
         program = """
 import os
@@ -195,7 +197,9 @@ with patch("moneybin.config.get_settings", return_value=settings), patch(
     assert row == ("hello",)
 print("roundtrip sentinel: hello")
 """
-        process = spawn_python_pty(program, env={"MONEYBIN_TEST_DB_PATH": str(db_path)})
+        process = spawn_python_pty(
+            program, request=request, env={"MONEYBIN_TEST_DB_PATH": str(db_path)}
+        )
         process.child.expect("Enter passphrase")
         process.child.sendline(TEST_PASSPHRASE)
         process.child.expect("Confirm passphrase")

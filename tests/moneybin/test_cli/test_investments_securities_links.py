@@ -7,8 +7,10 @@ the service layer and test argument parsing, exit codes, and output shape.
 from __future__ import annotations
 
 import json
+import logging
 from unittest.mock import MagicMock, patch
 
+import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.investments.security_links import app
@@ -198,6 +200,31 @@ class TestSecurityLinksPending:
         assert result.exit_code == 0
         assert "--no-pager" in result.stdout
 
+    @patch("moneybin.cli.commands.investments.security_links.get_database")
+    @patch("moneybin.services.security_links_service.SecurityLinksService.pending")
+    @patch(
+        "moneybin.services.security_links_service.SecurityLinksService.count_pending"
+    )
+    def test_pending_quiet_keeps_decision_data_but_drops_routine_next_hint(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Quiet retains the review evidence while suppressing a next step."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group(decision_id="dec_quiet")]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "dec_quiet" in result.stdout
+        assert (
+            "Next: decide with moneybin investments securities links set"
+            not in result.stdout
+        )
+
 
 # ---------------------------------------------------------------------------
 # links set
@@ -329,6 +356,27 @@ class TestSecurityLinksSet:
             app, ["set", "dec001", "--reject", "--into", "sec001aabbcc"]
         )
         assert result.exit_code == 2
+
+    @pytest.mark.parametrize(
+        ("args", "message"),
+        [
+            (["--accept", "--reject", "--into", "sec001aabbcc"], "mutually exclusive"),
+            ([], "Specify either --accept or --reject"),
+            (["--reject", "--into", "sec001aabbcc"], "only valid with --accept"),
+            (["--accept"], "--accept requires --into"),
+        ],
+    )
+    def test_set_usage_errors_use_the_standard_failure_marker(
+        self, args: list[str], message: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Every mutually-exclusive usage failure gets the CLI error presentation."""
+        with caplog.at_level(logging.ERROR):
+            result = runner.invoke(app, ["set", "dec001", *args])
+
+        assert result.exit_code == 2, result.output
+        errors = [record.getMessage() for record in caplog.records]
+        assert any(message in error for error in errors), errors
+        assert any(error.startswith(("×", "X")) for error in errors), errors
 
     @patch("moneybin.cli.commands.investments.security_links.get_database")
     @patch("moneybin.services.security_links_service.SecurityLinksService.accept")

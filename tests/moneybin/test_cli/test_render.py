@@ -1284,6 +1284,32 @@ def test_render_summary_aligns_values_under_each_other(
     assert lines[0].index("1.00") == lines[1].index("2.00")
 
 
+def test_render_summary_honors_the_supplied_terminal_width(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A summary uses the same width policy as tables and receipts."""
+    from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+    terminal = TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=12,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+    render_summary([("Long label", "value")], terminal=terminal)
+
+    assert capsys.readouterr().out.splitlines() == ["Long label: ", "value"]
+
+
 def test_build_summary_styles_the_heading_and_labels_but_not_external_values() -> None:
     """Receipt hierarchy must survive shared-summary composition.
 

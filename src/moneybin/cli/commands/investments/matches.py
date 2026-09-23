@@ -24,6 +24,7 @@ def _inspect(
     status: str,
     output: OutputFormat,
     *,
+    quiet: bool,
     wide: bool,
     no_pager: bool,
 ) -> None:
@@ -57,8 +58,12 @@ def _inspect(
                         )
                     ],
                     disclosures=(
-                        "Run 'moneybin investments matches run' to prepare "
-                        "investment Proposals.",
+                        ()
+                        if quiet
+                        else (
+                            "Run 'moneybin investments matches run' to prepare "
+                            "investment Proposals.",
+                        )
                     ),
                 ),
                 policy=policy,
@@ -184,7 +189,7 @@ def investments_matches_pending(
     no_pager: bool = no_pager_option,
 ) -> None:
     """Inspect pending Proposals with their issued review evidence."""
-    _inspect("pending", output, wide=wide, no_pager=no_pager)
+    _inspect("pending", output, quiet=quiet, wide=wide, no_pager=no_pager)
 
 
 @app.command("history")
@@ -195,7 +200,7 @@ def investments_matches_history(
     no_pager: bool = no_pager_option,
 ) -> None:
     """Inspect historical Proposal evidence without rerunning matching."""
-    _inspect("history", output, wide=wide, no_pager=no_pager)
+    _inspect("history", output, quiet=quiet, wide=wide, no_pager=no_pager)
 
 
 @app.command("run")

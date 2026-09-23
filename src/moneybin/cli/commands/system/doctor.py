@@ -141,13 +141,8 @@ def doctor_command(
         lines.append(line)
         if result.status != "pass" and result.affected_ids:
             lines.append(f"   Affected: {', '.join(result.affected_ids)}")
-        # Recovery actions carry no --verbose gate. This is asymmetric with
-        # affected_ids on purpose: raw IDs are debug-only (operator inspecting
-        # the failure), but the actions are the agent's next-step contract —
-        # they need to be visible on a plain `moneybin system doctor` call too,
-        # since the CLI is a first-class agent surface (AGENTS.md). The 5-action
-        # cap below keeps that output bounded when one invariant flags many
-        # orphans.
+        # Affected IDs and recovery actions remain visible for non-pass checks;
+        # the five-action cap bounds guidance for checks with many affected rows.
         #
         # They are the one thing `-q` does silence, which is the same line
         # `echo_report_notes` draws: quiet reaches next-step hints and nothing

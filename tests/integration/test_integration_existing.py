@@ -62,6 +62,7 @@ class TestPassphraseRoundTrip:
     def test_passphrase_init_lock_unlock_preserves_data(
         self,
         tmp_path: Path,
+        request: pytest.FixtureRequest,
     ) -> None:
         """Data survives a lock/unlock cycle via passphrase derivation."""
         db_path = tmp_path / "pp_test.duckdb"
@@ -123,7 +124,9 @@ with patch("moneybin.config.get_settings", return_value=settings), patch(
     assert row == ("hello",)
 print("roundtrip sentinel: hello")
 """
-        process = spawn_python_pty(program, env={"MONEYBIN_TEST_DB_PATH": str(db_path)})
+        process = spawn_python_pty(
+            program, request=request, env={"MONEYBIN_TEST_DB_PATH": str(db_path)}
+        )
         process.child.expect("Enter passphrase")
         process.child.sendline("testpass123")
         process.child.expect("Confirm passphrase")

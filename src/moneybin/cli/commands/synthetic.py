@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import random
 from dataclasses import dataclass
 from datetime import date
@@ -18,6 +19,8 @@ from moneybin.errors import UserError
 
 if TYPE_CHECKING:
     from moneybin.database import Database
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Generate and manage synthetic financial data for testing",
@@ -223,7 +226,10 @@ def _run_generate(
                         try:
                             ImportService(db).run_transforms()
                             transforms = "Completed"
-                        except Exception:
+                        except Exception as exc:
+                            logger.info(
+                                f"Report materialization failed ({type(exc).__name__})"
+                            )
                             transforms = "Failed after raw data was saved"
                             transform_failed = True
 

@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from click.testing import Result
 from pytest_mock import MockerFixture
 from typer.testing import CliRunner
 
@@ -143,6 +144,28 @@ def test_inbox_drain_failure_exits_nonzero_but_keeps_failure_facts(
     assert "transform_error" in result.stdout
     assert "Imported" in result.stdout
     assert "Failed" in result.stdout
+
+
+@pytest.mark.parametrize("transforms_error", ["refresh failed", ""])
+def test_inbox_drain_quiet_preserves_its_receipt_and_transform_recovery(
+    runner: CliRunner, patch_inbox: MagicMock, transforms_error: str
+) -> None:
+    """The drain has no routine chatter; quiet preserves results and recovery facts."""
+    results: list[Result] = []
+    for args in (["import", "inbox"], ["import", "inbox", "--quiet"]):
+        patch_inbox.sync.return_value = InboxSyncResult(
+            processed=[{"filename": "march.csv", "transactions": 47}],
+            failed=[],
+            transforms_error=transforms_error,
+        )
+        results.append(runner.invoke(app, args))
+
+    normal, quiet = results
+    assert normal.exit_code == quiet.exit_code == 1
+    assert quiet.stdout == normal.stdout
+    assert "march.csv" in quiet.stdout
+    assert "Derived data may be stale" in quiet.stdout
+    assert "moneybin transform plan" in quiet.stdout
 
 
 def test_inbox_drain_renders_pending_files(

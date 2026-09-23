@@ -1567,6 +1567,29 @@ def test_explain_echoes_the_drift_reason_and_keeps_it_out_of_the_log() -> None:
     assert not any("amazon_spend" in message for message in logged)
 
 
+def test_explain_marks_graduation_blockers_and_drift_as_attention() -> None:
+    """Trust warnings need the same visible marker as report result disclosures."""
+    explanation = _explanation(
+        graduation_blockers=("joins are not portable",),
+        drift_detected=True,
+        drift_reason="stale_classification: spend moved upward",
+    )
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch("moneybin.cli.report_params.coerce_report_parameters", return_value={}),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(app, ["reports", "explain", "my_accounts"])
+
+    assert result.exit_code == 0, result.output
+    assert "! joins are not portable" in _flatten(result.output)
+    assert "! stale_classification: spend moved upward" in _flatten(result.output)
+
+
 def test_explain_json_carries_the_provenance_and_freshness() -> None:
     explanation = _explanation(drift_detected=True, drift_reason="stale_classification")
     with (

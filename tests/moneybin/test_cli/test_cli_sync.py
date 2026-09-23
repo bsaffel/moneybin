@@ -579,6 +579,62 @@ def test_sync_link_no_pull(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_auto_pull_exception_receipt_exits_nonzero(
+    mock_build: MagicMock,
+) -> None:
+    """A connected institution with a failed default follow-up is incomplete."""
+    service = MagicMock()
+    service.list_connections.return_value = []
+    service.link.return_value = LinkResult(
+        provider_item_id="item_new",
+        institution_name="Chase",
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 1, result.output
+    assert "Link partially completed" in result.stdout
+    assert "Connected; auto-pull failed" in result.stdout
+    assert "moneybin sync pull" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_pull_busy_database_reports_recovery(mock_build: MagicMock) -> None:
+    """A writer lock is a classified, actionable sync-pull failure."""
+    from moneybin.database import DatabaseLockError
+
+    service = MagicMock()
+    service.pull.side_effect = DatabaseLockError("database busy")
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "pull"])
+
+    assert result.exit_code == 1, result.output
+    assert "database busy" in result.output
+    assert "moneybin db ps" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_link_busy_database_reports_recovery(mock_build: MagicMock) -> None:
+    """A writer lock before linking is classified instead of leaking a traceback."""
+    from moneybin.database import DatabaseLockError
+
+    service = MagicMock()
+    service.list_connections.side_effect = DatabaseLockError("database busy")
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(app, ["sync", "link"])
+
+    assert result.exit_code == 1, result.output
+    assert "database busy" in result.output
+    assert "moneybin db ps" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_link_explicit_institution(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.link.return_value = LinkResult(

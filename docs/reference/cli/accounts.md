@@ -13,7 +13,7 @@ Usage: `moneybin accounts [OPTIONS] COMMAND [ARGS]...`
 |---|---|
 | [`moneybin accounts list`](#moneybin-accounts-list) | List accounts. |
 | [`moneybin accounts summary`](#moneybin-accounts-summary) | Summarize account counts, lifecycle state, and recent activity. |
-| [`moneybin accounts get`](#moneybin-accounts-get) | Show one account's full settings + dim record. |
+| [`moneybin accounts get`](#moneybin-accounts-get) | Show one account's identity and lifecycle summary. |
 | [`moneybin accounts set`](#moneybin-accounts-set) | Update account settings (structural + behavioral fields). |
 | [`moneybin accounts resolve`](#moneybin-accounts-resolve) | Resolve a free-text account reference to ranked account_id candidates. |
 | [`moneybin accounts balance`](#moneybin-accounts-balance) | Balance assertions, history, and reconciliation |
@@ -51,7 +51,7 @@ Usage: `moneybin accounts summary [OPTIONS]`
 
 ## moneybin accounts get
 
-Show one account's full settings + dim record.
+Show one account's identity and lifecycle summary.
 
 Usage: `moneybin accounts get [OPTIONS] ACCOUNT_ID`
 

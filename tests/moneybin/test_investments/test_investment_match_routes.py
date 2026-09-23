@@ -346,12 +346,12 @@ def test_cli_review_stdout_preserves_proposal_and_choice_context(
 
 
 @pytest.mark.parametrize("command", ["pending", "history"])
-def test_cli_review_empty_scope_stays_visible_under_quiet(
+def test_cli_review_empty_scope_stays_visible_without_its_routine_hint_under_quiet(
     comparison_db: Database,
     monkeypatch: pytest.MonkeyPatch,
     command: str,
 ) -> None:
-    """Quiet suppresses chatter, never a finite read's empty scope or next step."""
+    """Quiet keeps the requested empty result while dropping the next-step hint."""
 
     @contextmanager
     def database_context(
@@ -369,7 +369,7 @@ def test_cli_review_empty_scope_stays_visible_under_quiet(
     assert result.exit_code == 0, result.output
     expected_scope = "pending" if command == "pending" else "historical"
     assert f"No {expected_scope} investment Proposals." in result.stdout
-    assert "moneybin investments matches" in result.stdout
+    assert "moneybin investments matches run" not in result.stdout
 
 
 def test_cli_pending_pages_one_complete_answer_and_no_pager_prints_it(

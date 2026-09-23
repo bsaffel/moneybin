@@ -2568,8 +2568,9 @@ def import_confirm_command(
             render_or_json(
                 envelope, OutputFormat.JSON, cli_actor="import_confirm_command"
             )
-            # JSON preserves its established envelope and exit behavior;
-            # explicit text reaches the receipt branch below even when redirected.
+            # JSON confirm is a proposal/confirmation loop: exit 0 delivers the
+            # next action. Unlike import files, it has not promised ingestion.
+            # Keep this asymmetry; explicit text uses the refusal receipt below.
             return
         # Interactive path: human-readable summary + exit code 1.
         _confirm_receipt(

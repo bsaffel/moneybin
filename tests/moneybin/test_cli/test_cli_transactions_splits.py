@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Generator
 from decimal import Decimal
 from pathlib import Path
@@ -14,6 +15,7 @@ from typer.testing import CliRunner
 from moneybin import error_codes
 from moneybin.cli import utils as cli_utils
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.database import Database
 from moneybin.services.transaction_service import TransactionService
 from tests.moneybin.test_cli._curation_helpers import make_curation_db, patch_db
@@ -39,6 +41,23 @@ def _set_terminal_streams(
             stdout=_Stream(stdout_tty),
             stderr=_Stream(True),
         ),
+    )
+
+
+def _colored_terminal() -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=True,
+        style=True,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
     )
 
 
@@ -84,6 +103,22 @@ def test_splits_add_unbalanced_warns(runner: CliRunner, db: Database) -> None:
     # T1 amount=-100, child=-25 → residual = -100 - (-25) = -75
     body = json.loads(result.stdout)["data"]
     assert Decimal(body["residual"]) == Decimal("-75.00")
+
+
+def test_split_residual_is_neutral_not_an_income_or_expense(
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner, db: Database
+) -> None:
+    """The residual is an allocation difference, not a cash flow."""
+    import moneybin.cli.commands.transactions.splits as splits
+
+    monkeypatch.setattr(splits, "get_terminal_policy", _colored_terminal)
+
+    result = runner.invoke(app, ["transactions", "splits", "add", "T1", "--", "-25"])
+
+    assert result.exit_code == 0, result.output
+    output = result.output
+    assert "-75.00" in output
+    assert re.search(r"\x1b\[3[12]m[^\x1b]*-75\.00", output) is None
 
 
 def test_splits_mutations_emit_scoped_unpaged_receipts(

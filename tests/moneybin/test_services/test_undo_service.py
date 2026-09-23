@@ -778,6 +778,28 @@ class TestMetrics:
         assert action.tool == "system_audit"
         assert action.arguments == {"view": "detail", "operation_id": delete_op}
 
+    def test_confirmation_mismatch_increments_its_outcome(self, db: Database) -> None:
+        """A stale preview is a refused undo, so its outcome cannot disappear."""
+        op = _note_op(db)
+        previewed_ids = tuple(
+            event.audit_id for event in UndoService(db).get(op).events
+        )
+        with operation(op):
+            AuditService(db).record_audit_event(
+                action="note.preview_marker",
+                target=("app", "transaction_notes", None),
+                before=None,
+                after={"reason": "appended after preview"},
+                actor="test",
+            )
+
+        before = self._outcome("confirmation_mismatch")
+        with pytest.raises(UserError) as exc:
+            UndoService(db).undo(op, actor="cli", expected_audit_ids=previewed_ids)
+
+        assert exc.value.code == error_codes.MUTATION_CONFIRMATION_MISMATCH
+        assert self._outcome("confirmation_mismatch") - before == 1.0
+
 
 class TestGet:
     """get() returns full before/after for each row, with undoability flags."""

@@ -209,8 +209,7 @@ def setup_logging(
     # Prepare handlers
     handlers: list[logging.Handler] = []
 
-    # Console handler (always present, writes to stderr). Its filter is
-    # attached below, once we know whether a file handler actually landed.
+    # Console filtering is independent of whether file logging is available.
     console_handler = logging.StreamHandler(sys.stderr)
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
     handlers.append(console_handler)

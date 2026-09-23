@@ -169,7 +169,7 @@ or DEBUG. Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilt
 Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same **records and values** the text branch displays: the same rows, the same amounts, the same masking. It may carry more *fields* — where a text table renders a declared subset of its columns, JSON still carries every one (see `--wide` below). Narrowing is a reading aid for a terminal, never a difference in what the two branches know.
-- `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `-q, --quiet` — suppress informational output (status lines, progress, next-step hints). Result rows are NEVER suppressed by `-q` — they are the data.
 - `--wide` — on a command whose text table renders a declared subset of its columns, restore the full projection. Text-only: `--output json` always carries every column. A command that renders everything by default does not need it.
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
@@ -202,7 +202,7 @@ data through this module and have it silenced.
 
 A command that accepts `-q` must forward it: `render_note` defaults to
 `quiet=False`, so a dropped flag is a flag that silently does nothing. Forward
-it to the chatter only — a next-step hint, a progress line, a `✅`. A statement
+it to the chatter only — a next-step hint or a progress line. A statement
 about how far the numbers can be trusted (truncated, degraded, converted)
 keeps printing under `-q`, because asking for less chatter is not a claim that
 the truncation stopped.
@@ -324,10 +324,7 @@ Combined with `--output json` (see `mcp-architecture.md` §7), this makes every 
 
 ## Terminal symbols and logging
 
-Normal CLI logging shows warnings and errors only; `--verbose` adds routine
-diagnostics. Command results belong to their stdout presenter and progress to
-stderr, so a result must never depend on `logger.info`. This stays true when
-file logging is unavailable. File handlers retain their configured records.
+For console and file logging behavior, see "Keeping the console readable" above.
 
 Use the active `TerminalPolicy` symbols for shared error and progress helpers:
 `OK`/`X`/`>` in ASCII mode and their functional Unicode counterparts otherwise.

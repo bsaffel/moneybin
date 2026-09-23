@@ -22,6 +22,27 @@ from moneybin.cli.commands.db import app
 from moneybin.secrets import SecretNotFoundError, SecretUnavailableError
 
 
+def test_unlock_refuses_redirected_passphrase_before_derivation(
+    mocker: Any,
+    tmp_path: Path,
+) -> None:
+    _make_settings_mock(tmp_path / "test.duckdb", mocker)
+    store = mocker.patch("moneybin.secrets.SecretStore").return_value
+    store.get_key.return_value = "c3ludGhldGljLXNhbHQ="
+    mocker.patch("typer.prompt", side_effect=AssertionError("must not prompt"))
+    mocker.patch(
+        "moneybin.database.derive_key_from_passphrase",
+        side_effect=AssertionError("must not derive a key"),
+    )
+
+    result = CliRunner().invoke(app, ["unlock"], input="synthetic passphrase\n")
+
+    assert result.exit_code == 1, result.output
+    assert "requires an interactive terminal" in result.stderr
+    assert "never reads passphrases from redirected input" in result.stderr
+    store.set_key.assert_not_called()
+
+
 def _make_settings_mock(db_path: Path, mocker: Any) -> MagicMock:
     """Create a mock settings object with a database.path set to db_path."""
     mock_settings = MagicMock()

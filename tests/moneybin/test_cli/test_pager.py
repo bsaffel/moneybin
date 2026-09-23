@@ -130,6 +130,17 @@ def test_page_text_accepts_early_pager_close(
     assert calls == ["communicate", "wait"]
 
 
+def test_page_text_returns_false_when_pager_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def denied(*args: object, **kwargs: object) -> NoReturn:
+        raise PermissionError("pager execution denied")
+
+    monkeypatch.setattr(pager.subprocess, "Popen", denied)
+
+    assert not pager.page_text("complete answer", color=False, wide=False)
+
+
 def test_page_text_returns_false_when_pager_exits_unsuccessfully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

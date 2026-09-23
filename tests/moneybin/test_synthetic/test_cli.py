@@ -166,9 +166,11 @@ class TestGenerateCommand:
         mock_engine: MagicMock,
         mock_writer: MagicMock,
         mock_run_transforms: MagicMock,
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """A requested transform is part of the operation, even after raw writes."""
-        mock_run_transforms.side_effect = RuntimeError("SQLMesh is unavailable")
+        mock_run_transforms.side_effect = RuntimeError("private exception detail")
+        caplog.set_level("INFO", logger="moneybin.cli.commands.synthetic")
 
         result = runner.invoke(app, ["generate", "--persona", "basic", "--seed", "42"])
 
@@ -176,6 +178,8 @@ class TestGenerateCommand:
         assert "Generation partially completed" in result.stdout
         assert "Transactions saved:  100" in result.stdout
         assert "Reports are stale" in result.stdout
+        assert "Report materialization failed (RuntimeError)" in caplog.text
+        assert "private exception detail" not in caplog.text
 
     def test_generate_skip_transform_is_an_intentional_complete_mode(
         self,

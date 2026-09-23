@@ -212,8 +212,11 @@ def test_empty_merchant_history_keeps_a_nonrepeating_next_action(
         "moneybin.services.merchant_links_service.MerchantLinksService.history",
         return_value=[],
     ):
-        result = CliRunner().invoke(app, ["merchants", "links", "history", "--quiet"])
+        normal = CliRunner().invoke(app, ["merchants", "links", "history"])
+        quiet = CliRunner().invoke(app, ["merchants", "links", "history", "--quiet"])
 
-    assert result.exit_code == 0, result.output
-    assert "No merchant-link decisions found" in result.stdout
-    assert "merchants links run" in result.stdout
+    assert normal.exit_code == quiet.exit_code == 0
+    assert "No merchant-link decisions found" in normal.stdout
+    assert normal.stdout.count("merchants links run") == 1
+    assert "No merchant-link decisions found" in quiet.stdout
+    assert "merchants links run" not in quiet.stdout

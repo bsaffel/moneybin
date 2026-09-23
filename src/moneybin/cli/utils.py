@@ -505,7 +505,7 @@ def sqlmesh_command(
                 # handler has no level filter, so a logged hint would persist
                 # to the durable log. Same fix, same reason, kept in sync so
                 # this path doesn't quietly reacquire the retired pattern.
-                typer.echo(user_error.hint, err=True)
+                typer.echo(format_cli_hint(user_error.hint), err=True)
         else:
             logger.error(format_cli_failure(f"{label} failed: {e}"))
         raise typer.Exit(1) from e

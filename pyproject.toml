@@ -88,6 +88,8 @@ dependencies = [
     # (typer._click): the click.Context cli/output.py reads via
     # click.get_current_context() would no longer be typer's.
     "typer>=0.25.1,<0.26",
+    # Imported directly by the terminal renderers and progress display.
+    "rich>=15.0.0",
     # Inline, searchable choice input. Imported only for interactive prompts.
     "prompt_toolkit>=3.0.52",
     # Observability: metrics registry

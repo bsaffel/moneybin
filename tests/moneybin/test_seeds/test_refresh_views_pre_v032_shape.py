@@ -104,6 +104,43 @@ def test_refresh_views_tolerates_pre_v032_shape_without_mutating_tables(
     assert row_count == (7,)
 
 
+def test_refresh_views_projects_category_id_for_current_and_legacy_merchants(
+    db: Database,
+) -> None:
+    """Both startup view variants retain the merchant-category identifier."""
+    db.execute(
+        "INSERT INTO app.user_merchants "
+        "(merchant_id, raw_pattern, match_type, canonical_name, category_id, "
+        "category, created_by) VALUES "
+        "('current-merchant', 'CURRENT', 'exact', 'Current Merchant', "
+        "'current-category', 'Current', 'test')"
+    )
+    refresh_views(db)
+    assert db.execute(
+        "SELECT category_id FROM core.dim_merchants WHERE merchant_id = "
+        "'current-merchant'"
+    ).fetchone() == ("current-category",)
+
+    db.execute("DROP VIEW IF EXISTS app.merchants")
+    db.execute("DROP TABLE app.user_merchants")
+    db.execute(
+        "CREATE TABLE app.merchants ("
+        "merchant_id VARCHAR, raw_pattern VARCHAR, match_type VARCHAR, "
+        "canonical_name VARCHAR, category VARCHAR, subcategory VARCHAR, "
+        "created_by VARCHAR, created_at TIMESTAMP)"
+    )
+    db.execute(
+        "INSERT INTO app.merchants VALUES "
+        "('legacy-merchant', 'LEGACY', 'exact', 'Legacy Merchant', "
+        "'Legacy', NULL, 'test', CURRENT_TIMESTAMP)"
+    )
+    refresh_views(db)
+    assert db.execute(
+        "SELECT category_id FROM core.dim_merchants WHERE merchant_id = "
+        "'legacy-merchant'"
+    ).fetchone() == (None,)
+
+
 def test_bootstrap_shape_matches_frozen_v014(db: Database) -> None:
     """A never-migrated DB's bootstrapped seeds.categories must satisfy V014.
 

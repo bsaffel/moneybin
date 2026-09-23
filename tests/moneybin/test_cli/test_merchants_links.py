@@ -73,6 +73,8 @@ class TestMerchantLinksPending:
 
         result = runner.invoke(app, ["pending"])
         assert result.exit_code == 0
+        assert result.stdout.count("No pending decisions.") == 1
+        assert "Next: moneybin merchants links run" in result.stdout
 
     @patch("moneybin.cli.commands.merchants.links.get_database")
     @patch("moneybin.services.merchant_links_service.MerchantLinksService.pending")
@@ -133,6 +135,50 @@ class TestMerchantLinksPending:
         assert len(groups[0]["candidates"]) == 1
         assert groups[0]["candidates"][0]["decision_id"] == "dec_j"
         assert "n_pending" in parsed["data"]
+
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.pending")
+    @patch(
+        "moneybin.services.merchant_links_service.MerchantLinksService.count_pending"
+    )
+    def test_pending_quiet_keeps_decision_data_but_drops_routine_next_hint(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """Quiet must not erase the queue, only the instruction after it."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = [_make_pending_group(decision_id="dec_quiet")]
+        mock_count.return_value = 1
+
+        result = runner.invoke(app, ["pending", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "dec_quiet" in result.stdout
+        assert "Next: moneybin merchants links set" not in result.stdout
+
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.pending")
+    @patch(
+        "moneybin.services.merchant_links_service.MerchantLinksService.count_pending"
+    )
+    def test_pending_quiet_keeps_empty_result_but_drops_routine_next_hint(
+        self,
+        mock_count: MagicMock,
+        mock_pending: MagicMock,
+        mock_get_db: MagicMock,
+    ) -> None:
+        """An empty queue is the requested result, even when its hint is quieted."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_pending.return_value = []
+        mock_count.return_value = 0
+
+        result = runner.invoke(app, ["pending", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "No pending decisions." in result.stdout
+        assert "Next: moneybin merchants links run" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +311,21 @@ class TestMerchantLinksHistory:
 
         runner.invoke(app, ["history", "--limit", "10"])
         mock_history.assert_called_once_with(limit=10)
+
+    @patch("moneybin.cli.commands.merchants.links.get_database")
+    @patch("moneybin.services.merchant_links_service.MerchantLinksService.history")
+    def test_history_quiet_keeps_empty_result_but_drops_routine_next_hint(
+        self, mock_history: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """An empty history is data; its suggestion to harvest is chatter."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_history.return_value = []
+
+        result = runner.invoke(app, ["history", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert "No merchant-link decisions found." in result.stdout
+        assert "Next: moneybin merchants links run" not in result.stdout
 
 
 # ---------------------------------------------------------------------------

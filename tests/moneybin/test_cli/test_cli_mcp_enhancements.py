@@ -891,6 +891,9 @@ class TestMCPInstallSnippetHardening:
             assert "mcpServers" in json.loads(result.stdout)
         assert "Install into" in result.stderr
         assert "cancelled" in result.stderr.lower()
+        diagnostic = " ".join(result.stderr.split())
+        assert "OK Installation cancelled" not in diagnostic
+        assert "✓ Installation cancelled" not in diagnostic
 
     def test_old_config_generate_command_removed(self) -> None:
         """The old `mcp config generate` command no longer exists."""

@@ -30,7 +30,12 @@ from moneybin.cli.output import (
     quiet_option,
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
-from moneybin.cli.utils import confidence_cell, get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    confidence_cell,
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     SecurityLinksHistoryPayload,
@@ -126,7 +131,7 @@ def links_pending(
                     "Next: decide with moneybin investments securities links set "
                     "<decision-id> --accept --into <candidate-security-id>."
                 ]
-                if groups
+                if groups and not quiet
                 else []
             ),
         ),
@@ -197,16 +202,18 @@ def links_set(
       moneybin investments securities links set dec001 --reject
     """
     if accept and reject:
-        logger.error("--accept and --reject are mutually exclusive")
+        logger.error(format_cli_failure("--accept and --reject are mutually exclusive"))
         raise typer.Exit(2)
     if not accept and not reject:
-        logger.error("Specify either --accept or --reject")
+        logger.error(format_cli_failure("Specify either --accept or --reject"))
         raise typer.Exit(2)
     if reject and into is not None:
-        logger.error("--into is only valid with --accept")
+        logger.error(format_cli_failure("--into is only valid with --accept"))
         raise typer.Exit(2)
     if accept and not into:
-        logger.error("--accept requires --into <candidate_security_id>")
+        logger.error(
+            format_cli_failure("--accept requires --into <candidate_security_id>")
+        )
         raise typer.Exit(2)
 
     with handle_cli_errors():

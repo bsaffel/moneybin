@@ -232,9 +232,9 @@ def demo_command(
         else:
             _render_demo_receipt(result, quiet=quiet)
 
-            # A demo that boots dirty is a real signal, not a warning to swallow.
-            if result.doctor_failing > 0:
-                raise typer.Exit(1)
+        # A demo that boots dirty is a real signal, not a warning to swallow.
+        if result.doctor_failing > 0:
+            raise typer.Exit(1)
     finally:
         if original_profile is None:
             clear_current_profile()

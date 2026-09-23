@@ -190,6 +190,21 @@ def test_default_symbols_preserve_the_human_terminal_vocabulary(
     assert policy.minus == "−"
 
 
+@pytest.mark.parametrize("encoding", ["ascii", "latin-1", "cp1252"])
+def test_non_unicode_stdout_automatically_uses_ascii_symbols(
+    streams: dict[str, _Stream], settings: CLISettings, encoding: str
+) -> None:
+    streams["stdout"].encoding = encoding
+
+    policy = _resolve(streams, settings)
+
+    assert policy.ascii
+    assert policy.symbols.success == "OK"
+    assert policy.symbols.failure == "X"
+    assert policy.symbols.action == ">"
+    assert policy.minus == "-"
+
+
 def test_money_formatter_keeps_the_value_when_using_the_ascii_minus(
     streams: dict[str, _Stream], settings: CLISettings
 ) -> None:
