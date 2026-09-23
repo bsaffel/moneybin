@@ -156,12 +156,13 @@ class ConfirmationRequired:
     `account_proposals`.
 
     `reason='header_row_consumed'` narrows `unknown_layout` to the one cause
-    no caller input can answer: the first row was read as column names but
-    parses as a transaction, so a real record is already gone. It exists
-    because `resolve_or_confirm` honours an `Override` at every tier by
-    design — the caller's column correction outranks a low score — and that
-    is right for a mapping problem and wrong for this one, which no column
-    correction touches. Surfaces route it to source repair, not a retry.
+    no caller input can answer: the row read as column names parses as a
+    transaction, so a real record is already gone. It exists because
+    `resolve_or_confirm` honours an `Override` at every tier by design — the
+    caller's column correction outranks a low score — and that is right for a
+    mapping problem and wrong for this one, which no column correction
+    touches. Surfaces route it to re-detecting the layout against this file,
+    never to a column retry.
 
     `reason='header_position_ambiguous'` is `header_row_consumed`'s
     dismissible sibling: auto-detection picked a header-like row that has a
@@ -224,6 +225,22 @@ class ConfirmationRequired:
     # Position-aligned with header_position_ambiguous_rows; required to
     # resolve a disputed cell's column identity in disputed_row_fields().
     header_position_ambiguous_header_cells: tuple[str, ...] = ()
+    # The options a retry must repeat, as the READ that failed actually
+    # resolved them — not as the caller spelled them. Populated only for
+    # reason='header_row_consumed', whose sole recovery is to re-run without
+    # the named format: a format carries a sheet, a delimiter, an encoding, a
+    # date format and a number format alongside the skip_rows being escaped,
+    # and dropping --format drops all six together. An unset sheet makes the
+    # reader auto-select the largest worksheet, so a workbook whose largest
+    # sheet has compatible headers imports the WRONG sheet, silently and with
+    # no error to notice. A dropped number format is the same failure shape
+    # one field over: the retry re-reads under auto-detection instead of the
+    # format's declared convention, which can silently reinterpret decimal
+    # separators. Carried from the service rather than re-derived by each
+    # surface because that re-derivation is the drift resolve_read_settings
+    # exists to end. Absent from confirmation_payload_dict, like
+    # ratified_bindings above.
+    retry_read_options: TabularReadOptions | None = None
 
 
 # The only destination fields a disputed row may ever show — exactly the
@@ -555,38 +572,128 @@ def classify_unconfirmable_plan(
     return "unknown_layout"
 
 
-def header_row_consumed_recovery() -> str:
+def header_row_consumed_recovery(
+    file_path: str,
+    *,
+    format_name: str | None,
+    read_options: TabularReadOptions | None = None,
+    retry_command: str = "import files",
+) -> str:
     """The consumed-header recovery, for the CLI and the inbox sidecar.
 
-    Identical substance to the MCP wording below and deliberately adjacent to
-    it: there is no command to offer on either surface, because MoneyBin
-    exposes no skip-rows override. Only the closing sentence differs, since a
-    CLI reader re-runs a command rather than re-previewing through a tool.
+    The guard this answers (``header_row_looks_like_data`` in ``readers.py``)
+    is computed only when the caller passed an explicit ``skip_rows`` — auto-
+    detection has its own safety net and never selects a data-looking row as
+    the header. The only source of an explicit, non-zero ``skip_rows`` is a
+    saved format's own field, and nothing in the product currently writes
+    one: the single production ``TabularFormat(...)`` construction
+    (``import_service.py``'s auto-save) omits the field, so it takes the
+    model default of 0; ``resolve_read_settings`` treats a matched format's
+    ``skip_rows`` of 0 as "no opinion" and lets detection run regardless;
+    there is no ``formats create``/``edit`` surface that could set one; and
+    every built-in YAML omits the key (see
+    ``test_no_builtin_format_sets_skip_rows``). So this text is unreachable
+    today — the guard is defense-in-depth for a future surface that lets a
+    caller pin a header position — and that is why it names the condition
+    the guard actually tests (the layout being applied puts the header on a
+    row this file uses for data) rather than a numeric cause — a
+    ``skip_rows`` too large for this file — it has no way to know.
+
+    ``read_options`` is what makes the printed retry carry the same read
+    *options* as the read it replaces, minus ``--format`` — not an identical
+    read: ``TabularReadOptions`` has no field for a format's
+    ``skip_trailing_patterns``, so that one setting cannot survive the drop
+    and the retry may trim (or keep) trailing rows differently than the
+    failed read did. Dropping ``--format`` is the whole recovery, but a
+    format carries more than the ``skip_rows`` being escaped: its sheet,
+    delimiter and encoding go with it. The sheet is the one that fails
+    silently — unset, the reader auto-selects the largest worksheet, so a
+    workbook whose largest sheet happens to carry compatible headers imports
+    that sheet instead, with no error and nothing in the output saying a
+    different sheet was read. So the caller passes the settings the failed
+    read actually resolved, and they are respelled here as explicit flags.
+    ``format_name`` is expected to be absent from them; it is the one option
+    a retry must not repeat.
+
+    The delete command carries ``--yes`` rather than naming it alongside.
+    This text is emitted into ``confirm_actions``, which reaches an agent or a
+    script as a JSON actions list, and ``formats delete`` gates on a
+    ``typer.confirm`` — so a command printed without the flag is an action a
+    machine cannot execute, which is what ``cli.md``'s Non-Interactive Parity
+    rule exists to prevent. The parenthetical gives a human at a terminal the
+    off-ramp back to the prompt. Embedding it is safe *here* specifically:
+    MoneyBin supplies the name, and it names the format it has just refused as
+    unusable — so neither thing the confirm guards against (a mistyped name, an
+    unrecognized destructive verb) is live on this path. That reasoning does
+    not generalize to a delete the user chose themselves.
+
+    ``retry_command`` names the subcommand the printed retry invokes —
+    ``import files`` (the default) when this text answers a load-time
+    confirmation, or ``import preview`` when ``import preview`` itself is
+    what read a transaction as the header. Both name the identical fix
+    (re-run without --format); only the verb differs, and a caller already
+    inspecting via preview should be told to preview again, not to load.
     """
+    import shlex
+    from dataclasses import replace
+
+    quoted_file = shlex.quote(file_path)
+    # Belt and braces: the caller builds these with format_name already
+    # dropped, but a retry that re-names the format is the one command this
+    # text must never print — it reproduces the failure it is answering.
+    retry_args = replace(read_options or TabularReadOptions(), format_name=None)
+    read_args_str = retry_args.cli_fragment()
+    if format_name is not None:
+        removal = (
+            "run `moneybin import formats delete "
+            f"{shlex.quote(format_name)} --yes` (drop --yes to be asked first)"
+        )
+        return (
+            "A real transaction was consumed as this file's header row: the "
+            "row read as column names parses as a date and an amount. No "
+            "--mapping or --override correction recovers it. This file does "
+            f"not match the layout saved as {format_name} — that format puts "
+            "the header on a row this file uses for data. Re-run `moneybin "
+            f"{retry_command} {quoted_file}{read_args_str}` — the same read "
+            "options minus --format, so the layout is detected fresh from "
+            f"this file. If {format_name} no longer describes this export, "
+            f"remove it: {removal}."
+        )
+    removal = (
+        "`moneybin import formats list` shows saved formats; remove the "
+        "stale one with `moneybin import formats delete` and its name, "
+        "plus `--yes` (drop --yes to be asked first)"
+    )
     return (
-        "This file's first row was read as column names, but it parses as a "
-        "transaction — a real record was consumed as the header. No --mapping "
-        "or --override correction can recover it, and MoneyBin exposes no "
-        "skip-rows override. Add a header row to the source file, or correct "
-        "the saved format's skip_rows, then import it again."
+        "A real transaction was consumed as this file's header row: the row "
+        "read as column names parses as a date and an amount. No --mapping "
+        "or --override correction recovers it. The header position applied "
+        "to this read lands on a row this file uses for data. Re-run "
+        f"`moneybin {retry_command} {quoted_file}{read_args_str}` — the same "
+        "read options minus --format, so the layout is detected fresh from "
+        f"this file. If a saved format supplied that layout, {removal}."
     )
 
 
 def header_row_consumed_recovery_mcp() -> str:
     """The only honest recovery when a transaction was read as the header.
 
-    Takes no file path because there is no command to run: MoneyBin exposes
-    no skip-rows override (`skip_rows` is only ever written from detection),
-    so every mapping retry restages the same unconfirmable plan. Shared by
-    the preview- and confirm-side action builders — keeping one text per
-    state is what stops the two from drifting, which they did for three
-    consecutive review rounds.
+    Unreachable today: no tabular MCP tool names a format, and a persisted
+    preview never carries an explicit ``skip_rows`` — the guard this answers
+    is defense-in-depth for a future surface that lets a caller pin a header
+    position (see ``header_row_consumed_recovery``'s docstring for the full
+    reachability story). Mirrors the CLI recovery for the shared classifier.
+    Shared by the preview- and confirm-side action builders — one text per
+    state, which stopped the two from drifting.
     """
     return (
-        "This file's first row was read as column names, but it parses as a "
-        "transaction — a real record was consumed as the header. No column "
-        "correction can recover it, and MoneyBin exposes no skip-rows "
-        "override. Add a header row to the source file and preview it again."
+        "A real transaction was consumed as this file's header row: the row "
+        "read as column names parses as a date and an amount. No column "
+        "correction recovers it. The file does not match the layout being "
+        "applied — it puts the header on a row this file uses for data. "
+        "Import the file again without naming a saved format so the layout "
+        "is detected fresh, or remove that format with import_revert("
+        "operation='delete_saved_format', format_name=<name>)."
     )
 
 
@@ -597,12 +704,13 @@ def header_position_ambiguous_recovery(
 ) -> str:
     """The dismissible recovery for an ambiguous auto-detected header, CLI.
 
-    UNLIKE `header_row_consumed_recovery`, this names a command that actually
-    resolves the gate: nothing has been consumed yet, so `--confirm` (or
-    `import confirm ... --accept`) ratifies the detected header position and
-    the import proceeds. Names the other honest option too — if the row
-    above the header is a real transaction, not a balance summary, the fix
-    is in the source file, and no flag changes that.
+    UNLIKE `header_row_consumed_recovery`'s recoveries — which work around a
+    row already gone — this one resolves the gate directly: nothing has been
+    consumed yet, so `--confirm` (or `import confirm ... --accept`) ratifies
+    the detected header position and the import proceeds. Names the other
+    honest option too — if the row above the header is a real transaction,
+    not a balance summary, the fix is in the source file, and no flag
+    changes that.
 
     Deliberately row-free: this text can reach the log pipeline
     (`log_to_file` defaults to True), so the disputed row's own content
@@ -629,9 +737,10 @@ def header_position_ambiguous_recovery(
 def header_position_ambiguous_recovery_mcp() -> str:
     """The dismissible recovery for an ambiguous auto-detected header, MCP.
 
-    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`, this
-    one has a command to offer, because confirming the SAME preview ratifies
-    the detected header position rather than restaging an unconfirmable plan.
+    Mirrors the CLI wording; unlike `header_row_consumed_recovery_mcp`'s
+    recoveries — which work around a row already gone — confirming the SAME
+    preview here ratifies the detected header position directly rather than
+    restaging an unconfirmable plan.
     The disputed row's own content lives in `data.header_position_ambiguous_
     rows` rather than inlined here — the same reason `data.sample_
     values` isn't inlined into this text either.

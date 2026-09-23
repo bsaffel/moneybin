@@ -367,17 +367,17 @@ class AnnotationPlan:
 
     @property
     def destructive(self) -> bool:
-        """Return whether any changed item removes or replaces live state."""
+        """Whether any changed item removes or replaces live state."""
         return any(item.destructive for item in self.items if item.changed)
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material annotation changes."""
+        """The number of material annotation changes."""
         return sum(item.changed for item in self.items)
 
     @property
     def resolved_ids(self) -> tuple[str, ...]:
-        """Return exact resolved targets and opaque live-state fingerprints."""
+        """Exact resolved targets and opaque live-state fingerprints."""
         targets = tuple(
             sorted({
                 f"{item.request.kind}:{target_id}"
@@ -1194,7 +1194,7 @@ class TransactionService:
         Validates every entry up front (account exists, amount is non-zero
         ``Decimal``, transaction_date is parseable, description non-empty);
         raises ``ValueError`` with the offending index on the first failure
-        before opening any transaction. Allocates one ``raw.import_log`` row
+        before opening any transaction. Allocates one ``app.import_log`` row
         for the batch via ``ImportService.allocate_import_log`` and inserts
         every row under that ``import_id`` inside a single DuckDB transaction
         alongside one ``manual.create`` audit event.
@@ -1301,7 +1301,7 @@ class TransactionService:
             self._db.commit()
         except Exception:
             # Any failure between allocate_import_log() and the commit leaves
-            # an orphaned ``importing``-status row in raw.import_log that
+            # an orphaned ``importing``-status row in app.import_log that
             # blocks re-imports and shows up in `moneybin import history`.
             # Mirror the OFX path: mark the batch as failed before re-raising.
             self._db.rollback()

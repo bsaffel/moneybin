@@ -227,8 +227,9 @@ IMPORT_REVALIDATION_FAILURE_TOTAL = Counter(
     "Known layout that failed the replay/validation guard and re-surfaced.",
     ("channel",),
 )
-# Wired: ImportService._import_tabular refuses a saved layout whose skip_rows
-# now consumes a transaction as the header row, and records it here. That is
+# Wired: ImportService._import_tabular refuses a saved layout that no longer
+# fits its file — the header position it implies lands on a transaction row —
+# and records it here. That is
 # the first replay check to land; column-presence and header-drift checks on
 # the matched_format path are still trusted without verification, so a rise
 # here means a saved format stopped reading its own file, not that every kind
@@ -539,8 +540,9 @@ CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL = Counter(
 CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     "moneybin_categorize_provider_native_total",
     "Categorizations assigned from a provider's native categorization. "
-    "trigger='sweep' is the automatic apply_plaid_categories pass over "
-    "still-uncategorized rows; trigger='backfill' is the explicit "
+    "trigger='sweep' is the automatic pass over still-uncategorized rows — "
+    "apply_plaid_categories and apply_source_category_map, told apart by the "
+    "source_type label; trigger='backfill' is the explicit "
     "improve_ai_categories upgrade pass over categorized_by='ai' rows.",
     ["source_type", "trigger"],
 )
@@ -845,7 +847,8 @@ app_mutation_audit_emitted_total = Counter(
 audit_undo_total = Counter(
     "moneybin_audit_undo_total",
     "system_audit_undo invocations by outcome (success, not_found, "
-    "already_undone, cascade_blocked, no_path). One increment per undo attempt.",
+    "already_undone, cascade_blocked, no_path, value_inadmissible). One "
+    "increment per undo attempt.",
     ["outcome"],
 )
 

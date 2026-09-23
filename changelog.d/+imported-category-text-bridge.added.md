@@ -1,0 +1,1 @@
+Imported transactions (CSV/Excel/manual) whose source rows carry their own category text can now resolve to a canonical MoneyBin category through a curated provider-code mapping, the same mechanism Plaid categories already use. Existing databases migrate automatically on next open; no action needed.

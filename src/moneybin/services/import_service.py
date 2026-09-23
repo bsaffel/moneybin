@@ -11,12 +11,12 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable, Collection, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast, get_args
 
 import duckdb
 
@@ -100,6 +100,7 @@ from moneybin.services.import_confirmation import (
     ImportConfirmationRequiredError,
     ProposedMapping,
     SignConventionProposal,
+    TabularReadOptions,
 )
 from moneybin.services.ledger_overlap import probe_incoming_ledger_overlap
 from moneybin.services.refresh_outcome import RefreshStepOutcome
@@ -309,7 +310,7 @@ class ImportResult:
     with `sign=` — the card-marker detector is bypassed for that format, so the
     replay is surfaced rather than applied silently."""
     import_id: str | None = None
-    """UUID of the raw.import_log row this import created."""
+    """UUID of the app.import_log row this import created."""
     accounts_created: tuple[CreatedAccount, ...] = ()
     """Canonical accounts this import minted; empty when every account was adopted.
 
@@ -384,7 +385,7 @@ class SavedFormatDeletePlan:
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the one-row destructive impact for confirmation metadata."""
+        """The one-row destructive impact for confirmation metadata."""
         return {"saved_formats": 1}
 
 
@@ -415,17 +416,17 @@ class ImportRevertPlan:
 
     @property
     def revertable(self) -> bool:
-        """Return whether this plan would actually delete or flip anything."""
+        """Whether this plan would actually delete or flip anything."""
         return self.outcome == "revertable"
 
     @property
     def rows_to_delete(self) -> int:
-        """Return the total raw rows this reversion would destroy."""
+        """The total raw rows this reversion would destroy."""
         return sum(count for _, count in self.table_counts)
 
     @property
     def blast_radius(self) -> dict[str, int]:
-        """Return the per-table destructive impact for confirmation metadata."""
+        """The per-table destructive impact for confirmation metadata."""
         radius = dict(self.table_counts)
         radius["total_rows"] = self.rows_to_delete
         if self.security_link_ids:
@@ -1675,7 +1676,7 @@ class ImportService:
         format_name: str,
         actor: str,
     ) -> str:
-        """Allocate a fresh ``raw.import_log`` row and return its ``import_id``.
+        """Allocate a fresh ``app.import_log`` row and return its ``import_id``.
 
         Thin wrapper around :meth:`ImportLogRepo.begin_import` that exposes
         the lifecycle to callers (manual entry, future API connectors) that
@@ -1707,7 +1708,7 @@ class ImportService:
         limit: int = 20,
         import_id: str | None = None,
     ) -> list[dict[str, str | int | None]]:
-        """Read ``raw.import_log`` batch history — thin wrapper for CLI/MCP.
+        """Read ``app.import_log`` batch history — thin wrapper for CLI/MCP.
 
         Backs ``moneybin import history``, the read path for one entity
         (``ImportLogRepo``) whose write path already goes through this
@@ -1726,7 +1727,7 @@ class ImportService:
         after_import_id: str | None = None,
         snapshot_total: int | None = None,
     ) -> ImportHistoryPage:
-        """Read one keyset page of ``raw.import_log`` history.
+        """Read one keyset page of ``app.import_log`` history.
 
         The paged twin of :meth:`get_import_history`, so the cursored MCP
         read reaches the same service boundary as the unpaged one rather
@@ -1887,6 +1888,7 @@ class ImportService:
         from moneybin.extractors.ofx import OFXExtractor
         from moneybin.extractors.ofx.extractor import (
             OFXLoadError,
+            incoming_ofx_transactions,
             ofx_source_accounts,
             parse_ofx_content,
         )
@@ -1984,6 +1986,7 @@ class ImportService:
             ofx_source_accounts(parsed_ofx, source_origin),
             account_bindings,
             channel="ofx",
+            incoming_transactions=incoming_ofx_transactions(parsed_ofx),
         )
 
         # OFX <ACCTID> values are institution-assigned account numbers, not
@@ -2005,7 +2008,7 @@ class ImportService:
         # Extract and write all four raw.ofx_* tables through the encrypted
         # ingest path (OFXExtractor.load(), matching PlaidExtractor's
         # extract+write shape). Wrapped so a failure anywhere inside marks the
-        # batch 'failed' instead of leaving raw.import_log.status='importing'
+        # batch 'failed' instead of leaving app.import_log.status='importing'
         # and blocking re-imports.
         try:
             load_result = OFXExtractor(db=self._db).load(
@@ -2176,7 +2179,8 @@ class ImportService:
         channel: Channel,
         resolved_mapping: dict[str, str] | None = None,
         fallback_keys: Collection[str] = (),
-        incoming_transactions: Sequence[IncomingTransaction] = (),
+        incoming_transactions: Mapping[str, Sequence[IncomingTransaction]]
+        | None = None,
         emit_metrics: bool = True,
         observations: MetricObservations | None = None,
     ) -> list[SourceAccount]:
@@ -2228,6 +2232,16 @@ class ImportService:
         reaches ``resolve()``'s candidate pass any more — the confidence
         histogram it used to feed would read zero for the interactive path.
         ``disposition="rollback"`` because raising is this call's success case.
+
+        ``incoming_transactions`` is keyed by ``source_account_key``, not one
+        flat sequence, so a multi-account file (a tabular export with several
+        accounts, an OFX file with several ``<STMTRS>`` blocks) probes each
+        candidate against only the rows belonging to ITS OWN source account.
+        A single shared sequence would let one account's rows count as
+        overlap evidence for a sibling account merely because both arrived in
+        the same file. A source key with no entry (or an empty tuple) leaves
+        every candidate's ``overlap`` at ``None`` — unmeasured, not a
+        measured zero — same as passing nothing at all.
         """
         source_accounts, binding_targets = _apply_account_bindings(
             source_accounts, bindings or {}
@@ -2249,7 +2263,10 @@ class ImportService:
             proposal = resolver.propose(
                 src, fallback=src.source_account_key in wanted_fallback
             )
-            if incoming_transactions and proposal.candidates:
+            own_transactions = (incoming_transactions or {}).get(
+                src.source_account_key
+            ) or ()
+            if own_transactions and proposal.candidates:
                 proposal = dataclasses.replace(
                     proposal,
                     candidates=tuple(
@@ -2257,7 +2274,7 @@ class ImportService:
                             candidate,
                             overlap=probe_incoming_ledger_overlap(
                                 self._db,
-                                transactions=incoming_transactions,
+                                transactions=own_transactions,
                                 against_account_id=candidate.account_id,
                             ),
                         )
@@ -2561,7 +2578,10 @@ class ImportService:
         from moneybin.extractors.tabular.sign_convention import (
             validate_explicit_sign_shape,
         )
-        from moneybin.extractors.tabular.transforms import transform_dataframe
+        from moneybin.extractors.tabular.transforms import (
+            incoming_tabular_transactions,
+            transform_dataframe,
+        )
         from moneybin.utils import slugify
 
         result = ImportResult(file_path=str(file_path), file_type="tabular")
@@ -2584,7 +2604,7 @@ class ImportService:
             matched_format = all_formats[format_name]
 
         # Stage 1: Format detection — apply matched format's properties as
-        # defaults. `import preview` resolves the same seven values from the
+        # defaults. `import preview` resolves the same eight values from the
         # same helper, which is what keeps a preview's read identical to the
         # import it previews.
         #
@@ -2604,6 +2624,31 @@ class ImportService:
             encoding=encoding,
             sheet=sheet,
             date_format=date_format_override,
+            number_format=number_format_override,
+        )
+
+        # What a `header_row_consumed` retry has to repeat: this read, minus
+        # the format that caused the refusal. Built once, here, because that
+        # reason has four raise sites below — one explicit and three through
+        # classify_unconfirmable_plan — and a retry built at only some of them
+        # is the same silent-wrong-worksheet bug on the paths that were missed.
+        # Drawn from read_settings rather than the caller's flags: a sheet,
+        # delimiter, encoding or number_format the FORMAT supplied appears in
+        # no flag, and dropping --format drops it along with the skip_rows
+        # being escaped. This runs BEFORE the number-format validation further
+        # down, but read_settings.number_format is already safe here: an
+        # invalid raw override was dropped by resolve_read_settings itself
+        # (falling back to the format's own validated value), so nothing
+        # unvalidated is ever echoed onto the printed retry.
+        retry_read_options = TabularReadOptions(
+            format_name=None,
+            date_format=read_settings.date_format,
+            number_format=read_settings.number_format,
+            sheet=read_settings.sheet,
+            delimiter=read_settings.delimiter,
+            encoding=read_settings.encoding,
+            no_row_limit=no_row_limit,
+            no_size_limit=no_size_limit,
         )
 
         if reviewed_plan is None:
@@ -2832,6 +2877,9 @@ class ImportService:
                             field_mapping=reviewed_plan.field_mapping,
                             flagged_fields=list(reviewed_plan.flagged_fields),
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                 )
             # The gate above already refused reviewed_plan.date_format is
@@ -3077,6 +3125,9 @@ class ImportService:
                             flagged_fields=list(mapping_result.flagged_fields),
                             header_position_ambiguous=_unreadable_date_ambiguous_header,
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                         samples=dict(proposed.sample_values),
                         # header_position_ambiguous outranks unreadable_date
                         # in classify_unconfirmable_plan's precedence, so this
@@ -3182,6 +3233,9 @@ class ImportService:
                             if _first_contact_ambiguous_header
                             else ()
                         ),
+                        # Inert unless the classifier above returns
+                        # header_row_consumed; carried on every site that can.
+                        retry_read_options=retry_read_options,
                     )
                     if outcome.reason == "unknown_layout"
                     else outcome
@@ -3396,6 +3450,7 @@ class ImportService:
                     ),
                     reason="header_row_consumed",
                     samples=gate_samples,
+                    retry_read_options=retry_read_options,
                 )
             )
 
@@ -3434,11 +3489,12 @@ class ImportService:
         # Validate at runtime: typing.cast has no runtime effect, so an
         # invalid value like ``--sign=backwards`` would silently propagate
         # into the transform pipeline and surface deep inside SQLMesh,
-        # leaving a dangling raw.import_log row in ``importing`` state.
+        # leaving a dangling app.import_log row in ``importing`` state.
         # Guard explicitly via get_args so the failure is a clean UserError
-        # at the import boundary.
-        from typing import get_args
-
+        # at the import boundary. Imported at module scope rather than here:
+        # a function-local import binds the name for the WHOLE function, so
+        # the header_row_consumed gate above — which reads it earlier — would
+        # raise UnboundLocalError instead of reaching its confirmation.
         if sign and sign not in get_args(SignConventionType):
             raise UserError(
                 f"Invalid sign convention: {sign!r}. "
@@ -3837,7 +3893,10 @@ class ImportService:
 
         # Phase 2 — gate on any account identity the caller hasn't ratified.
         # Raises ImportConfirmationRequiredError (no rows load) and returns the
-        # bound accounts for the resolve pass below.
+        # bound accounts for the resolve pass below. Ledger evidence comes from
+        # the raw mapped frame (Stage 3), one stage before transform_dataframe
+        # (Stage 4) below normalizes it further — the gate needs date/amount now,
+        # not after a confirm it might never reach.
         source_accounts = self._gate_account_proposals(
             resolver,
             source_accounts,
@@ -3845,6 +3904,14 @@ class ImportService:
             channel="tabular",
             resolved_mapping=dict(resolved.field_mapping),
             fallback_keys=fallback_keys,
+            incoming_transactions=incoming_tabular_transactions(
+                df=df,
+                field_mapping=resolved.field_mapping,
+                date_format=final_date_format,
+                sign_convention=resolved.sign_convention,
+                number_format=resolved.number_format,
+                account_ids=account_ids,
+            ),
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -4037,6 +4104,16 @@ class ImportService:
             and rows_imported > 0
         ):
             try:
+                # skip_rows and skip_trailing_patterns are deliberately NOT
+                # persisted here (both take their model default, 0/None): a
+                # saved format describes the column layout, not the header's
+                # position, so every read re-detects that position fresh —
+                # which adapts when a future export of this layout grows one
+                # more preamble line, where a pinned position would instead
+                # consume a transaction as the header. resolve_read_settings
+                # already reads a format's skip_rows of 0 as "no opinion" and
+                # lets detection run, so this is the behavior either way — do
+                # not "fix" this omission without deciding to change that.
                 detected_fmt = TabularFormat(
                     name=source_origin,
                     # Institution is best-effort metadata; the per-account label
@@ -4191,7 +4268,7 @@ class ImportService:
         """Run the Phase 2a routing state machine on a PDF without importing.
 
         Four outcomes — same machinery as ``_import_pdf`` but no side effects
-        on raw tables and no ``raw.import_log`` row:
+        on raw tables and no ``app.import_log`` row:
 
         - Deterministic success (``decision.outcome == "transactions"``):
           returns ``PdfPreviewResult(deterministic=True, ...)`` with the row
@@ -4303,7 +4380,7 @@ class ImportService:
           recipe to ``app.pdf_formats`` (first contact → ``save_new``; audited,
           Invariant 10) unless ``save_format=False``, then load the re-executed
           rows to ``raw.tabular_transactions`` (``source_type='pdf'``) with a
-          reversible ``raw.import_log`` row (Req 17).
+          reversible ``app.import_log`` row (Req 17).
         - **Verify expectation vs actual.** If the agent's row count differs
           from the re-executed count, ``rows_diverged=True`` is surfaced (and
           logged) — the saved recipe does not reproduce the agent's own
@@ -4465,7 +4542,9 @@ class ImportService:
             account_bindings,
             channel="pdf",
             fallback_keys=identity.fallback_keys,
-            incoming_transactions=incoming_pdf_transactions(decision),
+            incoming_transactions={
+                identity.source.source_account_key: incoming_pdf_transactions(decision)
+            },
             emit_metrics=emit_metrics,
             observations=observations,
         )
@@ -5131,7 +5210,11 @@ class ImportService:
                 account_bindings,
                 channel="pdf",
                 fallback_keys=identity.fallback_keys,
-                incoming_transactions=incoming_pdf_transactions(decision),
+                incoming_transactions={
+                    identity.source.source_account_key: incoming_pdf_transactions(
+                        decision
+                    )
+                },
                 emit_metrics=emit_metrics,
                 observations=observations,
             )
@@ -5725,7 +5808,7 @@ class ImportService:
         # can never drift on the naming scheme — see that helper.
         first_contact_format_name = pdf_format_name(fp)
 
-        # Backfill format columns on raw.import_log now that routing has
+        # Backfill format columns on app.import_log now that routing has
         # decided. Tabular knows its format before begin_import; PDFs only
         # know it post-routing, so without this update every PDF import_log
         # entry would carry NULL format_name/format_source and users could
@@ -6413,7 +6496,7 @@ class ImportService:
         binding instead of slipping past it.
 
         Args:
-            import_id: UUID of the import batch in ``raw.import_log``.
+            import_id: UUID of the import batch in ``app.import_log``.
         """
         from moneybin.tables import IMPORT_LOG
 
@@ -6554,15 +6637,7 @@ class ImportService:
                         f"DELETE FROM {table.full_name} WHERE import_id = ?",
                         [import_id],
                     )
-                self._db.execute(
-                    f"""
-                    UPDATE {IMPORT_LOG.full_name} SET
-                        status = 'reverted',
-                        reverted_at = CURRENT_TIMESTAMP
-                    WHERE import_id = ?
-                    """,
-                    [import_id],
-                )
+                self._import_log.mark_reverted(import_id)
                 # After the deletes: the re-key it causes is what the pass reads.
                 forwarding = forward_rekeyed_transaction_ids(
                     self._db, actor=actor, in_outer_txn=True

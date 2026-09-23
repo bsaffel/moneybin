@@ -133,12 +133,12 @@ class IdentityDecisionPlan:
 
     @property
     def changed_count(self) -> int:
-        """Return the number of material decision transitions."""
+        """The number of material decision transitions."""
         return sum(item.changed for item in self.items)
 
     @property
     def destructive(self) -> bool:
-        """Return whether the material batch contains an identity merge accept."""
+        """Whether the material batch contains an identity merge accept."""
         return any(
             item.changed and item.request.decision == "accept" for item in self.items
         )

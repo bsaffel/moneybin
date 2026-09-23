@@ -341,7 +341,7 @@ def test_apply_writes_revertable_import_log(
     result = _apply_bridge(db, _pdf_path(tmp_path), _bridge_response())
 
     log = db.conn.execute(
-        "SELECT status, source_type FROM raw.import_log WHERE import_id = ?",
+        "SELECT status, source_type FROM app.import_log WHERE import_id = ?",
         [result.import_id],
     ).fetchone()
     assert log is not None
@@ -708,7 +708,7 @@ def test_bridge_apply_gates_account_identity_before_begin_import(
         )
         == 0
     )
-    assert _count(db, "SELECT COUNT(*) FROM raw.import_log") == 0
+    assert _count(db, "SELECT COUNT(*) FROM app.import_log") == 0
     assert _count(db, "SELECT COUNT(*) FROM app.account_links") == 0
     assert (
         _count(

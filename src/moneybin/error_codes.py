@@ -139,6 +139,10 @@ REFRESH_UNKNOWN_STEP = "refresh_unknown_step"
 UNDO_ALREADY_UNDONE = "undo_already_undone"
 UNDO_CASCADE_BLOCKED = "undo_cascade_blocked"
 UNDO_OPERATION_NOT_FOUND = "undo_operation_not_found"
+# The captured before-image would restore a value the current write path
+# refuses (e.g. a pre-#517 whitespace-only category). BaseRepo._require_admissible
+# raises this instead of writing the row back verbatim (issue #547).
+UNDO_VALUE_INADMISSIBLE = "undo_value_inadmissible"
 
 
 # ---------------------------------------------------------------------------
@@ -156,6 +160,7 @@ INFRA_CATALOG_UNAVAILABLE = "infra_catalog_unavailable"
 INFRA_CRYPTO_UNAVAILABLE = "infra_crypto_unavailable"
 INFRA_DATABASE_LOCKED = "infra_database_locked"
 INFRA_DATABASE_NOT_INITIALIZED = "infra_database_not_initialized"
+INFRA_DATABASE_UPGRADE_REQUIRED = "infra_database_upgrade_required"
 INFRA_FILE_NOT_FOUND = "infra_file_not_found"
 INFRA_INVALID_ARGUMENTS = "infra_invalid_arguments"
 INFRA_INVALID_INPUT = "infra_invalid_input"

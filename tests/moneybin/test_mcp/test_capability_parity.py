@@ -1037,7 +1037,7 @@ async def test_import_writes_same_log_and_raw_row_counts(
     assert "data" in mcp
     log_query = """
         SELECT source_type, status, rows_imported, rows_rejected
-        FROM raw.import_log
+        FROM app.import_log
         ORDER BY started_at
     """
     assert _query_rows(cli_path, log_query) == _query_rows(mcp_path, log_query)

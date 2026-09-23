@@ -48,6 +48,9 @@ class TransactionCategoriesRepo(BaseRepo):
 
     table_ref = TRANSACTION_CATEGORIES
     pk_columns = ("transaction_id",)
+    # #517's blank-text rule; restore-path enforcement lives in
+    # BaseRepo._require_admissible (#547).
+    _CATEGORY_TEXT_COLUMNS = ("category", "subcategory")
 
     def _fetch_row(self, transaction_id: str) -> dict[str, Any] | None:
         return self._fetch_one(

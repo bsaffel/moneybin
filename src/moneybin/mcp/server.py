@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import textwrap
+import time
 from pathlib import Path
 
 from fastmcp import FastMCP
@@ -55,6 +56,16 @@ mcp.add_middleware(ValidationErrorMiddleware(server=mcp))
 
 _tools_registered = False
 
+# Longest a starting server waits for another server's schema heal on the same
+# profile. Must stay under the MCP host's initialize timeout: the MCP TypeScript
+# SDK's default request timeout, which Claude Desktop uses, is 60 s. Deliberately
+# not a setting, for the reason the 10 s write-lock ceiling isn't one
+# (database-writer-coordination.md): the bound comes from the host's protocol
+# timeout rather than from anything a user tunes, so a host shipping a shorter
+# one is a change to this line, not a knob to turn.
+_PEER_HEAL_WAIT_SECONDS = 45.0
+_PEER_HEAL_POLL_SECONDS = 0.5
+
 
 def get_db_path() -> Path:
     """Get the path to the DuckDB database file."""
@@ -94,6 +105,30 @@ def init_db() -> None:
     register_core_tools()
 
 
+def _peer_heal_running(db_path: Path) -> bool:
+    """Whether another process holds the write lock for a schema heal."""
+    from moneybin.db_lock import live_writer
+
+    writer = live_writer(db_path)
+    return writer is not None and writer["operation_type"] == "transform_apply"
+
+
+def _wait_out_peer_heal(db_path: Path, deadline: float) -> bool:
+    """Poll until no peer heal holds the lock; False if ``deadline`` passes first."""
+    waiting = False
+    while _peer_heal_running(db_path):
+        if not waiting:
+            logger.info(
+                "Another MoneyBin process is updating this profile's database "
+                "schema; waiting for it to finish."
+            )
+            waiting = True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_PEER_HEAL_POLL_SECONDS)
+    return True
+
+
 def check_schema_at_boot() -> None:
     """Verify core.* materialized tables aren't stale vs. EXPECTED_CORE_COLUMNS.
 
@@ -104,7 +139,37 @@ def check_schema_at_boot() -> None:
     behind a chicken-and-egg: the server can't boot to expose the fix.
     Re-verifies with a fresh read-only connection after the heal; raises
     SchemaDriftError only if drift persists.
+
+    MCP hosts routinely start several servers on one profile at once, and a
+    heal holds the database read-write, which blocks the others' reads too.
+    A server that finds another one healing waits for it (up to
+    ``_PEER_HEAL_WAIT_SECONDS``) and re-checks instead of failing at the
+    default lock wait — the peer's heal usually leaves nothing to fix. Any
+    other lock holder still fails at the default wait.
     """
+    from moneybin.database import DatabaseLockError
+
+    db_path = get_db_path()
+    deadline = time.monotonic() + _PEER_HEAL_WAIT_SECONDS
+    while True:
+        if not _wait_out_peer_heal(db_path, deadline):
+            raise DatabaseLockError(
+                "Another MoneyBin process was still updating the database "
+                f"schema after {_PEER_HEAL_WAIT_SECONDS:.0f}s. Retry once it "
+                "finishes; run 'moneybin db ps' for details."
+            )
+        try:
+            _check_and_heal_schema()
+            return
+        except DatabaseLockError:
+            # A heal that started after the wait above blocked this open; loop
+            # back to wait it out. Any other holder fails fast.
+            if not _peer_heal_running(db_path):
+                raise
+
+
+def _check_and_heal_schema() -> None:
+    """One drift check, plus a self-heal and re-verify when drift is found."""
     from moneybin.database import (
         DatabaseNotInitializedError,
         SchemaDriftError,
@@ -125,8 +190,8 @@ def check_schema_at_boot() -> None:
     from moneybin.services.transform_service import TransformService
 
     logger.info(
-        f"Stale snapshots detected for {sorted(drift)}; "
-        "running transform apply to self-heal."
+        f"Stale snapshots detected for {sorted(drift)}; running transform apply "
+        "to self-heal. This can take a minute after an upgrade."
     )
     # Plain apply (no restate_models): a regular SQLMesh plan picks up
     # model-fingerprint changes, which is exactly the production drift

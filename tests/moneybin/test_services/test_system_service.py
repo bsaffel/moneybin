@@ -131,7 +131,7 @@ def test_status_last_import_at_none_when_table_missing(system_db: Database) -> N
 def test_status_last_import_at_populated(system_db: Database) -> None:
     """last_import_at returns the most recent completed_at from import_log."""
     system_db.conn.execute("""
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin, account_names,
             status, started_at, completed_at
         ) VALUES
@@ -174,7 +174,7 @@ def _seed_import_log(db: Database, completed_at: datetime) -> None:
     """Insert one complete import row at the given timestamp."""
     db.conn.execute(
         """
-        INSERT INTO raw.import_log (
+        INSERT INTO app.import_log (
             import_id, source_file, source_type, source_origin, account_names,
             status, started_at, completed_at
         ) VALUES (?, 'test.qfx', 'ofx', 'test', '[]', 'complete', ?, ?)

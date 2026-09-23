@@ -17,7 +17,7 @@ Schema is stable but not yet frozen — see [`docs/architecture.md`](../architec
 | `seeds` | Reference data shipped with MoneyBin — six registries: categories, provider-category map, account types, exchange MICs, institutions, price sources. | CSV-backed tables | **Refused** | SQLMesh |
 | `reports` | Curated presentation views, one per CLI/MCP report. | Views | Yes | **Blocked** |
 
-"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 34 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
+"Read?" answers for the agent-safe SQL surface — the `sql_query` MCP tool and `moneybin sql query`. Those admit `core`, `app`, `reports`, `raw`, and `prep`, and refuse `meta` and `seeds` by `DESCRIBE` as by `SELECT`. `raw` and `prep` are an inspection exception, not a widening of the analysis contract: their shapes change without notice, and they carry 33 column declarations with every other value masked by a value-shape scan rather than by a declared class. `moneybin db shell` and `moneybin db query` are raw operator access with no privacy middleware; they read every schema and mask nothing.
 
 Mutations use service-backed MCP or CLI write paths for `app.*` and loader-only `raw.*`. The general MCP SQL surface is read-only.
 
@@ -200,12 +200,13 @@ Logical grain key: `category_id`.
 
 ### `core.bridge_category_source_map`
 
-Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_category_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given code always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) into a MoneyBin `category_id`, with no schema change per new aggregator.
+Resolved provider-code → canonical-category bridge. Grain: one row per `(source_type, source_category_code, source_subcategory_code)`. `VIEW` that unions the `seeds.category_source_map` defaults with `app.category_source_map` user overrides — a user row for a given key always wins over the seed default. This is the reverse-lookup key for turning an aggregator's category code (e.g. Plaid PFC) or an imported row's own category text into a MoneyBin `category_id`, with no schema change per new aggregator.
 
 | Column | Type | Description |
 |---|---|---|
-| `source_type` | VARCHAR | Aggregator / import pathway the code comes from (e.g. `plaid`). |
-| `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`). |
+| `source_type` | VARCHAR | Taxonomy namespace: a provider tag (e.g. `plaid`) or a `source_origin` slug for imported mappings. |
+| `source_category_code` | VARCHAR | The provider's category code (e.g. `FOOD_AND_DRINK_COFFEE`) or an imported row's own category text. |
+| `source_subcategory_code` | VARCHAR | Second half of the source key. `''` is the sentinel for "no subcategory" (DuckDB primary keys reject NULL). |
 | `code_level` | VARCHAR | `detailed` \| `primary`. Detailed wins over primary on reverse lookup. |
 | `category_id` | VARCHAR | FK → `core.dim_categories.category_id`. Exactly one per code (canonical-by-PK). |
 | `source_taxonomy_version` | VARCHAR | Provider taxonomy version the mapping was derived against (drift marker; not part of the key). |
@@ -806,9 +807,9 @@ Tables here capture state that cannot be re-derived from raw sources: categoriza
 | `app.user_merchants` | One row per `merchant_id` | Mutable merchant entries. Surfaced via `core.dim_merchants`. |
 | `app.user_categories` | One row per `category_id` | User-created categories. Combined with seeds via `core.dim_categories`. |
 | `app.category_overrides` | One row per `category_id` | User soft-deletions on seed categories. |
-| `app.category_source_map` | One row per `(source_type, source_category_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
+| `app.category_source_map` | One row per `(source_type, source_category_code, source_subcategory_code)` | User overrides for provider-code → `category_id` mappings. Combined with `seeds.category_source_map` via `core.bridge_category_source_map`. |
 | `app.budgets` | One row per `budget_id` | Monthly spending targets by category over a `start_month`–`end_month` window. |
-| `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `raw.import_log.import_id`. |
+| `app.imports` | One row per labeled `import_id` | User-applied labels on import batches. FK → `app.import_log.import_id`. |
 | `app.audit_log` | One row per mutation | Unified audit log; emitted synchronously in the same transaction as the mutation. |
 | `app.match_decisions` | One row per `match_id` | Matcher + user-review decisions. `match_type` ∈ `{dedup, transfer}`. Source for `core.bridge_transfers`. |
 | `app.tabular_formats` | One row per format `name` | Saved column mappings for tabular imports (Chase, Citi, Tiller, Mint, YNAB built-ins + auto-detected). |
@@ -843,7 +844,7 @@ MCP-visible app tables are tagged `audience="interface"` in [`src/moneybin/table
 | Table | Grain | Backing |
 |---|---|---|
 | `seeds.categories` | One row per `category_id` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/categories.csv`). 17 primary categories with ~95 subcategories, based on Plaid Personal Finance Category v2. Columns: `category_id`, `category`, `subcategory`, `description`, `class`. SQLMesh detects CSV changes automatically. |
-| `seeds.category_source_map` | One row per `(source_type, source_category_code)` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
+| `seeds.category_source_map` | One row per `(source_type, source_category_code, source_subcategory_code)` | CSV-backed (`src/moneybin/sqlmesh/models/seeds/category_source_map.csv`). Default provider-code → `category_id` mappings (Plaid PFC). Surfaced via `core.bridge_category_source_map`. |
 | `seeds.account_type_map` | One row per `alias` | CSV-backed (`.../seeds/account_type_map.csv`). Source-spelling → canonical `(account_type, account_subtype)` registry (OFX `<ACCTTYPE>`, Plaid, tabular). Lookup is on `UPPER(alias)`. Consumed by `core.dim_accounts`. |
 | `seeds.exchange_mic_map` | One row per `alias` | CSV-backed (`.../seeds/exchange_mic_map.csv`). Alias → canonical ISO-10383 MIC registry for exchange-identity resolution. An alias absent from the table is treated as unknown, not a mismatch. |
 | `seeds.institutions` | One row per `fid` | CSV-backed (`.../seeds/institutions.csv`). OFX `<FI><FID>` → `(slug, display_name)`. Consumed by `core.dim_accounts.institution_name`; `slug` also feeds `source_origin` at import time (renaming an existing slug re-keys transaction ids and needs a migration). |

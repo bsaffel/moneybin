@@ -1,0 +1,1 @@
+`raw.import_log` moved to `app.import_log` in `moneybin sql query` / the `sql_query` MCP tool. It is MoneyBin-written batch bookkeeping, not re-importable source data, so it belongs beside its siblings `app.imports` and `app.import_previews`. Existing databases migrate automatically on next open; no action needed.

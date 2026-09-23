@@ -39,7 +39,19 @@ and rendering. Add the label in GitHub if it does not yet exist.
    Towncrier does not import those bullets. Keep one heading per category and
    leave the `[Unreleased]` heading, pending-fragment link, and marker above
    the generated release. Preserve all older dated milestone sections.
-4. Run `uv run pytest tests/test_documentation_policy.py` and
+4. **Reconcile stale claims.** No ordinary PR may edit `CHANGELOG.md` (the
+   rule above), so a fact a bullet states — a count, a column or table name,
+   a class — can go stale between releases with nothing catching it: guards
+   like `tests/moneybin/test_docs/test_internal_critical_docs.py` bind that
+   kind of claim to live code everywhere *except* `CHANGELOG.md`, which they
+   exclude for exactly this reason. Release prep is where that drift gets
+   corrected instead. Before merging the release PR, re-read every bullet
+   being moved out of `[Unreleased]` (step 3) and every bullet in the newly
+   generated section against current code, and fix wording that a later
+   change invalidated — update the fact, keep the bullet's shape and intent.
+   This is a correction, not a rewrite: don't relitigate old phrasing that
+   is still accurate.
+5. Run `uv run pytest tests/test_documentation_policy.py` and
    `uv run python scripts/check_release_metadata.py --tag v0.1.0` with the
    actual version. Confirm every pending change is accounted for, then review
    and merge the release PR before creating its version tag.

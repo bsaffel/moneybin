@@ -290,7 +290,7 @@ ADAPTER_LAYERING_ALLOWLIST: frozenset[tuple[str, str, str]] = frozenset({
     # resolve_read_settings is a pure resolution over a TabularFormat and the
     # caller's flags — no DB, no IO, no file read. It is guarded rather than
     # duplicated on purpose: `import preview` and ImportService must resolve the
-    # same seven read settings from the same place, and the copy that drifted is
+    # same eight read settings from the same place, and the copy that drifted is
     # exactly the defect this closes. Routing it through the service instead
     # would make the CLI construct a service to read a file it then reads
     # itself, which the surrounding read-stage imports (detect_format,

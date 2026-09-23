@@ -104,7 +104,7 @@ downloaded a month apart routinely share one.
 The re-import gate already reached this spec's conclusion and applies it in one
 place only. `find_existing_import` matches on the content digest and treats the
 path as "a legacy fallback that retires per path"
-(`import_log.py:380-395`). `raw.import_log` therefore already carries both
+(`import_log.py:380-395`). `app.import_log` therefore already carries both
 `source_file` and `file_sha256` side by side. This spec generalizes that split.
 
 ## Requirements
@@ -904,7 +904,7 @@ class again.
 carries `source_file`. `NOT NULL` because it takes `source_file`'s place in
 eight primary keys (R10).
 
-**`raw.import_log` takes the same column nullable**, and the exception is
+**`app.import_log` takes the same column nullable**, and the exception is
 deliberate rather than an inconsistency. That table keys on `import_id`, so the
 document key is informational there rather than a key component, and it holds
 rows for pre-V046 batches with no `file_sha256` to derive one from. NULL is the
@@ -927,10 +927,10 @@ document:
 | `raw_plaid_investment_transactions` | `extractors/plaid/schema/` |
 | `raw_plaid_securities` | `extractors/plaid/schema/` |
 | `raw_pdf_seeds` | `sql/schema/` |
-| `raw_import_log` | `sql/schema/` (already named above) |
+| `app_import_log` | `sql/schema/` (already named above) |
 
 **Enumerate rather than search, because the files are not where a reader
-looks.** Only `raw_import_log.sql` and `raw_pdf_seeds.sql` live under
+looks.** Only `app_import_log.sql` and `raw_pdf_seeds.sql` live under
 `sql/schema/`; the other thirteen live under `extractors/<channel>/schema/`. A
 `grep` of `sql/schema/` therefore returns two of fifteen, and the resulting
 list looks complete long before it is — which is how the five Plaid tables go
@@ -939,7 +939,7 @@ missing from a change that must touch all of them.
 **Truncation: 16 hex characters**, matching `transaction_id` and
 `migrations.py:35`'s documented 64-bit content-hash convention, rather than
 `_bare_account_key`'s 12. The full digest stays in
-`raw.import_log.file_sha256`, which the key is a prefix of **for file-backed
+`app.import_log.file_sha256`, which the key is a prefix of **for file-backed
 channels only** — Plaid, Google Sheets, and manual have no `file_sha256`, so
 the two columns coexist rather than agree everywhere.
 
@@ -953,7 +953,7 @@ token, so the column holds one kind of value everywhere:
 | Google Sheets | `gsheet://{spreadsheet_id}/{sheet_gid}` plus the pull's row digest |
 | Manual | the minting batch token |
 
-`raw.import_log.file_sha256` is the existing full digest and stays, retaining
+`app.import_log.file_sha256` is the existing full digest and stays, retaining
 its role in `find_existing_import`.
 
 ### Second new column
@@ -1250,7 +1250,7 @@ The migration must:
    | `raw.exchange_rates` | Append-only by design: "a rate a provider published for a date is a historical fact, so a refetch never rewrites one." A refetch is also bounded by the provider's history window, so what falls outside it is simply gone. |
    | `raw.security_prices` | Append-only for the same reason — "a historical close is an immutable fact" — and the schema says so precisely to contrast with `raw.plaid_securities`, whose close price is overwritten on every pull and therefore *cannot* carry a history. |
    | `raw.gsheet_seeds` | Holds **soft-deleted** rows a re-pull cannot return. Each pull sets `deleted_from_source_at` on rows that have vanished from the sheet and keeps their `data` (`raw_gsheet_seeds.sql:8`), but the adapter can only read rows the sheet still has — so a row the user deleted upstream exists nowhere else. Clearing this table is unrecoverable by any command, `--force` included, which is what separates it from `raw.plaid_*`. It carries no `source_file` and takes no new column, so preserving it needs no reshape. |
-   | `raw.import_log` | The batch parent of all five above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
+   | `app.import_log` | The batch parent of all five above: dropping it dangles their `import_id`. It is also the audit record of every import ever run, which a re-import appends to rather than reconstructs. |
 
 4. On both manual tables, rename the minted `source_transaction_id` to
    `source_row_key` (R13). It stays the primary key and no value changes.
@@ -1387,7 +1387,7 @@ The migration must:
    NULLs the stale predictions for, and it happens once: after this migration
    the minted key never changes, so a manual row's identity is stable for good.
 
-7. On `raw.import_log`, rename `source_file` to `source_path` and relax it to
+7. On `app.import_log`, rename `source_file` to `source_path` and relax it to
    nullable, then add `source_document_key` as a **nullable** column, filled by
    truncating `file_sha256` where one exists. That is a derivation, not a
    backfill: R1's key is exactly that truncation of exactly those bytes. It is
@@ -1582,12 +1582,12 @@ from it.
 - The six further schema files that carry `source_file` without holding it
   in a primary key, each taking `source_document_key` as a plain column and
   R10's `source_file` → `source_path` rename (§Data Model lists all seven,
-  `raw_import_log.sql` being the seventh and already named above):
+  `app_import_log.sql` being the seventh and already named above):
   `extractors/plaid/schema/raw_plaid_transactions.sql`,
   `raw_plaid_accounts.sql`, `raw_plaid_balances.sql`,
   `raw_plaid_investment_transactions.sql`, `raw_plaid_securities.sql`; and
   `sql/schema/raw_pdf_seeds.sql`. Note the two directories: **only**
-  `raw_import_log.sql` and `raw_pdf_seeds.sql` are under `sql/schema/`, and
+  `app_import_log.sql` and `raw_pdf_seeds.sql` are under `sql/schema/`, and
   every other raw schema this spec touches is under
   `extractors/<channel>/schema/`.
 
@@ -1668,7 +1668,7 @@ populated `source_path`. A silent blank column is the failure mode a rename
 sweep that greps only for subscript access misses, and the heading and help
 text on the same command carry the old word too.
 
-**Import-log producers and readers** — `raw.import_log` is written by every
+**Import-log producers and readers** — `app.import_log` is written by every
 channel, and the enumeration above named only the `find_existing_import`
 predicate. The writers break first and hardest: `loaders/import_log.py:129`
 names `source_file` in its `INSERT` column list (bound at `:135`, declared at
@@ -1814,7 +1814,7 @@ R9's minted key exists in the schema and nothing ever writes it.
 - `src/moneybin/sql/schema/raw_manual_investment_transactions.sql` — the same
   `source_transaction_id` → `source_row_key` rename. Its `account_id` is **not**
   repurposed (§Data Model).
-- `src/moneybin/sql/schema/raw_import_log.sql` — `source_file` → `source_path`,
+- `src/moneybin/sql/schema/app_import_log.sql` — `source_file` → `source_path`,
   relaxed to nullable, plus a nullable `source_document_key` (§Migration step
   6). Its own key is `import_id` and does not move.
 - `src/moneybin/sql/schema/app_account_links.sql` — a nullable `source_label`
@@ -2040,7 +2040,7 @@ Per `docs/specs/observability.md`, registered in
     migration. That column is the canonical grain key, not a prediction, and
     nothing downstream can recompute it — a test that accepts NULL here would
     pass while every preserved investment event loses its identity.
-17. `raw.import_log` keeps every batch row. `source_document_key` equals the
+17. `app.import_log` keeps every batch row. `source_document_key` equals the
     truncation of `file_sha256` wherever that column is populated, and NULL
     for a pre-V046 batch — no batch acquires a minted stand-in.
 18. A re-import after the migration reproduces the transaction ids that
@@ -2348,7 +2348,7 @@ reader would otherwise reopen it.
    sources: the accumulated ledger, which R17 wires up, and a human-declared
    route recorded once. **The route is rejected for this milestone**, and not
    only on scope. No original filesystem path is persisted anywhere.
-   `raw.import_log.source_file` stores the path at import time, which under
+   `app.import_log.source_file` stores the path at import time, which under
    the inbox flow is the inbox path and goes stale the moment the file is
    moved (`inbox_service.py:569-574`, `import_log.py:126-143`). The only path
    actually available is therefore the inbox path — and every institution's

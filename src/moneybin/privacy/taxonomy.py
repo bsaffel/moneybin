@@ -98,7 +98,7 @@ class DataClass(StrEnum):
 
     @property
     def tier(self) -> Tier:
-        """Return the privacy ``Tier`` this class belongs to."""
+        """The privacy ``Tier`` this class belongs to."""
         return _TIER_BY_CLASS[self]
 
 
@@ -310,6 +310,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "code_level": DataClass.TXN_TYPE,
         "created_at": DataClass.TIMESTAMP_OBSERVABILITY,
         "source_category_code": DataClass.CATEGORY,
+        "source_subcategory_code": DataClass.CATEGORY,
         "source_taxonomy_version": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
@@ -385,6 +386,58 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "report_id": DataClass.RECORD_ID,
         "semantics": DataClass.DESCRIPTION,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
+    # --- Import log (MB-255 moved this table raw -> app; it used to ride
+    # raw's FLOORED content net with only `account_names` declared in
+    # INTERNAL_CRITICAL). `app` is not floored, so every column needs an
+    # explicit class now — an undeclared one fails closed to UNRESOLVED and
+    # whole-masks, silently hiding a column that used to display.
+    ("app", "import_log"): {
+        "account_names": (
+            # Same value as raw.tabular_accounts.account_name / the OFX
+            # <ACCTID> element, carried in a JSON array. COMPOSITE_IDENTIFIER,
+            # not ACCOUNT_IDENTIFIER: a DuckDB JSON column reaches the
+            # redaction transform as `str`, so the partial `"****" +
+            # value[-4:]` mask would publish the tail of the SERIALIZED
+            # array — for a one-element array of a bare number, the tail of
+            # an account number. Whole-masks instead, at CRITICAL.
+            DataClass.COMPOSITE_IDENTIFIER
+        ),
+        "balance_validated": DataClass.TXN_TYPE,
+        "completed_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "date_format": DataClass.TXN_TYPE,
+        "detection_confidence": DataClass.TXN_TYPE,
+        "file_sha256": DataClass.RECORD_ID,
+        "format_name": DataClass.RECORD_ID,
+        "format_source": DataClass.TXN_TYPE,
+        "import_id": DataClass.RECORD_ID,
+        "number_format": DataClass.TXN_TYPE,
+        "rejection_details": (
+            # JSON [{row_number, reason}]. `reason` can embed the raw
+            # unparseable source value verbatim — transforms.py's
+            # `_extract_amounts` writes reasons like `f"Unparseable amount:
+            # {s!r}"` — so this can carry an un-redacted amount string at an
+            # unknown position, the same "worst case is a money value" shape
+            # as import_previews.snapshot_json. TXN_AMOUNT (HIGH) rather than
+            # DESCRIPTION, which the sibling structural-metadata JSON columns
+            # (tabular_formats.field_mapping/header_signature) get — those
+            # only ever hold column names, never row values.
+            DataClass.TXN_AMOUNT
+        ),
+        "reverted_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "rows_imported": DataClass.AGGREGATE,
+        "rows_rejected": DataClass.AGGREGATE,
+        "rows_skipped_trailing": DataClass.AGGREGATE,
+        "rows_total": DataClass.AGGREGATE,
+        "sign_convention": DataClass.TXN_TYPE,
+        "source_file": DataClass.RECORD_ID,
+        # Institution or source name (e.g. "chase_credit") per
+        # transform_dataframe's docstring — same shape as
+        # tabular_formats.institution_name.
+        "source_origin": DataClass.INSTITUTION,
+        "source_type": DataClass.TXN_TYPE,
+        "started_at": DataClass.TIMESTAMP_OBSERVABILITY,
+        "status": DataClass.TXN_TYPE,
     },
     ("app", "imports"): {
         "import_id": DataClass.RECORD_ID,
@@ -760,6 +813,7 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "code_level": DataClass.TXN_TYPE,
         "is_default": DataClass.TXN_TYPE,
         "source_category_code": DataClass.CATEGORY,
+        "source_subcategory_code": DataClass.CATEGORY,
         "source_taxonomy_version": DataClass.AGGREGATE,
         "source_type": DataClass.TXN_TYPE,
     },
@@ -1320,19 +1374,6 @@ INTERNAL_CRITICAL: dict[tuple[str, str], dict[str, DataClass]] = {
         "account_number_masked": DataClass.INSTITUTION_ACCOUNT_NUMBER,
         # `NULL::TEXT AS routing_number` placeholder, as for Plaid above.
         "routing_number": DataClass.ROUTING_NUMBER,
-    },
-    # --- Import log: `account_names` is the same tabular file value again, and
-    # the OFX importer writes raw <ACCTID> values into it verbatim — its call
-    # site says so ("institution-assigned account numbers, not display names").
-    #
-    # WHOLE, not the partial mask the two columns above take. A DuckDB JSON
-    # column reaches the transform as `str`, so ACCOUNT_IDENTIFIER's
-    # `"****" + value[-4:]` would publish the TAIL of the serialized array,
-    # which for a one-element array of a bare number is the tail of an account
-    # number. Same reasoning as `source_bytes` below, and the same scoping
-    # argument for using UNRESOLVED in this map.
-    ("raw", "import_log"): {
-        "account_names": DataClass.UNRESOLVED,
     },
     ("prep", "stg_tabular__transactions"): {
         "account_id": DataClass.ACCOUNT_IDENTIFIER,

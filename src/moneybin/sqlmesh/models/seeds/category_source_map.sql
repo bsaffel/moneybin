@@ -11,9 +11,10 @@ MODEL (
   columns (
     source_type TEXT,
     source_category_code TEXT,
+    source_subcategory_code TEXT,
     code_level TEXT,
     category_id TEXT,
     source_taxonomy_version TEXT
   ),
-  grain (source_type, source_category_code)
+  grain (source_type, source_category_code, source_subcategory_code)
 )

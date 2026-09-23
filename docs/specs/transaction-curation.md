@@ -27,7 +27,7 @@ This spec ships the bundle as a single coherent surface. It is the lead M1E spec
 
 - [`matching-same-record-dedup.md`](matching-same-record-dedup.md) — `app.match_decisions`, gold-key `transaction_id`. This spec extends the matcher's candidate-blocking rule.
 - [`categorization-overview.md`](categorization-overview.md) / [`categorization-auto-rules.md`](categorization-auto-rules.md) — `app.transaction_categories`, priority hierarchy, auto-rule training. This spec extends the auto-rule training query.
-- [`smart-import-tabular.md`](smart-import-tabular.md) — `raw.tabular_transactions` shape, `Database.ingest_dataframe()`, `raw.import_log` lifecycle. Manual entry mirrors this flow.
+- [`smart-import-tabular.md`](smart-import-tabular.md) — `raw.tabular_transactions` shape, `Database.ingest_dataframe()`, `app.import_log` lifecycle. Manual entry mirrors this flow.
 - [`smart-import-financial.md`](smart-import-financial.md) — reversible imports via `import_id`. Manual entries are reversible by the same mechanism.
 - [`mcp-architecture.md`](mcp-architecture.md) / [`moneybin-mcp.md`](moneybin-mcp.md) — MCP v2 conventions, sensitivity tiers, response envelopes.
 - [`mcp-sql-discoverability.md`](mcp-sql-discoverability.md) — `moneybin://schema` resource. New curation columns and tables register here.
@@ -84,7 +84,7 @@ An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups)
 1. Users can create one or more manual transactions via CLI (`transactions create`, single-txn) or MCP (`transactions_create`, bulk 1–100 per call).
 2. Manual transactions land in a new `raw.manual_transactions` table mirroring the `raw.tabular_transactions` column shape.
 3. A new `prep.stg_manual__transactions` staging view is added to the existing `prep.int_transactions__unioned` model. No prep or core models *on the manual-ingestion path* change shape beyond adding this staging view. (Curation-presentation columns added to `core.fct_transactions` and the new `core.fct_transaction_lines` view are described in §Data Model — additive joins from `app.*`, not changes to the ingestion contract.)
-4. Each manual-entry CLI invocation or MCP bulk call writes exactly one row to `raw.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
+4. Each manual-entry CLI invocation or MCP bulk call writes exactly one row to `app.import_log` with `source_type='manual'`, `format_name='manual_entry'`, and the resulting `import_id` is reusable for batch labeling and reversal.
 5. Manual transactions enter the standard pipeline: transform → match → categorize. They are reversible via the existing `import revert <import_id>` flow.
 6. Manual transactions are excluded from cross-source dedup (Tier 3) candidate selection. They are never proposed as matches against imported rows in either direction. Explicit user merge via `transactions matches confirm` is the only path that pairs them.
 7. Manual transactions are excluded from the auto-rule generator's training set. Auto-rules continue to learn from user category edits made *to imported* rows.
@@ -114,7 +114,7 @@ An MCP-vocabulary audit pass on the existing surface (Out-of-Scope §Follow-ups)
 
 ### Import labels
 
-22. Each `raw.import_log` row may carry zero or more user-applied labels stored in `app.imports(import_id, labels VARCHAR[], updated_at, updated_by)`. One row per labeled import. Absence = no user-state on that batch.
+22. Each `app.import_log` row may carry zero or more user-applied labels stored in `app.imports(import_id, labels VARCHAR[], updated_at, updated_by)`. One row per labeled import. Absence = no user-state on that batch.
 23. Labels follow the same pattern as tags (`^[a-z0-9_-]+(:[a-z0-9_-]+)?$`) but live in their own column because import labels and transaction tags are queried independently.
 24. The `app.imports` table is intentionally consolidated (single row per import with a `LIST(VARCHAR)` labels column) rather than an M:N sibling table, because import labels have low write volume and consolidating prevents `app.*` table sprawl.
 
@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS raw.manual_transactions (
     source_transaction_id   VARCHAR PRIMARY KEY, -- 'manual_' + truncated UUID4 (12 hex)
     source_type             VARCHAR NOT NULL DEFAULT 'manual', -- Discriminator; matches matcher and auto-rule exemption predicates
     source_origin           VARCHAR NOT NULL DEFAULT 'user', -- Origin tag; always 'user' for manual entries
-    import_id               VARCHAR NOT NULL, -- FK to raw.import_log.import_id; one batch per CLI call or MCP bulk call
+    import_id               VARCHAR NOT NULL, -- FK to app.import_log.import_id; one batch per CLI call or MCP bulk call
     account_id              VARCHAR NOT NULL, -- FK to core.dim_accounts
     transaction_date        DATE NOT NULL, -- Date of the transaction as the user reports it
     amount                  DECIMAL(18,2) NOT NULL, -- Signed; negative = expense, positive = income
@@ -214,7 +214,7 @@ CREATE INDEX IF NOT EXISTS idx_transaction_splits_txn ON app.transaction_splits(
 
 ```sql
 CREATE TABLE IF NOT EXISTS app.imports (
-    import_id   VARCHAR PRIMARY KEY, -- FK to raw.import_log.import_id; one row per labeled import
+    import_id   VARCHAR PRIMARY KEY, -- FK to app.import_log.import_id; one row per labeled import
     labels      VARCHAR[], -- LIST(VARCHAR); NULL when no labels; same slug pattern as tags
     updated_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_by  VARCHAR NOT NULL
@@ -548,7 +548,7 @@ those lifecycle semantics without spending three registered tool slots.
 ### `transactions_create` — bulk shape and constraints
 
 - **Atomicity**: all-or-nothing per call. Validation failures reject the whole batch with per-item error reporting; no partial commit.
-- **Single import_id**: all transactions in one call land under one `raw.import_log` row with `source_type='manual'`. Users can label that batch as a unit.
+- **Single import_id**: all transactions in one call land under one `app.import_log` row with `source_type='manual'`. Users can label that batch as a unit.
 - **Pipeline runs once**: transform, match, and categorize execute over the batch together — far cheaper than N invocations. The matcher's `source_type='manual'` exemption applies per-row.
 - **Bounds**: 1 ≤ N ≤ 100. The MCP 30s tool timeout (`mcp-tool-timeouts.md`) is the binding constraint; 100 is a comfortable headroom.
 - **Response envelope**: `{batch_id: import_id, results: [{transaction_id, status, pipeline_summary, ...}]}` — one entry per input transaction in same order.

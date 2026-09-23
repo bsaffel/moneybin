@@ -1313,6 +1313,179 @@ def test_a_parameter_in_a_case_result_still_surfaces(
 
 
 # ---------------------------------------------------------------------------
+# A FILTER predicate comparing two catalog columns, with no literal or bound
+# value anywhere in it (#440)
+#
+# `Filter(this=Count(...), expression=Where(...))` puts the predicate as a
+# SIBLING of the aggregate, not a descendant, so a plain ancestor walk from a
+# predicate column never reaches the `Count` and the column classified as a
+# live projected value instead of collapsing with the count. Scoped to
+# COUNTING aggregates only (SUM/MAX/etc. still mask, below) and to a predicate
+# with no literal and no placeholder — see `_filter_predicate_is_pure_columns`
+# for why a caller-supplied comparand must keep masking.
+# ---------------------------------------------------------------------------
+
+
+def test_count_star_filtered_on_a_pure_column_predicate_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """The reported shape: `COUNT(*) FILTER (WHERE <critical> = <critical>)`.
+
+    Both sides are catalog columns the caller does not control — the count
+    reports a fact about the data (how many self-referential mappings exist),
+    not any specific value, so it must not mask.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE ref_value = account_id) AS self_maps "
+        "FROM app.account_links",
+        populated_db,
+    )
+    assert out == {"self_maps": DataClass.AGGREGATE}
+
+
+def test_count_distinct_filtered_on_a_pure_column_predicate_is_aggregate(
+    populated_db: Database,
+) -> None:
+    """`COUNT(DISTINCT x) FILTER (WHERE ...)`, the issue's second named idiom."""
+    out = _classes(
+        "SELECT COUNT(DISTINCT account_id) FILTER (WHERE last_four = routing_number) "
+        "AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.AGGREGATE}
+
+
+def test_sum_filtered_on_a_critical_column_still_masks(
+    populated_db: Database,
+) -> None:
+    """The narrow-fix boundary: only `_COUNTING_AGGS` (Count) is exempted.
+
+    `SUM` preserves the source class of whatever it sums; its `FILTER`
+    predicate is exempted from nothing here, so a critical predicate column
+    still contributes its class. Guards against widening the exemption to
+    every aggregate (shape (b) in #440's design discussion) as a side effect
+    of an unrelated change.
+    """
+    out = _classes(
+        "SELECT SUM(credit_limit) FILTER (WHERE last_four = account_id) AS x "
+        "FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"x": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_count_filtered_on_a_column_compared_to_a_literal_still_masks(
+    populated_db: Database,
+) -> None:
+    """A literal comparand is exactly as caller-controlled as a placeholder.
+
+    Without this guard a caller could vary the literal call to call — or
+    stack one `COUNT(*) FILTER (WHERE last_four = '<guess>')` column per
+    guess in a single query — to probe for a specific value's presence, the
+    same existence oracle #562 fenced off for a bound parameter. Only a
+    predicate built from catalog columns alone (no literal, no placeholder)
+    is exempt.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = '1234') AS n FROM core.dim_accounts",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+# `test_a_parameter_equality_probe_is_not_exempt` above already pins the
+# placeholder half of this exact boundary (`COUNT(*) FILTER (WHERE last_four
+# = $acct)`) — no separate test needed here.
+#
+# The tests above all pin the POSITION half of the new drop clause (a pure
+# column-to-column predicate). Nothing yet exercises the IDENTITY half
+# (`_resolves_to_a_classified_catalog_column`) THROUGH THIS PATH specifically:
+# position alone is not sufficient, the same way it is not for the null-test
+# drop below (`_capped_null_test`'s pivot/CTE tests) — a name that only LOOKS
+# like a catalog column must not earn the exemption just because it sits in a
+# pure-columns predicate.
+
+
+def test_a_pure_column_predicate_on_a_derived_table_alias_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """Position passes; identity declines — the CTE/derived-table half.
+
+    `d1 = d2` is positionally pure (no literal, no placeholder) and wraps a
+    `Count`, so `_enclosing_counting_filter` finds it. But both names are
+    aliases from a derived table, so
+    `_resolves_to_a_classified_catalog_column` says no (`_source_scope_of` is
+    non-None) — exactly mirroring
+    `test_a_null_test_on_a_derived_table_alias_is_not_exempt`, but for the
+    FILTER path instead of the null-test path. Without the identity half here,
+    this would wrongly collapse to `AGGREGATE`.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE d1 = d2) AS n FROM "
+        "(SELECT routing_number AS d1, account_id AS d2 FROM core.dim_accounts)",
+        populated_db,
+    )
+    assert out == {"n": DataClass.ROUTING_NUMBER}
+
+
+def test_a_pure_column_predicate_on_an_unpivot_value_column_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """Position passes; identity declines — the PIVOT/UNPIVOT half.
+
+    `last_four = account_id` is positionally pure and wraps a `Count`, but
+    both names are UNPIVOT-generated value columns fed by DIFFERENT source
+    columns per row, not the base `last_four` (`_reads_a_pivot` says no) —
+    the same shape as `test_a_null_test_is_not_exempt_anywhere_a_pivot_is_in_scope`,
+    for the FILTER path.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = account_id) AS c "
+        "FROM core.dim_accounts "
+        "UNPIVOT INCLUDE NULLS (last_four FOR arm IN (last_four, account_id)) "
+        "GROUP BY arm",
+        populated_db,
+    )
+    assert out == {"c": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_pure_column_predicate_against_a_hoisted_literal_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """One side passing identity must not rescue the other side.
+
+    `last_four` resolves to a classified catalog column on its own; `t.g`
+    does not (it reads a derived table). Deciding each occurrence
+    independently drops `last_four` alone, leaves `t.g` to resolve through
+    `t`'s own projection — a bare literal, i.e. `AGGREGATE` — and the
+    combined class is `AGGREGATE`: the caller's literal comparand, hoisted
+    one hop into a derived table instead of written inline, reaches the
+    output as an unmasked count. That is the existence oracle #562 fenced
+    off, reopened through this path. The predicate must be judged as a
+    whole: `t.g` failing identity means NEITHER side is dropped.
+    """
+    out = _classes(
+        "SELECT COUNT(*) FILTER (WHERE last_four = t.g) AS n "
+        "FROM core.dim_accounts, (SELECT '1234' AS g) AS t",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+def test_a_pure_column_predicate_against_a_cte_hoisted_literal_is_not_exempt(
+    populated_db: Database,
+) -> None:
+    """The CTE spelling of the laundering above — the fix must not be shaped to one syntax."""
+    out = _classes(
+        "WITH t AS (SELECT '1234' AS g) "
+        "SELECT COUNT(*) FILTER (WHERE last_four = t.g) AS n "
+        "FROM core.dim_accounts, t",
+        populated_db,
+    )
+    assert out == {"n": DataClass.INSTITUTION_ACCOUNT_NUMBER}
+
+
+# ---------------------------------------------------------------------------
 # A branch can map a predicate's answer back to the value
 #
 # These are the counterexamples that bound the rule above. A `CASE`/`IF` branch
@@ -1897,10 +2070,17 @@ def test_import_log_account_names_masks_whole_not_partial() -> None:
     Whole, not partial: a DuckDB ``JSON`` column arrives as ``str``, so
     ACCOUNT_IDENTIFIER's ``"****" + value[-4:]`` would publish the TAIL of the
     serialized array — which for a one-element array of a bare number is the
-    tail of an account number.
+    tail of an account number. ``app.import_log`` (MB-255 moved it out of
+    ``raw``, which is FLOORED) declares this explicitly as
+    ``COMPOSITE_IDENTIFIER`` rather than relying on the fail-closed class —
+    see the enum's own guidance against writing ``UNRESOLVED`` into
+    ``CLASSIFICATION``.
     """
-    assert _class_of_key(("raw", "import_log", "account_names")) is FAIL_CLOSED_CLASS
-    assert mask_strength(FAIL_CLOSED_CLASS) is MaskStrength.WHOLE
+    assert (
+        _class_of_key(("app", "import_log", "account_names"))
+        is DataClass.COMPOSITE_IDENTIFIER
+    )
+    assert mask_strength(DataClass.COMPOSITE_IDENTIFIER) is MaskStrength.WHOLE
 
 
 # ---------------------------------------------------------------------------

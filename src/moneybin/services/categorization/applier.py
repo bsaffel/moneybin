@@ -211,17 +211,17 @@ class RuleTargetPlan:
 
     @property
     def changed(self) -> tuple[RuleTargetPlanItem, ...]:
-        """Return only items which mutate persisted state."""
+        """Only items which mutate persisted state."""
         return tuple(item for item in self.items if item.action != "noop")
 
     @property
     def destructive(self) -> bool:
-        """Return whether a present rule will be hard-deleted."""
+        """Whether a present rule will be hard-deleted."""
         return any(item.action == "delete" for item in self.items)
 
     @property
     def resolved_ids(self) -> tuple[str, ...]:
-        """Return stable rule IDs participating in the planned mutation."""
+        """Stable rule IDs participating in the planned mutation."""
         return tuple(item.rule_id for item in self.changed if item.rule_id is not None)
 
 
@@ -290,7 +290,7 @@ class CategoryDeletePlan:
 
     @property
     def cascade_count(self) -> int:
-        """Return dependent rows the cascade itself will hard-delete."""
+        """Dependent rows the cascade itself will hard-delete."""
         return sum(
             (group.store, row.target_id) not in self.excluded_references
             for group in self.references
@@ -323,7 +323,7 @@ class TaxonomyTargetPlanItem:
 
     @property
     def kind(self) -> Literal["category", "merchant"]:
-        """Return the target discriminator."""
+        """The target discriminator."""
         if isinstance(self.target, CategoryStateTarget):
             return "category"
         return "merchant"
@@ -337,22 +337,22 @@ class TaxonomyTargetPlan:
 
     @property
     def changed(self) -> tuple[TaxonomyTargetPlanItem, ...]:
-        """Return planned mutations only."""
+        """Planned mutations only."""
         return tuple(item for item in self.items if item.action != "noop")
 
     @property
     def destructive(self) -> bool:
-        """Return whether the batch includes a hard delete."""
+        """Whether the batch includes a hard delete."""
         return any(item.action == "delete" for item in self.items)
 
     @property
     def explicit_hard_deletes(self) -> int:
-        """Return hard deletes directly requested by taxonomy targets."""
+        """Hard deletes directly requested by taxonomy targets."""
         return sum(item.action == "delete" for item in self.items)
 
     @property
     def cascade_hard_deletes(self) -> int:
-        """Return dependent rows removed by category cascades."""
+        """Dependent rows removed by category cascades."""
         return sum(
             item.category_delete.cascade_count
             for item in self.items

@@ -340,7 +340,23 @@ class AutoRuleService:
                 samples,
             ) = existing
             if existing_category == category and existing_subcategory == subcategory:
-                already_counted = transaction_id in samples
+                # samples holds each id as it was canonical *at the time it was
+                # recorded* -- it is evidence history, never rewritten in place
+                # (matching/aliasing.py module docstring, "Decision history is
+                # deliberately not forwarded", extended to this column for the
+                # same reason: its live effect is the promoted rule, keyed on
+                # pattern, not on any one transaction id). A dedup merge can
+                # supersede one of those stored ids after it was recorded, so
+                # comparing the caller's live transaction_id against the raw
+                # ids misses the case where an old sample and the caller's id
+                # now name the same transaction (issue #552) -- resolving each
+                # sample through the alias chain before checking membership
+                # answers that without a second, competing read-time mechanism:
+                # it is the module's one sanctioned way to ask "is this the
+                # same transaction now", already used by every curation writer
+                # at write time.
+                live_samples = resolve_curation_transaction_ids(self._db, samples)
+                already_counted = transaction_id in live_samples.values()
                 new_samples = samples if already_counted else samples + [transaction_id]
                 # Keep the most recent samples when over capacity — appended IDs
                 # are newest, so a head-slice would silently drop the new txn.
