@@ -1595,6 +1595,85 @@ class TestMerchantLinksMutating:
         assert "Traceback (most recent call last)" not in result.stderr
 
 
+class TestCategoriesMappingsMutating:
+    """E2E smoke tests for `categories mappings set`.
+
+    Deep enumeration/resolution behavior is covered at the unit tier
+    (test_category_source_mapping_curation.py); these smoke the wiring, exit
+    codes, and mutual-exclusion guard the way `merchants links set` does.
+    """
+
+    def test_categories_mappings_set_missing_flag_is_usage_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set` without --into or --new exits 2 (usage error)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-usage", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_mutual_exclusion_error(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set --into X --new Y` exits 2 (mutually exclusive)."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-mutex", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Groceries",
+            "--into",
+            "cat-groceries",
+            "--new",
+            "New Category",
+            env=env,
+        )
+        assert result.exit_code == 2
+        assert "Traceback (most recent call last)" not in result.stderr
+
+    def test_categories_mappings_set_new_creates_mapping(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set --new <name>` creates a category and maps the term."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-new", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Some Imported Text",
+            "--new",
+            "E2E Minted Category",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert payload["data"]["action"] == "mapped"
+        assert payload["data"]["category_id"]
+
+
 class TestSecurityLinksMutating:
     """E2E smoke tests for `investments securities links set`.
 

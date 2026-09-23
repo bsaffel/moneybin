@@ -1343,6 +1343,71 @@ class MatchApplier:
             raise RuntimeError("UserCategoriesRepo.insert returned no category_id")
         return event.target_id
 
+    def resolve_source_term(
+        self,
+        *,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+        category_id: str | None = None,
+        new_category: str | None = None,
+        actor: str,
+    ) -> str:
+        """Map one imported vocabulary term to a MoneyBin category.
+
+        ``(source_origin, category, subcategory)`` identifies the term being
+        resolved — an imported category/subcategory string pair, never
+        displayed as a category, only ever used to match or mint one (the
+        owner's ruling on this curation surface). Exactly one of
+        ``category_id`` (bind to an existing category) or ``new_category``
+        (create a category named ``new_category``, then bind) must be given.
+
+        The create path routes through :meth:`create_category` — never a
+        direct ``app.user_categories`` write — and the mapping write through
+        :attr:`_category_source_map` (``CategorySourceMapRepo.upsert``),
+        which itself normalizes an absent ``subcategory`` to ``""`` (the
+        "no subcategory" sentinel DuckDB's NULL-rejecting primary key
+        requires); this method does not re-normalize it. Both writes commit
+        atomically: if the mapping upsert fails, a category just created for
+        it must not survive as an orphan nobody chose.
+
+        Raises:
+            UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
+                both of ``category_id`` / ``new_category`` were given.
+            UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
+                ``category_id`` does not name an existing category.
+        """
+        if (category_id is None) == (new_category is None):
+            raise UserError(
+                "Specify exactly one of category_id or new_category",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        with self._transaction():
+            if new_category is not None:
+                resolved_category_id = self.create_category(
+                    new_category, actor=actor, in_outer_txn=True
+                )
+            else:
+                resolved_category_id = cast(str, category_id)
+                exists = self._db.execute(
+                    f"SELECT 1 FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
+                    [resolved_category_id],
+                ).fetchone()
+                if not exists:
+                    raise UserError(
+                        f"Category {resolved_category_id} not found",
+                        code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                    )
+            self._category_source_map.upsert(
+                source_type=source_origin,
+                category=category,
+                subcategory=subcategory,
+                category_id=resolved_category_id,
+                actor=actor,
+                in_outer_txn=True,
+            )
+        return resolved_category_id
+
     def _complete_rows(
         self,
         table: TableRef,

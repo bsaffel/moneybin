@@ -180,6 +180,10 @@ _HELP_COMMANDS: list[list[str]] = [
     ["merchants", "links", "set"],
     ["merchants", "links", "history"],
     ["merchants", "links", "run"],
+    # categories mappings subgroup + leaves
+    ["categories", "mappings"],
+    ["categories", "mappings", "pending"],
+    ["categories", "mappings", "set"],
 ]
 
 _runner = CliRunner()
