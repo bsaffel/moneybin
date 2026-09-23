@@ -235,7 +235,7 @@ All sync commands live under the `moneybin sync` subgroup. This namespace maps t
 | `moneybin sync logout` | Clear stored JWT from keychain/file |
 | `moneybin sync link` | Link a bank account — text output waits for completion; JSON returns the Link session and URL |
 | `moneybin sync link-status --session-id ID` | Read a Link session's current state after a nonblocking JSON link |
-| `moneybin sync disconnect --institution NAME` | Remove an institution (resolves name → id via `GET /institutions`) |
+| `moneybin sync disconnect --institution NAME \| --provider-item-id ID` | Remove one connection (resolves name or exact item id → id via `GET /institutions`); `--provider-item-id` targets one connection when an institution has more than one (e.g. after a relink) |
 | `moneybin sync pull [--force] [--institution NAME]` | Pull bank data: trigger a server-completed sync, download, load, transform |
 | `moneybin sync status` | Show connected institutions, last sync times, health, errors with actionable guidance |
 
@@ -323,7 +323,7 @@ MCP tools mirror the CLI under a `sync` namespace. Designed for AI agents (Claud
 | `sync_pull` | Trigger a bank data sync, wait for completion, and load results | `institution: str \| None` |
 | `sync_status` | Show connected institutions and health, inspect one link session, or advance one device-login session | `session_id: str \| None` or `auth_session_id: str \| None` (mutually exclusive) |
 | `sync_link` | Start a bank link or device-login flow | `institution: str \| None`, `mode: "institution" \| "login"`; returns session URL or device credentials |
-| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
+| `sync_disconnect` | Remove a bank connection or clear profile-scoped credentials | `institution: str \| None`, `provider_item_id: str \| None` (mutually exclusive), `mode: "institution" \| "logout"`, `confirmation_token: str \| None` |
 
 Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/OpenAI tool-name regex (`mcp-architecture.md` §3).
 
@@ -333,8 +333,12 @@ Underscore separators per `.claude/rules/surface-design.md` and the Anthropic/Op
 - After the user completes the verification URL, advance that session with
   `sync_status(auth_session_id=...)`.
 - Disconnecting an institution is a two-call confirmation flow. First call
-  `sync_disconnect(mode="institution", institution=<institution>)`; when it returns
-  `confirmation_required`, retry the same call with `confirmation_token=<token>`.
+  `sync_disconnect(mode="institution", institution=<institution>)` (or
+  `provider_item_id=<id>` from `sync_status` to target one exact connection
+  when the institution has more than one, e.g. after a relink); when it
+  returns `confirmation_required`, retry the same call with
+  `confirmation_token=<token>`. The confirmation message and binding name
+  the exact connection being removed.
 - Clear profile-scoped credentials with `sync_disconnect(mode="logout")`. Logout
   does not accept `institution` or `confirmation_token`.
 - Provider-specific operations remain abstracted behind the provider-agnostic

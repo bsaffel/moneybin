@@ -328,10 +328,22 @@ def sync_connect_status_alias(  # Typer-registered alias; referenced by decorato
 
 @app.command("disconnect")
 def sync_disconnect(
-    institution: str = typer.Option(
-        ...,
+    institution: str | None = typer.Option(
+        None,
         "--institution",
-        help="Institution name to disconnect.",
+        help=(
+            "Institution name to disconnect. Ambiguous when it has more "
+            "than one connection (e.g. after a relink) — use "
+            "--provider-item-id instead."
+        ),
+    ),
+    provider_item_id: str | None = typer.Option(
+        None,
+        "--provider-item-id",
+        help=(
+            "Exact connection to disconnect, from `moneybin sync status`. "
+            "Mutually exclusive with --institution."
+        ),
     ),
     yes: bool = typer.Option(
         False,
@@ -342,13 +354,23 @@ def sync_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a bank connection."""
-    if not yes and sys.stdin.isatty():
-        if not typer.confirm(f"Disconnect {institution}?", default=False):
-            typer.echo("Cancelled.", err=True)
-            raise typer.Exit(0)
     with handle_cli_errors():
         with _build_sync_service() as service:
-            service.disconnect(institution=institution)
+            if not yes and sys.stdin.isatty():
+                plan = service.plan_disconnect(
+                    institution=institution, provider_item_id=provider_item_id
+                )
+                target = plan.institution_name or plan.provider_item_id
+                if not typer.confirm(
+                    f"Disconnect {target} (provider_item_id={plan.provider_item_id})?",
+                    default=False,
+                ):
+                    typer.echo("Cancelled.", err=True)
+                    raise typer.Exit(0)
+            disconnected = service.disconnect(
+                institution=institution, provider_item_id=provider_item_id
+            )
+    resolved = disconnected.institution_name or disconnected.provider_item_id
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
             sync_disconnect_envelope,
@@ -356,14 +378,14 @@ def sync_disconnect(
 
         render_or_json(
             sync_disconnect_envelope(
-                institution=institution,
+                institution=resolved,
                 actions=["Use 'moneybin sync link' to reconnect an institution"],
             ),
             output,
             cli_actor="sync_disconnect",
         )
     else:
-        typer.echo(f"✅ Disconnected {institution}")
+        typer.echo(f"✅ Disconnected {resolved}")
 
 
 @app.command("pull")
@@ -535,7 +557,7 @@ def sync_status(
         help=(
             "Comma-separated field projection (json output only). Available: "
             "id, provider_item_id, institution_name, provider, status, last_sync, "
-            "error_code, guidance"
+            "created_at, error_code, guidance"
         ),
     ),
 ) -> None:
@@ -568,7 +590,13 @@ def sync_status(
         return
     for c in connections:
         last = c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
-        line = f"{c.institution_name} — status: {c.status}, last sync: {last}"
+        linked = c.created_at.strftime("%Y-%m-%d %H:%M UTC")
+        # Renders every item, including duplicates from a relink — created_at is
+        # what tells two identically-named items apart (issue #408).
+        line = (
+            f"{c.institution_name} — status: {c.status}, last sync: {last}, "
+            f"linked: {linked} ({c.provider_item_id})"
+        )
         typer.echo(line)
         if c.error_code:
             typer.echo(f"   ⚠️  error: {c.error_code}")

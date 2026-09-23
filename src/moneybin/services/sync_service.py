@@ -442,6 +442,7 @@ class SyncService:
                 provider=i.provider,
                 status=i.status,
                 last_sync=i.last_sync,
+                created_at=i.created_at,
                 error_code=i.error_code,
                 guidance=self._guidance_for(
                     status=i.status,
@@ -452,13 +453,45 @@ class SyncService:
             for i in institutions
         ]
 
-    def disconnect(self, *, institution: str) -> None:
-        """Resolve institution name to connection id and call client.disconnect()."""
-        inst = self.plan_disconnect(institution=institution)
+    def disconnect(
+        self, *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> ConnectedInstitution:
+        """Resolve a target (name or exact item) to a connection and disconnect it."""
+        inst = self.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
         self.client.disconnect(inst.id)
+        return inst
 
-    def plan_disconnect(self, *, institution: str) -> ConnectedInstitution:
-        """Resolve the exact live connection that an institution disconnect targets."""
+    def plan_disconnect(
+        self, *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> ConnectedInstitution:
+        """Resolve the exact live connection that a disconnect targets.
+
+        `provider_item_id` targets one connection exactly — set when an
+        institution has more than one (e.g. after a relink), where
+        `institution` alone is ambiguous and `_find_institution` refuses it.
+        Mutually exclusive with `institution`, mirroring `pull()`'s guard.
+        """
+        if institution is not None and provider_item_id is not None:
+            raise ValueError(
+                "institution and provider_item_id are mutually exclusive — "
+                "pass exactly one"
+            )
+        if provider_item_id is not None:
+            inst = self._find_institution_by_item(provider_item_id)
+            if inst is None:
+                raise ValueError(
+                    f"no connected institution with provider_item_id "
+                    f"'{provider_item_id}' — run `moneybin sync status` to "
+                    f"list connected banks"
+                )
+            return inst
+        if institution is None:
+            raise ValueError(
+                "institution or provider_item_id is required to disconnect — "
+                "run `moneybin sync status` to list connected banks"
+            )
         inst = self._find_institution(institution)
         if inst is None:
             raise ValueError(
@@ -470,11 +503,14 @@ class SyncService:
     def disconnect_confirmed(
         self,
         *,
-        institution: str,
+        institution: str | None = None,
+        provider_item_id: str | None = None,
         verify: Callable[[ConnectedInstitution], None],
     ) -> ConnectedInstitution:
         """Verify the live target immediately before deleting the connection."""
-        inst = self.plan_disconnect(institution=institution)
+        inst = self.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
         verify(inst)
         self.client.disconnect(inst.id)
         return inst
@@ -515,10 +551,25 @@ class SyncService:
             ids = ", ".join(m.provider_item_id for m in matches)
             raise ValueError(
                 f"multiple connected institutions match '{name}' ({ids}). "
-                f"Run `moneybin sync status` to identify them; disambiguate "
-                f"via the matching server-side connection id."
+                f"Run `moneybin sync status` to see each connection's "
+                f"provider_item_id and created_at, then target the specific "
+                f"connection by provider_item_id."
             )
         return matches[0] if matches else None
+
+    def _find_institution_by_item(
+        self, provider_item_id: str
+    ) -> ConnectedInstitution | None:
+        """Look up a connected institution by its exact provider_item_id.
+
+        Unambiguous by construction — unlike institution name, the server
+        assigns one item id per connection, so this never raises.
+        """
+        institutions = self.client.list_institutions()
+        for inst in institutions:
+            if inst.provider_item_id == provider_item_id:
+                return inst
+        return None
 
     def _resolve_institution(self, name: str) -> str:
         """Map a human-readable institution name to its provider_item_id.

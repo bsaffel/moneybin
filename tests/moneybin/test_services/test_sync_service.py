@@ -862,6 +862,92 @@ def test_disconnect_unknown_institution_raises(
         service.disconnect(institution="UnknownBank")
 
 
+def _two_items_same_institution() -> list[ConnectedInstitution]:
+    """Two connections sharing an institution name (post-relink), one per item."""
+    return [
+        ConnectedInstitution(
+            id="conn_a",
+            provider_item_id="item_a",
+            provider="plaid",
+            institution_name="Chase",
+            status="revoked",
+            created_at=datetime(2026, 1, 5, tzinfo=UTC),
+        ),
+        ConnectedInstitution(
+            id="conn_b",
+            provider_item_id="item_b",
+            provider="plaid",
+            institution_name="Chase",
+            status="active",
+            created_at=datetime(2026, 6, 1, tzinfo=UTC),
+        ),
+    ]
+
+
+def test_plan_disconnect_by_provider_item_id_resolves_among_duplicates(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """provider_item_id targets one exact item without hitting the name ambiguity guard."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+
+    resolved = service.plan_disconnect(provider_item_id="item_b")
+
+    assert resolved.id == "conn_b"
+    assert resolved.provider_item_id == "item_b"
+
+
+def test_disconnect_by_provider_item_id_deletes_the_correct_internal_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The client is called with the resolved internal id, not the item id."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+
+    result = service.disconnect(provider_item_id="item_a")
+
+    assert result.id == "conn_a"
+    mock_client.disconnect.assert_called_once_with("conn_a")
+
+
+def test_plan_disconnect_unknown_provider_item_id_raises(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(
+        ValueError, match="no connected institution with provider_item_id"
+    ):
+        service.plan_disconnect(provider_item_id="item_missing")
+
+
+def test_plan_disconnect_rejects_both_institution_and_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        service.plan_disconnect(institution="Chase", provider_item_id="item_a")
+    mock_client.list_institutions.assert_not_called()
+
+
+def test_plan_disconnect_requires_institution_or_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="required to disconnect"):
+        service.plan_disconnect()
+
+
+def test_ambiguous_institution_error_names_provider_item_id(
+    mock_client: MagicMock, db: Database, loader: PlaidExtractor
+) -> None:
+    """The dead-end message must name a parameter the caller can actually use."""
+    mock_client.list_institutions.return_value = _two_items_same_institution()
+    service = SyncService(client=mock_client, db=db, loader=loader)
+    with pytest.raises(ValueError, match="provider_item_id"):
+        service.plan_disconnect(institution="Chase")
+
+
 class TestPullAutoRefreshes:
     """sync.pull() runs the post-load refresh pipeline by default.
 

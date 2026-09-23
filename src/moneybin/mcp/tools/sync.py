@@ -230,8 +230,11 @@ def sync_link(
                 error=UserError(
                     f"multiple connected institutions match '{institution}' ({ids})",
                     code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
-                    hint="Run sync_status to identify them; the duplicate name "
-                    "must be disambiguated before sync_link can target one.",
+                    hint="Run sync_status to see each connection's "
+                    "provider_item_id and created_at. sync_link cannot target "
+                    "one of several same-named connections yet — use "
+                    "sync_disconnect(provider_item_id=...) to remove the "
+                    "extra one, then retry.",
                 ),
                 actions=["Run sync_status to list connected institutions."],
             )
@@ -391,15 +394,19 @@ def sync_pull_coarse(
     return sync_pull(institution=institution)
 
 
-def _sync_disconnect_binding(
-    institution: str,
-    connection: ConnectedInstitution,
-) -> ConfirmationBinding:
-    """Bind confirmation to one exact live remote institution connection."""
+def _sync_disconnect_binding(connection: ConnectedInstitution) -> ConfirmationBinding:
+    """Bind confirmation to one exact live remote institution connection.
+
+    Bound on the resolved connection's own stable identity
+    (``provider_item_id`` / ``id``), not the caller's raw ``institution``
+    input — that stays correct whether the caller targeted by name or by
+    item id, and it is what actually changes if the live connection set
+    shifts between plan and confirm (see ``ConfirmationGrant.verify``).
+    """
     return ConfirmationBinding(
         arguments={
-            "institution": institution.casefold(),
             "mode": "institution",
+            "provider_item_id": connection.provider_item_id,
             "institution_name": connection.institution_name,
             "provider": connection.provider,
             "status": connection.status,
@@ -413,29 +420,52 @@ def _sync_disconnect_binding(
     )
 
 
+def _sync_disconnect_message(connection: ConnectedInstitution) -> str:
+    """Name the exact connection a disconnect confirmation would remove.
+
+    Two connections at the same institution (e.g. after a relink) render
+    identically without this — the confirm must let the user tell them
+    apart rather than trust a bare institution name (design-principles.md
+    -> "Magic stays visible").
+    """
+    name = connection.institution_name or "this institution"
+    linked = connection.created_at.date().isoformat()
+    return (
+        f"Permanently disconnect {name} (provider_item_id="
+        f"{connection.provider_item_id}, linked {linked})? Previously "
+        "pulled local rows remain."
+    )
+
+
 def _sync_logout() -> Any:
     """Run blocking credential cleanup outside the MCP event loop."""
     return _build_sync_auth_service().logout()
 
 
-def _plan_sync_disconnect(institution: str) -> ConnectedInstitution:
+def _plan_sync_disconnect(
+    institution: str | None, provider_item_id: str | None
+) -> ConnectedInstitution:
     """Resolve one live disconnect target outside the MCP event loop."""
     with _build_sync_service() as service:
-        return service.plan_disconnect(institution=institution)
+        return service.plan_disconnect(
+            institution=institution, provider_item_id=provider_item_id
+        )
 
 
 def _disconnect_sync_confirmed(
-    institution: str,
+    institution: str | None,
+    provider_item_id: str | None,
     grant: ConfirmationGrant,
 ) -> ConnectedInstitution:
     """Re-resolve, verify, and delete one connection outside the event loop."""
 
     def verify(live: ConnectedInstitution) -> None:
-        grant.verify(_sync_disconnect_binding(institution, live))
+        grant.verify(_sync_disconnect_binding(live))
 
     with _build_sync_service() as service:
         return service.disconnect_confirmed(
             institution=institution,
+            provider_item_id=provider_item_id,
             verify=verify,
         )
 
@@ -449,19 +479,25 @@ def _disconnect_sync_confirmed(
 )
 async def sync_disconnect(
     institution: str | None = None,
+    provider_item_id: str | None = None,
     mode: Literal["institution", "logout"] = "institution",
     confirmation_token: str | None = None,
 ) -> ResponseEnvelope[SyncDisconnectCoarsePayload]:
-    """Disconnect an institution or clear scoped sync credentials.
+    """Disconnect one institution connection or clear scoped sync credentials.
 
     Institution disconnect is permanent on moneybin-sync; local pulled rows
-    remain. Logout clears profile-scoped credentials and pending auth sessions
-    but is recoverable through ``sync_link(mode="login")``.
+    remain. Pass `provider_item_id` (from sync_status) to target one exact
+    connection — required when an institution has more than one (e.g. after
+    a relink), where `institution` alone is ambiguous and gets refused.
+    `institution` and `provider_item_id` are mutually exclusive. Logout
+    clears profile-scoped credentials and pending auth sessions but is
+    recoverable through ``sync_link(mode="login")``.
     """
     if mode == "logout":
-        if institution is not None:
+        if institution is not None or provider_item_id is not None:
             raise UserError(
-                "institution is valid only when mode='institution'.",
+                "institution and provider_item_id are valid only when "
+                "mode='institution'.",
                 code=error_codes.SYNC_DISCONNECT_MODE_CONFLICT,
             )
         if confirmation_token is not None:
@@ -479,33 +515,39 @@ async def sync_disconnect(
                 "Use sync_link(mode='login') to authenticate this profile again.",
             ],
         )
-    if institution is None:
+    if institution is None and provider_item_id is None:
         raise UserError(
-            "institution is required when mode='institution'.",
+            "institution or provider_item_id is required when mode='institution'.",
             code=error_codes.SYNC_INSTITUTION_REQUIRED,
         )
     binding: ConfirmationBinding | None = None
+    message = (
+        "Permanently disconnect this connection? Previously pulled local rows remain."
+    )
     if confirmation_token is None:
-        plan = await asyncio.to_thread(_plan_sync_disconnect, institution)
-        binding = _sync_disconnect_binding(institution, plan)
+        plan = await asyncio.to_thread(
+            _plan_sync_disconnect, institution, provider_item_id
+        )
+        binding = _sync_disconnect_binding(plan)
+        message = _sync_disconnect_message(plan)
     grant: ConfirmationGrant = await grant_confirmation_or_raise(
         binding=binding,
-        message=(
-            "Permanently disconnect this exact institution from future syncs? "
-            "Previously pulled local rows remain."
-        ),
+        message=message,
         confirmation_token=confirmation_token,
     )
 
     disconnected = await asyncio.to_thread(
         _disconnect_sync_confirmed,
         institution,
+        provider_item_id,
         grant,
     )
     return build_envelope(
         data=SyncInstitutionDisconnectView(
             status="disconnected",
-            institution=disconnected.institution_name or institution,
+            institution=disconnected.institution_name
+            or institution
+            or disconnected.provider_item_id,
         ),
         actions=["Use sync_status to inspect remaining institution connections."],
     )

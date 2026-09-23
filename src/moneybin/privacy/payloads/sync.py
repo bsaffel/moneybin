@@ -131,6 +131,7 @@ class SyncConnectionRow:
     provider: Annotated[str, DataClass.INSTITUTION]
     status: Annotated[str, DataClass.TXN_TYPE]
     last_sync: Annotated[str | None, DataClass.TIMESTAMP_OBSERVABILITY]
+    created_at: Annotated[str, DataClass.TIMESTAMP_OBSERVABILITY]
     error_code: Annotated[str | None, DataClass.TXN_TYPE]
     guidance: Annotated[str | None, DataClass.DESCRIPTION]
 

@@ -550,7 +550,73 @@ def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
         app, ["sync", "disconnect", "--institution", "Chase", "--yes"]
     )
     assert result.exit_code == 0, result.output
-    service.disconnect.assert_called_once_with(institution="Chase")
+    service.disconnect.assert_called_once_with(
+        institution="Chase", provider_item_id=None
+    )
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
+    """--provider-item-id targets one exact connection, bypassing name lookup."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--provider-item-id", "item_b", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    service.disconnect.assert_called_once_with(
+        institution=None, provider_item_id="item_b"
+    )
+    assert "Chase" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_rejects_both_institution_and_provider_item_id(
+    mock_build: MagicMock,
+) -> None:
+    service = MagicMock()
+    service.disconnect.side_effect = ValueError(
+        "institution and provider_item_id are mutually exclusive — pass exactly one"
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--institution",
+            "Chase",
+            "--provider-item-id",
+            "item_a",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 1
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_a_target(mock_build: MagicMock) -> None:
+    """Neither --institution nor --provider-item-id given must refuse, not delete."""
+    service = MagicMock()
+    service.disconnect.side_effect = ValueError(
+        "institution or provider_item_id is required to disconnect"
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "disconnect", "--yes"])
+    assert result.exit_code == 1
 
 
 @pytest.mark.unit
@@ -565,6 +631,7 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
         SyncConnectionView(
@@ -574,6 +641,7 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 2, 1, 9, 0, tzinfo=UTC),
             guidance="Schwab needs re-authentication — run `moneybin sync link --institution Schwab`",
         ),
     ]
@@ -583,6 +651,10 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
     assert "Chase" in result.stdout
     assert "Schwab" in result.stdout
     assert "needs re-authentication" in result.stdout
+    # created_at (the link date) must reach text output — several items at one
+    # institution otherwise render as identical, unorderable rows (issue #408).
+    assert "2026-01-05" in result.stdout
+    assert "item_a" in result.stdout
 
 
 @pytest.mark.unit
@@ -597,6 +669,7 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -607,6 +680,8 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     assert rows[0]["institution_name"] == "Chase"
     assert rows[0]["status"] == "active"
     assert rows[0]["error_code"] is None
+    # created_at must survive the projection to CLI JSON output.
+    assert rows[0]["created_at"] == "2026-01-05T09:00:00+00:00"
 
 
 @pytest.mark.unit
@@ -630,6 +705,7 @@ def test_sync_status_json_fields_still_projects_after_the_envelope(
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -658,6 +734,7 @@ def test_sync_status_shows_error_code_when_present(mock_build: MagicMock) -> Non
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             error_code="ITEM_LOGIN_REQUIRED",
             guidance="Chase needs re-authentication",
         ),

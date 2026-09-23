@@ -87,7 +87,8 @@ Usage: `moneybin sync disconnect [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--institution` | text |  | Required. Institution name to disconnect. |
+| `--institution` | text |  | Institution name to disconnect. Ambiguous when it has more than one connection (e.g. after a relink) — use --provider-item-id instead. |
+| `--provider-item-id` | text |  | Exact connection to disconnect, from `moneybin sync status`. Mutually exclusive with --institution. |
 | `--yes, -y` | flag |  | Skip confirmation prompt. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
@@ -119,4 +120,4 @@ Usage: `moneybin sync status [OPTIONS]`
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
-| `--json-fields` | text |  | Comma-separated field projection (json output only). Available: id, provider_item_id, institution_name, provider, status, last_sync, error_code, guidance |
+| `--json-fields` | text |  | Comma-separated field projection (json output only). Available: id, provider_item_id, institution_name, provider, status, last_sync, created_at, error_code, guidance |

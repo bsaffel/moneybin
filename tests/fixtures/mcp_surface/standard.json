@@ -1,5 +1,5 @@
 {
-  "sha256": "60206db0a25b5e99bc07add35c5cf9a389fcb0e8800a49706c8708fca63dad44",
+  "sha256": "819d277f67de8f9e368b25c52b5716c27a7352dbf215a4c3005dffae3dd0aab9",
   "tool_count": 50,
   "tools": [
     {
@@ -3359,6 +3359,17 @@
                 "logout"
               ],
               "type": "string"
+            },
+            "provider_item_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
             }
           },
           "type": "object"
@@ -3371,11 +3382,11 @@
         "name": "sync_disconnect"
       },
       "description_bytes": 68,
-      "input_schema_bytes": 299,
+      "input_schema_bytes": 379,
       "name": "sync_disconnect",
       "other_bytes": 57,
       "output_schema_bytes": 0,
-      "total_bytes": 560
+      "total_bytes": 640
     },
     {
       "annotation_bytes": 90,
@@ -5251,5 +5262,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 62356
+  "total_bytes": 62436
 }

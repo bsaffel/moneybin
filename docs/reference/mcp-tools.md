@@ -644,6 +644,7 @@ Access: write, destructive, not idempotent, open world. Sensitivity: at least `l
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider_item_id` | string |  |  |
 | `mode` | one of `institution`, `logout` | `institution` |  |
 | `confirmation_token` | string |  |  |
 

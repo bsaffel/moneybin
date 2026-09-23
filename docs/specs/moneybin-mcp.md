@@ -103,7 +103,7 @@ safety family without duplicating FastMCP's drifting JSON schema.
 | `sync_link` | `institution`, `mode` | Start mediated provider linking | Credential flow / at least medium |
 | `sync_status` | `auth_session_id`, `session_id` | Provider connection status | Read / dynamic / up to medium / session-derived |
 | `sync_pull` | `institution` | Pull linked-provider data | External mutation / at least medium |
-| `sync_disconnect` | `confirmation_token`, `institution`, `mode` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
+| `sync_disconnect` | `confirmation_token`, `institution`, `mode`, `provider_item_id` | Disconnect provider or credentials | Institution disconnect is a confirmed destructive write; logout is recoverable / at least low |
 | `gsheet` | `connection_id`, `view` | Google Sheets connections | Read / dynamic / up to medium / connection-derived |
 | `gsheet_connect` | `accept_seed_fallback`, `account_id`, `account_name`, `adapter`, `alias`, `column_mapping`, `confirm_mapping`, `connection_id`, `force_reauth`, `no_initial_pull`, `url` | Bind user-controlled storage | Credential flow / dynamic / up to medium / connection-derived |
 | `gsheet_pull` | `connection_id` | Pull sheet data | External mutation / at least medium |
