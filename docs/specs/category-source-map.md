@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
-> Last updated: 2026-09-20
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition.
+> Last updated: 2026-09-23
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface.
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -193,11 +193,19 @@ unchanged; only the reverse-lookup key and code shape are new:
   cannot `ALTER` a primary key), replacing the JSON-encoded composite code
   described above.
 
-PR1 ships the engine only (repo write method + orchestrator leg, wired into
-`categorize_pending`). The CLI/MCP surface to author `app.category_source_map`
-rows for an exporter is a later slice — until it ships, this leg is a
-capability with no way to populate its own input for imported sources users
-haven't already mapped via Plaid-style curation.
+PR1 shipped the engine only (repo write method + orchestrator leg, wired into
+`categorize_pending`). PR2 adds the authoring surface:
+`CategorizationQueries.list_unmapped_source_terms` enumerates distinct
+unmapped `(source_origin, category, subcategory)` terms — the decision unit
+is the term, not the transaction, since one curated mapping resolves every
+row carrying that text — with up to 3 `did_you_mean` suggestions against
+active MoneyBin category names; `MatchApplier.resolve_source_term` maps one
+term to an existing category or a newly-created one (via `create_category`),
+sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
+are exposed as `moneybin categories mappings pending` / `... set`. An MCP
+tool was not added in PR2 — this is CLI-only for now; the taxonomy of the
+future MCP surface, if one is added, is an open follow-up rather than a
+decision made here.
 
 ## Reverse-lookup contract
 

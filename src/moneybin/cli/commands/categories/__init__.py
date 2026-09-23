@@ -1,4 +1,4 @@
-"""Category taxonomy management (list, create, set, delete)."""
+"""Category taxonomy management (list, create, set, delete) and mappings subgroup."""
 
 from __future__ import annotations
 
@@ -20,12 +20,15 @@ from moneybin.privacy.payloads.categories import (
 )
 from moneybin.protocol.envelope import build_envelope
 
+from . import mappings
+
 logger = logging.getLogger(__name__)
 
 app = typer.Typer(
     help="Category taxonomy management",
     no_args_is_help=True,
 )
+app.add_typer(mappings.app, name="mappings")
 
 
 @app.command("list")
