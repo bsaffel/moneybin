@@ -32,13 +32,13 @@ moneybin privacy redact "VENMO PAYMENT TO J SMITH"
 echo "STARBUCKS #1234 SEATTLE WA" | moneybin privacy redact -
 ```
 
-Usage: `moneybin privacy redact [OPTIONS] [DESCRIPTION]`
+Usage: `moneybin privacy redact [OPTIONS] [description]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[DESCRIPTION]` | text | no | Description to redact, or '-' to read from stdin. |
+| `description` | text | no | Description to redact, or '-' to read from stdin. |
 
 ## moneybin privacy grant
 
@@ -46,13 +46,13 @@ Grant consent to share \<category> data with an AI backend.
 
 Account numbers and other CRITICAL fields always remain masked.
 
-Usage: `moneybin privacy grant [OPTIONS] CATEGORY`
+Usage: `moneybin privacy grant [OPTIONS] {category}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CATEGORY` | text | yes | Feature category, e.g. mcp-data-sharing |
+| `category` | text | yes | Feature category, e.g. mcp-data-sharing |
 
 **Options**
 
@@ -67,13 +67,13 @@ Usage: `moneybin privacy grant [OPTIONS] CATEGORY`
 
 Revoke consent for \<category>; takes effect immediately.
 
-Usage: `moneybin privacy revoke [OPTIONS] CATEGORY`
+Usage: `moneybin privacy revoke [OPTIONS] {category}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CATEGORY` | text | yes | Feature category to revoke |
+| `category` | text | yes | Feature category to revoke |
 
 **Options**
 

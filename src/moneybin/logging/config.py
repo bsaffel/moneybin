@@ -9,12 +9,13 @@ values are passed explicitly by the caller, decoupling logging setup from
 profile resolution and settings loading.
 """
 
+import contextlib
 import logging
 import stat as stat_mod
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, TextIO
 
 from moneybin.log_sanitizer import SanitizedLogFormatter
 from moneybin.logging.formatters import HumanFormatter, JSONFormatter
@@ -122,6 +123,29 @@ def session_log_path(
     return profile_log_dir / f"{prefix}_{now.strftime('%Y-%m-%d')}.log"
 
 
+class _CurrentStderrHandler(logging.StreamHandler[TextIO]):
+    """Write to whatever ``sys.stderr`` is at emit time, not at setup.
+
+    ``StreamHandler(sys.stderr)`` binds the stream object, so a caller that
+    swaps ``sys.stderr`` and later closes the old one (typer's CliRunner does,
+    between invocations) leaves every later record hitting a closed file.
+    Mirrors the stdlib's own ``logging.lastResort`` handler.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(sys.stderr)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Handler.handle holds the handler lock around emit.
+        self.stream = sys.stderr
+        super().emit(record)
+
+    def flush(self) -> None:
+        with self.lock or contextlib.nullcontext():
+            self.stream = sys.stderr
+            super().flush()
+
+
 def _make_file_handler(
     log_file: Path, formatter: logging.Formatter
 ) -> logging.FileHandler:
@@ -191,7 +215,7 @@ def _setup_sqlmesh_file_handler(
         isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler)
         for h in sqlmesh_logger.handlers
     ):
-        sqlmesh_console = logging.StreamHandler(sys.stderr)
+        sqlmesh_console = _CurrentStderrHandler()
         sqlmesh_console.setLevel(logging.WARNING)
         sqlmesh_console.setFormatter(SanitizedLogFormatter(formatter))
         sqlmesh_logger.addHandler(sqlmesh_console)
@@ -254,7 +278,7 @@ def setup_logging(
 
     # Console handler (always present, writes to stderr). Its filter is
     # attached below, once we know whether a file handler actually landed.
-    console_handler = logging.StreamHandler(sys.stderr)
+    console_handler = _CurrentStderrHandler()
     console_handler.setFormatter(SanitizedLogFormatter(console_formatter))
     handlers.append(console_handler)
 

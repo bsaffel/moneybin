@@ -49,13 +49,13 @@ Detects sheet structure, persists the column mapping + header
 signature, and (by default) runs the initial pull. Use --adapter=seed
 --alias=\<name> to land arbitrary tabular data into raw.gsheet_\<alias>.
 
-Usage: `moneybin gsheet connect [OPTIONS] URL`
+Usage: `moneybin gsheet connect [OPTIONS] {url}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `URL` | text | yes | Google Sheet URL (must include #gid=...). |
+| `url` | text | yes | Google Sheet URL (must include #gid=...). |
 
 **Options**
 
@@ -76,13 +76,13 @@ Usage: `moneybin gsheet connect [OPTIONS] URL`
 
 Pull a single connection by ID, or every healthy connection.
 
-Usage: `moneybin gsheet pull [OPTIONS] [CONNECTION_ID]`
+Usage: `moneybin gsheet pull [OPTIONS] [connection_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[CONNECTION_ID]` | text | no | Connection ID to pull. Omit to pull every healthy connection. |
+| `connection_id` | text | no | Connection ID to pull. Omit to pull every healthy connection. |
 
 **Options**
 
@@ -108,13 +108,13 @@ Usage: `moneybin gsheet list [OPTIONS]`
 
 Show status for one connection, or a summary of all of them.
 
-Usage: `moneybin gsheet status [OPTIONS] [CONNECTION_ID]`
+Usage: `moneybin gsheet status [OPTIONS] [connection_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[CONNECTION_ID]` | text | no | Connection ID to inspect. Omit for a full summary. |
+| `connection_id` | text | no | Connection ID to inspect. Omit for a full summary. |
 
 **Options**
 
@@ -129,13 +129,13 @@ Re-detect the sheet structure, re-pin the mapping, and run a pull.
 Use after the source sheet changes shape (column added, header reworded)
 and drift_detected status appears.
 
-Usage: `moneybin gsheet reconnect [OPTIONS] CONNECTION_ID`
+Usage: `moneybin gsheet reconnect [OPTIONS] {connection_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CONNECTION_ID` | text | yes | Connection ID to reconnect. |
+| `connection_id` | text | yes | Connection ID to reconnect. |
 
 **Options**
 
@@ -149,13 +149,13 @@ Usage: `moneybin gsheet reconnect [OPTIONS] CONNECTION_ID`
 
 Soft-disconnect (default) or purge a Google Sheets connection.
 
-Usage: `moneybin gsheet disconnect [OPTIONS] CONNECTION_ID`
+Usage: `moneybin gsheet disconnect [OPTIONS] {connection_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CONNECTION_ID` | text | yes | Connection ID to disconnect. |
+| `connection_id` | text | yes | Connection ID to disconnect. |
 
 **Options**
 

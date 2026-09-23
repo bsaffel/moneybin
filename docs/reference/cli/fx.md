@@ -28,15 +28,15 @@ because a wrong rate looks exactly like a right one.
 A fetched rate is cached in raw.exchange_rates, so the same question costs
 one network call at most. Record your own with 'moneybin fx set'.
 
-Usage: `moneybin fx rate [OPTIONS] FROM_CURRENCY TO_CURRENCY [RATE_DATE]`
+Usage: `moneybin fx rate [OPTIONS] {from_currency} {to_currency} [rate_date]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FROM_CURRENCY` | text | yes | ISO-4217 code to price from |
-| `TO_CURRENCY` | text | yes | ISO-4217 code to price into |
-| `[RATE_DATE]` | text | no | Date the rate applies to (YYYY-MM-DD). Default: today. |
+| `from_currency` | text | yes | ISO-4217 code to price from |
+| `to_currency` | text | yes | ISO-4217 code to price into |
+| `rate_date` | text | no | Date the rate applies to (YYYY-MM-DD). Default: today. |
 
 **Options**
 
@@ -57,14 +57,14 @@ One row per date: the rate that actually applied, not every candidate that
 competed for it. 'source' names the provider that supplied it, or
 'override' where your own correction won.
 
-Usage: `moneybin fx list [OPTIONS] FROM_CURRENCY TO_CURRENCY`
+Usage: `moneybin fx list [OPTIONS] {from_currency} {to_currency}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FROM_CURRENCY` | text | yes | ISO-4217 code to price from |
-| `TO_CURRENCY` | text | yes | ISO-4217 code to price into |
+| `from_currency` | text | yes | ISO-4217 code to price from |
+| `to_currency` | text | yes | ISO-4217 code to price into |
 
 **Options**
 
@@ -89,16 +89,16 @@ outranks the provider nothing downstream would contradict it.
 FROM and TO must differ. A currency prices itself at exactly 1, and 'fx
 rate' answers that without reading this table at all.
 
-Usage: `moneybin fx set [OPTIONS] FROM_CURRENCY TO_CURRENCY RATE_DATE RATE`
+Usage: `moneybin fx set [OPTIONS] {from_currency} {to_currency} {rate_date} {rate}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FROM_CURRENCY` | text | yes | ISO-4217 code to price from |
-| `TO_CURRENCY` | text | yes | ISO-4217 code to price into |
-| `RATE_DATE` | text | yes | Date the rate applies to (YYYY-MM-DD) |
-| `RATE` | text | yes | Units of TO per one FROM, e.g. 0.87138 |
+| `from_currency` | text | yes | ISO-4217 code to price from |
+| `to_currency` | text | yes | ISO-4217 code to price into |
+| `rate_date` | text | yes | Date the rate applies to (YYYY-MM-DD) |
+| `rate` | text | yes | Units of TO per one FROM, e.g. 0.87138 |
 
 **Options**
 
@@ -117,15 +117,15 @@ this a correction is unreachable once written. Removing one is permanent —
 the audit log records it, but the previous value is not restored by
 re-running anything.
 
-Usage: `moneybin fx delete [OPTIONS] FROM_CURRENCY TO_CURRENCY RATE_DATE`
+Usage: `moneybin fx delete [OPTIONS] {from_currency} {to_currency} {rate_date}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FROM_CURRENCY` | text | yes | ISO-4217 code to price from |
-| `TO_CURRENCY` | text | yes | ISO-4217 code to price into |
-| `RATE_DATE` | text | yes | Date of the correction to remove (YYYY-MM-DD) |
+| `from_currency` | text | yes | ISO-4217 code to price from |
+| `to_currency` | text | yes | ISO-4217 code to price into |
+| `rate_date` | text | yes | Date of the correction to remove (YYYY-MM-DD) |
 
 **Options**
 

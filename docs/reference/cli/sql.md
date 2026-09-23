@@ -36,13 +36,13 @@ Amounts use the accounting convention: negative = expense, positive = income.
 ``--json-fields`` filters ``--output json`` to a subset of the SELECT list's
 column names (the available fields depend on the query).
 
-Usage: `moneybin sql query [OPTIONS] QUERY`
+Usage: `moneybin sql query [OPTIONS] {query}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `QUERY` | text | yes | SQL query to execute (read-only). |
+| `query` | text | yes | SQL query to execute (read-only). |
 
 **Options**
 

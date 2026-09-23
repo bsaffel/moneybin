@@ -47,14 +47,14 @@ Usage: `moneybin transactions review [OPTIONS]`
 
 Create a single manual transaction.
 
-Usage: `moneybin transactions create [OPTIONS] AMOUNT DESCRIPTION`
+Usage: `moneybin transactions create [OPTIONS] {amount} {description}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `AMOUNT` | text | yes | Signed decimal amount (negative=expense) |
-| `DESCRIPTION` | text | yes | Transaction description |
+| `amount` | text | yes | Signed decimal amount (negative=expense) |
+| `description` | text | yes | Transaction description |
 
 **Options**
 
@@ -78,13 +78,13 @@ Usage: `moneybin transactions create [OPTIONS] AMOUNT DESCRIPTION`
 
 List audit events for one transaction.
 
-Usage: `moneybin transactions audit [OPTIONS] TRANSACTION_ID`
+Usage: `moneybin transactions audit [OPTIONS] {transaction_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
+| `transaction_id` | text | yes | Transaction ID |
 
 **Options**
 
@@ -188,13 +188,13 @@ moneybin transactions categorize export-uncategorized \
 
 Exit code is 1 if any item failed or was skipped.
 
-Usage: `moneybin transactions categorize commit-from-file [OPTIONS] [INPUT_PATH]`
+Usage: `moneybin transactions categorize commit-from-file [OPTIONS] [input_path]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[INPUT_PATH]` | path | no | Path to a JSON file produced by export-uncategorized, or '-' to read stdin. |
+| `input_path` | path | no | Path to a JSON file produced by export-uncategorized, or '-' to read stdin. |
 
 **Options**
 
@@ -250,13 +250,13 @@ cat cats.json | moneybin transactions categorize commit -
 Per-item validation: failures are reported in the result without aborting
 the batch. Exit code is 1 if any item failed.
 
-Usage: `moneybin transactions categorize commit [OPTIONS] [STDIN_SENTINEL]`
+Usage: `moneybin transactions categorize commit [OPTIONS] [stdin_sentinel]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[STDIN_SENTINEL]` | text | no | Pass '-' to read JSON from stdin. |
+| `stdin_sentinel` | text | no | Pass '-' to read JSON from stdin. |
 
 **Options**
 
@@ -398,13 +398,13 @@ Batch: pass --from-file pointing at a JSON list of rule dicts.
 A 'contains' rule whose pattern is too short to discriminate is refused
 unless --allow-broad is passed — see --allow-broad help.
 
-Usage: `moneybin transactions categorize rules create [OPTIONS] [NAME]`
+Usage: `moneybin transactions categorize rules create [OPTIONS] [name]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[NAME]` | text | no | Rule name (omit when --from-file is used) |
+| `name` | text | no | Rule name (omit when --from-file is used) |
 
 **Options**
 
@@ -432,13 +432,13 @@ The rule remains in the database with is_active=false. Use --reapply to
 strip categorizations written by this rule and re-evaluate those rows
 against remaining active matchers.
 
-Usage: `moneybin transactions categorize rules delete [OPTIONS] RULE_ID`
+Usage: `moneybin transactions categorize rules delete [OPTIONS] {rule_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `RULE_ID` | text | yes | Rule ID to deactivate (soft-delete) |
+| `rule_id` | text | yes | Rule ID to deactivate (soft-delete) |
 
 **Options**
 
@@ -473,13 +473,13 @@ list of resolution dicts; the whole batch applies atomically or not at all.
 A conflict recorded against a rule that has since been edited is refused
 as stale — re-read the queue with `rules list-conflicts` and decide again.
 
-Usage: `moneybin transactions categorize rules resolve [OPTIONS] [CONFLICT_ID]`
+Usage: `moneybin transactions categorize rules resolve [OPTIONS] [conflict_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[CONFLICT_ID]` | text | no | Conflict ID to resolve (omit when --from-file is used) |
+| `conflict_id` | text | no | Conflict ID to resolve (omit when --from-file is used) |
 
 **Options**
 
@@ -629,13 +629,13 @@ Usage: `moneybin transactions matches history [OPTIONS]`
 
 Reverse a match decision.
 
-Usage: `moneybin transactions matches undo [OPTIONS] MATCH_ID`
+Usage: `moneybin transactions matches undo [OPTIONS] {match_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `MATCH_ID` | text | yes | Match ID to reverse |
+| `match_id` | text | yes | Match ID to reverse |
 
 **Options**
 
@@ -647,13 +647,13 @@ Usage: `moneybin transactions matches undo [OPTIONS] MATCH_ID`
 
 Accept or reject one pending match by id.
 
-Usage: `moneybin transactions matches set [OPTIONS] MATCH_ID`
+Usage: `moneybin transactions matches set [OPTIONS] {match_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `MATCH_ID` | text | yes | Match ID to accept or reject |
+| `match_id` | text | yes | Match ID to accept or reject |
 
 **Options**
 
@@ -693,14 +693,14 @@ Usage: `moneybin transactions notes [OPTIONS] COMMAND [ARGS]...`
 
 Add a new note to a transaction.
 
-Usage: `moneybin transactions notes add [OPTIONS] TRANSACTION_ID TEXT`
+Usage: `moneybin transactions notes add [OPTIONS] {transaction_id} {text}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
-| `TEXT` | text | yes | Note text |
+| `transaction_id` | text | yes | Transaction ID |
+| `text` | text | yes | Note text |
 
 **Options**
 
@@ -712,13 +712,13 @@ Usage: `moneybin transactions notes add [OPTIONS] TRANSACTION_ID TEXT`
 
 List all notes on a transaction.
 
-Usage: `moneybin transactions notes list [OPTIONS] TRANSACTION_ID`
+Usage: `moneybin transactions notes list [OPTIONS] {transaction_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
+| `transaction_id` | text | yes | Transaction ID |
 
 **Options**
 
@@ -731,14 +731,14 @@ Usage: `moneybin transactions notes list [OPTIONS] TRANSACTION_ID`
 
 Edit an existing note's text.
 
-Usage: `moneybin transactions notes edit [OPTIONS] NOTE_ID TEXT`
+Usage: `moneybin transactions notes edit [OPTIONS] {note_id} {text}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NOTE_ID` | text | yes | Note ID |
-| `TEXT` | text | yes | New note text |
+| `note_id` | text | yes | Note ID |
+| `text` | text | yes | New note text |
 
 **Options**
 
@@ -750,13 +750,13 @@ Usage: `moneybin transactions notes edit [OPTIONS] NOTE_ID TEXT`
 
 Delete a note.
 
-Usage: `moneybin transactions notes delete [OPTIONS] NOTE_ID`
+Usage: `moneybin transactions notes delete [OPTIONS] {note_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NOTE_ID` | text | yes | Note ID |
+| `note_id` | text | yes | Note ID |
 
 **Options**
 
@@ -784,14 +784,14 @@ Usage: `moneybin transactions tags [OPTIONS] COMMAND [ARGS]...`
 
 Apply one or more tags to a transaction.
 
-Usage: `moneybin transactions tags add [OPTIONS] TRANSACTION_ID TAGS...`
+Usage: `moneybin transactions tags add [OPTIONS] {transaction_id} {tags}...`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
-| `TAGS...` | text, repeatable | yes | One or more tags |
+| `transaction_id` | text | yes | Transaction ID |
+| `tags...` | text, repeatable | yes | One or more tags |
 
 **Options**
 
@@ -803,14 +803,14 @@ Usage: `moneybin transactions tags add [OPTIONS] TRANSACTION_ID TAGS...`
 
 Remove one or more tags from a transaction.
 
-Usage: `moneybin transactions tags remove [OPTIONS] TRANSACTION_ID TAGS...`
+Usage: `moneybin transactions tags remove [OPTIONS] {transaction_id} {tags}...`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
-| `TAGS...` | text, repeatable | yes | One or more tags to remove |
+| `transaction_id` | text | yes | Transaction ID |
+| `tags...` | text, repeatable | yes | One or more tags to remove |
 
 **Options**
 
@@ -822,13 +822,13 @@ Usage: `moneybin transactions tags remove [OPTIONS] TRANSACTION_ID TAGS...`
 
 List tags on a transaction, or all distinct tags with usage counts.
 
-Usage: `moneybin transactions tags list [OPTIONS] [TRANSACTION_ID]`
+Usage: `moneybin transactions tags list [OPTIONS] [transaction_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[TRANSACTION_ID]` | text | no | Transaction ID (omit to list all distinct tags with usage counts) |
+| `transaction_id` | text | no | Transaction ID (omit to list all distinct tags with usage counts) |
 
 **Options**
 
@@ -841,14 +841,14 @@ Usage: `moneybin transactions tags list [OPTIONS] [TRANSACTION_ID]`
 
 Rename a tag globally (all transactions). Emits a parent audit event.
 
-Usage: `moneybin transactions tags rename [OPTIONS] OLD NEW`
+Usage: `moneybin transactions tags rename [OPTIONS] {old} {new}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `OLD` | text | yes | Existing tag |
-| `NEW` | text | yes | Replacement tag |
+| `old` | text | yes | Existing tag |
+| `new` | text | yes | Replacement tag |
 
 **Options**
 
@@ -875,14 +875,14 @@ Usage: `moneybin transactions splits [OPTIONS] COMMAND [ARGS]...`
 
 Append a split to a transaction.
 
-Usage: `moneybin transactions splits add [OPTIONS] TRANSACTION_ID AMOUNT`
+Usage: `moneybin transactions splits add [OPTIONS] {transaction_id} {amount}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Parent transaction ID |
-| `AMOUNT` | text | yes | Signed decimal amount |
+| `transaction_id` | text | yes | Parent transaction ID |
+| `amount` | text | yes | Signed decimal amount |
 
 **Options**
 
@@ -897,13 +897,13 @@ Usage: `moneybin transactions splits add [OPTIONS] TRANSACTION_ID AMOUNT`
 
 List splits on a transaction.
 
-Usage: `moneybin transactions splits list [OPTIONS] TRANSACTION_ID`
+Usage: `moneybin transactions splits list [OPTIONS] {transaction_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
+| `transaction_id` | text | yes | Transaction ID |
 
 **Options**
 
@@ -916,13 +916,13 @@ Usage: `moneybin transactions splits list [OPTIONS] TRANSACTION_ID`
 
 Remove a single split.
 
-Usage: `moneybin transactions splits remove [OPTIONS] SPLIT_ID`
+Usage: `moneybin transactions splits remove [OPTIONS] {split_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SPLIT_ID` | text | yes | Split ID |
+| `split_id` | text | yes | Split ID |
 
 **Options**
 
@@ -935,13 +935,13 @@ Usage: `moneybin transactions splits remove [OPTIONS] SPLIT_ID`
 
 Delete all splits on a transaction.
 
-Usage: `moneybin transactions splits clear [OPTIONS] TRANSACTION_ID`
+Usage: `moneybin transactions splits clear [OPTIONS] {transaction_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `TRANSACTION_ID` | text | yes | Transaction ID |
+| `transaction_id` | text | yes | Transaction ID |
 
 **Options**
 

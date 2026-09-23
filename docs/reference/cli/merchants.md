@@ -32,14 +32,14 @@ Usage: `moneybin merchants list [OPTIONS]`
 
 Create a merchant mapping.
 
-Usage: `moneybin merchants create [OPTIONS] PATTERN CANONICAL_NAME`
+Usage: `moneybin merchants create [OPTIONS] {pattern} {canonical_name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `PATTERN` | text | yes | Merchant name pattern |
-| `CANONICAL_NAME` | text | yes | Canonical merchant name |
+| `pattern` | text | yes | Merchant name pattern |
+| `canonical_name` | text | yes | Canonical merchant name |
 
 **Options**
 
@@ -98,13 +98,13 @@ moneybin merchants links set dec001 --into merch0001aa
 moneybin merchants links set dec001 --new
 ```
 
-Usage: `moneybin merchants links set [OPTIONS] DECISION_ID`
+Usage: `moneybin merchants links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `merchants links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `merchants links pending`) |
 
 **Options**
 

@@ -34,13 +34,13 @@ Usage: `moneybin categories list [OPTIONS]`
 
 Create a new category.
 
-Usage: `moneybin categories create [OPTIONS] NAME`
+Usage: `moneybin categories create [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Category name |
+| `name` | text | yes | Category name |
 
 **Options**
 
@@ -53,13 +53,13 @@ Usage: `moneybin categories create [OPTIONS] NAME`
 
 Update a category's settings (is_active is the only modifiable field).
 
-Usage: `moneybin categories set [OPTIONS] CATEGORY_ID`
+Usage: `moneybin categories set [OPTIONS] {category_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CATEGORY_ID` | text | yes | Category ID to update |
+| `category_id` | text | yes | Category ID to update |
 
 **Options**
 
@@ -76,13 +76,13 @@ Refuses if the category is referenced by transactions or budgets unless
 --force is passed. Default (seeded) categories cannot be deleted — disable
 them with `moneybin categories set <id> --inactive` instead.
 
-Usage: `moneybin categories delete [OPTIONS] CATEGORY_ID`
+Usage: `moneybin categories delete [OPTIONS] {category_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `CATEGORY_ID` | text | yes | Category ID to delete |
+| `category_id` | text | yes | Category ID to delete |
 
 **Options**
 

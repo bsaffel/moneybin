@@ -59,7 +59,7 @@ dependencies = [
     # Database and data manipulation
     "duckdb>=1.5.5",
     "polars>=1.44.2",
-    "pyarrow>=24.0.0",
+    "pyarrow>=25.0.1",
     # API integrations
     "plaid-python>=44.0.0",
     "ofxparse>=0.21",
@@ -75,19 +75,12 @@ dependencies = [
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
     "httplib2>=0.32.0",
     # Data validation and utilities
-    # Also a transitive dep of typer, but declared directly because cli/output.py
-    # and reports/user_reports.py import it to read the active command context —
-    # a future typer pin change must not silently break those importers. Upper
-    # bound lives in [tool.uv] constraint-dependencies with its own reason.
-    "click>=8.3.3",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
-    # Modern CLI framework. Capped below 0.26, which vendors its own click
-    # (typer._click): the click.Context cli/output.py reads via
-    # click.get_current_context() would no longer be typer's.
-    "typer>=0.25.1,<0.26",
+    # Modern CLI framework.
+    "typer>=0.27.2",
     # Observability: metrics registry
     "prometheus_client>=0.26.0",
     # Security: transitive dependency version overrides to address CVEs.
@@ -112,7 +105,7 @@ dependencies = [
     "pillow>=12.3.0",
     "anyio>=4.15.1",
     "soupsieve>=2.9.2",
-    "starlette>=1.6.0",
+    "starlette>=1.7.0",
     # Secret management and key derivation
     "keyring>=25.7.0",
     "argon2-cffi>=25.1.0",
@@ -237,7 +230,11 @@ dev = [
     # Property-based testing. Named by multi-currency.md's testing strategy for
     # the conversion and lot-conservation properties, where the claim quantifies
     # over all amounts and rates and examples cannot establish it.
-    "hypothesis>=6.168.0",
+    "hypothesis>=6.168.1",
+    # pyarrow 25 dropped the placeholder stub that typed its whole API as Any,
+    # leaving pyright strict with no types at all. Drop once pyarrow ships its
+    # own annotations (apache/arrow GH-48970).
+    "pyarrow-stubs>=20.0.0.20260819",
 ]
 
 server = [
@@ -245,21 +242,6 @@ server = [
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
     # plaid-python already in main dependencies
-]
-
-[tool.uv]
-constraint-dependencies = [
-    # click 8.4 made click.ParamType generic; typer 0.25.1's type stubs still
-    # reference ParamType without a type arg, so pyright infers ParamType[Unknown]
-    # and flags every typer.Option/Argument call (reportUnknownMemberType). typer
-    # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
-    # regression. Drop once typer ships click-8.4-compatible stubs.
-    "click<8.4",
-    # pyarrow 25's typing surface leaves Table/Schema/array unknown to pyright
-    # strict mode (~300 errors across the SQLMesh Python models and renderers).
-    # A type-check hold, not a runtime one, so it caps the lock only. The runtime
-    # holds (mcp, fastmcp, typer) are upper bounds in [project] dependencies.
-    "pyarrow<25",
 ]
 
 [tool.ruff]

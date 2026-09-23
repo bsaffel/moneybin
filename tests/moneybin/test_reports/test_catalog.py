@@ -16,13 +16,14 @@ from functools import partial
 from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 import sqlglot
 import typer
 from pydantic import JsonValue
 from pytest_mock import MockerFixture
 from sqlglot import exp
+from typer._click import Command, Context
+from typer.core import TyperGroup
 
 from moneybin.cli.main import app as cli_app
 from moneybin.database import (
@@ -2078,10 +2079,10 @@ def test_stale_dedup_hint_names_a_runnable_command() -> None:
     # Resolved through the command tree rather than invoked: appending `--help`
     # would short-circuit before argument parsing, so `refresh run --help`
     # exits 0 on a leaf command that accepts no `run`.
-    command: click.Command = typer.main.get_command(cli_app)
-    context = click.Context(command)
+    command: Command = typer.main.get_command(cli_app)
+    context = Context(command)
     for token in shlex.split(invocation.group(1)):
-        assert isinstance(command, click.Group), (
+        assert isinstance(command, TyperGroup), (
             f"the hint prints `moneybin {invocation.group(1)}`, which passes "
             f"{token!r} to a leaf command that takes no argument"
         )

@@ -51,13 +51,13 @@ Usage: `moneybin accounts summary [OPTIONS]`
 
 Show one account's full settings + dim record.
 
-Usage: `moneybin accounts get [OPTIONS] ACCOUNT_ID`
+Usage: `moneybin accounts get [OPTIONS] {account_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes | Account ID |
+| `account_id` | text | yes | Account ID |
 
 **Options**
 
@@ -83,13 +83,13 @@ no report reads it that way yet. Use --exclude to exclude an account
 from net worth regardless of its archived status, including one that
 stays active and listed. At least one field flag required.
 
-Usage: `moneybin accounts set [OPTIONS] ACCOUNT_ID`
+Usage: `moneybin accounts set [OPTIONS] {account_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes | Account ID |
+| `account_id` | text | yes | Account ID |
 
 **Options**
 
@@ -123,13 +123,13 @@ Fuzzy-matches against display_name, account_subtype, and institution_name.
 Use this before commands that need an account_id when you only have a
 natural-language reference.
 
-Usage: `moneybin accounts resolve [OPTIONS] QUERY`
+Usage: `moneybin accounts resolve [OPTIONS] {query}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `QUERY` | text | yes | Free-text account reference (e.g., 'my Chase account') |
+| `query` | text | yes | Free-text account reference (e.g., 'my Chase account') |
 
 **Options**
 
@@ -191,15 +191,15 @@ Usage: `moneybin accounts balance history [OPTIONS]`
 
 Assert a balance for an account on a specific date.
 
-Usage: `moneybin accounts balance assert [OPTIONS] ACCOUNT_ID ASSERTION_DATE AMOUNT`
+Usage: `moneybin accounts balance assert [OPTIONS] {account_id} {assertion_date} {amount}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes |  |
-| `ASSERTION_DATE` | text | yes | ISO date (YYYY-MM-DD) |
-| `AMOUNT` | text | yes | Balance amount as decimal |
+| `account_id` | text | yes |  |
+| `assertion_date` | text | yes | ISO date (YYYY-MM-DD) |
+| `amount` | text | yes | Balance amount as decimal |
 
 **Options**
 
@@ -226,14 +226,14 @@ Usage: `moneybin accounts balance list [OPTIONS]`
 
 Delete a balance assertion. Silent no-op if no row exists.
 
-Usage: `moneybin accounts balance assertion-delete [OPTIONS] ACCOUNT_ID ASSERTION_DATE`
+Usage: `moneybin accounts balance assertion-delete [OPTIONS] {account_id} {assertion_date}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `ACCOUNT_ID` | text | yes |  |
-| `ASSERTION_DATE` | text | yes | ISO date (YYYY-MM-DD) |
+| `account_id` | text | yes |  |
+| `assertion_date` | text | yes | ISO date (YYYY-MM-DD) |
 
 **Options**
 
@@ -312,13 +312,13 @@ moneybin accounts links set dec001 --into ACC002 --yes
 moneybin accounts links set dec001 --standalone
 ```
 
-Usage: `moneybin accounts links set [OPTIONS] DECISION_ID`
+Usage: `moneybin accounts links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `accounts links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `accounts links pending`) |
 
 **Options**
 
@@ -356,14 +356,14 @@ account. Order is direction: the first id is absorbed and the second kept,
 whenever both are absorbable. Neither form merges: both write proposals for
 `accounts links set`.
 
-Usage: `moneybin accounts links run [OPTIONS] [ACCOUNT_ID] [CANDIDATE_ACCOUNT_ID]`
+Usage: `moneybin accounts links run [OPTIONS] [account_id] [candidate_account_id]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[ACCOUNT_ID]` | text | no | Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID) |
-| `[CANDIDATE_ACCOUNT_ID]` | text | no | Account kept on accept (requires ACCOUNT_ID) |
+| `account_id` | text | no | Account absorbed on accept (requires CANDIDATE_ACCOUNT_ID) |
+| `candidate_account_id` | text | no | Account kept on accept (requires ACCOUNT_ID) |
 
 **Options**
 

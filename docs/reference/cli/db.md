@@ -86,13 +86,13 @@ Account numbers and sensitive fields are NOT masked here.
 For agent-mediated access with privacy enforcement, use:
 moneybin sql query "\<your SQL>"
 
-Usage: `moneybin db query [OPTIONS] SQL`
+Usage: `moneybin db query [OPTIONS] {sql}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SQL` | text | yes | SQL query to execute |
+| `sql` | text | yes | SQL query to execute |
 
 **Options**
 

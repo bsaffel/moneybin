@@ -8,8 +8,7 @@ from types import MappingProxyType
 from unittest.mock import MagicMock, patch
 
 import pytest
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app

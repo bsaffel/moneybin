@@ -47,13 +47,13 @@ moneybin import files ~/Downloads/chase_activity.csv --account-name "Chase Check
 moneybin import files statement.ofx --output json
 ```
 
-Usage: `moneybin import files [OPTIONS] FILE_PATHS...`
+Usage: `moneybin import files [OPTIONS] {file_paths}...`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FILE_PATHS...` | path, repeatable | yes | One or more financial data files to import |
+| `file_paths...` | path, repeatable | yes | One or more financial data files to import |
 
 **Options**
 
@@ -104,13 +104,13 @@ moneybin import confirm ~/Downloads/card.csv --accept --sign negative_is_expense
 moneybin import confirm ~/Downloads/card.pdf --bridge-response response.json --confirm
 ```
 
-Usage: `moneybin import confirm [OPTIONS] FILE_PATH`
+Usage: `moneybin import confirm [OPTIONS] {file_path}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FILE_PATH` | path | yes | Path to the file to confirm. |
+| `file_path` | path | yes | Path to the file to confirm. |
 
 **Options**
 
@@ -180,13 +180,13 @@ moneybin import revert abc123-...
 moneybin import revert abc123-... --yes
 ```
 
-Usage: `moneybin import revert [OPTIONS] IMPORT_ID`
+Usage: `moneybin import revert [OPTIONS] {import_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `IMPORT_ID` | text | yes | Import batch ID to revert |
+| `import_id` | text | yes | Import batch ID to revert |
 
 **Options**
 
@@ -214,13 +214,13 @@ moneybin import preview ~/Downloads/transactions.xlsx --sheet Sheet1
 moneybin import preview ~/Downloads/chase_statement.pdf
 ```
 
-Usage: `moneybin import preview [OPTIONS] FILE_PATH`
+Usage: `moneybin import preview [OPTIONS] {file_path}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `FILE_PATH` | text | yes | File to preview |
+| `file_path` | text | yes | File to preview |
 
 **Options**
 
@@ -314,13 +314,13 @@ moneybin import formats show tiller
 moneybin import formats show chase_a1b2c3d4e5f6
 ```
 
-Usage: `moneybin import formats show [OPTIONS] NAME`
+Usage: `moneybin import formats show [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Format name to show |
+| `name` | text | yes | Format name to show |
 
 **Options**
 
@@ -343,13 +343,13 @@ moneybin import formats delete my_custom_format
 moneybin import formats delete my_custom_format --yes
 ```
 
-Usage: `moneybin import formats delete [OPTIONS] NAME`
+Usage: `moneybin import formats delete [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Format name to delete |
+| `name` | text | yes | Format name to delete |
 
 **Options**
 
@@ -421,14 +421,14 @@ Usage: `moneybin import labels [OPTIONS] COMMAND [ARGS]...`
 
 Add one or more labels to an import.
 
-Usage: `moneybin import labels add [OPTIONS] IMPORT_ID LABELS...`
+Usage: `moneybin import labels add [OPTIONS] {import_id} {labels}...`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `IMPORT_ID` | text | yes | Import ID |
-| `LABELS...` | text, repeatable | yes | One or more labels |
+| `import_id` | text | yes | Import ID |
+| `labels...` | text, repeatable | yes | One or more labels |
 
 **Options**
 
@@ -440,14 +440,14 @@ Usage: `moneybin import labels add [OPTIONS] IMPORT_ID LABELS...`
 
 Remove one or more labels from an import.
 
-Usage: `moneybin import labels remove [OPTIONS] IMPORT_ID LABELS...`
+Usage: `moneybin import labels remove [OPTIONS] {import_id} {labels}...`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `IMPORT_ID` | text | yes | Import ID |
-| `LABELS...` | text, repeatable | yes | One or more labels |
+| `import_id` | text | yes | Import ID |
+| `labels...` | text, repeatable | yes | One or more labels |
 
 **Options**
 
