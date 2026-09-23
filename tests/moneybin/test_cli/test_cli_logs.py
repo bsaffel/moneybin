@@ -114,6 +114,67 @@ class TestLogsPrune:
             assert result.exit_code == 0
             assert not old_log.exists()
 
+    def test_prune_output_json_reports_actual_removals(self, tmp_path: Path) -> None:
+        """JSON prune receipts must be parseable and distinguish removals from previews."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        old_log = log_dir / "old.log"
+        old_log.write_text("old log content")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(old_log, (old_time, old_time))
+
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(
+                logs_command_app,
+                ["--prune", "--older-than", "30d", "--output", "json"],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert not old_log.exists()
+        assert json.loads(result.output) == {
+            "dry_run": False,
+            "removed": [{"path": "old.log", "size_bytes": 15}],
+            "failures": [],
+        }
+
+    def test_prune_dry_run_output_json_reports_selected_files(
+        self, tmp_path: Path
+    ) -> None:
+        """A JSON dry run must describe selection without claiming removal."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        old_log = log_dir / "old.log"
+        old_log.write_text("old log content")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(old_log, (old_time, old_time))
+
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(
+                logs_command_app,
+                [
+                    "--prune",
+                    "--older-than",
+                    "30d",
+                    "--dry-run",
+                    "--output",
+                    "json",
+                ],
+            )
+
+        assert result.exit_code == 0, result.output
+        assert old_log.exists()
+        assert json.loads(result.output) == {
+            "dry_run": True,
+            "selected": [{"path": "old.log", "size_bytes": 15}],
+            "failures": [],
+        }
+
     def test_prune_keeps_recent_files(self, tmp_path: Path) -> None:
         """`logs --prune` keeps files newer than the cutoff."""
         log_dir = tmp_path / "logs"
@@ -192,6 +253,92 @@ class TestLogsPrune:
         assert "a-old.log" in result.output
         assert "b-old.log" in result.output
         assert not first.exists()
+        assert failed.exists()
+
+    def test_prune_all_failures_reports_failed_not_partial(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prune with no completed deletions must not claim partial completion."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        failed = log_dir / "old.log"
+        failed.write_text("old")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(failed, (old_time, old_time))
+
+        def fail_unlink(path: Path, missing_ok: bool = False) -> None:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(logs_command_app, ["--prune", "--older-than", "30d"])
+
+        assert result.exit_code == 1
+        assert "Prune failed" in result.output
+        assert "Prune partially completed" not in result.output
+        assert failed.exists()
+
+    def test_prune_dry_run_failure_keeps_preview_wording(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dry-run metadata failure remains a preview because nothing was removed."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        failed = log_dir / "old.log"
+        failed.write_text("old")
+        original_stat = Path.stat
+
+        def fail_stat(path: Path, *, follow_symlinks: bool = True) -> object:
+            if path == failed:
+                raise OSError("permission denied")
+            return original_stat(path, follow_symlinks=follow_symlinks)
+
+        monkeypatch.setattr(Path, "stat", fail_stat)
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(
+                logs_command_app,
+                ["--prune", "--older-than", "30d", "--dry-run"],
+            )
+
+        assert result.exit_code == 1
+        assert "Prune preview" in result.output
+        assert "Prune failed" not in result.output
+        assert original_stat(failed).st_size == 3
+
+    def test_prune_output_json_reports_failures(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed JSON prune stays parseable while signaling its nonzero outcome."""
+        log_dir = tmp_path / "logs"
+        log_dir.mkdir()
+        failed = log_dir / "old.log"
+        failed.write_text("old")
+        old_time = (datetime.now() - timedelta(days=60)).timestamp()
+        import os
+
+        os.utime(failed, (old_time, old_time))
+
+        def fail_unlink(path: Path, missing_ok: bool = False) -> None:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(Path, "unlink", fail_unlink)
+        with patch("moneybin.cli.commands.logs.get_settings") as mock:
+            mock.return_value.logging.log_file_path = log_dir / "moneybin.log"
+            result = runner.invoke(
+                logs_command_app,
+                ["--prune", "--older-than", "30d", "--output", "json"],
+            )
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "dry_run": False,
+            "removed": [],
+            "failures": [{"path": "old.log", "reason": "permission denied"}],
+        }
         assert failed.exists()
 
     def test_prune_symlink_removes_only_the_link_without_claiming_target_bytes(

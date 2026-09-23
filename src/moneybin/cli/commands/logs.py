@@ -215,8 +215,8 @@ def _render_prune_outcome(outcome: _PruneOutcome, *, dry_run: bool) -> None:
         text = "No log files matched the requested age.\n"
     else:
         action = "Prune preview" if dry_run else "Prune complete"
-        if outcome.failures:
-            action = "Prune partially completed"
+        if outcome.failures and not dry_run:
+            action = "Prune partially completed" if outcome.removed else "Prune failed"
         lines = [action]
         if outcome.regular_file_count:
             verb = "Selected" if dry_run else "Removed"
@@ -243,6 +243,20 @@ def _render_prune_outcome(outcome: _PruneOutcome, *, dry_run: bool) -> None:
         no_pager=True,
         receipt=True,
     )
+
+
+def _prune_json_payload(outcome: _PruneOutcome, *, dry_run: bool) -> dict[str, object]:
+    """Build the machine-readable prune receipt from filesystem outcomes."""
+    completed = [
+        {"path": path.name, "size_bytes": size} for path, size in outcome.removed
+    ]
+    return {
+        "dry_run": dry_run,
+        "selected" if dry_run else "removed": completed,
+        "failures": [
+            {"path": path.name, "reason": reason} for path, reason in outcome.failures
+        ],
+    }
 
 
 def _do_prune(
@@ -541,7 +555,12 @@ def logs_command(
         # older_than presence enforced by guard above; type narrows here.
         assert older_than is not None  # noqa: S101  # type-narrowing aid
         outcome = _do_prune(log_dir, older_than, dry_run=dry_run, output=output)
-        _render_prune_outcome(outcome, dry_run=dry_run)
+        if output == OutputFormat.JSON:
+            typer.echo(
+                json.dumps(_prune_json_payload(outcome, dry_run=dry_run), indent=2)
+            )
+        else:
+            _render_prune_outcome(outcome, dry_run=dry_run)
         if outcome.failures:
             raise typer.Exit(1)
         return
