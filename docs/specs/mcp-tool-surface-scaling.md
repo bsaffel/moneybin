@@ -428,7 +428,7 @@ The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
 contains 50 tools, 62,521 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`67625a7fda3ce5f974d53ab1933be0d76899cec72bb857474ae324962952ee90`.
+`a0000a5ac0eb088fc94077b8602946d35013309fee449fdf48ad6d582028c441`.
 The frozen baseline is 90,734 bytes with SHA-256
 `ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
 The delta is -28,213 bytes (-31.1%). The deterministic estimate is 15,631
