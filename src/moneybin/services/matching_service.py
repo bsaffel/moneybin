@@ -8,8 +8,11 @@ Exposes ``run``, ``seed_priority``, ``undo``, ``get_log``, and
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
 
 from moneybin import error_codes
@@ -61,6 +64,28 @@ PENDING_MATCHES_HINT = (
 _SETTABLE_STATUSES: frozenset[str] = frozenset({"accepted", "rejected"})
 
 
+def _selection_value(value: object, *, key: str) -> object:
+    """Normalize the persisted primitives that bind a match confirmation."""
+    if key == "match_signals" and isinstance(value, str):
+        return json.loads(value)
+    if isinstance(value, Decimal):
+        return str(value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, dict):
+        mapping = cast("dict[object, object]", value)
+        return {
+            str(mapping_key): _selection_value(mapping_value, key="")
+            for mapping_key, mapping_value in mapping.items()
+        }
+    if isinstance(value, (list, tuple)):
+        values = cast("list[object] | tuple[object, ...]", value)
+        return [_selection_value(item, key="") for item in values]
+    raise TypeError(
+        f"Unsupported pending-match selection value: {type(value).__name__}"
+    )
+
+
 @dataclass(frozen=True)
 class MatchDecisionOutcome:
     """What :meth:`MatchingService.set_status` actually committed.
@@ -94,6 +119,31 @@ class BulkAcceptOutcome:
     accepted: int
     reversed_by_reconciliation: int
     transfers_retired: int
+    accounting_stale: bool = False
+    accounting_error_code: str | None = None
+    accounting_hint: str | None = None
+    accounting_recovery_actions: tuple[RecoveryAction, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingMatchSelection:
+    """The exact pending batch a caller reviewed before accepting it."""
+
+    ids: tuple[str, ...]
+    limit: int
+    fingerprint: str
+    items: tuple[PendingMatchPreview, ...] = ()
+
+
+@dataclass(frozen=True)
+class PendingMatchPreview:
+    """The reviewed target and effect of one pending match decision."""
+
+    match_id: str
+    match_type: str
+    source_transaction_id_a: str
+    source_transaction_id_b: str
+    confidence_score: float | None
 
 
 def _non_pending_recovery(
@@ -217,7 +267,7 @@ class MatchingService:
                         forwarding_failure = forwarding_error
                     else:
                         logger.warning(
-                            f"⚠️ Transaction-id alias forwarding failed at "
+                            f"! Transaction-id alias forwarding failed at "
                             f"{exception_origin(forwarding_error)} while a matching run "
                             f"was already failing; reporting the run's own error. Any "
                             f"curation left on a superseded id is repaired by the next "
@@ -537,6 +587,134 @@ class MatchingService:
         comp_keys = self._compute_component_keys()
         return len({self._component_key_for_row(r, comp_keys) for r in pending})
 
+    def preview_pending(self, *, limit: int) -> PendingMatchSelection:
+        """Return the deterministic limited pending batch a user may approve."""
+        if limit < 1:
+            raise UserError(
+                "limit must be at least 1 when confirming pending matches.",
+                code=error_codes.MUTATION_INVALID_INPUT,
+            )
+        return self._pending_selection(limit=limit)
+
+    def accept_previewed(
+        self, selection: PendingMatchSelection, *, actor: str
+    ) -> BulkAcceptOutcome:
+        """Accept a reviewed pending batch only when it is still unchanged."""
+        if not selection.ids:
+            raise UserError(
+                "No pending matches remain to confirm. List pending matches and choose again.",
+                code=error_codes.MUTATION_NOTHING_TO_DO,
+            )
+        self._db.begin()
+        try:
+            current = self._pending_selection(limit=selection.limit)
+            if current != selection:
+                raise UserError(
+                    "Pending matches changed after the preview. Review the current selection and confirm again.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                    recovery_actions=[
+                        RecoveryAction(
+                            tool="reviews",
+                            arguments={"kind": "matches", "status": "pending"},
+                            rationale="List the current pending matches before confirming them.",
+                            confidence="suggested",
+                            idempotent=True,
+                        )
+                    ],
+                )
+            application = MatchDecisionApplication(
+                self._db,
+                decisions=self._match_repo(),
+                actor=actor,
+                decided_by="user",
+            )
+            application.accept_ids(selection.ids)
+            effects = application.finalize()
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+        return self._record_and_restate(effects, preserve_fx_error=False)
+
+    def _pending_selection(self, *, limit: int) -> PendingMatchSelection:
+        rows = get_pending_matches(self._db, limit=limit)
+        ids = tuple(str(row["match_id"]) for row in rows)
+        items = tuple(
+            PendingMatchPreview(
+                match_id=str(row["match_id"]),
+                match_type=str(row["match_type"]),
+                source_transaction_id_a=str(row["source_transaction_id_a"]),
+                source_transaction_id_b=str(row["source_transaction_id_b"]),
+                confidence_score=(
+                    float(row["confidence_score"])
+                    if row["confidence_score"] is not None
+                    else None
+                ),
+            )
+            for row in rows
+        )
+        contents = [
+            {
+                key: _selection_value(row[key], key=key)
+                for key in (
+                    "match_id",
+                    "source_transaction_id_a",
+                    "source_type_a",
+                    "source_origin_a",
+                    "source_transaction_id_b",
+                    "source_type_b",
+                    "source_origin_b",
+                    "account_id",
+                    "account_id_b",
+                    "confidence_score",
+                    "match_signals",
+                    "match_type",
+                    "match_tier",
+                    "match_reason",
+                )
+            }
+            for row in rows
+        ]
+        canonical = json.dumps(
+            contents, sort_keys=True, separators=(",", ":"), default=str
+        )
+        return PendingMatchSelection(
+            ids=ids,
+            limit=limit,
+            fingerprint=hashlib.sha256(canonical.encode()).hexdigest(),
+            items=items,
+        )
+
+    def _record_and_restate(
+        self, effects: Any, *, preserve_fx_error: bool
+    ) -> BulkAcceptOutcome:
+        """Report committed effects even when the post-commit FX refresh is stale."""
+        outcome = BulkAcceptOutcome(
+            accepted=effects.accepted_count,
+            reversed_by_reconciliation=effects.immediate_reversals,
+            transfers_retired=effects.standing_transfers_retired,
+        )
+        record_committed_match_effects(effects)
+        from moneybin.services.fx_accounting_refresh import (
+            restate_fx_accounting_after_match_effects,
+        )
+
+        try:
+            restate_fx_accounting_after_match_effects(self._db, effects)
+        except UserError as exc:
+            if preserve_fx_error:
+                raise
+            return BulkAcceptOutcome(
+                accepted=outcome.accepted,
+                reversed_by_reconciliation=outcome.reversed_by_reconciliation,
+                transfers_retired=outcome.transfers_retired,
+                accounting_stale=True,
+                accounting_error_code=exc.code,
+                accounting_hint=exc.hint,
+                accounting_recovery_actions=tuple(exc.recovery_actions or ()),
+            )
+        return outcome
+
     def accept_all_pending(
         self, *, match_type: str | None = None, actor: str = "system"
     ) -> BulkAcceptOutcome:
@@ -577,14 +755,4 @@ class MatchingService:
         except BaseException:
             self._db.rollback()
             raise
-        record_committed_match_effects(effects)
-        from moneybin.services.fx_accounting_refresh import (
-            restate_fx_accounting_after_match_effects,
-        )
-
-        restate_fx_accounting_after_match_effects(self._db, effects)
-        return BulkAcceptOutcome(
-            accepted=effects.accepted_count,
-            reversed_by_reconciliation=effects.immediate_reversals,
-            transfers_retired=effects.standing_transfers_retired,
-        )
+        return self._record_and_restate(effects, preserve_fx_error=True)

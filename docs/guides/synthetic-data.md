@@ -1,7 +1,9 @@
-<!-- Last reviewed: 2026-09-17 -->
+<!-- Last reviewed: 2026-09-22 -->
 # Synthetic Data
 
 MoneyBin ships a synthetic-data generator that builds a multi-year transaction history from a declared persona. It reads no real statement: every input is a persona YAML file shipped in the repo. This guide covers what the generator produces, how to drive it from the CLI, and how it stays isolated from any real data on the same machine.
+
+The examples were captured against an isolated synthetic profile at 80 columns. Profile paths are normalized to `<MONEYBIN_HOME>`; a third-party SQLMesh warning and path-bearing initialization trace are omitted.
 
 ## What it generates
 
@@ -22,7 +24,7 @@ Per persona you get:
 
 Each persona declares its own default, ending at the calendar year before the current year. Generating in 2026 covers 2023-01-01 through 2025-12-31 for a 3-year persona; `international` declares 2 years (`src/moneybin/synthetic/data/personas/international.yaml:11`), the other three declare 3. Override with `--years`.
 
-Volume scales with persona complexity. `basic` generates 995 transactions over its three years and `family` generates 2,886 over the same span — both at `--seed 42`, both shown in the transcripts under Quick start. `freelancer` and `international` fall between those two. The generator prints its own total on every run (`Generated N transactions for persona ...`), so read the count off the build rather than pinning one from this page.
+Volume scales with persona complexity. `basic` generates 995 transactions over its three years and `family` generates 2,886 over the same span — both at `--seed 42`, both shown in the receipts under Quick start. `freelancer` and `international` fall between those two. The completion receipt reports the saved transaction count, so read the count from that receipt rather than pinning one from this page.
 
 Counts are deterministic given a seed and a MoneyBin version — see Seed stability below.
 
@@ -47,7 +49,8 @@ To completely remove synthetic data when you're done:
 
 ```console
 $ moneybin profile delete alice --yes
-✅ Deleted profile: alice
+Profile deleted
+Profile: alice
 ```
 
 `profile delete` removes the DuckDB file, the encryption key in the keychain, the backups directory, and the config entry — leaving no synthetic data on disk. Without `--yes`/`-y` it confirms first.
@@ -61,51 +64,79 @@ missing profile the command exits 1 without writing anything (see Limitations).
 
 ```console
 $ moneybin profile create bob --no-init-inbox
-✅ Created profile bob at <MONEYBIN_HOME>/profiles/bob
+Profile created
+Profile:  bob
+Location: <MONEYBIN_HOME>/profiles/bob
 ```
 
 Then generate. The command writes raw rows, then runs SQLMesh to build core and reports.
 
 ```console
 $ moneybin synthetic generate --persona family --seed 42
-⚙️  Generating 'family' persona into profile 'bob' (seed=42)
-Generated 2886 transactions for persona 'family' (seed=42, 2023-01-01 to 2025-12-31)
-Wrote synthetic data: {'ofx_accounts': 2, 'ofx_balances': 2, 'tabular_accounts': 2, 'ofx_transactions': 1381, 'tabular_transactions': 1505, 'ground_truth': 2886}
-⚙️  Running transforms to materialize pipeline...
-Transforms completed in 7.41s
+Generating synthetic data
+Saving generated data
+Materializing reports
+Generation complete
+Profile:             bob
+Persona:             family
+Seed:                42
+History:             2023-01-01 through 2025-12-31
+Accounts saved:      4
+Transactions saved:  2886
+Ground-truth labels: 2886
+Transfer pairs:      108
+Transforms:          Completed
 ```
 
-Two things are trimmed from that transcript: the SQLMesh plan and snapshot logging
-between those lines, and the closing `✅` line, which reads that profile `bob` is
-ready at `seed=42` and to pass `--profile=bob` to any later command. The run emitted
-3,685 lines in total against those six user-facing ones; both figures are counted
-from the captured run. Every line the command prints, the `✅` included, goes to
-stderr — redirect stderr, not stdout, to keep it.
+The receipt names the profile, persona, chosen seed, date range, writer-confirmed
+counts, transfer pairs, and transform outcome. Progress is transient on a capable
+terminal; the receipt is the durable result to capture. This transcript omits a
+third-party SQLMesh `FutureWarning` observed between progress and the receipt; the
+receipt itself is copied verbatim.
 
-`basic` is the smaller build, and the same two steps produce it:
+`basic` is the smaller build. This raw-only run shows the intentional
+`--skip-transform` outcome:
 
 ```console
-$ moneybin synthetic generate --persona basic --seed 42
-⚙️  Generating 'basic' persona into profile 'alice' (seed=42)
-Generated 995 transactions for persona 'basic' (seed=42, 2023-01-01 to 2025-12-31)
-Wrote synthetic data: {'ofx_accounts': 1, 'ofx_balances': 1, 'tabular_accounts': 1, 'ofx_transactions': 540, 'tabular_transactions': 455, 'ground_truth': 995}
-⚙️  Running transforms to materialize pipeline...
-Transforms completed in 13.35s
+$ moneybin synthetic generate --persona basic --seed 42 --skip-transform
+Generating synthetic data
+Saving generated data
+Generation complete
+Profile:             alice
+Persona:             basic
+Seed:                42
+History:             2023-01-01 through 2025-12-31
+Accounts saved:      2
+Transactions saved:  995
+Ground-truth labels: 995
+Transfer pairs:      36
+Transforms:          Skipped by request
 ```
 
-Same two trims, with `alice` in place of `bob` on the closing line. Both builds finished in under 20 seconds wall-clock on a laptop,
-transforms included. The transform stage dominates, and its cost does not track the
-row count: in these two runs the 2,886-row `family` build transformed in 7.41s and
-the 995-row `basic` build in 13.35s.
+Omit `--skip-transform` when you need reports. The family receipt above is from a
+full transform; raw-only generation succeeds but leaves reports unmaterialized.
 
 Read the reports against the fresh data:
 
 ```console
 $ moneybin --profile bob reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name        ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings   │ USD           │       33,000.00 │                    - │
+│ …0002               │               │                 │                      │
+│ Chase Bank checking │ USD           │      387,080.77 │                    - │
+│ …0001               │               │                 │                      │
+│ Chase Bank credit   │ USD           │            0.00 │                    - │
+│ card                │               │                 │                      │
+│ Citi credit card    │ USD           │            0.00 │                    - │
+└─────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
 ```
 
-The output is omitted here. `reports net-worth-accounts` shows each generated account's
-latest balance; `reports cash-flow`
+The three trailing next-step hints are trimmed above. `account_balance_home` is `-`
+because the profile has no home currency yet. `reports net-worth-accounts` shows
+each generated account's latest balance; `reports cash-flow`
 rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
 `reports recurring-subscriptions` lists the detected recurring stream (rent, utilities,
 subscriptions, statement payments). These are the same commands that run against real
@@ -117,10 +148,15 @@ moneybin --profile bob reports recurring-subscriptions
 moneybin --profile bob reports spending-trend
 ```
 
-Every generated row carries its provenance. `db query` writes its table to stdout:
+Every generated row carries its provenance. Direct database queries begin with a
+privacy warning; the transient initialization trace is omitted here:
 
 ```console
 $ moneybin --profile bob db query "SELECT DISTINCT source_origin FROM raw.tabular_transactions"
+! Direct DB access - no privacy middleware applies.
+   Account numbers and sensitive fields are NOT masked here.
+   For agent-mediated access with privacy enforcement, use:
+     moneybin sql query "<your SQL>"
 +------------------+
 |  source_origin   |
 +------------------+
@@ -137,8 +173,8 @@ $ moneybin --profile bob db query "SELECT COUNT(*) AS ground_truth_rows FROM syn
 +-------------------+
 ```
 
-The ground-truth row count matches the `Generated 2886 transactions` line from the
-build: one ground-truth row per generated transaction.
+The ground-truth row count matches the receipt's `Transactions saved: 2886`: one
+ground-truth row per generated transaction.
 
 To start over with a different seed or year count:
 
@@ -211,9 +247,9 @@ Every flag, its type, and its bounds: [`moneybin synthetic generate`](../referen
 
 - **The target profile must already exist.** `generate` does not create it. Run `moneybin profile create <name>` first; against a missing profile the command exits 1 and reports a missing encryption key rather than a missing profile.
 - **It refuses to write into a profile that already holds imported data.** Exits 1 and points you at `synthetic reset`.
-- **Omitting `--seed` picks a value in `1..9999` and logs it.** The value is not persisted anywhere else — see Limitations.
+- **Omitting `--seed` picks a value in `1..9999`.** The completion receipt shows the chosen seed; save it for reproducibility.
 
-After raw rows are written, the command runs SQLMesh to materialize the staging, core, and reports models against the new data. Pass `--skip-transform` to keep just the raw write — useful when you want to inspect the loader output before transformation.
+After raw rows are written, the command runs SQLMesh to materialize the staging, core, and reports models against the new data. Pass `--skip-transform` to keep just the raw write — an intentional successful raw-only generation, useful when you want to inspect the loader output before transformation. If transforms were requested but fail after the raw write, the receipt says that raw data was saved and the command exits nonzero; reports may remain stale.
 
 ### Reset
 
@@ -320,6 +356,5 @@ Practical implications for CI and regression tests:
 - **No investment accounts yet.** Only checking, savings, and credit-card account types are generated. Brokerage, retirement, and crypto accounts are planned.
 - **No inferred conversion.** Accounts carry their own `currency_code` (see the `international` persona). A same-currency transfer moves one magnitude to both sides. A cross-currency transfer must declare `received_amount` in the persona YAML; the generator writes the two declared magnitudes and looks up no rate, and a cross-currency transfer without `received_amount` is refused at persona load (`src/moneybin/synthetic/models.py`). Without a home currency set, reports sub-total per currency — see [Multi-currency](multi-currency.md).
 - **No manual entries or rule training.** The generator produces raw transactions and ground truth; it does not seed `app.*` user-state tables (manual entries, custom rules, budgets).
-- **Random `--seed` is logged but not persisted.** If you omit `--seed`, the generator picks a value in `1..9999` and logs it. Save it from the log if you need to reproduce that exact run; otherwise prefer passing an explicit seed.
+- **Save the random seed for reproducibility.** If you omit `--seed`, the generator picks a value in `1..9999` and shows it in the completion receipt. Save that value or pass an explicit seed.
 - **`generate` does not create the target profile.** Run `moneybin profile create <name>` first. Against a missing profile the command exits 1 and reports a missing encryption key, which names the symptom rather than the cause.
-- **All output goes to stderr, mixed with SQLMesh logging.** A build emits thousands of plan and snapshot lines around its six user-facing ones, and the `✅` completion line is on stderr with them. To keep the result, redirect stderr; `db query` is the exception and writes its table to stdout.

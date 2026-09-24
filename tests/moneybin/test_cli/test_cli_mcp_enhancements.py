@@ -1,5 +1,6 @@
 """Tests for MCP CLI enhancements."""
 
+import json
 import logging
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -10,13 +11,57 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from moneybin.cli import pager
 from moneybin.cli.commands.mcp import (
     _gate_network_transport,  # pyright: ignore[reportPrivateUsage]
     app,
 )
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.mcp.surface import VISIBLE_TOOL_COUNT
 
 runner = CliRunner()
+
+
+def _paging_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=not no_pager,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=24,
+        height=2,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+
+
+def _noninteractive_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    policy = _paging_policy(no_pager=no_pager)
+    return TerminalPolicy(
+        output=policy.output,
+        interactive=False,
+        page=False,
+        color=policy.color,
+        style=policy.style,
+        animate_progress=False,
+        stage_chatter=policy.stage_chatter,
+        ascii=policy.ascii,
+        width=policy.width,
+        height=policy.height,
+        symbols=policy.symbols,
+        minus=policy.minus,
+    )
+
+
+def _catalog_entry(name: str, description: str) -> MagicMock:
+    entry = MagicMock()
+    entry.name = name
+    entry.description = description
+    return entry
 
 
 class TestMCPListTools:
@@ -72,6 +117,78 @@ class TestMCPListTools:
 
         assert result.exit_code == 0
 
+    def test_list_tools_pages_complete_catalog_and_no_pager_keeps_the_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The catalog is one finite answer, whether paged or printed directly."""
+
+        async def fake_get_tools() -> list[MagicMock]:
+            return [
+                _catalog_entry(f"tool-{index}", "full description")
+                for index in range(4)
+            ]
+
+        pages: list[str] = []
+
+        def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            pages.append(text)
+            return True
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+        monkeypatch.setattr(pager, "page_text", capture_page)
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
+        ):
+            paged = runner.invoke(app, ["list-tools"])
+            direct = runner.invoke(app, ["list-tools", "--no-pager"])
+
+        assert paged.exit_code == 0, paged.output
+        assert direct.exit_code == 0, direct.output
+        assert len(pages) == 1
+        assert "tool-3" in pages[0]
+        assert (
+            pages[0].replace("\n\nq return to shell\n", "").rstrip()
+            == direct.stdout.rstrip()
+        )
+
+    def test_list_tools_empty_is_an_answer_even_when_quiet(self) -> None:
+        """Quiet suppresses chatter, never the requested empty catalog answer."""
+
+        async def fake_get_tools() -> list[MagicMock]:
+            return []
+
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
+        ):
+            result = runner.invoke(app, ["list-tools", "--quiet"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == "No tools registered.\n"
+
+    def test_list_tools_json_keeps_the_existing_low_sensitivity_envelope(self) -> None:
+        """Shared text paging must leave the machine-readable envelope unchanged."""
+
+        async def fake_get_tools() -> list[MagicMock]:
+            return [_catalog_entry("zeta", "Z"), _catalog_entry("alpha", "A")]
+
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp._list_tools", new=fake_get_tools),
+        ):
+            result = runner.invoke(app, ["list-tools", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "low"
+        assert payload["data"] == [
+            {"name": "alpha", "description": "A"},
+            {"name": "zeta", "description": "Z"},
+        ]
+
 
 class TestMCPListPrompts:
     """Tests for the list-prompts command."""
@@ -112,6 +229,65 @@ class TestMCPListPrompts:
 
         assert result.exit_code == 0
 
+    def test_list_prompts_pages_complete_catalog_and_no_pager_keeps_the_answer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Prompt catalogs use the same finite-result paging boundary as tools."""
+
+        async def fake_list_prompts(*, run_middleware: bool = True) -> list[MagicMock]:
+            return [
+                _catalog_entry(f"prompt-{index}", "full description")
+                for index in range(4)
+            ]
+
+        pages: list[str] = []
+
+        def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+            pages.append(text)
+            return True
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+        monkeypatch.setattr(pager, "page_text", capture_page)
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp.list_prompts", new=fake_list_prompts),
+        ):
+            paged = runner.invoke(app, ["list-prompts"])
+            direct = runner.invoke(app, ["list-prompts", "--no-pager"])
+
+        assert paged.exit_code == 0, paged.output
+        assert direct.exit_code == 0, direct.output
+        assert len(pages) == 1
+        assert "prompt-3" in pages[0]
+        assert (
+            pages[0].replace("\n\nq return to shell\n", "").rstrip()
+            == direct.stdout.rstrip()
+        )
+
+    def test_list_prompts_json_keeps_the_existing_low_sensitivity_envelope(
+        self,
+    ) -> None:
+        """JSON remains sorted, complete, and independent of terminal paging."""
+
+        async def fake_list_prompts(*, run_middleware: bool = True) -> list[MagicMock]:
+            return [_catalog_entry("zeta", "Z"), _catalog_entry("alpha", "A")]
+
+        with (
+            patch("moneybin.mcp.server.init_db"),
+            patch("moneybin.mcp.server.mcp.list_prompts", new=fake_list_prompts),
+        ):
+            result = runner.invoke(app, ["list-prompts", "--output", "json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["summary"]["sensitivity"] == "low"
+        assert payload["data"] == [
+            {"name": "alpha", "description": "A"},
+            {"name": "zeta", "description": "Z"},
+        ]
+
 
 class TestMCPConfig:
     """Tests for the mcp config command."""
@@ -145,6 +321,15 @@ class TestMCPConfig:
         )
         assert deprecated_notice in result.output
 
+    def test_config_path_is_a_raw_single_line_without_callback_output(self) -> None:
+        """The pipeable path leaf never renders the config callback's settings answer."""
+        result = runner.invoke(app, ["config", "path", "--client", "cursor"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout.count("\n") == 1
+        assert result.stdout.endswith(".cursor/mcp.json\n")
+        assert "Profile:" not in result.stdout
+
 
 class TestMCPInstall:
     """Tests for the mcp install command."""
@@ -171,12 +356,60 @@ class TestMCPInstall:
             "moneybin.cli.commands.mcp._get_client_config_path",
             lambda client: config_file,  # type: ignore[reportUnknownLambdaType]
         )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
         result = runner.invoke(
             app,
             ["install", "--client", "claude-desktop"],
             input="y\n",
         )
         assert result.exit_code == 0
+
+    @pytest.mark.parametrize("scenario", ["piped-input", "redirected-stdout"])
+    def test_install_refuses_noninteractive_confirmation_without_yes(
+        self,
+        scenario: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pipe or redirected result stream cannot become write authorization."""
+        config_file = tmp_path / "claude_desktop_config.json"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            lambda _client: config_file,  # type: ignore[reportUnknownLambdaType]
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _noninteractive_policy
+        )
+
+        result = runner.invoke(
+            app,
+            ["install", "--client", "claude-desktop"],
+            input="y\n" if scenario == "piped-input" else None,
+        )
+
+        assert result.exit_code == 1, result.output
+        assert not config_file.exists()
+        assert "--yes" in result.stderr
+
+    def test_install_yes_keeps_noninteractive_write_authority(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The explicit flag remains the sole noninteractive write authorization."""
+        config_file = tmp_path / "claude_desktop_config.json"
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            lambda _client: config_file,  # type: ignore[reportUnknownLambdaType]
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _noninteractive_policy
+        )
+
+        result = runner.invoke(app, ["install", "--client", "claude-desktop", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        assert config_file.exists()
 
     def test_install_yes_skips_prompt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -239,6 +472,16 @@ class TestMCPInstall:
         result = runner.invoke(app, ["install", "--client", "bogus", "--print"])
         assert result.exit_code == 2
         assert "Unknown client" in caplog.text
+
+    def test_install_refusal_strips_controls_and_keeps_markup_literal(self) -> None:
+        """User-supplied diagnostics cannot style a terminal or consume markup."""
+        client = "bad\x1b[31m[bold]literal[/bold]\x1b[0m"
+
+        result = runner.invoke(app, ["install", "--client", client, "--print"])
+
+        assert result.exit_code == 2
+        assert "\x1b" not in result.stderr
+        assert "[bold]literal[/bold]" in result.stderr
 
     def test_install_claude_code_print_emits_launch_hint(self, tmp_path: Path) -> None:
         """claude-code --print emits the snippet plus the `claude --mcp-config` launch line."""
@@ -396,6 +639,22 @@ class TestMCPInstall:
             app, ["install", "--client", "chatgpt-desktop", "--print"]
         )
         assert "web" in result.stderr.lower()
+
+    def test_install_chatgpt_desktop_note_uses_ascii_action_symbol(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ASCII policy applies to the advisory as well as status diagnostics."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+
+        result = runner.invoke(
+            app, ["install", "--client", "chatgpt-desktop", "--print"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Settings > MCP servers" in result.stderr
+        assert "→" not in result.stderr
         assert "restart" in result.stderr.lower()
 
     def test_install_emits_pinned_uvx_when_not_in_a_repo(
@@ -550,6 +809,92 @@ class TestMCPInstallSnippetHardening:
         parsed = _json.loads(result.stdout)  # raises if a note leaked onto stdout
         assert "mcpServers" in parsed
 
+    @pytest.mark.parametrize("client", ["codex", "chatgpt-desktop"])
+    def test_print_emits_parseable_toml_config_bytes_on_stdout(
+        self, client: str
+    ) -> None:
+        """Codex-hosted clients retain their TOML artifact when notes use stderr."""
+        import tomllib
+
+        result = runner.invoke(app, ["install", "--client", client, "--print"])
+
+        assert result.exit_code == 0, result.output
+        parsed = tomllib.loads(result.stdout)
+        assert "mcp_servers" in parsed
+
+    @pytest.mark.parametrize("client", ["claude-desktop", "codex"])
+    def test_accepted_install_keeps_stdout_parseable_and_reports_success_on_stderr(
+        self, client: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Write confirmation and success must not contaminate the config artifact."""
+        target = tmp_path / ("config.toml" if client == "codex" else "mcp.json")
+
+        def config_path(_client: str) -> Path:
+            return target
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            config_path,
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+
+        result = runner.invoke(
+            app,
+            ["install", "--client", client, "--profile", "alice", "--yes"],
+        )
+
+        assert result.exit_code == 0, result.output
+        if client == "codex":
+            import tomllib
+
+            assert "mcp_servers" in tomllib.loads(result.stdout)
+        else:
+            assert "mcpServers" in json.loads(result.stdout)
+        assert "Config written" in result.stderr
+
+    @pytest.mark.parametrize("client", ["claude-desktop", "codex"])
+    def test_declined_install_does_not_write_or_put_cancellation_on_stdout(
+        self,
+        client: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Both native config formats survive a declined write as parseable stdout."""
+        target = tmp_path / ("config.toml" if client == "codex" else "mcp.json")
+
+        def config_path(_client: str) -> Path:
+            return target
+
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp._get_client_config_path",
+            config_path,
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+
+        result = runner.invoke(
+            app,
+            ["install", "--client", client, "--profile", "alice"],
+            input="n\n",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert not target.exists()
+        if client == "codex":
+            import tomllib
+
+            assert "mcp_servers" in tomllib.loads(result.stdout)
+        else:
+            assert "mcpServers" in json.loads(result.stdout)
+        assert "Install into" in result.stderr
+        assert "cancelled" in result.stderr.lower()
+        diagnostic = " ".join(result.stderr.split())
+        assert "OK Installation cancelled" not in diagnostic
+        assert "✓ Installation cancelled" not in diagnostic
+
     def test_old_config_generate_command_removed(self) -> None:
         """The old `mcp config generate` command no longer exists."""
         result = runner.invoke(app, ["config", "generate", "--help"])
@@ -675,6 +1020,9 @@ class TestMCPInstallCodex:
             "moneybin.cli.commands.mcp._get_client_config_path",
             lambda client: target,  # type: ignore[reportUnknownLambdaType]
         )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
         result = runner.invoke(
             app,
             [
@@ -710,6 +1058,9 @@ class TestMCPInstallCodex:
         monkeypatch.setattr(
             "moneybin.cli.commands.mcp._get_client_config_path",
             lambda client: target,  # type: ignore[reportUnknownLambdaType]
+        )
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
         )
         result = runner.invoke(
             app,
@@ -895,7 +1246,21 @@ class TestGateNetworkTransport:
         with caplog.at_level(logging.WARNING):
             _gate_network_transport("streamable-http", insecure=True)
         assert "authentication" in caplog.text.lower()
-        assert "⚠️" in caplog.text
+        assert "! Starting" in caplog.text
+
+    def test_network_gate_uses_ascii_policy_symbols(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Policy-driven diagnostics keep their state marker in portable terminals."""
+        monkeypatch.setattr(
+            "moneybin.cli.commands.mcp.get_terminal_policy", _paging_policy
+        )
+
+        with caplog.at_level(logging.WARNING):
+            _gate_network_transport("streamable-http", insecure=True)
+
+        assert "! Starting" in caplog.text
+        assert "⚠" not in caplog.text
 
 
 @contextmanager
@@ -971,6 +1336,14 @@ class TestMCPServe:
         purge.assert_not_called()
         mock_mcp.run.assert_called_once_with(transport="stdio")
         assert "authentication" not in caplog.text.lower()
+
+    def test_mocked_serve_keeps_stdout_for_the_protocol_only(self) -> None:
+        """No human receipt or lifecycle message may enter the stdio protocol stream."""
+        with _mock_server_start():
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == ""
 
     def test_configured_startup_purges_expired_import_previews(
         self,

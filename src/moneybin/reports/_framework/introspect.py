@@ -48,7 +48,13 @@ _ARG_ENTRY = re.compile(r"^(\w+)\s*(?:\([^)]*\))?\s*:\s*(.*)$")
 # A runner param colliding with one of these would raise a cryptic duplicate-
 # parameter error deep in Signature construction, crashing the whole reports
 # command group at build; reject it here with a clear message instead.
-_RESERVED_CLI_PARAMS = frozenset({"output", "quiet", "display_currency", "wide"})
+_RESERVED_CLI_PARAMS = frozenset({
+    "display_currency",
+    "no_pager",
+    "output",
+    "quiet",
+    "wide",
+})
 
 
 def _section_tag(stripped: str) -> str | None:

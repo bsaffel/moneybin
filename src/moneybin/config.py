@@ -867,6 +867,25 @@ class InvestmentsSettings(BaseModel):
     )
 
 
+class CLISettings(BaseModel):
+    """Persistent preferences for human terminal presentation."""
+
+    model_config = ConfigDict(frozen=True)
+
+    auto_pager: bool = Field(
+        default=True,
+        description="Page eligible interactive text results automatically.",
+    )
+    reduced_motion: bool = Field(
+        default=False,
+        description="Replace animated progress with static stage labels.",
+    )
+    ascii: bool = Field(
+        default=False,
+        description="Use portable ASCII symbols and minus signs in terminal text.",
+    )
+
+
 class MoneyBinSettings(BaseSettings):
     """Main application settings with environment variable integration.
 
@@ -893,6 +912,7 @@ class MoneyBinSettings(BaseSettings):
     matching: MatchingSettings = Field(default_factory=MatchingSettings)
     doctor: DoctorSettings = Field(default_factory=DoctorSettings)
     investments: InvestmentsSettings = Field(default_factory=InvestmentsSettings)
+    cli: CLISettings = Field(default_factory=CLISettings)
     categorization: CategorizationSettings = Field(
         default_factory=CategorizationSettings
     )

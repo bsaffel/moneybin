@@ -58,6 +58,9 @@ from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
 
+# DEPRECATED: direct-human-output — migrate this text path through the shared
+# terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
+
 
 app = typer.Typer(
     name="moneybin",

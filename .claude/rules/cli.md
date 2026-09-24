@@ -153,30 +153,23 @@ Use `typer.echo(msg, err=True)` for direct error echoes. The project logger's `S
 
 ### Keeping the console readable
 
-WARNING and above always reach the console. Below that, a record is hidden only
-if its logger matches `_CONSOLE_SUPPRESSED_PREFIXES` in `logging/config.py`;
-everything else prints.
+WARNING and above always reach the console. Normal CLI invocations suppress
+routine INFO and DEBUG records; `--verbose` restores diagnostics. File handlers
+remain unfiltered, and non-CLI streams retain their own console behavior.
 
-**`logger.debug` is not "hide from console" — it is "drop everywhere."** The
-root logger sits at INFO, so a DEBUG record never reaches the log file either.
-Before demoting a line, name the other place the information survives — and
-note that `typer.echo` is not that place, because it writes to stderr and never
-reaches the log file. Reach for `logger.debug` only when a surviving
-`typer.echo` or INFO line already says it; when the detail belongs in the file
-but not the terminal, add a denylist prefix instead. Getting this backwards is
-easy and quiet: demoting the per-tier match counts looked like console cleanup,
-but `MatchResult.summary()` reports only run-wide totals, so the per-tier split
-left the log file entirely. Why the denylist is deliberate rather than an
-allowlist, and what `log_to_file: false` changes:
-[`.claude/references/console-log-routing.md`](../references/console-log-routing.md).
-Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
+**`logger.debug` is not "hide from console" — it is "drop everywhere" unless
+`--verbose` enables it.** Before demoting a line, name the result or recovery
+presenter that preserves the user-facing fact. `typer.echo` is not a durable
+log record, so use INFO when the detail belongs in configured file logs and
+make it visible with `--verbose`. Command results never depend on either INFO
+or DEBUG. Locked by `tests/moneybin/test_logging_config.py::TestConsoleNoiseFilter`.
 
 ## Standard Flags on Read-Only Commands
 
 Every command that **reads but does not mutate** state MUST accept:
 
 - `-o, --output {text,json}` — output format. `text` is human-readable, `json` is machine-readable. The `json` branch must serialize the same **records and values** the text branch displays: the same rows, the same amounts, the same masking. It may carry more *fields* — where a text table renders a declared subset of its columns, JSON still carries every one (see `--wide` below). Narrowing is a reading aid for a terminal, never a difference in what the two branches know.
-- `-q, --quiet` — suppress informational output (status lines, progress, `✅`). Result rows are NEVER suppressed by `-q` — they are the data.
+- `-q, --quiet` — suppress informational output (status lines, progress, optional next-step hints). Preserve result rows and required recovery actions.
 - `--wide` — on a command whose text table renders a declared subset of its columns, restore the full projection. Text-only: `--output json` always carries every column. A command that renders everything by default does not need it.
 - `--json-fields` — comma-separated field projection for `--output json` (e.g. `--json-fields id,date,amount`). Only applies when `--output json` is active; silently ignored otherwise. Added progressively as each read-only command is extended — declare as `json_fields: str | None = json_fields_option` and pass to `render_or_json(json_fields=json_fields)`. Commands that implement it MUST enumerate available field names in their `--help` text (e.g. `"Available fields: id, date, amount, description, category, account_id"`).
 
@@ -209,10 +202,12 @@ data through this module and have it silenced.
 
 A command that accepts `-q` must forward it: `render_note` defaults to
 `quiet=False`, so a dropped flag is a flag that silently does nothing. Forward
-it to the chatter only — a next-step hint, a progress line, a `✅`. A statement
+it to the chatter only — an optional next-step hint or a progress line. A statement
 about how far the numbers can be trusted (truncated, degraded, converted)
 keeps printing under `-q`, because asking for less chatter is not a claim that
-the truncation stopped.
+the truncation stopped. Required recovery actions also remain visible. Commands
+that emit only results and recovery disclosures should document why quiet has
+no additional output to suppress.
 
 **Amounts.** `format_money` is the only place an amount becomes text, and every
 money column declares a **money kind** — `flow`, `magnitude`, `delta`, or
@@ -231,13 +226,27 @@ it would let a redirected file record a truncated table that reads as whole.
 Pass `total_columns=` to `render_rows` to get that line; leave it out and
 nothing is framed.
 
-**Colour** is defined once, semantically, as `render.Style` — no colour literal
-belongs at a call site — and is emitted only when stdout is a TTY and `NO_COLOR`
-is unset. The sign glyph is always present, so the encoding survives a pipe.
+**Terminal policy** belongs to `moneybin.cli.terminal`. It resolves actual
+stdin/stdout/stderr capabilities and the supplied `CLISettings` without loading
+a profile or database. JSON disables human presentation; reduced motion keeps
+static stage labels while disabling animation; quiet suppresses those labels.
+`NO_COLOR` disables every style, including bold. `render.Style` names semantic
+roles (hierarchy, context, action, and states) with terminal palette names; no
+colour literal belongs at a call site. Rich may appear only in the centralized
+presentation helpers (`render.py`, `terminal.py`, and `progress.py`), never in a command-local
+renderer. The sign glyph is always present, so the encoding survives a pipe.
+
+`TerminalPolicy.symbols` provides `✓`, `!`, `×`, and `›` with `OK`, `!`, `X`,
+and `>` ASCII fallbacks. Use its `minus` when a terminal-facing formatter needs
+the portable hyphen-minus; preserve the number and sign meaning. Commands with
+legacy direct human output carry the searchable
+`DEPRECATED: direct-human-output` marker until they migrate through the shared
+presentation boundary.
 
 Three guards in `tests/moneybin/test_cli/test_render.py` enforce this
-structurally: Rich may be imported only by `render.py`, no `typer.echo` outside
-it carries an alignment format spec, and nothing calls `typer.secho`/`typer.style`.
+structurally: Rich may be imported only by centralized presentation helpers,
+no `typer.echo` outside them carries an alignment format spec, and nothing calls
+`typer.secho`/`typer.style`.
 
 **No module is exempt** — every CLI module is held to these three guards
 unconditionally. The `_AWAITING_RENDER_ROWS` set that once carried eight
@@ -315,18 +324,12 @@ Every interactive prompt (confirmation, selection, wizard step) must have a flag
 
 Combined with `--output json` (see `mcp-architecture.md` §7), this makes every CLI command fully automatable by AI agents (Claude Code, Codex) and shell scripts.
 
-## Icon Usage
+## Terminal symbols and logging
 
-Use icons **sparingly** — only where they add scanability, not decoration.
+For console and file logging behavior, see "Keeping the console readable" above.
 
-| Signal | Icon | When to use |
-|--------|------|-------------|
-| Success | `✅` | Final line of a successful action command |
-| Error | `❌` | `logger.error(...)` messages |
-| Warning | `⚠️` | `logger.warning(...)` messages |
-| Working | `⚙️` | Start of a long-running operation (sync, load, transform) |
-| Hint | `💡` | Optional follow-up tips after an error |
-| Bug report | `🐛` | Link to issue tracker after an unexpected error |
-| Review | `👀` | Items that need user attention or review |
-
-Do **not** add icons to ordinary informational log lines (paths, counts, results rows). Query/display commands (`status`, `stats`, `list-*`) don't need a trailing ✅ — they just display data. No decorative icons (📈📊📁) — only the semantic icons in the table above.
+Use the active `TerminalPolicy` symbols for shared error and progress helpers:
+`OK`/`X`/`>` in ASCII mode and their functional Unicode counterparts otherwise.
+Do not hard-code pictographic prefixes in new terminal output. Essential
+recovery text goes directly to stderr and JSON commands keep stdout exclusively
+for their structured document or envelope.

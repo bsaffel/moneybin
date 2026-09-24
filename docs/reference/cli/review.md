@@ -11,12 +11,13 @@ Usage: `moneybin review [OPTIONS]`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `--type` | text | `all` | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
+| `--type` | text |  | all \| matches \| categorize \| account-links \| merchant-links \| security-links |
 | `--status` | flag |  | Show queue counts (the default) |
 | `--interactive` | flag |  | Walk the queue item by item (not yet built) |
 | `--confirm` | text |  | Non-interactive: confirm one match by ID |
 | `--reject` | text |  | Non-interactive: reject one match by ID |
 | `--confirm-all` | flag |  | Non-interactive: confirm all items in scope |
 | `--limit` | int | `50` | Cap items per session |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

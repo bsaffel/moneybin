@@ -176,6 +176,52 @@ def test_gsheet_connect_text_output(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_connect_failure_receipt_and_detection_notes_use_ascii_symbols(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Warnings in a stateful connect receipt honor the same ASCII policy."""
+    service = MagicMock()
+    detection = replace(_make_detection(), notes=["renamed duplicate header"])
+    service.connect.return_value = ConnectResult(
+        connection=_make_connection(),
+        detection=detection,
+        initial_pull=None,
+        initial_pull_status="drift_detected",
+        initial_pull_error="header changed",
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    def ascii_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(
+            symbols=MagicMock(success="OK", attention="!", failure="X"),
+            output="text",
+            page=False,
+            width=80,
+            style=False,
+        )
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        ascii_policy,
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "gsheet",
+            "connect",
+            "https://docs.google.com/spreadsheets/d/ssid_xyz/edit#gid=0",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "⚠️" not in result.output
+    assert "! renamed duplicate header" in result.stderr
+    assert "! Initial pull returned status=drift_detected" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
 def test_gsheet_connect_json_output(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.connect.return_value = ConnectResult(
@@ -317,9 +363,13 @@ def test_gsheet_pull_single_connection_runs_refresh(
     assert result.exit_code == 0, result.output
     service.pull_connection.assert_called_once_with("conn_abc123")
     mock_refresh.assert_called_once()
-    assert mock_refresh.call_args.kwargs == {
-        "steps": ["match", "transform", "categorize", "rates"]
-    }
+    assert mock_refresh.call_args.kwargs["steps"] == [
+        "match",
+        "transform",
+        "categorize",
+        "rates",
+    ]
+    assert callable(mock_refresh.call_args.kwargs["progress"])
 
 
 @pytest.mark.unit
@@ -348,6 +398,230 @@ def test_gsheet_pull_nonzero_exit_on_failed_pull(
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--no-refresh"])
     assert result.exit_code == 1, result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.orchestration.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_requested_drift_is_partial_and_nonzero_in_text_and_json(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """A requested connection skipped for drift cannot look like a successful pull."""
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="drift_detected",
+        drift_reason="header changed",
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    text = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--no-refresh"])
+    machine = runner.invoke(
+        app, ["gsheet", "pull", "conn_abc123", "--no-refresh", "--output", "json"]
+    )
+
+    assert text.exit_code == 1, text.output
+    assert "drift detected" in text.stdout
+    assert machine.exit_code == 1, machine.output
+    payload = json.loads(machine.stdout)["data"]["pulls"]
+    assert payload == [
+        {
+            "connection_id": "conn_abc123",
+            "status": "drift_detected",
+            "rows_inserted": 0,
+            "rows_upserted": 0,
+            "rows_soft_deleted": 0,
+            "drift_reason": "header changed",
+            "error_message": None,
+        }
+    ]
+
+
+@pytest.mark.unit
+@patch("moneybin.orchestration.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_mixed_success_and_drift_preserves_saved_counts(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """Partial results keep the successful connection's known saved counts."""
+    service = MagicMock()
+    service.pull_all_healthy.return_value = [
+        PullResult(
+            "conn_saved",
+            status="complete",
+            load_result=_make_load_result(rows_inserted=3, rows_upserted=2),
+        ),
+        PullResult(
+            "conn_drift", status="drift_detected", drift_reason="header changed"
+        ),
+    ]
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+
+    result = runner.invoke(app, ["gsheet", "pull", "--no-refresh", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    pulls = json.loads(result.stdout)["data"]["pulls"]
+    assert pulls[0]["rows_inserted"] == 3
+    assert pulls[0]["rows_upserted"] == 2
+    assert pulls[1]["status"] == "drift_detected"
+
+
+@pytest.mark.unit
+@patch("moneybin.orchestration.refresh.refresh")
+@patch("moneybin.database.get_database")
+@patch("moneybin.connectors.gsheet.sheets_api.SheetsClient")
+@patch("moneybin.connectors.gsheet.pull_service.GSheetPullService")
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_pull_requested_refresh_shortfall_is_partial_and_nonzero(
+    mock_oauth: MagicMock,
+    mock_service_cls: MagicMock,
+    mock_sheets_cls: MagicMock,
+    mock_get_db: MagicMock,
+    mock_refresh: MagicMock,
+) -> None:
+    """A clean apply cannot hide a requested best-effort refresh shortfall."""
+    from moneybin.orchestration.refresh import RefreshResult
+    from moneybin.services.rate_backfill import RateBackfillResult
+    from moneybin.services.refresh_outcome import StageOutcome
+
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123", status="complete", load_result=_make_load_result()
+    )
+    mock_service_cls.return_value = service
+    mock_oauth.return_value = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    mock_refresh.return_value = RefreshResult(
+        applied=True,
+        duration_seconds=0.1,
+        rate_backfill=RateBackfillResult(rates_written=0, pairs_failed=("EUR/USD",)),
+        stages=(StageOutcome(step="rates", ran=True, counts={"rates_written": 0}),),
+    )
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
+
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.stdout)["data"]
+    assert payload["rate_pairs_failed"] == ["EUR/USD"]
+    assert payload["pulls"][0]["rows_inserted"] == 5
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_pull_service")
+def test_gsheet_pull_interruption_reports_unknown_saved_scope(
+    mock_build: MagicMock,
+) -> None:
+    """Ctrl+C after pull start never invents a rollback or zero saved rows."""
+    service = MagicMock()
+    service.pull_connection.side_effect = KeyboardInterrupt
+    mock_build.return_value.__enter__.return_value = (service, MagicMock())
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--no-refresh"])
+
+    assert result.exit_code == 130
+    assert "Google Sheets pull cancelled" in result.stdout
+    assert "saved scope is unknown" in result.stdout.lower()
+    assert "moneybin gsheet status" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_pull_service")
+def test_gsheet_pull_interruption_json_keeps_a_structured_unknown_saved_scope(
+    mock_build: MagicMock,
+) -> None:
+    """Scripts receive the same honest cancellation state as human terminals."""
+    service = MagicMock()
+    service.pull_connection.side_effect = KeyboardInterrupt
+    mock_build.return_value.__enter__.return_value = (service, MagicMock())
+
+    result = runner.invoke(
+        app, ["gsheet", "pull", "conn_abc123", "--no-refresh", "--output", "json"]
+    )
+
+    assert result.exit_code == 130
+    error = json.loads(result.stdout)["error"]
+    assert error["details"] == {"outcome": "cancelled", "saved_scope": "unknown"}
+
+
+@pytest.mark.unit
+@patch("moneybin.orchestration.refresh.refresh", side_effect=KeyboardInterrupt)
+@patch("moneybin.cli.commands.gsheet._build_pull_service")
+def test_gsheet_pull_interruption_during_refresh_retains_known_counts(
+    mock_build: MagicMock, mock_refresh: MagicMock
+) -> None:
+    """Only freshness is unknown once the completed pull already returned counts."""
+    service = MagicMock()
+    service.pull_connection.return_value = PullResult(
+        connection_id="conn_abc123",
+        status="complete",
+        load_result=_make_load_result(rows_inserted=3),
+    )
+    mock_build.return_value.__enter__.return_value = (service, MagicMock())
+
+    result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
+
+    assert result.exit_code == 130
+    error = json.loads(result.stdout)["error"]
+    assert error["details"]["pulls"] == [
+        {
+            "connection_id": "conn_abc123",
+            "status": "complete",
+            "rows_inserted": 3,
+            "rows_upserted": 0,
+            "rows_soft_deleted": 0,
+        }
+    ]
+    assert error["details"]["freshness"] == "unknown"
+    assert "saved_scope" not in error["details"]
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_oauth_client")
+def test_gsheet_auth_receipt_never_uses_a_pager(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stateful authorization receipts never enter the finite-read pager."""
+    from moneybin.cli import pager
+
+    client = MagicMock()
+    client.is_authorized.return_value = True
+    mock_build.return_value = client
+    page_text = MagicMock(return_value=True)
+    monkeypatch.setattr(pager, "page_text", page_text)
+
+    def tiny_paging_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(
+            output="text", page=True, width=80, height=1, color=False, style=False
+        )
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        tiny_paging_policy,
+    )
+
+    result = runner.invoke(app, ["gsheet", "auth"])
+
+    assert result.exit_code == 0, result.output
+    assert "Already authorized" in result.stdout
+    page_text.assert_not_called()
 
 
 @pytest.mark.unit
@@ -526,7 +800,7 @@ def test_gsheet_pull_reports_a_crashed_rates_step(
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert "Exchange rate backfill failed" in result.output
 
 
@@ -574,7 +848,7 @@ def test_gsheet_pull_names_an_unsupported_pair_and_its_remedy(
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert "EUR/XTS" in result.output
     assert "moneybin fx set" in result.output
 
@@ -622,7 +896,7 @@ def test_gsheet_pull_json_carries_the_rate_backfill_outcome(
     )
 
     result = runner.invoke(app, ["gsheet", "pull", "conn_abc123", "--output", "json"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.stdout)["data"]
     rates = next(s for s in payload["stages"] if s["step"] == "rates")
     assert rates["counts"]["rates_written"] == 7
@@ -694,10 +968,75 @@ def test_gsheet_list_text_output(mock_build: MagicMock) -> None:
     service = MagicMock()
     service.list_connections.return_value = [_make_connection()]
     mock_build.return_value.__enter__.return_value = service
+    for args in ([], ["--quiet"]):
+        result = runner.invoke(app, ["gsheet", "list", *args])
+        assert result.exit_code == 0, result.output
+        assert "conn_abc123" in result.stdout
+        assert "My Budget" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_list_long_finite_result_uses_the_pager(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long list pages the already-read connections without another fetch."""
+    from moneybin.cli import pager
+
+    service = MagicMock()
+    service.list_connections.return_value = [
+        _make_connection(connection_id=f"conn_{index:03d}") for index in range(80)
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    captured: list[str] = []
+
+    def paging_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(output="text", page=True, width=80, height=4, color=False)
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        captured.append(text)
+        return True
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        paging_policy,
+    )
+    monkeypatch.setattr(pager, "page_text", capture_page)
+
     result = runner.invoke(app, ["gsheet", "list"])
+
     assert result.exit_code == 0, result.output
-    assert "conn_abc123" in result.stdout
-    assert "My Budget" in result.stdout
+    assert len(captured) == 1
+    assert "conn_000" in captured[0]
+    assert "conn_079" in captured[0]
+    service.list_connections.assert_called_once_with()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_list_no_pager_prints_the_same_finite_result(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-pager preserves every returned row on stdout."""
+    service = MagicMock()
+    service.list_connections.return_value = [
+        _make_connection(connection_id=f"conn_{index:03d}") for index in range(80)
+    ]
+    mock_build.return_value.__enter__.return_value = service
+
+    def paging_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(output="text", page=True, width=80, height=4, color=False)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        paging_policy,
+    )
+
+    result = runner.invoke(app, ["gsheet", "list", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    assert "conn_000" in result.stdout
+    assert "conn_079" in result.stdout
 
 
 @pytest.mark.unit
@@ -774,6 +1113,39 @@ def test_gsheet_status_single_connection(mock_build: MagicMock) -> None:
     assert result.exit_code == 0, result.output
     assert "conn_abc123" in result.stdout
     assert "header mismatch" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_status_long_result_pages_and_no_pager_prints_all_rows(
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Status is a finite composed read with the same pager contract as list."""
+    from moneybin.cli import pager
+
+    service = MagicMock()
+    service.list_connections.return_value = [
+        _make_connection(connection_id=f"conn_{index:03d}") for index in range(80)
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    captured: list[str] = []
+
+    def policy(*, no_pager: bool = False) -> object:
+        return MagicMock(output="text", page=True, width=80, height=4, color=False)
+
+    def capture(text: str, *, color: bool, wide: bool) -> bool:
+        captured.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.commands.gsheet.get_terminal_policy", policy)
+    monkeypatch.setattr(pager, "page_text", capture)
+    paged = runner.invoke(app, ["gsheet", "status"])
+    direct = runner.invoke(app, ["gsheet", "status", "--no-pager"])
+
+    assert paged.exit_code == 0, paged.output
+    assert "conn_000" in captured[0] and "conn_079" in captured[0]
+    assert direct.exit_code == 0, direct.output
+    assert "conn_000" in direct.stdout and "conn_079" in direct.stdout
 
 
 # --------------------------------------------------------------- reconnect ---
@@ -860,21 +1232,37 @@ def test_gsheet_disconnect_soft(mock_build: MagicMock) -> None:
 
 
 @pytest.mark.unit
-@patch("moneybin.cli.commands.gsheet.sys")
 @patch("moneybin.cli.commands.gsheet._build_connection_service")
 def test_gsheet_disconnect_purge_requires_confirmation_or_yes(
-    mock_build: MagicMock, mock_sys: MagicMock
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """In a TTY context, --purge without --yes prompts; declining aborts."""
     service = MagicMock()
+    from moneybin.connectors.gsheet.connection_service import GSheetPurgePlan
+
+    service.plan_purge.return_value = GSheetPurgePlan(
+        "conn_abc123",
+        {"adapter": "transactions"},
+        (),
+        (),
+        {"connections": 1, "raw_rows": 0, "raw_account_rows": 0, "views": 0},
+    )
     mock_build.return_value.__enter__.return_value = service
-    mock_sys.stdin.isatty.return_value = True
+
+    def interactive_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(interactive=True)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        interactive_policy,
+    )
     # Provide stdin "n\n" to decline the typer.confirm prompt.
     result = runner.invoke(
         app, ["gsheet", "disconnect", "conn_abc123", "--purge"], input="n\n"
     )
     assert result.exit_code == 0
     service.disconnect.assert_not_called()
+    service.purge_confirmed.assert_not_called()
 
 
 @pytest.mark.unit
@@ -886,22 +1274,68 @@ def test_gsheet_disconnect_purge_with_yes_proceeds(mock_build: MagicMock) -> Non
         app, ["gsheet", "disconnect", "conn_abc123", "--purge", "--yes"]
     )
     assert result.exit_code == 0, result.output
-    service.disconnect.assert_called_once_with("conn_abc123", purge=True, actor="cli")
-    assert "Purged" in result.stdout
+    service.plan_purge.assert_called_once_with("conn_abc123")
+    service.purge_confirmed.assert_called_once()
+    assert service.purge_confirmed.call_args.args == ("conn_abc123",)
 
 
 @pytest.mark.unit
-@patch("moneybin.cli.commands.gsheet.sys")
+@patch("moneybin.cli.commands.gsheet._build_connection_service")
+def test_gsheet_disconnect_purge_rejects_a_stale_preview(mock_build: MagicMock) -> None:
+    """A changed destructive scope refuses the purge before any deletion."""
+    from moneybin.connectors.gsheet.connection_service import GSheetPurgePlan
+
+    planned = GSheetPurgePlan(
+        "conn_abc123",
+        {"adapter": "transactions"},
+        (),
+        (),
+        {"connections": 1, "raw_rows": 0, "raw_account_rows": 0, "views": 0},
+    )
+    service = MagicMock()
+    service.plan_purge.return_value = planned
+
+    def reject(_connection_id: str, *, verify: object, actor: str) -> None:
+        assert callable(verify)
+        verify(
+            GSheetPurgePlan(
+                "conn_abc123",
+                {"adapter": "transactions", "changed": True},
+                (),
+                (),
+                {"connections": 1, "raw_rows": 0, "raw_account_rows": 0, "views": 0},
+            )
+        )
+
+    service.purge_confirmed.side_effect = reject
+    mock_build.return_value.__enter__.return_value = service
+
+    result = runner.invoke(
+        app, ["gsheet", "disconnect", "conn_abc123", "--purge", "--yes"]
+    )
+
+    assert result.exit_code == 1
+    assert "changed" in result.output.lower()
+
+
+@pytest.mark.unit
 @patch("moneybin.cli.commands.gsheet._build_connection_service")
 def test_gsheet_disconnect_purge_non_tty_requires_yes(
-    mock_build: MagicMock, mock_sys: MagicMock
+    mock_build: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """In non-TTY (script/agent), --purge without --yes must fail loudly, not auto-confirm."""
     service = MagicMock()
     mock_build.return_value.__enter__.return_value = service
-    mock_sys.stdin.isatty.return_value = False
+
+    def noninteractive_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(interactive=False)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.gsheet.get_terminal_policy",
+        noninteractive_policy,
+    )
     result = runner.invoke(app, ["gsheet", "disconnect", "conn_abc123", "--purge"])
-    assert result.exit_code == 2
+    assert result.exit_code == 1
     service.disconnect.assert_not_called()
     assert "--yes" in result.stderr or "--yes" in result.output
 

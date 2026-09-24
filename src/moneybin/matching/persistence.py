@@ -98,7 +98,7 @@ def get_pending_matches(
         f"""
         SELECT {_MATCH_DECISION_SELECT} FROM {MATCH_DECISIONS.full_name}
         {where}
-        ORDER BY confidence_score DESC
+        ORDER BY confidence_score DESC, match_id ASC
         {limit_clause}
         """,  # noqa: S608  # match_type validated above; limit is parameterized
         params,

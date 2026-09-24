@@ -268,6 +268,7 @@ def refresh_views(db: Database) -> None:
             CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
             SELECT
                 merchant_id, raw_pattern, match_type, canonical_name,
+                CAST(NULL AS VARCHAR) AS category_id,
                 category, subcategory, created_by, created_at,
                 CAST([] AS VARCHAR[]) AS exemplars,
                 CAST(NULL AS TIMESTAMP) AS updated_at
@@ -281,7 +282,7 @@ def refresh_views(db: Database) -> None:
         CREATE OR REPLACE VIEW {MERCHANTS.full_name} AS
         SELECT
             merchant_id, raw_pattern, match_type, canonical_name,
-            category, subcategory, created_by,
+            category_id, category, subcategory, created_by,
             exemplars,
             created_at,
             updated_at

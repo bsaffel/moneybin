@@ -223,6 +223,8 @@ class ManualEntryRawResult:
 
     source_transaction_id: str
     transaction_id: str
+    amount: Decimal
+    currency_code: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -405,6 +407,14 @@ class Split:
     ord: int
     created_at: str
     created_by: str
+
+
+@dataclass(frozen=True, slots=True)
+class SplitsClearResult:
+    """Resolved transaction identity and exact number of deleted split rows."""
+
+    transaction_id: str
+    cleared_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1249,7 +1259,7 @@ class TransactionService:
                 # next ``refresh_run`` (which materializes the row in
                 # ``core.fct_transactions``). Migration V026 added the column;
                 # The canonical helper mirrors the SQLMesh unmatched-row hash.
-                self._db.conn.execute(
+                committed = self._db.conn.execute(
                     f"""
                     INSERT INTO {MANUAL_TRANSACTIONS.full_name} (
                         source_transaction_id, import_id, account_id,
@@ -1258,6 +1268,7 @@ class TransactionService:
                         transaction_type, check_number, currency_code,
                         created_by, transaction_id
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING amount, currency_code
                     """,
                     [
                         source_transaction_id,
@@ -1283,11 +1294,15 @@ class TransactionService:
                         actor,
                         transaction_id,
                     ],
-                )
+                ).fetchone()
+                if committed is None:
+                    raise RuntimeError("manual entry insert returned no committed row")
                 results.append(
                     ManualEntryRawResult(
                         source_transaction_id=source_transaction_id,
                         transaction_id=transaction_id,
+                        amount=cast("Decimal", committed[0]),
+                        currency_code=cast("str | None", committed[1]),
                     )
                 )
 
@@ -1925,7 +1940,7 @@ class TransactionService:
         self._splits_repo.delete(split_id=split_id, actor=actor)
         logger.info(f"split.remove split_id={split_id} actor={actor}")
 
-    def clear_splits(self, transaction_id: str, *, actor: str) -> None:
+    def clear_splits(self, transaction_id: str, *, actor: str) -> SplitsClearResult:
         """Delete all splits for a transaction; emit one ``split.remove`` per row.
 
         Per-row capture (DN3) keeps each split individually undoable. No-op (no
@@ -1941,6 +1956,9 @@ class TransactionService:
         logger.info(
             f"split.clear transaction_id={transaction_id} "
             f"count={len(events)} actor={actor}"
+        )
+        return SplitsClearResult(
+            transaction_id=transaction_id, cleared_count=len(events)
         )
 
     def set_splits(

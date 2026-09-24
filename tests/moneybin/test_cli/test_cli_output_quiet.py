@@ -35,6 +35,8 @@ _READ_ONLY_HELP_PATHS: list[list[str]] = [
     ["system", "doctor", "--help"],
     ["fx", "rate", "--help"],
     ["fx", "list", "--help"],
+    ["gsheet", "list", "--help"],
+    ["gsheet", "status", "--help"],
 ]
 
 

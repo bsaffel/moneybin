@@ -39,6 +39,7 @@ from moneybin.metrics.registry import (
 )
 from moneybin.orchestration.refresh import refresh as _refresh
 from moneybin.orchestration.refresh import step_outcome as _step_outcome
+from moneybin.progress import ProgressEvent
 from moneybin.services.account_resolver import AccountResolver
 from moneybin.services.security_resolver import SecurityResolver
 from moneybin.tables import FCT_INVESTMENT_TRANSACTIONS
@@ -85,6 +86,7 @@ class SyncService:
         provider_item_id: str | None = None,
         force: bool = False,
         refresh: bool = True,
+        progress: Callable[[ProgressEvent], None] | None = None,
     ) -> PullResult:
         """Trigger a sync, fetch data, load into raw tables, return counts.
 
@@ -110,6 +112,8 @@ class SyncService:
             provider_item_id = self._resolve_institution(institution)
         with SYNC_PULL_DURATION_SECONDS.labels(provider=_PROVIDER).time():
             try:
+                if progress is not None:
+                    progress(ProgressEvent("Syncing institutions"))
                 trigger_resp = self.client.trigger_sync(
                     provider_item_id=provider_item_id,
                     reset_cursor=force,
@@ -124,6 +128,8 @@ class SyncService:
                         f"for job_id={trigger_resp.job_id}; expected 'completed'"
                     )
                 sync_data = self.client.get_data(trigger_resp.job_id)
+                if progress is not None:
+                    progress(ProgressEvent("Loading synced data"))
                 removed_count = self.loader.handle_removed_transactions(
                     sync_data.removed_transactions,
                 )
@@ -258,7 +264,13 @@ class SyncService:
             + resolution_writes
         )
         if refresh and rows_changed > 0:
-            refresh_result = _refresh(self.db)
+            if progress is not None:
+                progress(ProgressEvent("Refreshing reports"))
+            refresh_result = (
+                _refresh(self.db)
+                if progress is None
+                else _refresh(self.db, progress=progress)
+            )
             result.transforms_applied = refresh_result.applied
             result.transforms_duration_seconds = refresh_result.duration_seconds
             result.transforms_error = refresh_result.error

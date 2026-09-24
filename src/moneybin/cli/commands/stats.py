@@ -12,9 +12,15 @@ from typing import Annotated, Any
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_summary
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_summary, compose_human_result
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.tables import METRICS
 from moneybin.utils.parsing import parse_duration
@@ -164,6 +170,7 @@ def stats_command(
     ] = None,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """Display lifetime metric aggregates."""
     where_clauses: list[str] = []
@@ -173,7 +180,7 @@ def stats_command(
         try:
             delta = parse_duration(since)
         except ValueError as e:
-            logger.error(f"❌ {e}")
+            logger.error(str(e))
             raise typer.Exit(1) from e
         cutoff = datetime.now(tz=UTC) - delta
         where_clauses.append("recorded_at >= ?")
@@ -257,8 +264,21 @@ def stats_command(
                 # logs — so moving this one settles nothing and silently
                 # changes what `moneybin stats > file` writes. Requirements
                 # 23-25 are about the rendering of metrics that exist.
-                if not quiet:
-                    typer.echo("No metrics recorded yet. Run some operations first.")
+                emit_human_result(
+                    compose_human_result([
+                        build_summary(
+                            [
+                                ("Scope", "All recorded metrics"),
+                                ("Result", "No metrics recorded yet."),
+                                ("Next", "Run an import, refresh, or report."),
+                            ],
+                            title="Metrics",
+                        )
+                    ]),
+                    policy=get_terminal_policy(no_pager=no_pager),
+                    finite_read=True,
+                    no_pager=no_pager,
+                )
                 return
 
             # Deferred, matching every other CLI reference to the registry:
@@ -266,5 +286,13 @@ def stats_command(
             # startup path of every command, not just this one.
             from moneybin.metrics.registry import HISTOGRAM_UNITS, METRIC_DOMAINS
 
-            for domain, pairs in _grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS):
-                render_summary(pairs, title=domain)
+            parts = [
+                build_summary(pairs, title=domain)
+                for domain, pairs in _grouped(rows, HISTOGRAM_UNITS, METRIC_DOMAINS)
+            ]
+            emit_human_result(
+                compose_human_result(parts),
+                policy=get_terminal_policy(no_pager=no_pager),
+                finite_read=True,
+                no_pager=no_pager,
+            )

@@ -10,6 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.import_cmd import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.services.import_service import ImportRefreshError, ImportResult
 
 runner = CliRunner()
@@ -429,6 +430,23 @@ def _patched_history() -> Any:
     )
 
 
+def _pager_policy(*, no_pager: bool = False) -> TerminalPolicy:
+    return TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=not no_pager,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=3,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
+
+
 def test_import_history_renders_a_table_not_a_padded_rule(
     wide_terminal: None,
 ) -> None:
@@ -487,3 +505,71 @@ def test_import_history_renders_one_row_per_import(wide_terminal: None) -> None:
     # routed through `format_money`.
     assert "1204" in result.stdout
     assert "1,204" not in result.stdout
+
+
+def test_import_history_no_pager_prints_the_complete_finite_answer(
+    wide_terminal: None,
+) -> None:
+    """A caller can opt out of paging without losing a full action target."""
+    with patch("moneybin.database.get_database", _fake_db_ctx), _patched_history():
+        result = runner.invoke(app, ["history", "--no-pager"], catch_exceptions=False)
+
+    assert result.exit_code == 0, result.output
+    assert "imp_0123456789ab" in result.stdout
+    assert "imp_ba9876543210" in result.stdout
+    assert "Use 'moneybin import revert <import_id>'" in result.stdout
+
+
+def test_import_history_pager_and_no_pager_receive_the_same_complete_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The long catalog passes its complete rendered answer to the pager once."""
+    records = [
+        dict(record, import_id=f"{record['import_id']}-{index}")
+        for index in range(4)
+        for record in _HISTORY_RECORDS
+    ]
+    captured: list[str] = []
+    monkeypatch.setattr(
+        "moneybin.cli.commands.import_cmd.get_terminal_policy", _pager_policy
+    )
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        captured.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.pager.page_text", capture_page)
+    with (
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.get_import_history",
+            return_value=records,
+        ),
+    ):
+        paged = runner.invoke(app, ["history", "--limit", "8"])
+        direct = runner.invoke(app, ["history", "--limit", "8", "--no-pager"])
+
+    assert paged.exit_code == direct.exit_code == 0
+    assert len(captured) == 1
+    assert "total beyond --limit is unknown" in captured[0]
+    assert captured[0].removesuffix("\nq return to shell\n") == direct.stdout
+
+
+def test_import_history_empty_filter_names_the_scope_and_recovery(
+    wide_terminal: None,
+) -> None:
+    """A filtered empty history tells the reader which exact lookup missed."""
+    with (
+        patch("moneybin.database.get_database", _fake_db_ctx),
+        patch(
+            "moneybin.services.import_service.ImportService.get_import_history",
+            return_value=[],
+        ),
+    ):
+        result = runner.invoke(
+            app, ["history", "--import-id", "imp_missing"], catch_exceptions=False
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "imp_missing" in result.stdout
+    assert "moneybin import history" in result.stdout

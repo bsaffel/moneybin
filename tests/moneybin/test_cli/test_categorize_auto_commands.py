@@ -118,20 +118,16 @@ def test_auto_review_text_output_shows_match_count_and_flags_broad(
         total_count=2,
     )
 
-    with caplog.at_level(
-        logging.INFO, logger="moneybin.cli.commands.transactions.categorize.auto"
-    ):
-        result = runner.invoke(app, ["auto", "review"])
+    with caplog.at_level(logging.INFO):
+        result = runner.invoke(app, ["auto", "review", "--no-pager"])
 
     assert result.exit_code == 0, result.output
-    messages = [r.message for r in caplog.records]
-    safe_line = next(m for m in messages if "safe1" in m)
-    broad_line = next(m for m in messages if "broad1" in m)
-    assert "~3 matches" in safe_line
-    assert "BROAD" not in safe_line
-    assert "~400 matches" in broad_line
-    assert "BROAD" in broad_line
-    assert "--allow-broad" in broad_line
+    assert "safe1" in result.stdout
+    assert "3" in result.stdout
+    assert "broad1" in result.stdout
+    assert "400" in result.stdout
+    assert "require --allow-broad" in result.stdout
+    assert "AMZN" not in "\n".join(record.message for record in caplog.records)
 
 
 def _confirm_result(
@@ -144,6 +140,32 @@ def _confirm_result(
         newly_categorized=0,
         rule_ids=[],
     )
+
+
+@patch("moneybin.services.auto_rule_service.AutoRuleService")
+@patch("moneybin.cli.commands.transactions.categorize.auto.get_database")
+@patch("moneybin.cli.commands.transactions.categorize.auto.handle_cli_errors")
+def test_auto_accept_skips_are_partial_failures_in_text_and_json(
+    mock_db_ctx: MagicMock, _mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """A skipped proposal is preserved in the receipt but makes the batch nonzero."""
+    mock_db_ctx.return_value.__enter__.return_value = MagicMock()
+    mock_svc_cls.return_value.accept.return_value = _confirm_result(
+        approved=1, skipped=1
+    )
+
+    text_result = runner.invoke(app, ["auto", "accept", "--accept", "a1"])
+    json_result = runner.invoke(
+        app, ["auto", "accept", "--accept", "a1", "--output", "json"]
+    )
+
+    assert text_result.exit_code == 1, text_result.output
+    assert "partially completed" in text_result.stdout
+    assert json_result.exit_code == 1, json_result.output
+    body = json.loads(json_result.stdout)
+    assert body["status"] == "error"
+    assert body["data"]["approved"] == 1
+    assert body["data"]["skipped"] == 1
 
 
 @patch("moneybin.services.auto_rule_service.AutoRuleService")

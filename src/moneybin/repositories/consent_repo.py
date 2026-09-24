@@ -14,8 +14,11 @@ partial-index support is version-dependent.
 from __future__ import annotations
 
 import uuid
+from collections.abc import Set
 from typing import Any
 
+from moneybin import error_codes
+from moneybin.errors import UserError
 from moneybin.privacy.consent import ConsentMode, GrantInfo
 from moneybin.repositories.base import BaseRepo, quote_ident
 from moneybin.tables import AI_CONSENT_GRANTS
@@ -163,6 +166,7 @@ class ConsentRepo(BaseRepo):
         self,
         *,
         actor: str,
+        expected_grant_ids: Set[str] | None = None,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> list[GrantInfo]:
@@ -174,6 +178,14 @@ class ConsentRepo(BaseRepo):
         """
         with self._transaction(in_outer_txn=in_outer_txn):
             active = self.list_active()
+            if expected_grant_ids is not None and {
+                grant.grant_id for grant in active
+            } != set(expected_grant_ids):
+                raise UserError(
+                    "Consent selection changed after confirmation; no grants were revoked.",
+                    code=error_codes.MUTATION_CONFIRMATION_MISMATCH,
+                    hint="Run 'moneybin privacy status' to review the current grants, then retry.",
+                )
             for grant in active:
                 before = self._fetch_row(grant.grant_id)  # before-image, pre-UPDATE
                 self._db.execute(

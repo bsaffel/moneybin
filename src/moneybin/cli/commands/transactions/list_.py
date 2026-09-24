@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import shlex
 from dataclasses import replace
 from decimal import Decimal
 from typing import cast
@@ -13,16 +12,22 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    currency_label,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.render import (
     UNCATEGORIZED_LABEL,
     Money,
+    MoneyWithCurrency,
     Placeholder,
-    render_rows,
+    build_rows,
 )
+from moneybin.cli.utils import generated_cli_command, get_terminal_policy
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +43,10 @@ def _continuation_command(invocation: dict[str, object], next_cursor: str) -> st
     instead of an envelope.
 
     Mirrors the MCP twin (``_transaction_actions``), which already emits a
-    complete continuation call. ``shlex.join`` handles account names and
-    description patterns containing spaces or quotes.
+    complete continuation call. The shared builder handles shell quoting and
+    the explicit root profile without resolving either profile or settings.
     """
-    argv = ["moneybin", "transactions", "list"]
+    argv = ["transactions", "list"]
     for account in cast("list[str]", invocation["accounts"]):
         argv += ["--account", account]
     for category in cast("list[str]", invocation["categories"]):
@@ -67,7 +72,7 @@ def _continuation_command(invocation: dict[str, object], next_cursor: str) -> st
         "--cursor",
         next_cursor,
     ]
-    return shlex.join(argv)
+    return generated_cli_command(*argv)
 
 
 def _list_actions(next_cursor: str | None, invocation: dict[str, object]) -> list[str]:
@@ -124,6 +129,8 @@ def transactions_list(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
+    wide: bool = wide_option,
 ) -> None:
     """List transactions with optional filters."""
     from moneybin.cli.utils import handle_cli_errors
@@ -205,39 +212,61 @@ def transactions_list(
         summary=replace(envelope.summary, has_more=result.next_cursor is not None),
     )
 
-    def _render_text(_: object) -> None:
+    def _human_result() -> object | None:
         if not result.transactions:
-            if not quiet:
-                typer.echo("No transactions found.")
             return
 
+        policy = get_terminal_policy(no_pager=no_pager)
+        columns = [
+            "date",
+            "description",
+            "amount",
+            "currency",
+            "category",
+            "account_id",
+        ]
+        if not wide and policy.width <= 50:
+            # A money amount and its denomination are one fact. Preserve both
+            # before optional context when a narrow terminal cannot show all
+            # six columns without making the result unreadable.
+            columns = ["transaction", "amount"]
         rows: list[tuple[object, ...]] = []
         for t in result.transactions:
-            rows.append((
-                t.transaction_date,
+            values = {
+                "transaction": (
+                    f"{t.transaction_date} · {t.account_id} · {t.source_type} · "
+                    f"{t.description}"
+                ),
+                "date": t.transaction_date,
                 # Unclipped: `render_rows` folds an overlong value rather than
                 # eliding it, and a raw bank description carries the detail that
                 # separates two similar charges at the end.
-                t.description,
+                "description": t.description,
                 # Unformatted: `render_rows` stringifies it through
                 # `format_money`, which is the only place text output does so.
-                t.amount,
+                "amount": (
+                    MoneyWithCurrency(t.amount, currency_label(t.currency_code))
+                    if columns == ["transaction", "amount"]
+                    else t.amount
+                ),
+                "currency": t.currency_code,
                 # Passed through as stored, `None` included: `render_rows`
                 # substitutes the declared placeholder and counts what it
                 # substituted, so a category a person authored as
                 # `Uncategorized` is not counted as a missing one.
-                t.category,
-                t.account_id,
-            ))
+                "category": t.category,
+                "account_id": t.account_id,
+            }
+            rows.append(tuple(values[column] for column in columns))
 
-        render_rows(
+        return build_rows(
             # `account_id`, not `account`: the column holds an id, and naming
             # it what it is makes the join with `accounts list` visible rather
             # than merely possible (requirement 28). The account's display name
             # is deliberately absent — `TransactionRow` carries no account name,
             # and adding one would change the payload requirement 8 keeps
             # untouched.
-            ["date", "description", "amount", "category", "account_id"],
+            columns,
             rows,
             # A transaction amount is signed under the AGENTS.md convention —
             # negative is an expense, positive is income — which is `flow`.
@@ -254,9 +283,26 @@ def transactions_list(
             # the last page of a cursor walk, where nothing more is left to
             # fetch.
             has_more=result.next_cursor is not None,
-            placeholder=Placeholder("category", UNCATEGORIZED_LABEL),
+            placeholder=(
+                Placeholder("category", UNCATEGORIZED_LABEL)
+                if "category" in columns
+                else None
+            ),
+            total_columns=6,
+            terminal=policy,
         )
 
-    render_or_json(
-        envelope, output, render_fn=_render_text, cli_actor="transactions_list"
+    if output == OutputFormat.JSON:
+        render_or_json(envelope, output, cli_actor="transactions_list")
+        return
+    human = _human_result()
+    if human is None:
+        typer.echo("No transactions found.")
+        return
+    emit_human_result(
+        human,
+        policy=get_terminal_policy(no_pager=no_pager),
+        finite_read=True,
+        no_pager=no_pager,
+        wide=wide,
     )

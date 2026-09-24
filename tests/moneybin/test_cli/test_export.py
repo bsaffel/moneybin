@@ -15,6 +15,7 @@ import typer
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.config import CLISettings
 from moneybin.database import DatabaseNotInitializedError
 from moneybin.errors import UserError
 from moneybin.exports.models import ExportDestination, ExportReceipt
@@ -76,6 +77,7 @@ def _settings(exports_dir: Path) -> SimpleNamespace:
         profile="test",
         profile_exports_dir=exports_dir.resolve(),
         mcp=SimpleNamespace(max_rows=1_000),
+        cli=CLISettings(),
     )
 
 
@@ -138,7 +140,32 @@ def test_export_bundle_defaults_to_redacted_csv_and_local_exports(
     assert run.call_args.kwargs["actor"] == "cli"
     assert callable(run.call_args.kwargs["on_destination_resolved"])
     assert str(destination.local_path) in result.stderr
-    assert str(receipt.artifact_path) in result.stdout
+    assert str(receipt.artifact_path) in result.stdout.replace("\n", "")
+
+
+def test_export_artifact_receipt_never_uses_a_pager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An artifact creation receipt returns directly even on a tiny terminal."""
+    from moneybin.cli import pager
+
+    destination = _local_destination(tmp_path / "exports")
+    receipt = _receipt(destination, tmp_path / "exports" / "export-1")
+    page_text = MagicMock(return_value=True)
+    monkeypatch.setattr(pager, "page_text", page_text)
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
+        ),
+        patch("moneybin.exports.service.ExportService.run", return_value=receipt),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["export", "bundle"])
+
+    assert result.exit_code == 0, result.output
+    assert "Exported artifact" in result.stdout
+    page_text.assert_not_called()
 
 
 def test_export_report_parses_parameters_with_the_report_types(tmp_path: Path) -> None:
@@ -365,12 +392,14 @@ def test_export_yes_selects_only_the_redacted_default(tmp_path: Path) -> None:
     assert run.call_args.args[0].redaction_mode == "redacted"
 
 
-def test_interactive_decline_never_infers_unredacted_output(tmp_path: Path) -> None:
+def test_interactive_decline_never_infers_unredacted_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.cli.commands.export.get_terminal_policy",
+        lambda: MagicMock(interactive=True),
+    )
     with (
-        patch(
-            "moneybin.cli.commands.export._is_interactive_terminal",
-            return_value=True,
-        ),
         patch(
             "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
         ),
@@ -383,32 +412,36 @@ def test_interactive_decline_never_infers_unredacted_output(tmp_path: Path) -> N
     run.assert_not_called()
 
 
-def test_interactive_json_prompt_keeps_stdout_machine_readable(tmp_path: Path) -> None:
+def test_json_export_never_prompts_and_uses_the_safe_redacted_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     artifact = tmp_path / "exports" / "export-1"
     destination = _local_destination(tmp_path / "exports")
     receipt = _receipt(destination, artifact)
 
+    monkeypatch.setattr(
+        "moneybin.cli.commands.export.get_terminal_policy",
+        lambda: MagicMock(interactive=True),
+    )
     with (
-        patch(
-            "moneybin.cli.commands.export._is_interactive_terminal",
-            return_value=True,
-        ),
         patch("moneybin.database.get_database") as get_database,
         patch(
             "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
         ),
-        patch("moneybin.exports.service.ExportService.run", return_value=receipt),
+        patch(
+            "moneybin.exports.service.ExportService.run", return_value=receipt
+        ) as run,
     ):
         get_database.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(
             app,
             ["export", "bundle", "--output", "json"],
-            input="\n",
         )
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["status"] == "ok"
-    assert "Export redacted output?" in result.stderr
+    assert "Export redacted output?" not in result.stderr
+    assert run.call_args.args[0].redaction_mode == "redacted"
 
 
 def test_export_json_is_a_typed_standard_envelope(tmp_path: Path) -> None:
@@ -522,11 +555,66 @@ def test_export_destination_list_hides_sheets_target_and_shows_local_absolute_pa
 
     assert result.exit_code == 0, result.output
     assert local.local_path is not None
-    assert str(local.local_path.resolve()) in result.stdout
+    # The terminal renderer may wrap a long path on a narrow stream, but it
+    # must preserve every character of the disclosed local destination.
+    assert str(local.local_path.resolve()) in result.stdout.replace("\n", "")
     assert "dashboard" in result.stdout
     assert "dst_sheet_1" in result.stdout
     assert "sheet_abc" not in result.stdout
     assert "docs.google.com" not in result.stdout
+
+
+def test_export_destination_list_pages_the_complete_finite_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The destination leaf pages only after all readiness rows are assembled."""
+    from moneybin.cli import pager
+
+    destinations = [
+        _local_destination(tmp_path / f"archive-{index}", name=f"archive-{index}")
+        for index in range(80)
+    ]
+    readiness = ExportReadinessStatus(
+        destinations=(
+            ExportDestinationReadiness("local:exports", "local", True, True, ()),
+            *(
+                ExportDestinationReadiness(item.name, "local", True, True, ())
+                for item in destinations
+            ),
+        )
+    )
+    captured: list[str] = []
+
+    def paging_policy(*, no_pager: bool = False) -> object:
+        return MagicMock(output="text", page=True, width=80, height=4, color=False)
+
+    def capture_page(text: str, *, color: bool, wide: bool) -> bool:
+        captured.append(text)
+        return True
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.export.get_terminal_policy",
+        paging_policy,
+    )
+    monkeypatch.setattr(pager, "page_text", capture_page)
+    with (
+        patch("moneybin.database.get_database") as get_database,
+        patch(
+            "moneybin.config.get_settings", return_value=_settings(tmp_path / "exports")
+        ),
+        patch(
+            "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.list",
+            return_value=destinations,
+        ),
+        patch("moneybin.exports.service.ExportService.status", return_value=readiness),
+    ):
+        get_database.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["export", "destination", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert len(captured) == 1
+    assert "archive-0" in captured[0]
+    assert "archive-79" in captured[0]
 
 
 def test_export_destination_add_local_resolves_the_saved_path(tmp_path: Path) -> None:
@@ -717,7 +805,13 @@ def test_export_destination_add_sheets_json_matches_the_mutation_envelope() -> N
     }
 
 
-def test_export_destination_remove_requires_confirmation() -> None:
+def test_export_destination_remove_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "moneybin.cli.commands.export.get_terminal_policy",
+        lambda: MagicMock(interactive=True),
+    )
     with (
         patch("moneybin.database.get_database") as get_database,
         patch(
@@ -800,6 +894,25 @@ def test_export_destination_remove_json_matches_the_mutation_envelope() -> None:
         },
         "operation_id": "operation_1",
     }
+
+
+def test_export_destination_remove_json_refusal_is_structured_and_does_not_mutate() -> (
+    None
+):
+    """JSON mode refuses a missing confirmation without prompting or writing."""
+    with patch(
+        "moneybin.repositories.export_destinations_repo.ExportDestinationsRepo.remove"
+    ) as remove:
+        result = runner.invoke(
+            app, ["export", "destination", "remove", "archive", "--output", "json"]
+        )
+
+    assert result.exit_code == 1
+    error = json.loads(result.stdout)["error"]
+    assert error["code"] == "mutation_confirmation_required"
+    assert "--yes" in error["message"]
+    assert "Remove destination configuration" not in result.stderr
+    remove.assert_not_called()
 
 
 def test_export_destination_remove_json_preserves_the_removed_kind() -> None:
@@ -954,7 +1067,7 @@ def test_local_export_oserror_discloses_destination_without_logging_filename(
     assert result.stdout == ""
     assert f"Exporting to {destination_path}" in result.stderr
     assert "Local export could not be published." in result.stderr
-    log_error.assert_called_once_with("❌ Local export could not be published.")
+    log_error.assert_called_once_with("× Local export could not be published.")
     assert str(failed_filename) not in result.stderr
     assert str(failed_filename) not in str(log_error.call_args)
     assert "Permission denied" not in str(log_error.call_args)
