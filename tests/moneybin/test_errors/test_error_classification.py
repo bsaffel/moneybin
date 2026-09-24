@@ -473,3 +473,14 @@ class TestSecretFamilyClassification:
         result = classify_user_error(SecretStorageUnavailableError("no backend"))
         assert result is not None
         assert result.code == error_codes.INFRA_SETUP_REQUIRED
+
+
+def test_failed_keychain_deletion_hint_does_not_claim_backend_is_absent() -> None:
+    from moneybin.secrets import SecretStorageUnavailableError
+
+    result = classify_user_error(SecretStorageUnavailableError("Deletion was denied."))
+    assert result is not None
+    assert result.message == "Deletion was denied."
+    assert result.hint is not None
+    assert "unlock" in result.hint.lower()
+    assert "No OS keyring backend" not in result.hint

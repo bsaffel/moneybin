@@ -343,32 +343,27 @@ class ProfileService:
                 f"Cannot delete the active profile '{normalized}'. "
                 "Switch to another profile first: moneybin profile switch <name>"
             )
-        # Capture the opaque sync id before the dir (and its profile_id file) are
-        # removed, so the broker tokens scoped to it can be cleared afterward.
+        # Capture the opaque sync id to clear credentials before removing it.
         sync_id_file = profile_dir / "profile_id"
         sync_profile_id = (
             sync_id_file.read_text().strip() if sync_id_file.exists() else None
         )
-        shutil.rmtree(profile_dir)
-        # Clear the profile's keychain entries — each profile has its own
-        # service ("moneybin-<profile>"), so this never touches sibling profiles.
-        from moneybin.secrets import SecretStore
-
-        store = SecretStore(profile=normalized)
-        for key_name in ("DATABASE__ENCRYPTION_KEY", "DATABASE__PASSPHRASE_SALT"):
-            try:
-                store.delete_key(key_name)
-            except Exception as e:  # best-effort cleanup; data dir is already gone
-                # Don't turn a successful directory removal into a hard failure
-                # if keyring cleanup fails (e.g. NoKeyringError on headless
-                # systems, locked keychain, network keyring unreachable).
-                logger.debug(f"Keychain cleanup for {key_name} failed: {e}")
-        # Clear the profile's scoped broker sync tokens (a separate keyring
-        # service from the SecretStore above), so a delete leaves nothing behind.
+        # Clear broker credentials while the profile identity still exists, so
+        # a denied cleanup leaves enough information for a safe retry.
         if sync_profile_id:
             from moneybin.connectors.sync_client import SyncClient
 
             SyncClient.clear_tokens_for_profile(sync_profile_id)
+        shutil.rmtree(profile_dir)
+        from moneybin.crypto_constants import KEY_NAME, SALT_NAME
+        from moneybin.secrets import SecretNotFoundError, SecretStore
+
+        store = SecretStore(profile=normalized)
+        for key_name in (KEY_NAME, SALT_NAME):
+            try:
+                store.delete_key(key_name)
+            except SecretNotFoundError:
+                pass
         logger.debug(f"Deleted profile directory: {normalized}")
 
     def show(

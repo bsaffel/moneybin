@@ -419,7 +419,7 @@ What does not work today: running `moneybin mcp serve` as a systemd unit or Dock
 
 ## Troubleshooting
 
-**Server doesn't start.** Most common: the database is locked. Run `moneybin db unlock` to unlock the active profile's database before launching the client. If the unlock prompt errors out, check that you've created a profile (`moneybin profile create <name>`) and that the profile passphrase is set up. `db unlock` re-derives a key only on a passphrase-mode database; an auto-key profile that was locked is reopened by supplying its saved key through `MONEYBIN_DATABASE__ENCRYPTION_KEY` ([Database security](database-security.md#lifecycle-commands)).
+**Server doesn't start.** Most common: the database is locked. Run `moneybin db unlock` to unlock the active profile's database before launching the client. If the unlock prompt errors out, check that you've created a profile (`moneybin profile create <name>`) and that the profile passphrase is set up. `db unlock` re-derives a key only on a passphrase-mode database; an auto-key profile that was locked is reopened by supplying its saved key through `MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY` ([Database security](database-security.md#lifecycle-commands)).
 
 **Client doesn't see any tools.** Restart the client after install — most clients read MCP config only at launch. If the client is restarted and still empty, run `moneybin mcp config path --client <name>` to print the resolved config path, then verify the file exists and contains a `MoneyBin` entry under `mcpServers` (or `servers` for VS Code, `[mcp_servers.<name>]` for Codex).
 

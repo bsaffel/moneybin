@@ -338,7 +338,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=moneybin
-Environment=MONEYBIN_DATABASE__ENCRYPTION_KEY=...
+Environment=MONEYBIN_PROFILE=default
+Environment=MONEYBIN_PROFILE__DEFAULT__DATABASE__ENCRYPTION_KEY=...
 Environment=MONEYBIN_LOGGING__LOG_TO_FILE=false
 Environment=MONEYBIN_LOGGING__FORMAT=human
 ExecStart=/usr/local/bin/moneybin mcp serve

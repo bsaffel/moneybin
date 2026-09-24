@@ -40,6 +40,7 @@ from moneybin.cli.utils import (
     format_cli_failure,
     get_terminal_policy,
 )
+from moneybin.crypto_constants import ENCRYPTION_KEY_BYTES, KEY_NAME, SALT_NAME
 from moneybin.progress import ProgressEvent
 from moneybin.protocol.envelope import build_envelope
 
@@ -107,7 +108,7 @@ def _load_encryption_key() -> Generator[str, None, None]:
 
     store = SecretStore()
     try:
-        key = store.get_key("DATABASE__ENCRYPTION_KEY")
+        key = store.get_key(KEY_NAME)
     except SecretUnavailableError:
         logger.error(
             format_cli_failure(
@@ -188,9 +189,7 @@ def _duckdb_cli_environment() -> dict[str, str]:
     from moneybin.secrets import SecretStore
 
     child_environment = os.environ.copy()
-    child_environment[_CLI_ENCRYPTION_KEY_ENV_VAR] = SecretStore().get_key(
-        "DATABASE__ENCRYPTION_KEY"
-    )
+    child_environment[_CLI_ENCRYPTION_KEY_ENV_VAR] = SecretStore().get_key(KEY_NAME)
     return child_environment
 
 
@@ -489,7 +488,7 @@ def db_info(
     # Check lock state
     store = SecretStore()
     try:
-        store.get_key("DATABASE__ENCRYPTION_KEY")
+        store.get_key(KEY_NAME)
         payload["lock_state"] = "unlocked"
     except SecretNotFoundError:
         payload["lock_state"] = "locked"
@@ -729,6 +728,8 @@ def db_restore(
         if not confirm:
             raise typer.Exit(0)
 
+    store = SecretStore()
+
     # Auto-backup current database
     auto_backup: Path | None = None
     replacement_started = False
@@ -753,7 +754,6 @@ def db_restore(
                     pass
 
             report(ProgressEvent("Validating restored database"))
-            store = SecretStore()
             with Database(db_path, secret_store=store, read_only=True):
                 pass
         typer.echo(f"Database restored from {selected_path.name}")
@@ -783,7 +783,7 @@ def db_restore(
         typer.echo(
             f"Database was replaced from {selected_path}. {saved_state}"
             "Validation could not open it with the current key; it may predate a key "
-            "rotation. Set MONEYBIN_DATABASE__ENCRYPTION_KEY to the original key and "
+            f"rotation. Set {store.env_var_name(KEY_NAME)} to the original key and "
             "run 'moneybin db key rotate' to re-encrypt."
         )
         raise typer.Exit(1) from None
@@ -815,22 +815,29 @@ def db_restore(
 @app.command("lock")
 def db_lock() -> None:
     """Clear the cached encryption key from OS keychain."""
-    from moneybin.secrets import SecretNotFoundError, SecretStore
+    from moneybin.database import (  # defer to avoid cold-start cost
+        invalidate_encryption_key_cache,
+    )
+    from moneybin.secrets import (
+        SecretNotFoundError,
+        SecretStore,
+        SecretUnavailableError,
+    )
 
     store = SecretStore()
     try:
-        store.delete_key("DATABASE__ENCRYPTION_KEY")
-        from moneybin.database import (  # defer to avoid cold-start cost
-            invalidate_encryption_key_cache,
-        )
-
-        invalidate_encryption_key_cache()
-        typer.echo("Database locked — key cleared from keychain")
+        store.delete_key(KEY_NAME)
+    except SecretUnavailableError as e:
+        logger.error(format_cli_failure(f"Failed to lock: {e}"))
+        raise typer.Exit(1) from e
     except SecretNotFoundError:
         typer.echo("Database is already locked (no key in keychain)")
     except Exception as e:  # keyring backends may raise non-specific errors
         logger.error(format_cli_failure(f"Failed to lock: {e}"))
         raise typer.Exit(1) from e
+    else:
+        typer.echo("Database locked — key cleared from keychain")
+    invalidate_encryption_key_cache()
 
 
 @app.command("unlock")
@@ -840,7 +847,7 @@ def db_unlock() -> None:
     import binascii
 
     from moneybin.config import get_settings
-    from moneybin.database import SALT_NAME, Database, derive_key_from_passphrase
+    from moneybin.database import Database, derive_key_from_passphrase
     from moneybin.secrets import SecretNotFoundError, SecretStore
 
     settings = get_settings()
@@ -872,7 +879,7 @@ def db_unlock() -> None:
                     "the database already exists. This can mean it wasn't "
                     "created with --passphrase mode, or that this environment "
                     "denies keychain access. If you know the raw encryption "
-                    "key, set MONEYBIN_DATABASE__ENCRYPTION_KEY to open the "
+                    f"key, set {store.env_var_name(KEY_NAME)} to open the "
                     "database directly, bypassing the salt entirely."
                 )
             )
@@ -905,10 +912,10 @@ def db_unlock() -> None:
         hash_len=db_cfg.argon2_hash_len,
     )
 
-    store.set_key("DATABASE__ENCRYPTION_KEY", encryption_key)
+    store.set_key(KEY_NAME, encryption_key)
 
     if not settings.database.path.exists():
-        store.delete_key("DATABASE__ENCRYPTION_KEY")
+        store.delete_key(KEY_NAME)
         logger.error(
             format_cli_failure(f"Database file not found: {settings.database.path}")
         )
@@ -930,7 +937,7 @@ def db_unlock() -> None:
     ):  # duckdb raises untyped errors on bad ENCRYPTION_KEY at ATTACH time
         cleanup_confirmed = True
         try:
-            store.delete_key("DATABASE__ENCRYPTION_KEY")
+            store.delete_key(KEY_NAME)
         except Exception:  # keyring backends may raise beyond SecretNotFoundError
             cleanup_confirmed = False
             logger.debug(
@@ -1012,7 +1019,7 @@ def db_key_rotate(
         if not confirm:
             raise typer.Exit(0)
 
-    new_key = secrets_mod.token_hex(32)
+    new_key = secrets_mod.token_hex(ENCRYPTION_KEY_BYTES)
 
     from moneybin.database import build_attach_sql, scrub_key_material
 
@@ -1064,7 +1071,7 @@ def db_key_rotate(
                     pass
 
             report(ProgressEvent("Updating encryption keychain entry"))
-            store.set_key("DATABASE__ENCRYPTION_KEY", new_key)
+            store.set_key(KEY_NAME, new_key)
             keychain_updated = True
     except Exception as e:  # keyring backends may raise non-specific errors
         if not database_rotated:
@@ -1094,7 +1101,7 @@ def db_key_rotate(
             err=True,
         )
         typer.echo("Recovery: set the following env var to regain access:", err=True)
-        typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+        typer.echo(f"  {store.env_var_name(KEY_NAME)}={new_key}", err=True)
         typer.echo(f"  (old database backup: {old_backup})", err=True)
         raise typer.Exit(1) from e
     except KeyboardInterrupt:
@@ -1114,7 +1121,7 @@ def db_key_rotate(
                 typer.echo(
                     "Recovery: set the following env var to regain access:", err=True
                 )
-                typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+                typer.echo(f"  {store.env_var_name(KEY_NAME)}={new_key}", err=True)
                 typer.echo(f"  (old database backup: {old_backup})", err=True)
         elif original_archived:
             typer.echo(
@@ -1136,7 +1143,7 @@ def db_key_rotate(
                 "rotated candidate, set the following env var to regain access:",
                 err=True,
             )
-            typer.echo(f"  MONEYBIN_DATABASE__ENCRYPTION_KEY={new_key}", err=True)
+            typer.echo(f"  {store.env_var_name(KEY_NAME)}={new_key}", err=True)
         elif original_move_started or replacement_move_started:
             typer.echo(
                 "Key rotation interrupted during the database swap; file state is "
