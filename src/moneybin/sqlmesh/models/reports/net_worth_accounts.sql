@@ -8,7 +8,11 @@
    per currency per day, so SUM(account_balance_home) can differ from
    total_assets_home + total_liabilities_home by up to half a cent per account
    in that currency-day, plus that view's own half cent. Expected and bounded —
-   reconcile the rungs at the cent, not the sub-cent. */
+   reconcile the rungs at the cent, not the sub-cent.
+   Also emits one row per eligible account with holdings or transaction
+   activity and no balance observation (Requirement 14): balance columns
+   NULL, is_observed FALSE, dated at the spine's own last date so it never
+   moves MAX(balance_date). */
 MODEL (
   name reports.net_worth_accounts,
   kind VIEW
@@ -66,5 +70,44 @@ WHERE
     NOT a.archived
     OR (
       NOT a.archived_at IS NULL AND s.balance_date <= a.archived_at
+    )
+  )
+UNION ALL
+SELECT
+  a.account_id,
+  a.display_name AS account_name,
+  a.currency_code,
+  h.home_currency_code,
+  a.account_type,
+  FALSE AS is_observed,
+  NULL::TEXT AS observation_source,
+  NULL::TEXT AS rate_source,
+  spine_max.balance_date,
+  NULL::DATE AS rate_published_date,
+  NULL::INT AS days_since_observed,
+  NULL::DECIMAL(18, 2) AS reconciliation_delta,
+  NULL::DECIMAL(18, 2) AS account_balance,
+  NULL::DECIMAL(18, 2) AS account_balance_home
+FROM core.dim_unanchored_accounts AS u
+INNER JOIN core.dim_accounts AS a
+  ON u.account_id = a.account_id
+CROSS JOIN home AS h
+CROSS JOIN (
+  SELECT
+    COALESCE(
+      (
+        SELECT
+          MAX(b.balance_date)
+        FROM core.fct_balances_daily AS b
+      ),
+      CURRENT_DATE
+    ) AS balance_date
+) AS spine_max
+WHERE
+  a.include_in_net_worth
+  AND (
+    NOT a.archived
+    OR (
+      NOT a.archived_at IS NULL AND spine_max.balance_date <= a.archived_at
     )
   )

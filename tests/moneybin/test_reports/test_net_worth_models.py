@@ -1120,3 +1120,90 @@ def test_net_worth_wholly_unanchored_archived_candidate_publishes_no_row(
     _unanchored(model_db, "a")
     _install_report(model_db, "net_worth")
     assert _day_rows(model_db) == []
+
+
+def _account_rows(db: Database) -> list[dict[str, object]]:
+    cur = db.execute(
+        f"SELECT {', '.join(_COLUMNS)} FROM reports.net_worth_accounts "  # noqa: S608  # static column list
+        "ORDER BY balance_date, account_id"
+    )
+    return [dict(zip(_COLUMNS, r, strict=True)) for r in cur.fetchall()]
+
+
+def test_accounts_view_dates_a_candidate_at_the_spine_max(model_db: Database) -> None:
+    """Never at CURRENT_DATE while a spine exists: that would move MAX(balance_date)."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "EUR", account_type="investment")
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _balance(model_db, "chk", "2026-01-05", "90.00", "USD", observed=False)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+
+    brk = [r for r in _account_rows(model_db) if r["account_id"] == "brk"]
+
+    assert len(brk) == 1
+    row = brk[0]
+    assert str(row["balance_date"]) == "2026-01-05"
+    assert row["is_observed"] is False
+    assert row["currency_code"] == "EUR"
+    assert row["account_type"] == "investment"
+    assert row["account_name"] == "Brokerage"
+    assert row["home_currency_code"] == "USD"
+    for col in (
+        "observation_source",
+        "rate_source",
+        "rate_published_date",
+        "days_since_observed",
+        "reconciliation_delta",
+        "account_balance",
+        "account_balance_home",
+    ):
+        assert row[col] is None, col
+
+
+def test_accounts_view_dates_a_candidate_today_when_the_spine_is_empty(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    today = model_db.execute("SELECT CURRENT_DATE").fetchone()[0]  # type: ignore[index]
+    (row,) = _account_rows(model_db)
+    assert row["balance_date"] == today
+
+
+def test_accounts_view_omits_a_candidate_archived_before_the_spine_max(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-03"
+    )
+    _balance(model_db, "chk", "2026-01-05", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    assert [r["account_id"] for r in _account_rows(model_db)] == ["chk"]
+
+
+def test_accounts_view_omits_an_excluded_candidate(model_db: Database) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", "USD", include=False)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    assert _account_rows(model_db) == []
+
+
+def test_accounts_view_emits_a_candidate_with_unknown_currency(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "brk", "Brokerage", None)
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+    (row,) = _account_rows(model_db)
+    assert row["account_id"] == "brk"
+    assert row["currency_code"] is None
