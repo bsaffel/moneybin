@@ -59,7 +59,7 @@ dependencies = [
     # Database and data manipulation
     "duckdb>=1.5.5",
     "polars>=1.44.2",
-    "pyarrow>=24.0.0",
+    "pyarrow>=25.0.1",
     # API integrations
     "plaid-python>=44.0.0",
     "ofxparse>=0.21",
@@ -75,19 +75,12 @@ dependencies = [
     # Floor is PYSEC-2026-3444 (unbounded gzip/deflate decompression), fixed in 0.32.0.
     "httplib2>=0.32.0",
     # Data validation and utilities
-    # Also a transitive dep of typer, but declared directly because cli/output.py
-    # and reports/user_reports.py import it to read the active command context —
-    # a future typer pin change must not silently break those importers. Upper
-    # bound lives in [tool.uv] constraint-dependencies with its own reason.
-    "click>=8.3.3",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",  # GHSA-4xgf-cpjx-pc3j — fixed in 2.14.2
     "python-dateutil>=2.9.0.post0",
     "pyyaml>=6.0.3",
-    # Modern CLI framework. Capped below 0.26, which vendors its own click
-    # (typer._click): the click.Context cli/output.py reads via
-    # click.get_current_context() would no longer be typer's.
-    "typer>=0.25.1,<0.26",
+    # Modern CLI framework.
+    "typer>=0.27.2",
     # Imported directly by the terminal renderers and progress display.
     "rich>=15.0.0",
     # Inline, searchable choice input. Imported only for interactive prompts.
@@ -116,7 +109,7 @@ dependencies = [
     "pillow>=12.3.0",
     "anyio>=4.15.1",
     "soupsieve>=2.9.2",
-    "starlette>=1.6.0",
+    "starlette>=1.7.0",
     # Secret management and key derivation
     "keyring>=25.7.0",
     "argon2-cffi>=25.1.0",
@@ -124,18 +117,18 @@ dependencies = [
     "lxml>=6.1.3",
     "openpyxl>=3.1.5",
     "fastexcel>=0.21.0",
-    # MCP server — primary AI assistant interface. Capped below 4 with mcp below.
-    "fastmcp>=3.4.7,<4",
+    # MCP server — primary AI assistant interface. Capped below 5 with mcp below.
+    "fastmcp>=4.0.5,<5",
     # Also a transitive dep of fastmcp, but declared directly because _registration.py,
     # elicitation.py, middleware.py, and first_run.py import mcp.types independently —
     # a future fastmcp pin change must not silently break those importers.
     # Floor is CVE-2026-52869/52870 (unverified principal on HTTP transports; cross-client
     # task access) and CVE-2026-59950 (no WebSocket Host/Origin validation), all fixed by 1.28.1.
-    # Capped below 2: mcp 2 renames every protocol model field to snake_case
-    # (Tool.inputSchema, CallToolResult.structuredContent, ToolAnnotations.*Hint)
-    # and moves McpError and RequestContext — a migration of its own. fastmcp 4
-    # requires mcp 2.
-    "mcp>=1.30.0,<2",
+    # Capped below 3: mcp 2 is the 2026-07-28 protocol revision, and fastmcp 4
+    # requires it. Protocol model fields are snake_case for Python attribute
+    # access; the JSON wire format is unchanged, so a model_dump that feeds a
+    # peer or a snapshot must pass by_alias=True (see surface_inventory).
+    "mcp>=2.2.0,<3",
     # TOML round-trip writer for codex config installs (preserves comments/formatting)
     "tomlkit>=0.15.1",
     "httpx>=0.28.1",
@@ -244,7 +237,11 @@ dev = [
     # Property-based testing. Named by multi-currency.md's testing strategy for
     # the conversion and lot-conservation properties, where the claim quantifies
     # over all amounts and rates and examples cannot establish it.
-    "hypothesis>=6.168.0",
+    "hypothesis>=6.168.1",
+    # pyarrow 25 dropped the placeholder stub that typed its whole API as Any,
+    # leaving pyright strict with no types at all. Drop once pyarrow ships its
+    # own annotations (apache/arrow GH-48970).
+    "pyarrow-stubs>=20.0.0.20260819",
 ]
 
 server = [
@@ -252,21 +249,6 @@ server = [
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
     # plaid-python already in main dependencies
-]
-
-[tool.uv]
-constraint-dependencies = [
-    # click 8.4 made click.ParamType generic; typer 0.25.1's type stubs still
-    # reference ParamType without a type arg, so pyright infers ParamType[Unknown]
-    # and flags every typer.Option/Argument call (reportUnknownMemberType). typer
-    # accepts click>=8.2.1 at runtime, so this only holds back the type-stub
-    # regression. Drop once typer ships click-8.4-compatible stubs.
-    "click<8.4",
-    # pyarrow 25's typing surface leaves Table/Schema/array unknown to pyright
-    # strict mode (~300 errors across the SQLMesh Python models and renderers).
-    # A type-check hold, not a runtime one, so it caps the lock only. The runtime
-    # holds (mcp, fastmcp, typer) are upper bounds in [project] dependencies.
-    "pyarrow<25",
 ]
 
 [tool.ruff]

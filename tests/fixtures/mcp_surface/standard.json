@@ -1,10 +1,15 @@
 {
-  "sha256": "7bfc6b0eb920fa3339ba4e7d4f299a795a3ba4dfc22931d468b9bbd00b56f85a",
+  "sha256": "3d7a49a8d12c1cf27aacb22258857f29866ac759ec0b39520a2c1f4eebb79950",
   "tool_count": 50,
   "tools": [
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -70,23 +75,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "accounts"
+        "name": "accounts",
+        "title": "Accounts"
       },
       "description_bytes": 172,
       "input_schema_bytes": 465,
       "name": "accounts",
-      "other_bytes": 50,
+      "other_bytes": 70,
       "output_schema_bytes": 0,
-      "total_bytes": 823
+      "total_bytes": 843
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -198,23 +204,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "accounts_balance_assert"
+        "name": "accounts_balance_assert",
+        "title": "Accounts Balance Assert"
       },
       "description_bytes": 444,
       "input_schema_bytes": 775,
       "name": "accounts_balance_assert",
-      "other_bytes": 65,
+      "other_bytes": 100,
       "output_schema_bytes": 0,
-      "total_bytes": 1420
+      "total_bytes": 1455
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -320,23 +327,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "accounts_balances"
+        "name": "accounts_balances",
+        "title": "Accounts Balances"
       },
       "description_bytes": 156,
       "input_schema_bytes": 718,
       "name": "accounts_balances",
-      "other_bytes": 59,
+      "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 1069
+      "total_bytes": 1098
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -374,23 +382,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "accounts_links_run"
+        "name": "accounts_links_run",
+        "title": "Accounts Links Run"
       },
       "description_bytes": 810,
       "input_schema_bytes": 395,
       "name": "accounts_links_run",
-      "other_bytes": 60,
+      "other_bytes": 90,
       "output_schema_bytes": 0,
-      "total_bytes": 1412
+      "total_bytes": 1442
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -534,23 +543,26 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "accounts_set"
+        "name": "accounts_set",
+        "title": "Accounts Set"
       },
       "description_bytes": 889,
       "input_schema_bytes": 1006,
       "name": "accounts_set",
-      "other_bytes": 54,
+      "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 2086
+      "total_bytes": 2110
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": [
+              "exports"
+            ]
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -687,25 +699,26 @@
           ],
           "type": "object"
         },
-        "meta": {
+        "name": "export_run",
+        "title": "Export Run"
+      },
+      "description_bytes": 630,
+      "input_schema_bytes": 1400,
+      "name": "export_run",
+      "other_bytes": 83,
+      "output_schema_bytes": 0,
+      "total_bytes": 2256
+    },
+    {
+      "annotation_bytes": 88,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "exports"
             ]
           }
         },
-        "name": "export_run"
-      },
-      "description_bytes": 630,
-      "input_schema_bytes": 1400,
-      "name": "export_run",
-      "other_bytes": 61,
-      "output_schema_bytes": 0,
-      "total_bytes": 2234
-    },
-    {
-      "annotation_bytes": 88,
-      "definition": {
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -906,25 +919,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": [
-              "exports"
-            ]
-          }
-        },
-        "name": "exports_set"
+        "name": "exports_set",
+        "title": "Exports Set"
       },
       "description_bytes": 378,
       "input_schema_bytes": 1584,
       "name": "exports_set",
-      "other_bytes": 62,
+      "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 2159
+      "total_bytes": 2182
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -957,23 +969,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "gsheet"
+        "name": "gsheet",
+        "title": "Gsheet"
       },
       "description_bytes": 38,
       "input_schema_bytes": 219,
       "name": "gsheet",
-      "other_bytes": 48,
+      "other_bytes": 66,
       "output_schema_bytes": 0,
-      "total_bytes": 441
+      "total_bytes": 459
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1083,23 +1096,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "gsheet_connect"
+        "name": "gsheet_connect",
+        "title": "Gsheet Connect"
       },
       "description_bytes": 260,
       "input_schema_bytes": 828,
       "name": "gsheet_connect",
-      "other_bytes": 56,
+      "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 1281
+      "total_bytes": 1307
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": false,
@@ -1138,23 +1152,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "gsheet_disconnect"
+        "name": "gsheet_disconnect",
+        "title": "Gsheet Disconnect"
       },
       "description_bytes": 53,
       "input_schema_bytes": 290,
       "name": "gsheet_disconnect",
-      "other_bytes": 59,
+      "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 538
+      "total_bytes": 567
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1179,23 +1194,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "gsheet_pull"
+        "name": "gsheet_pull",
+        "title": "Gsheet Pull"
       },
       "description_bytes": 28,
       "input_schema_bytes": 138,
       "name": "gsheet_pull",
-      "other_bytes": 53,
+      "other_bytes": 76,
       "output_schema_bytes": 0,
-      "total_bytes": 356
+      "total_bytes": 379
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -1500,23 +1516,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "identity_links_decide"
+        "name": "identity_links_decide",
+        "title": "Identity Links Decide"
       },
       "description_bytes": 857,
       "input_schema_bytes": 2438,
       "name": "identity_links_decide",
-      "other_bytes": 63,
+      "other_bytes": 96,
       "output_schema_bytes": 0,
-      "total_bytes": 3497
+      "total_bytes": 3530
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1616,23 +1633,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_confirm"
+        "name": "import_confirm",
+        "title": "Import Confirm"
       },
       "description_bytes": 488,
       "input_schema_bytes": 788,
       "name": "import_confirm",
-      "other_bytes": 56,
+      "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 1472
+      "total_bytes": 1498
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1677,23 +1695,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_files"
+        "name": "import_files",
+        "title": "Import Files"
       },
       "description_bytes": 493,
       "input_schema_bytes": 341,
       "name": "import_files",
-      "other_bytes": 54,
+      "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 1028
+      "total_bytes": 1052
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1711,23 +1730,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_inbox_sync"
+        "name": "import_inbox_sync",
+        "title": "Import Inbox Sync"
       },
       "description_bytes": 253,
       "input_schema_bytes": 105,
       "name": "import_inbox_sync",
-      "other_bytes": 59,
+      "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 555
+      "total_bytes": 584
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -1754,23 +1774,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_labels_set"
+        "name": "import_labels_set",
+        "title": "Import Labels Set"
       },
       "description_bytes": 25,
       "input_schema_bytes": 177,
       "name": "import_labels_set",
-      "other_bytes": 59,
+      "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 398
+      "total_bytes": 427
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -1804,23 +1825,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_preview"
+        "name": "import_preview",
+        "title": "Import Preview"
       },
       "description_bytes": 494,
       "input_schema_bytes": 228,
       "name": "import_preview",
-      "other_bytes": 56,
+      "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 919
+      "total_bytes": 945
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": false,
@@ -1943,23 +1965,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_revert"
+        "name": "import_revert",
+        "title": "Import Revert"
       },
       "description_bytes": 383,
       "input_schema_bytes": 880,
       "name": "import_revert",
-      "other_bytes": 55,
+      "other_bytes": 80,
       "output_schema_bytes": 0,
-      "total_bytes": 1458
+      "total_bytes": 1483
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2020,23 +2043,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "import_status"
+        "name": "import_status",
+        "title": "Import Status"
       },
       "description_bytes": 46,
       "input_schema_bytes": 405,
       "name": "import_status",
-      "other_bytes": 55,
+      "other_bytes": 80,
       "output_schema_bytes": 0,
-      "total_bytes": 642
+      "total_bytes": 667
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2134,23 +2158,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "investments"
+        "name": "investments",
+        "title": "Investments"
       },
       "description_bytes": 900,
       "input_schema_bytes": 672,
       "name": "investments",
-      "other_bytes": 53,
+      "other_bytes": 76,
       "output_schema_bytes": 0,
-      "total_bytes": 1767
+      "total_bytes": 1790
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2180,23 +2205,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "investments_lots_select"
+        "name": "investments_lots_select",
+        "title": "Investments Lots Select"
       },
       "description_bytes": 169,
       "input_schema_bytes": 536,
       "name": "investments_lots_select",
-      "other_bytes": 65,
+      "other_bytes": 100,
       "output_schema_bytes": 0,
-      "total_bytes": 907
+      "total_bytes": 942
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2220,23 +2246,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "investments_record"
+        "name": "investments_record",
+        "title": "Investments Record"
       },
       "description_bytes": 135,
       "input_schema_bytes": 163,
       "name": "investments_record",
-      "other_bytes": 60,
+      "other_bytes": 90,
       "output_schema_bytes": 0,
-      "total_bytes": 495
+      "total_bytes": 525
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2382,23 +2409,26 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "investments_securities_set"
+        "name": "investments_securities_set",
+        "title": "Investments Securities Set"
       },
       "description_bytes": 109,
       "input_schema_bytes": 945,
       "name": "investments_securities_set",
-      "other_bytes": 68,
+      "other_bytes": 106,
       "output_schema_bytes": 0,
-      "total_bytes": 1259
+      "total_bytes": 1297
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": [
+              "privacy"
+            ]
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2437,25 +2467,26 @@
           },
           "type": "object"
         },
-        "meta": {
+        "name": "privacy",
+        "title": "Privacy"
+      },
+      "description_bytes": 129,
+      "input_schema_bytes": 267,
+      "name": "privacy",
+      "other_bytes": 77,
+      "output_schema_bytes": 0,
+      "total_bytes": 609
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "privacy"
             ]
           }
         },
-        "name": "privacy"
-      },
-      "description_bytes": 129,
-      "input_schema_bytes": 267,
-      "name": "privacy",
-      "other_bytes": 58,
-      "output_schema_bytes": 0,
-      "total_bytes": 590
-    },
-    {
-      "annotation_bytes": 89,
-      "definition": {
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -2570,25 +2601,26 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": [
-              "privacy"
-            ]
-          }
-        },
-        "name": "privacy_consent_set"
+        "name": "privacy_consent_set",
+        "title": "Privacy Consent Set"
       },
       "description_bytes": 212,
       "input_schema_bytes": 799,
       "name": "privacy_consent_set",
-      "other_bytes": 70,
+      "other_bytes": 101,
       "output_schema_bytes": 0,
-      "total_bytes": 1217
+      "total_bytes": 1248
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": [
+              "profile"
+            ]
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2601,25 +2633,26 @@
           "properties": {},
           "type": "object"
         },
-        "meta": {
+        "name": "profile",
+        "title": "Profile"
+      },
+      "description_bytes": 201,
+      "input_schema_bytes": 62,
+      "name": "profile",
+      "other_bytes": 77,
+      "output_schema_bytes": 0,
+      "total_bytes": 476
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "profile"
             ]
           }
         },
-        "name": "profile"
-      },
-      "description_bytes": 201,
-      "input_schema_bytes": 62,
-      "name": "profile",
-      "other_bytes": 58,
-      "output_schema_bytes": 0,
-      "total_bytes": 457
-    },
-    {
-      "annotation_bytes": 90,
-      "definition": {
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2660,25 +2693,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": [
-              "profile"
-            ]
-          }
-        },
-        "name": "profile_set"
+        "name": "profile_set",
+        "title": "Profile Set"
       },
       "description_bytes": 267,
       "input_schema_bytes": 383,
       "name": "profile_set",
-      "other_bytes": 62,
+      "other_bytes": 85,
       "output_schema_bytes": 0,
-      "total_bytes": 849
+      "total_bytes": 872
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2716,23 +2748,26 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "refresh_run"
+        "name": "refresh_run",
+        "title": "Refresh Run"
       },
       "description_bytes": 766,
       "input_schema_bytes": 798,
       "name": "refresh_run",
-      "other_bytes": 53,
+      "other_bytes": 76,
       "output_schema_bytes": 0,
-      "total_bytes": 1754
+      "total_bytes": 1777
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": [
+              "reports"
+            ]
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2792,25 +2827,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": [
-              "reports"
-            ]
-          }
-        },
-        "name": "reports"
+        "name": "reports",
+        "title": "Reports"
       },
       "description_bytes": 689,
       "input_schema_bytes": 396,
       "name": "reports",
-      "other_bytes": 58,
+      "other_bytes": 77,
       "output_schema_bytes": 0,
-      "total_bytes": 1279
+      "total_bytes": 1298
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -2863,23 +2897,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "reviews"
+        "name": "reviews",
+        "title": "Reviews"
       },
       "description_bytes": 331,
       "input_schema_bytes": 452,
       "name": "reviews",
-      "other_bytes": 49,
+      "other_bytes": 68,
       "output_schema_bytes": 0,
-      "total_bytes": 968
+      "total_bytes": 987
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3224,23 +3259,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "reviews_decide"
+        "name": "reviews_decide",
+        "title": "Reviews Decide"
       },
       "description_bytes": 717,
       "input_schema_bytes": 3211,
       "name": "reviews_decide",
-      "other_bytes": 56,
+      "other_bytes": 82,
       "output_schema_bytes": 0,
-      "total_bytes": 4127
+      "total_bytes": 4153
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3261,23 +3297,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sql_query"
+        "name": "sql_query",
+        "title": "Sql Query"
       },
       "description_bytes": 852,
       "input_schema_bytes": 150,
       "name": "sql_query",
-      "other_bytes": 51,
+      "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 1192
+      "total_bytes": 1213
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3303,23 +3340,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sql_schema"
+        "name": "sql_schema",
+        "title": "Sql Schema"
       },
       "description_bytes": 541,
       "input_schema_bytes": 412,
       "name": "sql_schema",
-      "other_bytes": 52,
+      "other_bytes": 74,
       "output_schema_bytes": 0,
-      "total_bytes": 1141
+      "total_bytes": 1163
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": false,
@@ -3374,23 +3412,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sync_disconnect"
+        "name": "sync_disconnect",
+        "title": "Sync Disconnect"
       },
       "description_bytes": 293,
       "input_schema_bytes": 379,
       "name": "sync_disconnect",
-      "other_bytes": 57,
+      "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 868
+      "total_bytes": 895
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -3423,23 +3462,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sync_link"
+        "name": "sync_link",
+        "title": "Sync Link"
       },
       "description_bytes": 214,
       "input_schema_bytes": 216,
       "name": "sync_link",
-      "other_bytes": 51,
+      "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 618
+      "total_bytes": 639
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -3464,23 +3504,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sync_pull"
+        "name": "sync_pull",
+        "title": "Sync Pull"
       },
       "description_bytes": 221,
       "input_schema_bytes": 136,
       "name": "sync_pull",
-      "other_bytes": 51,
+      "other_bytes": 72,
       "output_schema_bytes": 0,
-      "total_bytes": 545
+      "total_bytes": 566
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3516,23 +3557,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "sync_status"
+        "name": "sync_status",
+        "title": "Sync Status"
       },
       "description_bytes": 74,
       "input_schema_bytes": 214,
       "name": "sync_status",
-      "other_bytes": 53,
+      "other_bytes": 76,
       "output_schema_bytes": 0,
-      "total_bytes": 477
+      "total_bytes": 500
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3593,23 +3635,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "system_audit"
+        "name": "system_audit",
+        "title": "System Audit"
       },
       "description_bytes": 144,
       "input_schema_bytes": 412,
       "name": "system_audit",
-      "other_bytes": 54,
+      "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 746
+      "total_bytes": 770
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3629,23 +3672,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "system_audit_undo"
+        "name": "system_audit_undo",
+        "title": "System Audit Undo"
       },
       "description_bytes": 161,
       "input_schema_bytes": 122,
       "name": "system_audit_undo",
-      "other_bytes": 59,
+      "other_bytes": 88,
       "output_schema_bytes": 0,
-      "total_bytes": 479
+      "total_bytes": 508
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3687,23 +3731,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "system_status"
+        "name": "system_status",
+        "title": "System Status"
       },
       "description_bytes": 417,
       "input_schema_bytes": 287,
       "name": "system_status",
-      "other_bytes": 55,
+      "other_bytes": 80,
       "output_schema_bytes": 0,
-      "total_bytes": 896
+      "total_bytes": 921
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -3756,23 +3801,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "taxonomy"
+        "name": "taxonomy",
+        "title": "Taxonomy"
       },
       "description_bytes": 94,
       "input_schema_bytes": 389,
       "name": "taxonomy",
-      "other_bytes": 50,
+      "other_bytes": 70,
       "output_schema_bytes": 0,
-      "total_bytes": 669
+      "total_bytes": 689
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -4217,23 +4263,24 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "taxonomy_set"
+        "name": "taxonomy_set",
+        "title": "Taxonomy Set"
       },
       "description_bytes": 205,
       "input_schema_bytes": 3257,
       "name": "taxonomy_set",
-      "other_bytes": 54,
+      "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 3652
+      "total_bytes": 3676
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -4359,23 +4406,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "transactions"
+        "name": "transactions",
+        "title": "Transactions"
       },
       "description_bytes": 276,
       "input_schema_bytes": 821,
       "name": "transactions",
-      "other_bytes": 54,
+      "other_bytes": 78,
       "output_schema_bytes": 0,
-      "total_bytes": 1287
+      "total_bytes": 1311
     },
     {
       "annotation_bytes": 90,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": false,
@@ -4649,23 +4697,26 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "transactions_annotate"
+        "name": "transactions_annotate",
+        "title": "Transactions Annotate"
       },
       "description_bytes": 375,
       "input_schema_bytes": 2882,
       "name": "transactions_annotate",
-      "other_bytes": 63,
+      "other_bytes": 96,
       "output_schema_bytes": 0,
-      "total_bytes": 3457
+      "total_bytes": 3490
     },
     {
       "annotation_bytes": 89,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": [
+              "categorize"
+            ]
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -4721,25 +4772,26 @@
           },
           "type": "object"
         },
-        "meta": {
+        "name": "transactions_categorize_assist",
+        "title": "Transactions Categorize Assist"
+      },
+      "description_bytes": 278,
+      "input_schema_bytes": 556,
+      "name": "transactions_categorize_assist",
+      "other_bytes": 126,
+      "output_schema_bytes": 0,
+      "total_bytes": 1099
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "categorize"
             ]
           }
         },
-        "name": "transactions_categorize_assist"
-      },
-      "description_bytes": 278,
-      "input_schema_bytes": 556,
-      "name": "transactions_categorize_assist",
-      "other_bytes": 84,
-      "output_schema_bytes": 0,
-      "total_bytes": 1057
-    },
-    {
-      "annotation_bytes": 90,
-      "definition": {
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -4773,25 +4825,26 @@
           ],
           "type": "object"
         },
-        "meta": {
+        "name": "transactions_categorize_commit",
+        "title": "Transactions Categorize Commit"
+      },
+      "description_bytes": 156,
+      "input_schema_bytes": 324,
+      "name": "transactions_categorize_commit",
+      "other_bytes": 126,
+      "output_schema_bytes": 0,
+      "total_bytes": 743
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "categorize"
             ]
           }
         },
-        "name": "transactions_categorize_commit"
-      },
-      "description_bytes": 156,
-      "input_schema_bytes": 324,
-      "name": "transactions_categorize_commit",
-      "other_bytes": 84,
-      "output_schema_bytes": 0,
-      "total_bytes": 701
-    },
-    {
-      "annotation_bytes": 89,
-      "definition": {
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -4814,25 +4867,26 @@
           },
           "type": "object"
         },
-        "meta": {
+        "name": "transactions_categorize_rules",
+        "title": "Transactions Categorize Rules"
+      },
+      "description_bytes": 201,
+      "input_schema_bytes": 144,
+      "name": "transactions_categorize_rules",
+      "other_bytes": 124,
+      "output_schema_bytes": 0,
+      "total_bytes": 605
+    },
+    {
+      "annotation_bytes": 89,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "categorize"
             ]
           }
         },
-        "name": "transactions_categorize_rules"
-      },
-      "description_bytes": 201,
-      "input_schema_bytes": 144,
-      "name": "transactions_categorize_rules",
-      "other_bytes": 83,
-      "output_schema_bytes": 0,
-      "total_bytes": 564
-    },
-    {
-      "annotation_bytes": 89,
-      "definition": {
         "annotations": {
           "destructiveHint": true,
           "idempotentHint": true,
@@ -5145,25 +5199,26 @@
           ],
           "type": "object"
         },
-        "meta": {
+        "name": "transactions_categorize_rules_set",
+        "title": "Transactions Categorize Rules Set"
+      },
+      "description_bytes": 638,
+      "input_schema_bytes": 2428,
+      "name": "transactions_categorize_rules_set",
+      "other_bytes": 132,
+      "output_schema_bytes": 0,
+      "total_bytes": 3334
+    },
+    {
+      "annotation_bytes": 90,
+      "definition": {
+        "_meta": {
           "fastmcp": {
             "tags": [
               "categorize"
             ]
           }
         },
-        "name": "transactions_categorize_rules_set"
-      },
-      "description_bytes": 638,
-      "input_schema_bytes": 2428,
-      "name": "transactions_categorize_rules_set",
-      "other_bytes": 87,
-      "output_schema_bytes": 0,
-      "total_bytes": 3289
-    },
-    {
-      "annotation_bytes": 90,
-      "definition": {
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": true,
@@ -5205,25 +5260,24 @@
           },
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": [
-              "categorize"
-            ]
-          }
-        },
-        "name": "transactions_categorize_run"
+        "name": "transactions_categorize_run",
+        "title": "Transactions Categorize Run"
       },
       "description_bytes": 274,
       "input_schema_bytes": 458,
       "name": "transactions_categorize_run",
-      "other_bytes": 81,
+      "other_bytes": 120,
       "output_schema_bytes": 0,
-      "total_bytes": 950
+      "total_bytes": 989
     },
     {
       "annotation_bytes": 91,
       "definition": {
+        "_meta": {
+          "fastmcp": {
+            "tags": []
+          }
+        },
         "annotations": {
           "destructiveHint": false,
           "idempotentHint": false,
@@ -5247,20 +5301,16 @@
           ],
           "type": "object"
         },
-        "meta": {
-          "fastmcp": {
-            "tags": []
-          }
-        },
-        "name": "transactions_create"
+        "name": "transactions_create",
+        "title": "Transactions Create"
       },
       "description_bytes": 194,
       "input_schema_bytes": 175,
       "name": "transactions_create",
-      "other_bytes": 61,
+      "other_bytes": 92,
       "output_schema_bytes": 0,
-      "total_bytes": 568
+      "total_bytes": 599
     }
   ],
-  "total_bytes": 62664
+  "total_bytes": 64019
 }

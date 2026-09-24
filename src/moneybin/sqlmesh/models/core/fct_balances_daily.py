@@ -295,4 +295,4 @@ def execute(
         pa.field("currency_code", pa.string()),
     ])
     table = pa.Table.from_pylist(rows, schema=schema)
-    yield table.to_pandas(types_mapper=pd.ArrowDtype)
+    yield table.to_pandas(types_mapper=pd.ArrowDtype)  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list

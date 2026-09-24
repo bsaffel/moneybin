@@ -10,7 +10,6 @@ import dataclasses
 import json
 from collections.abc import Sequence
 
-import click
 import typer
 
 from moneybin import error_codes
@@ -79,7 +78,7 @@ def _undo_confirmation(detail: OperationDetail, *, operation_id: str) -> bool:
             f"for operation {operation_id}?",
             err=True,
         )
-    except click.Abort as exc:
+    except typer.Abort as exc:
         raise UserError(
             "Undo needs explicit confirmation.",
             code=error_codes.MUTATION_CONFIRMATION_REQUIRED,

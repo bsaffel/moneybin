@@ -31,8 +31,9 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import NamedTuple
 
-import click
 import pytest
+from typer._click import Command
+from typer.core import TyperArgument, TyperCommand, TyperGroup, TyperOption
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -561,7 +562,7 @@ def _expand_alternatives(token: str) -> list[str]:
 
 
 def _resolve_invocation(
-    tokens: list[str], root: click.Command, *, runnable: bool
+    tokens: list[str], root: Command, *, runnable: bool
 ) -> str | None:
     """Return why the invocation does not resolve, or None when it does.
 
@@ -576,11 +577,11 @@ def _resolve_invocation(
     """
     node = root
     path = ["moneybin"]
-    parents: list[tuple[click.Command, list[str]]] = []
+    parents: list[tuple[Command, list[str]]] = []
     positionals = 0
     options_done = False
     saw_help = False
-    seen_options: set[click.Option] = set()
+    seen_options: set[TyperOption] = set()
     index = 0
     while index < len(tokens):
         token = tokens[index]
@@ -609,7 +610,7 @@ def _resolve_invocation(
             aliases = name.split("/")  # `--refresh/--no-refresh`: each must exist
             if any("<" in alias for alias in aliases):
                 continue  # `--clear-<field>`: a placeholder for an option family
-            options = [p for p in node.params if isinstance(p, click.Option)]
+            options = [p for p in node.params if isinstance(p, TyperOption)]
             declared = {
                 alias for p in options for alias in (*p.opts, *p.secondary_opts)
             }
@@ -642,12 +643,12 @@ def _resolve_invocation(
                 index += 1  # the option's value
             continue
         if _is_placeholder(token):
-            if isinstance(node, click.Group):
+            if isinstance(node, TyperGroup):
                 if node is root or _names_a_command_slot(token):
                     return None  # `moneybin <command>`: nothing checkable
                 return f"`{' '.join(path)}` takes a subcommand, not `{token}`"
             positionals += 1
-        elif isinstance(node, click.Group):
+        elif isinstance(node, TyperGroup):
             alternatives = _expand_alternatives(token)
             unknown = [alt for alt in alternatives if alt not in node.commands]
             if unknown:
@@ -662,7 +663,7 @@ def _resolve_invocation(
             continue
         else:
             positionals += 1
-        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+        arguments = [p for p in node.params if isinstance(p, TyperArgument)]
         capacity = sum(
             float("inf") if argument.nargs < 0 else argument.nargs
             for argument in arguments
@@ -677,7 +678,7 @@ def _resolve_invocation(
     if (
         runnable
         and not saw_help
-        and isinstance(node, click.Group)
+        and isinstance(node, TyperGroup)
         and node is not root
         and not getattr(node, "invoke_without_command", False)
     ):
@@ -686,8 +687,8 @@ def _resolve_invocation(
     # (`moneybin db key import` with no path) exits non-zero, same as the
     # subcommand and option-value checks above. A required variadic
     # (`FILE_PATHS...` `[required]`) still needs at least one.
-    if runnable and not saw_help and not isinstance(node, click.Group):
-        arguments = [p for p in node.params if isinstance(p, click.Argument)]
+    if runnable and not saw_help and not isinstance(node, TyperGroup):
+        arguments = [p for p in node.params if isinstance(p, TyperArgument)]
         minimum = sum(
             (1 if argument.required else 0)
             if argument.nargs < 0
@@ -702,7 +703,7 @@ def _resolve_invocation(
         missing_options = [
             option
             for option in node.params
-            if isinstance(option, click.Option)
+            if isinstance(option, TyperOption)
             and option.required
             and option not in seen_options
         ]
@@ -732,7 +733,7 @@ def test_public_docs_cli_invocations_resolve() -> None:
     from moneybin.cli.main import app
 
     root = get_command(app)
-    assert isinstance(root, click.Group)
+    assert isinstance(root, TyperGroup)
     violations: list[str] = []
     for document in _user_facing_documents():
         text = document.read_text()
@@ -771,53 +772,55 @@ def _fixture_callback() -> None:
 
 
 @pytest.fixture
-def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # pytest fixture
+def _fixture_cli() -> TyperGroup:  # pyright: ignore[reportUnusedFunction]  # pytest fixture
     """A small synthetic command tree exercising the resolver's checks.
 
-    Built from plain Click objects (not Typer's decorator sugar, and not
+    Built from Typer's command classes directly (not its decorator sugar, and not
     nested `def`s pyright can't see used) — a fixture only ever inspected,
     never invoked.
     """
-    db = click.Group(
-        "db",
-        commands={"show": click.Command("show", callback=_fixture_callback)},
+    db = TyperGroup(
+        name="db",
+        commands={"show": TyperCommand("show", callback=_fixture_callback)},
         # No `invoke_without_command`: a bare invocation requires a subcommand.
     )
-    inbox = click.Group(
-        "inbox",
-        commands={"list": click.Command("list", callback=_fixture_callback)},
+    inbox = TyperGroup(
+        name="inbox",
+        commands={"list": TyperCommand("list", callback=_fixture_callback)},
         invoke_without_command=True,  # Runs its own callback bare.
         callback=_fixture_callback,
     )
-    create = click.Command(
+    create = TyperCommand(
         "create",
         callback=_fixture_callback,
         params=[
-            click.Argument(["name"]),
-            click.Argument(["amount"], required=False),
+            TyperArgument(param_decls=["name"], required=True),
+            TyperArgument(param_decls=["amount"], required=False),
         ],
     )
-    commit = click.Command(
+    commit = TyperCommand(
         "commit",
         callback=_fixture_callback,
-        params=[click.Option(["-y", "--yes"], is_flag=True)],
+        params=[TyperOption(param_decls=["-y", "--yes"], is_flag=True)],
     )
-    rules = click.Command(
-        "rules", callback=_fixture_callback, params=[click.Option(["--pattern"])]
+    rules = TyperCommand(
+        "rules",
+        callback=_fixture_callback,
+        params=[TyperOption(param_decls=["--pattern"])],
     )
-    secret = click.Command("secret", callback=_fixture_callback, hidden=True)
-    deploy = click.Command(
+    secret = TyperCommand("secret", callback=_fixture_callback, hidden=True)
+    deploy = TyperCommand(
         "deploy",
         callback=_fixture_callback,
-        params=[click.Option(["--target"], required=True)],
+        params=[TyperOption(param_decls=["--target"], required=True)],
     )
-    files = click.Command(
+    files = TyperCommand(
         "files",
         callback=_fixture_callback,
-        params=[click.Argument(["file_paths"], nargs=-1, required=True)],
+        params=[TyperArgument(param_decls=["file_paths"], nargs=-1, required=True)],
     )
-    return click.Group(
-        "cli",
+    return TyperGroup(
+        name="cli",
         commands={
             "db": db,
             "inbox": inbox,
@@ -893,7 +896,7 @@ def _fixture_cli() -> click.Group:  # pyright: ignore[reportUnusedFunction]  # p
     ],
 )
 def test_resolve_invocation_runnable_scoping(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
     tokens: list[str],
     runnable: bool,
     expected_ok: bool,
@@ -915,7 +918,7 @@ def test_invocations_semicolon_chain_finds_both() -> None:
     assert commands == [["db", "show"], ["create", "x"]]
 
 
-def test_resolve_invocation_elision_short_circuits(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_elision_short_circuits(_fixture_cli: TyperGroup) -> None:
     """An elision (`...`) stops the check before a trailing bogus flag."""
     (command,) = _invocations("moneybin commit ... --bogus")
     assert command == ["commit", "...", "--bogus"]
@@ -934,7 +937,7 @@ def test_invocations_masks_non_moneybin_substitution() -> None:
     assert command == ["db", "show", "-o", "backup-SUBST.db"]
 
 
-def test_invocations_elides_unterminated_quote_value(_fixture_cli: click.Group) -> None:
+def test_invocations_elides_unterminated_quote_value(_fixture_cli: TyperGroup) -> None:
     """An unterminated quote (a multi-line string) elides rather than vanishing.
 
     Cutting the value away entirely would leave `--pattern` as the last token
@@ -946,19 +949,19 @@ def test_invocations_elides_unterminated_quote_value(_fixture_cli: click.Group) 
 
 
 def test_resolve_invocation_placeholder_then_bogus_flag(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     (command,) = _invocations("moneybin create <name> --bogus")
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
-def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_bracketed_bogus_option(_fixture_cli: TyperGroup) -> None:
     (command,) = _invocations("moneybin create <name> [--bogus]")
     assert _resolve_invocation(command, _fixture_cli, runnable=False) is not None
 
 
 def test_invocations_drop_click_usage_options_placeholder(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     """Click's `[OPTIONS]` names no positional; `[--yes]` still keeps its option."""
     (command,) = _invocations("moneybin create [OPTIONS] NAME [AMOUNT]")
@@ -968,12 +971,12 @@ def test_invocations_drop_click_usage_options_placeholder(
     assert flagged == ["commit", "--yes"]
 
 
-def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: click.Group) -> None:
+def test_resolve_invocation_root_dash_h_unregistered(_fixture_cli: TyperGroup) -> None:
     (command,) = _invocations("moneybin -h")
     assert _resolve_invocation(command, _fixture_cli, runnable=True) is not None
 
 
-def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
+def test_code_lines_reads_soft_wrapped_span(_fixture_cli: TyperGroup) -> None:
     """A code span that soft-wraps across a line is still read as one span."""
     text = "run `moneybin\ncommit --bogus` now"
     (entry,) = _code_lines(text)
@@ -985,7 +988,7 @@ def test_code_lines_reads_soft_wrapped_span(_fixture_cli: click.Group) -> None:
 
 
 def test_full_pipeline_scopes_fenced_block_vs_inline_mention(
-    _fixture_cli: click.Group,
+    _fixture_cli: TyperGroup,
 ) -> None:
     """End to end: the same bare-group text is strict fenced, lenient inline."""
     text = (
