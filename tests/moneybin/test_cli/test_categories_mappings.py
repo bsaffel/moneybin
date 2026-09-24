@@ -31,12 +31,13 @@ class TestMappingsPending:
         "moneybin.services.categorization.CategorizationService.list_unmapped_source_terms"
     )
     def test_pending_empty(self, mock_list: MagicMock, mock_get_db: MagicMock) -> None:
-        """Empty queue exits 0 with no output."""
+        """Empty queue exits 0 and says so rather than printing nothing."""
         mock_get_db.return_value.__enter__.return_value = MagicMock()
         mock_list.return_value = []
 
         result = runner.invoke(app, ["pending"])
         assert result.exit_code == 0
+        assert "No unmapped terms." in result.output
 
     @patch("moneybin.cli.commands.categories.mappings.get_database")
     @patch(

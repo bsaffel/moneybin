@@ -165,7 +165,7 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
     """An accidental registration change must not evade the hand-written help list."""
     leaves = set(_leaves(get_command(app)))
 
-    assert len(leaves) == 207
+    assert len(leaves) == 209
     assert ("assets",) not in leaves
     assert {
         ("sync", "connect"),
@@ -235,6 +235,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
         ("investments", "matches", "pending"),
         ("investments", "matches", "history"),
         ("categories", "list"),
+        ("categories", "mappings", "pending"),
         ("merchants", "list"),
         ("merchants", "links", "pending"),
         ("merchants", "links", "history"),
@@ -330,6 +331,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
             accounts set
             categories create
             categories delete
+            categories mappings set
             categories set
             db init
             db key rotate

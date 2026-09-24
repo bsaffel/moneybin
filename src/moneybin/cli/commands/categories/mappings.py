@@ -15,9 +15,19 @@ import logging
 
 import typer
 
-from moneybin.cli.output import OutputFormat, output_option, quiet_option
-from moneybin.cli.render import render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.output import (
+    OutputFormat,
+    emit_human_result,
+    no_pager_option,
+    output_option,
+    quiet_option,
+)
+from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.utils import (
+    format_cli_failure,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.category_mappings import (
     CategoryMappingSetPayload,
@@ -41,6 +51,7 @@ def mappings_pending(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List imported category-vocabulary terms with no curated mapping.
 
@@ -70,24 +81,46 @@ def mappings_pending(
         )
         return
 
-    if not payload.terms:
-        if not quiet:
-            logger.info("No unmapped category-source terms")
-        return
-
-    render_rows(
-        ["namespace", "category", "subcategory", "rows", "suggestions"],
-        [
-            (
-                t.source_origin,
-                t.category,
-                t.subcategory or "-",
-                t.row_count,
-                ", ".join(t.suggestions) or "-",
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary(
+            [("Unmapped terms", str(len(payload.terms)))],
+            title="Imported category terms",
+        )
+    ]
+    if payload.terms:
+        parts.append(
+            build_rows(
+                ["namespace", "category", "subcategory", "rows", "suggestions"],
+                [
+                    (
+                        t.source_origin,
+                        t.category,
+                        t.subcategory or "-",
+                        t.row_count,
+                        ", ".join(t.suggestions) or "-",
+                    )
+                    for t in payload.terms
+                ],
+                numeric=("rows",),
+                terminal=policy,
             )
-            for t in payload.terms
-        ],
-        numeric=("rows",),
+        )
+    else:
+        parts.append(build_summary([("Result", "No unmapped terms.")]))
+    disclosures: tuple[str, ...] = (
+        (
+            "Next: moneybin categories mappings set --namespace <namespace> "
+            "--category <text> --into <category-id>",
+        )
+        if payload.terms and not quiet
+        else ()
+    )
+    emit_human_result(
+        compose_human_result(parts, disclosures=disclosures),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
     )
 
 
@@ -127,10 +160,12 @@ def mappings_set(
       moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
     """
     if into is not None and new is not None:
-        logger.error("❌ --into and --new are mutually exclusive")
+        logger.error(format_cli_failure("--into and --new are mutually exclusive"))
         raise typer.Exit(2)
     if not into and not new:
-        logger.error("❌ Specify either --into <category_id> or --new <name>")
+        logger.error(
+            format_cli_failure("Specify either --into <category_id> or --new <name>")
+        )
         raise typer.Exit(2)
 
     from moneybin.services.categorization import CategorizationService
@@ -162,4 +197,15 @@ def mappings_set(
             cli_actor="categories_mappings_set",
         )
         return
-    logger.info(f"✅ {namespace}/{category} → {category_id}")
+    receipt = [("Namespace", namespace), ("Category", category)]
+    if subcategory:
+        receipt.append(("Subcategory", subcategory))
+    receipt.append(("Mapped to", category_id))
+    emit_human_result(
+        compose_human_result([
+            build_summary(receipt, title="Category mapping recorded")
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
