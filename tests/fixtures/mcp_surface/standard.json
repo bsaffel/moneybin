@@ -1,5 +1,5 @@
 {
-  "sha256": "819d277f67de8f9e368b25c52b5716c27a7352dbf215a4c3005dffae3dd0aab9",
+  "sha256": "7bfc6b0eb920fa3339ba4e7d4f299a795a3ba4dfc22931d468b9bbd00b56f85a",
   "tool_count": 50,
   "tools": [
     {
@@ -3326,7 +3326,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution or clear profile-scoped sync credentials.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3381,12 +3381,12 @@
         },
         "name": "sync_disconnect"
       },
-      "description_bytes": 68,
+      "description_bytes": 293,
       "input_schema_bytes": 379,
       "name": "sync_disconnect",
       "other_bytes": 57,
       "output_schema_bytes": 0,
-      "total_bytes": 640
+      "total_bytes": 868
     },
     {
       "annotation_bytes": 90,
@@ -5262,5 +5262,5 @@
       "total_bytes": 568
     }
   ],
-  "total_bytes": 62436
+  "total_bytes": 62664
 }

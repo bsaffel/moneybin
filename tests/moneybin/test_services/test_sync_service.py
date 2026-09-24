@@ -696,7 +696,12 @@ def test_link_invokes_on_initiate_callback_before_polling(
 def test_resolve_institution_raises_on_ambiguous_name(
     mock_client: MagicMock, db: Database, loader: PlaidExtractor
 ) -> None:
-    """Two connections sharing institution_name must not silently map to one."""
+    """Two connections sharing institution_name must not silently map to one.
+
+    The message must be self-sufficient: it names both candidate ids and both
+    linked timestamps, and points at `sync status --wide` (issue #408) —
+    `sync status` alone narrows the id column away by default.
+    """
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
             id="u1",
@@ -704,7 +709,7 @@ def test_resolve_institution_raises_on_ambiguous_name(
             provider="plaid",
             institution_name="Chase",
             status="active",
-            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
         ),
         ConnectedInstitution(
             id="u2",
@@ -712,12 +717,18 @@ def test_resolve_institution_raises_on_ambiguous_name(
             provider="plaid",
             institution_name="Chase",
             status="active",
-            created_at=datetime(2026, 3, 15, tzinfo=UTC),
+            created_at=datetime(2026, 2, 10, 14, 30, tzinfo=UTC),
         ),
     ]
     service = SyncService(client=mock_client, db=db, loader=loader)
-    with pytest.raises(ValueError, match="multiple connected institutions match"):
+    with pytest.raises(
+        ValueError, match="multiple connected institutions match"
+    ) as exc_info:
         service.pull(institution="Chase")
+    message = str(exc_info.value)
+    assert "item_a (linked 2026-01-05 09:00 UTC)" in message
+    assert "item_b (linked 2026-02-10 14:30 UTC)" in message
+    assert "sync status --wide" in message
 
 
 def test_list_connections_returns_views_with_guidance(

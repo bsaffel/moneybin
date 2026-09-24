@@ -545,9 +545,7 @@ async def sync_disconnect(
     return build_envelope(
         data=SyncInstitutionDisconnectView(
             status="disconnected",
-            institution=disconnected.institution_name
-            or institution
-            or disconnected.provider_item_id,
+            institution=disconnected.institution_name or disconnected.provider_item_id,
         ),
         actions=["Use sync_status to inspect remaining institution connections."],
     )
@@ -581,7 +579,11 @@ def register_sync_workflow_tools(mcp: FastMCP) -> None:
         (
             sync_disconnect,
             "sync_disconnect",
-            "Disconnect one institution or clear profile-scoped sync credentials.",
+            "Disconnect one institution connection or clear profile-scoped sync "
+            "credentials. provider_item_id (from sync_status) targets one exact "
+            "connection — required when an institution has more than one (e.g. "
+            "after a relink), where institution alone is ambiguous. Mutually "
+            "exclusive with institution.",
         ),
     ):
         register(

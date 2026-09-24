@@ -2,7 +2,9 @@
 
 import logging
 import webbrowser
+from collections.abc import Callable
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -14,11 +16,13 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import (
     build_rows,
     build_summary,
+    column_view,
     compose_human_result,
     render_rows,
     render_summary,
@@ -37,6 +41,9 @@ from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.progress import ProgressEvent
 
 from .stubs import _not_implemented
+
+if TYPE_CHECKING:
+    from moneybin.connectors.sync_models import SyncConnectionView
 
 app = typer.Typer(
     help="Sync financial data from external services",
@@ -795,10 +802,30 @@ def sync_pull(
         raise typer.Exit(1)
 
 
+_STATUS_COLUMNS: tuple[tuple[str, Callable[["SyncConnectionView"], object]], ...] = (
+    ("Institution", lambda c: c.institution_name),
+    ("Status", lambda c: c.status),
+    (
+        "Last sync",
+        lambda c: (
+            c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
+        ),
+    ),
+    ("Linked", lambda c: c.created_at.strftime("%Y-%m-%d %H:%M UTC")),
+    ("Error", lambda c: c.error_code or "-"),
+    ("Item ID", lambda c: c.provider_item_id),
+)
+_STATUS_DEFAULT = ("Institution", "Status", "Last sync", "Linked", "Error")
+"""`created_at` (Linked) tells two identically named items apart by default;
+`provider_item_id` — what `sync disconnect --provider-item-id` takes — follows
+under `--wide` and in JSON (issue #408)."""
+
+
 @app.command("status")
 def sync_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # nothing to suppress yet
+    wide: bool = wide_option,
     no_pager: bool = no_pager_option,
     json_fields: str | None = typer.Option(
         None,
@@ -850,25 +877,14 @@ def sync_status(
             ])
         )
     else:
+        view = column_view(
+            _STATUS_COLUMNS, connections, default=_STATUS_DEFAULT, wide=wide
+        )
         parts.append(
             build_rows(
-                ["Institution", "Status", "Last sync", "Linked", "Error", "Item ID"],
-                [
-                    (
-                        c.institution_name,
-                        c.status,
-                        c.last_sync.strftime("%Y-%m-%d %H:%M UTC")
-                        if c.last_sync
-                        else "never",
-                        # Renders every item, including duplicates from a
-                        # relink — created_at is what tells two identically
-                        # named items apart (issue #408).
-                        c.created_at.strftime("%Y-%m-%d %H:%M UTC"),
-                        c.error_code or "-",
-                        c.provider_item_id,
-                    )
-                    for c in connections
-                ],
+                view.names,
+                view.rows,
+                total_columns=view.total,
                 terminal=policy,
             )
         )

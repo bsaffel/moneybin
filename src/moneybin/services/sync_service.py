@@ -560,12 +560,15 @@ class SyncService:
             if inst.institution_name and inst.institution_name.lower() == name.lower()
         ]
         if len(matches) > 1:
-            ids = ", ".join(m.provider_item_id for m in matches)
+            candidates = ", ".join(
+                f"{m.provider_item_id} "
+                f"(linked {m.created_at.strftime('%Y-%m-%d %H:%M UTC')})"
+                for m in matches
+            )
             raise ValueError(
-                f"multiple connected institutions match '{name}' ({ids}). "
-                f"Run `moneybin sync status` to see each connection's "
-                f"provider_item_id and created_at, then target the specific "
-                f"connection by provider_item_id."
+                f"multiple connected institutions match '{name}': {candidates}. "
+                f"Target one by provider_item_id; `moneybin sync status --wide` "
+                f"lists every connection's id."
             )
         return matches[0] if matches else None
 
