@@ -1377,6 +1377,8 @@ class MatchApplier:
                 both of ``category_id`` / ``new_category`` were given.
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
                 ``category_id`` does not name an existing category.
+            UserError(code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS):
+                ``new_category`` collides with an existing category name.
         """
         try:
             if (category_id is None) == (new_category is None):
