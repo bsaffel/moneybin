@@ -11,13 +11,18 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
+    Binding,
     OutputColumn,
     ReportQuery,
     ReportSemantics,
     report,
 )
-from moneybin.reports.definitions._shared import resolve_date_range
-from moneybin.tables import REPORTS_NET_WORTH
+from moneybin.reports.definitions._shared import (
+    DateRange,
+    resolve_date_range,
+    unanchored_candidates_ctes,
+)
+from moneybin.tables import PROFILE_SETTINGS, REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
 
@@ -43,6 +48,54 @@ _BUCKET_EXPR: Mapping[str, str] = {
     "weekly": "date_trunc('week', balance_date)",
     "monthly": "date_trunc('month', balance_date)",
 }
+
+
+def _source_cte(view_cols: str, rng: DateRange) -> tuple[str, list[Binding]]:
+    """The rows a read starts from: the view's filtered rows, plus one synthesized row.
+
+    The synthesized row appears only when an explicit range filtered to nothing
+    and an eligible candidate is dateable inside it — the one row the view cannot
+    date for a range it never saw.
+    """
+    base = f"""
+        filtered AS (
+            SELECT {view_cols}
+            FROM {REPORTS_NET_WORTH.full_name}
+            WHERE 1=1{rng.where_sql}
+        )
+    """  # noqa: S608  # TableRef interpolation, static column list
+    if not rng.is_ranged:
+        return (
+            f"{base}, source AS (SELECT {view_cols} FROM filtered)",  # noqa: S608  # static column list
+            list(rng.params),
+        )
+    candidates_sql, candidate_params = unanchored_candidates_ctes(rng)
+    sql = f"""
+        {base},
+        {candidates_sql},
+        synthesized AS (
+            SELECT
+                (SELECT p.home_currency FROM {PROFILE_SETTINGS.full_name} AS p)
+                    AS home_currency_code,
+                MIN(synthesis_date) AS balance_date,
+                0 AS account_count,
+                0 AS carried_forward_count,
+                0 AS currency_count,
+                0 AS unpriced_currency_count,
+                CAST(COUNT(*) AS INTEGER) AS unanchored_account_count,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_assets,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_liabilities,
+                CAST(NULL AS DECIMAL(18, 2)) AS net_worth
+            FROM unanchored_candidates
+            HAVING COUNT(*) > 0 AND NOT EXISTS (SELECT 1 FROM filtered)
+        ),
+        source AS (
+            SELECT {view_cols} FROM filtered
+            UNION ALL
+            SELECT {view_cols} FROM synthesized
+        )
+    """  # noqa: S608  # TableRef interpolation, static column list
+    return sql, [*rng.params, *candidate_params]
 
 
 def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
@@ -289,7 +342,10 @@ def net_worth(
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
             end open when given alone.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
-            end open when given alone.
+            end open when given alone. An explicit range with no balance
+            rows, while an eligible account holding value has no balance
+            observation, returns one row dated inside the range with null
+            measures and unanchored_account_count set.
         interval: daily | weekly | monthly — buckets the range into one row
             per bucket with change_abs/change_pct. Weekly buckets are ISO
             weeks starting Monday. Omitted returns the plain day-grain rows
@@ -316,19 +372,19 @@ def net_worth(
         rng = resolve_date_range(
             from_date, to_date, report_id=_REPORT_ID, view=REPORTS_NET_WORTH
         )
+        source_sql, params = _source_cte(view_cols, rng)
         sql = f"""
-            SELECT {view_cols}
-            FROM {REPORTS_NET_WORTH.full_name}
-            WHERE 1=1{rng.where_sql}
+            WITH {source_sql}
+            SELECT {view_cols} FROM source
             ORDER BY balance_date
-        """  # noqa: S608  # TableRef interpolation, static column list
+        """  # noqa: S608  # CTE text built above from TableRefs and a static column list
         actions = [
             "Run reports(report_id='core:net_worth', "
             "parameters={'interval': 'monthly'}) for period-over-period change",
             "Run reports(report_id='core:net_worth_currencies') for the "
             "currency-level breakdown",
         ]
-        return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+        return ReportQuery(sql, params, actions=actions, period=rng.period)
 
     rng = resolve_date_range(
         from_date,
@@ -338,14 +394,15 @@ def net_worth(
         default_latest=False,
     )
     bucket_expr = _BUCKET_EXPR[interval]
+    source_sql, params = _source_cte(view_cols, rng)
     sql = f"""
-        WITH ranked AS (
+        WITH {source_sql},
+        ranked AS (
             SELECT {view_cols},
                    ROW_NUMBER() OVER (
                        PARTITION BY {bucket_expr} ORDER BY balance_date DESC
                    ) AS rank_in_bucket
-            FROM {REPORTS_NET_WORTH.full_name}
-            WHERE 1=1{rng.where_sql}
+            FROM source
         ), bucketed AS (
             SELECT {view_cols},
                    LAG(net_worth) OVER (ORDER BY balance_date) AS prior_net_worth
@@ -365,4 +422,4 @@ def net_worth(
         "Set from_date to bound a recent window — rows return oldest-first, "
         "so a row limit keeps the earliest buckets, not the most recent",
     ]
-    return ReportQuery(sql, rng.params, actions=actions, period=rng.period)
+    return ReportQuery(sql, params, actions=actions, period=rng.period)

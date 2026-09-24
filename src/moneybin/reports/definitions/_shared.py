@@ -16,7 +16,7 @@ from moneybin import error_codes
 from moneybin.errors import UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import Binding
-from moneybin.tables import TableRef
+from moneybin.tables import DIM_ACCOUNTS, DIM_UNANCHORED_ACCOUNTS, TableRef
 
 # Month bound as YYYY-MM. Enforced because the runners canonicalize with
 # substr(?, 1, 7), which would let a malformed "2024-1" through and produce
@@ -185,6 +185,15 @@ class DateRange:
     """Positional bindings for ``where_sql``'s ``?`` placeholders, in order."""
     period: str | None
     """Human window for ``ReportQuery.period``; ``None`` for the latest-day default."""
+    from_bound: str | None = None
+    """Validated ISO lower bound, or ``None`` when ``from_date`` was not given."""
+    to_bound: str | None = None
+    """Validated ISO upper bound, or ``None`` when ``to_date`` was not given."""
+
+    @property
+    def is_ranged(self) -> bool:
+        """Whether the caller supplied an explicit bound on either side."""
+        return self.from_bound is not None or self.to_bound is not None
 
 
 def resolve_date_range(
@@ -240,6 +249,8 @@ def resolve_date_range(
                 Binding(to_bound, DataClass.TXN_DATE),
             ],
             period=f"{from_bound} to {to_bound}",
+            from_bound=from_bound,
+            to_bound=to_bound,
         )
     if parsed_from is not None:
         from_bound = parsed_from.isoformat()
@@ -247,6 +258,7 @@ def resolve_date_range(
             where_sql=" AND balance_date >= ?",
             params=[Binding(from_bound, DataClass.TXN_DATE)],
             period=f"from {from_bound}",
+            from_bound=from_bound,
         )
     if parsed_to is not None:
         to_bound = parsed_to.isoformat()
@@ -254,6 +266,7 @@ def resolve_date_range(
             where_sql=" AND balance_date <= ?",
             params=[Binding(to_bound, DataClass.TXN_DATE)],
             period=f"through {to_bound}",
+            to_bound=to_bound,
         )
     if not default_latest:
         return DateRange(where_sql="", params=[], period=None)
@@ -261,3 +274,61 @@ def resolve_date_range(
         f" AND balance_date = (SELECT MAX(balance_date) FROM {view.full_name})"  # noqa: S608  # TableRef interpolation, not a user value
     )
     return DateRange(where_sql=latest_day_sql, params=[], period=None)
+
+
+def unanchored_candidates_ctes(rng: DateRange) -> tuple[str, list[Binding]]:
+    """Requirement 14's eligible candidates for an explicit range, each with its own date.
+
+    Two CTE definitions (no leading ``WITH``): ``unanchored_bounds`` and
+    ``unanchored_candidates``. A candidate is eligible when it is included in net
+    worth and either unarchived or archived on/after ``effective_from``; its
+    ``synthesis_date`` is ``LEAST(effective_to, CURRENT_DATE, archived_at)``, and it
+    is dropped unless that date clears ``effective_from`` — a row is only ever
+    dated inside the window asked for (spec §Data Model, three-window rule). The
+    aggregate rung takes ``MIN(synthesis_date)``, which is the spec's
+    ``archived_at_floor`` form; the account rung uses each candidate's own.
+
+    Only for ranged reads: an unranged read is answered by the views themselves.
+    """
+    if not rng.is_ranged:
+        raise ValueError("unanchored_candidates_ctes needs an explicit range")
+    params: list[Binding] = []
+    to_expr = "CURRENT_DATE"
+    if rng.to_bound is not None:
+        to_expr = "CAST(? AS DATE)"
+        params.append(Binding(rng.to_bound, DataClass.TXN_DATE))
+    from_expr = "CAST(NULL AS DATE)"
+    if rng.from_bound is not None:
+        from_expr = "CAST(? AS DATE)"
+        params.append(Binding(rng.from_bound, DataClass.TXN_DATE))
+    sql = f"""
+        unanchored_bounds AS (
+            SELECT {to_expr} AS effective_to, {from_expr} AS effective_from
+        ), unanchored_candidates AS (
+            SELECT account_id, account_name, currency_code, account_type,
+                   synthesis_date
+            FROM (
+                SELECT a.account_id,
+                       a.display_name AS account_name,
+                       a.currency_code,
+                       a.account_type,
+                       LEAST(
+                           b.effective_to,
+                           CURRENT_DATE,
+                           CASE WHEN a.archived THEN a.archived_at
+                                ELSE b.effective_to END
+                       ) AS synthesis_date,
+                       b.effective_from
+                FROM {DIM_UNANCHORED_ACCOUNTS.full_name} AS u
+                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
+                CROSS JOIN unanchored_bounds AS b
+                WHERE a.include_in_net_worth
+                  AND (NOT a.archived
+                       OR (a.archived_at IS NOT NULL
+                           AND (b.effective_from IS NULL
+                                OR a.archived_at >= b.effective_from)))
+            )
+            WHERE effective_from IS NULL OR synthesis_date >= effective_from
+        )
+    """  # noqa: S608  # TableRef interpolation and fixed fragments; values bound
+    return sql, params

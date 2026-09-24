@@ -8,7 +8,7 @@ redefining a second copy of the same ``core.*`` stub schema.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -20,7 +20,11 @@ from moneybin.database import Database
 from moneybin.errors import UserError
 from moneybin.reports._framework.catalog import get_report_catalog
 from moneybin.reports._framework.contract import ReportQuery, ReportSpec, bound_value
-from moneybin.reports.definitions._shared import resolve_date_range
+from moneybin.reports.definitions._shared import (
+    resolve_date_range,
+    unanchored_candidates_ctes,
+)
+from moneybin.reports.definitions.net_worth import net_worth
 from moneybin.tables import REPORTS_NET_WORTH, REPORTS_NET_WORTH_ACCOUNTS
 
 # These sibling test modules deliberately name their fixture builders private
@@ -39,6 +43,7 @@ from tests.moneybin.test_reports.test_net_worth_models import (
     _install_net_worth_sources,  # pyright: ignore[reportPrivateUsage]
     _install_report,  # pyright: ignore[reportPrivateUsage]
     _rate,  # pyright: ignore[reportPrivateUsage]
+    _unanchored,  # pyright: ignore[reportPrivateUsage]
 )
 from tests.moneybin.test_reports.test_net_worth_models import model_db as _model_db
 
@@ -668,3 +673,181 @@ def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> N
         limit=100,
     )
     assert bucketed.columns == declared
+
+
+# ---------------------------------------------------------------------------
+# core:net_worth's ranged fallback for an unanchored candidate (M2B.3)
+# ---------------------------------------------------------------------------
+
+
+def _today(db: Database) -> date:
+    row = db.execute("SELECT CURRENT_DATE").fetchone()
+    assert row is not None
+    return row[0]
+
+
+def _nw_rows(db: Database, **params: str) -> list[dict[str, object]]:
+    return _run(db, net_worth(db, **params))  # type: ignore[arg-type]
+
+
+def _wholly_unanchored(db: Database, *, archived_at: str | None = None) -> None:
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(
+        db,
+        "brk",
+        "Brokerage",
+        "USD",
+        archived=archived_at is not None,
+        archived_at=archived_at,
+    )
+    _unanchored(db, "brk")
+    _install_report(db, "net_worth")
+
+
+def test_resolve_date_range_exposes_its_bounds() -> None:
+    rng = resolve_date_range(
+        "2026-01-01", None, report_id="core:net_worth", view=REPORTS_NET_WORTH
+    )
+    assert (rng.from_bound, rng.to_bound, rng.is_ranged) == ("2026-01-01", None, True)
+    unranged = resolve_date_range(
+        None, None, report_id="core:net_worth", view=REPORTS_NET_WORTH
+    )
+    assert unranged.is_ranged is False
+
+
+def test_unanchored_candidates_ctes_refuses_an_unranged_read() -> None:
+    unranged = resolve_date_range(
+        None, None, report_id="core:net_worth", view=REPORTS_NET_WORTH
+    )
+    with pytest.raises(ValueError, match="explicit range"):
+        unanchored_candidates_ctes(unranged)
+
+
+def test_net_worth_runner_historical_range_synthesizes_at_to_date(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
+    assert str(row["balance_date"]) == "2025-03-31"
+    assert row["unanchored_account_count"] == 1
+    assert row["account_count"] == 0
+    assert row["net_worth"] is None
+    assert row["home_currency_code"] == "USD"
+
+
+def test_net_worth_runner_to_date_alone_synthesizes_at_to_date(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    (row,) = _nw_rows(model_db, to_date="2025-03-31")
+    assert str(row["balance_date"]) == "2025-03-31"
+
+
+def test_net_worth_runner_future_only_lower_bound_synthesizes_nothing(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    future = (_today(model_db) + timedelta(days=30)).isoformat()
+    assert _nw_rows(model_db, from_date=future) == []
+
+
+def test_net_worth_runner_future_single_day_synthesizes_nothing(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    future = (_today(model_db) + timedelta(days=30)).isoformat()
+    assert _nw_rows(model_db, from_date=future, to_date=future) == []
+
+
+def test_net_worth_runner_dates_at_the_archive_floor(model_db: Database) -> None:
+    """A range straddling archived_at dates the row there, never at to_date."""
+    _wholly_unanchored(model_db, archived_at="2025-02-10")
+    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
+    assert str(row["balance_date"]) == "2025-02-10"
+    assert row["unanchored_account_count"] == 1
+
+
+def test_net_worth_runner_range_after_archival_synthesizes_nothing(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db, archived_at="2025-02-10")
+    assert _nw_rows(model_db, from_date="2025-03-01", to_date="2025-03-31") == []
+
+
+def test_net_worth_runner_unranged_archived_candidate_is_empty(
+    model_db: Database,
+) -> None:
+    """Unranged never reaches the fallback: the view's arm answers, correctly empty."""
+    _wholly_unanchored(model_db, archived_at="2025-02-10")
+    assert _nw_rows(model_db) == []
+
+
+def test_net_worth_runner_unranged_wholly_unanchored_is_the_views_row(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    (row,) = _nw_rows(model_db)
+    assert row["balance_date"] == _today(model_db)
+    assert row["unanchored_account_count"] == 1
+
+
+def test_net_worth_runner_inverted_range_with_a_candidate_raises(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    with pytest.raises(UserError) as excinfo:
+        net_worth(model_db, from_date="2025-03-31", to_date="2025-01-01")
+    assert excinfo.value.code == "report_parameter_invalid_range"
+
+
+def test_net_worth_runner_range_with_rows_never_synthesizes(
+    model_db: Database,
+) -> None:
+    """A non-empty filtered result is the answer; the fallback adds nothing."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD")
+    _balance(model_db, "chk", "2025-02-01", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+    rows = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
+    assert [str(r["balance_date"]) for r in rows] == ["2025-02-01"]
+    assert rows[0]["unanchored_account_count"] == 1
+
+
+def test_net_worth_runner_range_before_every_balance_still_synthesizes(
+    model_db: Database,
+) -> None:
+    """The trigger is the RANGE's emptiness, not the profile's."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD")
+    _balance(model_db, "chk", "2025-06-01", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+    (row,) = _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31")
+    assert str(row["balance_date"]) == "2025-03-31"
+    assert row["unanchored_account_count"] == 1
+
+
+def test_net_worth_runner_bucketed_range_with_no_spine_rows_synthesizes_one_bucket(
+    model_db: Database,
+) -> None:
+    _wholly_unanchored(model_db)
+    (row,) = _nw_rows(
+        model_db, from_date="2025-01-01", to_date="2025-03-31", interval="monthly"
+    )
+    assert str(row["balance_date"]) == "2025-03-31"
+    assert row["change_abs"] is None
+    assert row["unanchored_account_count"] == 1
+
+
+def test_net_worth_runner_range_without_candidates_is_empty(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth")
+    assert _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31") == []
