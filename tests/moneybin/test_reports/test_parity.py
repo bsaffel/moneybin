@@ -95,7 +95,7 @@ async def test_mcp_surface_matches_expected_set() -> None:
     async with Client(mcp) as client:
         tools = {t.name: t for t in await client.list_tools()}
     assert set(tools) == {"reports"}
-    assert set(tools["reports"].inputSchema["properties"]) == {
+    assert set(tools["reports"].input_schema["properties"]) == {
         "report_id",
         "parameters",
         "limit",

@@ -84,9 +84,9 @@ def _structured(response: Any) -> dict[str, Any]:
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
     )
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    return response.structuredContent
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    return response.structured_content
 
 
 def _observable_delivery(data: dict[str, Any], request: Any) -> dict[str, Any]:
@@ -112,14 +112,14 @@ async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
     export = await listed_tool(mcp, "export_run")
     destinations = await listed_tool(mcp, "exports_set")
 
-    assert export.outputSchema is None
-    assert destinations.outputSchema is None
+    assert export.output_schema is None
+    assert destinations.output_schema is None
     assert export.annotations is not None
-    assert export.annotations.readOnlyHint is False
-    assert export.annotations.idempotentHint is False
+    assert export.annotations.read_only_hint is False
+    assert export.annotations.idempotent_hint is False
     assert destinations.annotations is not None
-    assert destinations.annotations.readOnlyHint is False
-    assert destinations.annotations.idempotentHint is True
+    assert destinations.annotations.read_only_hint is False
+    assert destinations.annotations.idempotent_hint is True
     assert {tool.name for tool in await mcp._list_tools()} == {  # pyright: ignore[reportPrivateUsage]
         "export_run",
         "exports_set",
@@ -131,22 +131,22 @@ async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
             for branch in schema["properties"][field]["oneOf"]
         }
 
-    assert variants(export.inputSchema, "subject") == {
+    assert variants(export.input_schema, "subject") == {
         "bundle": {"kind"},
         "report": {"kind", "report_id"},
     }
-    assert variants(export.inputSchema, "destination") == {
+    assert variants(export.input_schema, "destination") == {
         "local": {"kind", "name"},
         "sheets": {"kind", "name"},
     }
-    assert variants(destinations.inputSchema, "target") == {
+    assert variants(destinations.input_schema, "target") == {
         "local": {"kind", "state", "name"},
         "sheets": {"kind", "state", "name"},
     }
 
     rendered = json.dumps({
-        "export_run": export.inputSchema,
-        "exports_set": destinations.inputSchema,
+        "export_run": export.input_schema,
+        "exports_set": destinations.input_schema,
     })
     assert '"operation"' not in rendered
     assert '"action"' not in rendered
@@ -395,7 +395,7 @@ async def test_export_run_rejects_legacy_redaction_selectors(legacy: str) -> Non
         },
     )
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 @pytest.mark.parametrize(
@@ -504,7 +504,7 @@ async def test_exports_set_canonicalizes_local_destination_path_before_persistin
             },
         )
 
-    assert response.isError is False
+    assert response.is_error is False
     assert set_local.call_args.kwargs["local_path"] == supplied_path.resolve()
 
 

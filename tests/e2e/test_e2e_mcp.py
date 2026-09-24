@@ -66,7 +66,7 @@ async def mcp_server_tools(
             initialized = await session.initialize()
             tools = await session.list_tools()
             server_tools = (
-                initialized.serverInfo.name,
+                initialized.server_info.name,
                 {tool.name for tool in tools.tools},
             )
     yield server_tools
@@ -102,7 +102,7 @@ class TestMCPServerBoot:
                 # envelope contract end-to-end.
                 result = await session.call_tool("system_status", {})
 
-                assert not result.isError, f"Tool returned error: {result.content}"
+                assert not result.is_error, f"Tool returned error: {result.content}"
                 assert len(result.content) > 0
                 content = result.content[0]
                 assert isinstance(content, TextContent)
@@ -172,7 +172,7 @@ class TestMCPServerBoot:
                 result = await session.call_tool(
                     "accounts_balances", {"view": "assertions"}
                 )
-                assert not result.isError, (
+                assert not result.is_error, (
                     f"accounts_balances returned error: {result.content}"
                 )
                 content = result.content[0]
@@ -329,7 +329,7 @@ class TestMatchesTools:
                     "reviews", {"kind": "matches", "status": "pending"}
                 )
 
-                assert not result.isError, f"Tool returned error: {result.content}"
+                assert not result.is_error, f"Tool returned error: {result.content}"
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
@@ -369,7 +369,7 @@ class TestMatchesTools:
                     },
                 )
 
-                assert not result.isError, f"Tool returned error: {result.content}"
+                assert not result.is_error, f"Tool returned error: {result.content}"
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
@@ -408,12 +408,12 @@ class TestMatchesTools:
                         ]
                     },
                 )
-                assert not set_result.isError, f"set failed: {set_result.content}"
+                assert not set_result.is_error, f"set failed: {set_result.content}"
                 result = await session.call_tool(
                     "reviews",
                     {"kind": "matches", "status": "history", "limit": 50},
                 )
-                assert not result.isError, f"Tool returned error: {result.content}"
+                assert not result.is_error, f"Tool returned error: {result.content}"
                 content = result.content[0]
                 assert isinstance(content, TextContent)
                 envelope = json.loads(content.text)
@@ -556,7 +556,7 @@ class TestMCPFirstRunSetup:
         # Assert after the session closes: a clean shutdown is itself evidence the
         # JSON-RPC stream stayed intact end to end (the original-bug regression).
         # Middleware returned a ToolResult (not raised), so isError is False.
-        assert not result.isError, f"Unexpected MCP-level error: {result.content}"
+        assert not result.is_error, f"Unexpected MCP-level error: {result.content}"
         content = result.content[0]
         assert isinstance(content, TextContent)
         payload = json.loads(content.text)
@@ -576,15 +576,15 @@ class TestMCPFirstRunSetup:
         the middleware is no longer active (self._configured is True).
         """
         from mcp import ClientSession, types
+        from mcp.client.session import ClientRequestContext
         from mcp.client.stdio import stdio_client
-        from mcp.shared.context import RequestContext
         from mcp.types import TextContent
 
         # FastMCP wraps response_type=str as ScalarElicitationType[str], sending a
         # schema with a single "value" property. The accept content must match:
         # {"value": "<profile_name>"}. "e2e-first-run" normalizes to itself.
         async def elicit_cb(
-            context: RequestContext[ClientSession, Any],
+            context: ClientRequestContext,
             params: types.ElicitRequestParams,
         ) -> types.ElicitResult:
             return types.ElicitResult(
@@ -642,15 +642,14 @@ class TestMCPFirstRunSetup:
         """
         from mcp import ClientSession
         from mcp.client.stdio import stdio_client
-        from mcp.shared.exceptions import McpError
-        from pydantic import AnyUrl
+        from mcp.shared.exceptions import MCPError
 
         server_params = _server_params(unconfigured_env)
         async with stdio_client(server_params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                with pytest.raises(McpError):
-                    await session.read_resource(AnyUrl("moneybin://schema"))
+                with pytest.raises(MCPError):
+                    await session.read_resource("moneybin://schema")
                 # Stream survived the failed read: the session still answers.
                 # A wizard write would have corrupted the JSON-RPC channel.
                 tools = await session.list_tools()

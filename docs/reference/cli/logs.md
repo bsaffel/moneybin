@@ -5,13 +5,13 @@ View, prune, or locate MoneyBin log files for the active profile.
 
 Generated from the registered command tree, so every option below is one the command declares; `--help` on any command prints the same text. Shared flags, exit codes, and JSON envelopes: [CLI reference](../../guides/cli-reference.md).
 
-Usage: `moneybin logs [OPTIONS] [STREAM]`
+Usage: `moneybin logs [OPTIONS] [stream]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[STREAM]` | text | no | Log stream to view: cli, mcp, sqlmesh. Required unless --print-path or --prune is used. |
+| `stream` | text | no | Log stream to view: cli, mcp, sqlmesh. Required unless --print-path or --prune is used. |
 
 **Options**
 

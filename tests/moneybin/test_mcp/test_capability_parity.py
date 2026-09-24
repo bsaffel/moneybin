@@ -11,10 +11,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
 
-import click
 import keyring.errors
 import pytest
 from pydantic import SecretStr
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -135,12 +136,12 @@ def load_outcome_map(path: Path = OUTCOME_MAP_PATH) -> tuple[OutcomeMapRow, ...]
     return tuple(rows)
 
 
-def registered_cli_commands() -> dict[str, click.Command]:
+def registered_cli_commands() -> dict[str, Command]:
     """Return every executable path, including hidden compatibility aliases."""
-    commands: dict[str, click.Command] = {}
+    commands: dict[str, Command] = {}
 
-    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
-        if isinstance(command, click.Group):
+    def walk(command: Command, prefix: tuple[str, ...]) -> None:
+        if isinstance(command, TyperGroup):
             if command.invoke_without_command and prefix:
                 commands[" ".join(prefix)] = command
             for name, child in command.commands.items():

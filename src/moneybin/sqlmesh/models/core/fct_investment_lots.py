@@ -141,6 +141,6 @@ def execute(
         pa.field("basis_incomplete", pa.bool_()),
         pa.field("updated_at", pa.timestamp("us")),
     ])
-    yield pa.Table.from_pylist(rows, schema=schema).to_pandas(
+    yield pa.Table.from_pylist(rows, schema=schema).to_pandas(  # pyright: ignore[reportUnknownMemberType]  # pyarrow-stubs types to_pandas's categories as a bare list
         types_mapper=pd.ArrowDtype
     )
