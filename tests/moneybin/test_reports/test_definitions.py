@@ -206,12 +206,18 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
         assert spec.view is not None
         if name in _DEEP_LINEAGE_REPORTS:
             assert semantics.provenance[0] == spec.view.full_name
-            assert semantics.provenance == (
+            expected_provenance = (
                 spec.view.full_name,
                 "core.fct_balances_daily",
                 "core.dim_accounts",
                 "core.fct_exchange_rates_effective",
             )
+            if name in _HOME_TOTAL_REPORTS:
+                # Requirement 14: net_worth also reads the unanchored-account
+                # candidate set, beside the rate-spine tables the other two
+                # rungs share.
+                expected_provenance += ("core.dim_unanchored_accounts",)
+            assert semantics.provenance == expected_provenance
         else:
             assert semantics.provenance == (spec.view.full_name,)
 

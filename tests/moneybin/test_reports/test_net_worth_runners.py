@@ -659,7 +659,7 @@ def test_net_worth_runner_mirrors_declared_column_order(model_db: Database) -> N
     plain = catalog.execute(
         model_db, report_id="core:net_worth", parameters={}, limit=100
     )
-    assert plain.columns == declared[:9]
+    assert plain.columns == declared[:10]
 
     bucketed = catalog.execute(
         model_db,

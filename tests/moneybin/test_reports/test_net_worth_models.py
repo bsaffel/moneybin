@@ -62,6 +62,7 @@ _DAY_COLUMNS = (
     "carried_forward_count",
     "currency_count",
     "unpriced_currency_count",
+    "unanchored_account_count",
     "total_assets",
     "total_liabilities",
     "net_worth",
@@ -142,6 +143,7 @@ def _install_net_worth_sources(db: Database) -> None:
             published_date DATE
         )
     """)
+    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
 
 
 def _balance(
@@ -194,6 +196,11 @@ def _account(
         """,
         [account_id, name, account_type, currency, archived, include, archived_at],
     )
+
+
+def _unanchored(db: Database, account_id: str) -> None:
+    """Mark one account as carrying evidence of holding value and no balance row."""
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [account_id])
 
 
 def _rate(
@@ -1006,3 +1013,110 @@ def test_day_rung_measures_are_decimal_18_2_not_widened(model_db: Database) -> N
     assert types_by_column["total_assets"] == "DECIMAL(18,2)"
     assert types_by_column["total_liabilities"] == "DECIMAL(18,2)"
     assert types_by_column["net_worth"] == "DECIMAL(18,2)"
+
+
+def _day_rows(db: Database) -> list[dict[str, object]]:
+    cur = db.execute(
+        f"SELECT {', '.join(_DAY_COLUMNS)} FROM reports.net_worth ORDER BY balance_date"  # noqa: S608  # static column list
+    )
+    return [dict(zip(_DAY_COLUMNS, r, strict=True)) for r in cur.fetchall()]
+
+
+def test_net_worth_unanchored_candidate_nulls_every_row_and_counts(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD", account_type="investment")
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-01", "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    rows = _day_rows(model_db)
+
+    assert len(rows) == 1
+    assert rows[0]["unanchored_account_count"] == 1
+    assert rows[0]["unpriced_currency_count"] == 0
+    assert rows[0]["net_worth"] is None
+    assert rows[0]["total_assets"] is None
+    assert rows[0]["total_liabilities"] is None
+
+
+def test_net_worth_excluded_candidate_does_not_null_the_total(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(model_db, "brk", "Brokerage", "USD", include=False)
+    _balance(model_db, "chk", "2026-01-01", "100.00", "USD")
+    _rate(model_db, "USD", "USD", "2026-01-01", "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    (row,) = _day_rows(model_db)
+    assert row["unanchored_account_count"] == 0
+    assert row["net_worth"] == Decimal("100.00")
+
+
+def test_net_worth_candidate_counts_only_through_its_archive_date(
+    model_db: Database,
+) -> None:
+    """Requirement 9 at each row's own balance_date."""
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-02"
+    )
+    for day in ("2026-01-01", "2026-01-02", "2026-01-03"):
+        _balance(model_db, "chk", day, "100.00", "USD")
+        _rate(model_db, "USD", "USD", day, "1", source="identity")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth")
+
+    counts = {
+        str(r["balance_date"]): r["unanchored_account_count"]
+        for r in _day_rows(model_db)
+    }
+    assert counts == {"2026-01-01": 1, "2026-01-02": 1, "2026-01-03": 0}
+
+
+def test_net_worth_wholly_unanchored_profile_gets_one_current_date_row(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _home(model_db, "USD")
+    _account(model_db, "a", "A", "USD")
+    _account(model_db, "b", "B", "USD")
+    _unanchored(model_db, "a")
+    _unanchored(model_db, "b")
+    _install_report(model_db, "net_worth")
+    today = model_db.execute("SELECT CURRENT_DATE").fetchone()[0]  # type: ignore[index]
+
+    (row,) = _day_rows(model_db)
+
+    assert row["balance_date"] == today
+    assert row["account_count"] == 0
+    assert row["unanchored_account_count"] == 2
+    assert row["net_worth"] is None
+    assert row["home_currency_code"] == "USD"
+
+
+def test_net_worth_empty_profile_publishes_no_row(model_db: Database) -> None:
+    """A count of zero never synthesizes: an empty profile is not an incomplete one."""
+    _install_net_worth_sources(model_db)
+    _install_report(model_db, "net_worth")
+    assert _day_rows(model_db) == []
+
+
+def test_net_worth_wholly_unanchored_archived_candidate_publishes_no_row(
+    model_db: Database,
+) -> None:
+    _install_net_worth_sources(model_db)
+    _account(model_db, "a", "A", "USD", archived=True, archived_at="2025-01-01")
+    _unanchored(model_db, "a")
+    _install_report(model_db, "net_worth")
+    assert _day_rows(model_db) == []

@@ -21,7 +21,7 @@ from moneybin.tables import REPORTS_NET_WORTH
 
 _REPORT_ID = "core:net_worth"
 
-#: The nine columns `reports.net_worth` itself projects, in its declared order.
+#: The ten columns `reports.net_worth` itself projects, in its declared order.
 _VIEW_COLUMNS = (
     "home_currency_code",
     "balance_date",
@@ -29,6 +29,7 @@ _VIEW_COLUMNS = (
     "carried_forward_count",
     "currency_count",
     "unpriced_currency_count",
+    "unanchored_account_count",
     "total_assets",
     "total_liabilities",
     "net_worth",
@@ -113,6 +114,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         "carried_forward_count": DataClass.AGGREGATE,
         "currency_count": DataClass.AGGREGATE,
         "unpriced_currency_count": DataClass.AGGREGATE,
+        "unanchored_account_count": DataClass.AGGREGATE,
         "total_assets": DataClass.BALANCE,
         "total_liabilities": DataClass.BALANCE,
         "net_worth": DataClass.BALANCE,
@@ -154,9 +156,16 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             DataClass.AGGREGATE,
         ),
         OutputColumn(
+            "unanchored_account_count",
+            "Accounts in net worth that hold value (holdings or transaction "
+            "activity) but have no balance observation; 0 means none. The "
+            "totals are null while it is above 0.",
+            DataClass.AGGREGATE,
+        ),
+        OutputColumn(
             "total_assets",
             "Sum of positive balances in home_currency_code; null when "
-            "unpriced_currency_count > 0.",
+            "unpriced_currency_count or unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -164,7 +173,7 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn(
             "total_liabilities",
             "Sum of negative balances in home_currency_code, kept negative; "
-            "null when unpriced_currency_count > 0.",
+            "null when unpriced_currency_count or unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -172,7 +181,8 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         OutputColumn(
             "net_worth",
             "Headline: total_assets + total_liabilities in "
-            "home_currency_code; null when unpriced_currency_count > 0.",
+            "home_currency_code; null when unpriced_currency_count or "
+            "unanchored_account_count > 0.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -234,12 +244,15 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
             "accounts excluded from net worth",
             "archived accounts after their archive date",
             "dates where any held currency is unpriced (measures are null)",
+            "dates where an eligible account holding value has no balance "
+            "observation (measures are null)",
         ),
         provenance=(
             "reports.net_worth",
             "core.fct_balances_daily",
             "core.dim_accounts",
             "core.fct_exchange_rates_effective",
+            "core.dim_unanchored_accounts",
         ),
     ),
     on_converted=_recompute_net_worth_and_change,

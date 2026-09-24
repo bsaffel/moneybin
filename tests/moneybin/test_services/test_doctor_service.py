@@ -3146,12 +3146,13 @@ def test_currency_integrity_sets_fx_spine_and_unpriced_gauges(
         CREATE OR REPLACE VIEW reports.net_worth AS
         SELECT * FROM (
             VALUES
-                ('USD', DATE '2026-01-01', 1, 0, 1, 0,
+                ('USD', DATE '2026-01-01', 1, 0, 1, 0, 0,
                  100.00::DECIMAL(18, 2), 0.00::DECIMAL(18, 2), 100.00::DECIMAL(18, 2)),
-                ('USD', DATE '2026-01-02', 1, 0, 2, 1,
+                ('USD', DATE '2026-01-02', 1, 0, 2, 1, 0,
                  NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2), NULL::DECIMAL(18, 2))
         ) AS t(home_currency_code, balance_date, account_count,
                carried_forward_count, currency_count, unpriced_currency_count,
+               unanchored_account_count,
                total_assets, total_liabilities, net_worth)
     """)  # test input, not user data
 

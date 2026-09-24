@@ -116,9 +116,10 @@ _STUB_VIEWS = (
     """,
     """
     CREATE OR REPLACE VIEW reports.net_worth AS SELECT * FROM (VALUES
-        ('USD', current_date, 3, 0, 1, 0, 15000.00, -2500.00, 12500.00)
+        ('USD', current_date, 3, 0, 1, 0, 0, 15000.00, -2500.00, 12500.00)
     ) AS t(home_currency_code, balance_date, account_count,
            carried_forward_count, currency_count, unpriced_currency_count,
+           unanchored_account_count,
            total_assets, total_liabilities, net_worth)
     """,
     """
