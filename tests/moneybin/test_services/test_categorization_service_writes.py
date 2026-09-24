@@ -1581,6 +1581,60 @@ class TestDeleteCategory:
         )
 
     @pytest.mark.unit
+    def test_force_delete_removes_the_mapping_row_rather_than_nulling_it(
+        self, db: Database
+    ) -> None:
+        """A deleted category's mapping row is removed entirely, never nulled.
+
+        category_id can now hold NULL (an ignored mapping), so the cascade
+        must not silently turn a deleted category's mapping into "ignored"
+        by clearing category_id instead of deleting the row -- that would be
+        indistinguishable from a user's deliberate ignore decision.
+        """
+        svc = CategorizationService(db)
+        cat_id = svc.create_category("DeletedMappingCat")
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, ?)",
+            ["plaid", "TRAVEL_PARKING", "detailed", cat_id],
+        )
+
+        svc.delete_category(cat_id, force=True)
+
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,), (
+            "the mapping row must be deleted, not left behind with category_id NULL"
+        )
+
+    @pytest.mark.unit
+    def test_ignored_mapping_survives_deletion_of_an_unrelated_category(
+        self, db: Database
+    ) -> None:
+        """A mapping already ignored (category_id NULL) references no category.
+
+        It cannot match any `WHERE category_id = ?` cascade predicate, so
+        deleting an unrelated category must leave it untouched.
+        """
+        svc = CategorizationService(db)
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, code_level, category_id) "
+            "VALUES (?, ?, ?, NULL)",
+            ["chase_credit", "Junk Label", "detailed"],
+        )
+        other_cat_id = svc.create_category("UnrelatedCat")
+
+        svc.delete_category(other_cat_id, force=True)
+
+        row = db.execute(
+            "SELECT category_id FROM app.category_source_map "
+            "WHERE source_category_code = 'Junk Label'"
+        ).fetchone()
+        assert row == (None,)
+
+    @pytest.mark.unit
     def test_subcategory_match_is_exact(self, db: Database) -> None:
         """Deleting (Childcare/Daycare) must not touch (Childcare/Preschool) refs."""
         svc = CategorizationService(db)

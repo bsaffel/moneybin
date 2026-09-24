@@ -1,7 +1,7 @@
 # Category Source Mapping — provider-code → canonical-category bridge
 
 > Last updated: 2026-09-23
-> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface.
+> Status: Implemented — M1V (Ingestion Core). Feature spec. See "Extension: imported (tabular/manual) category text (MB-180)" below for a post-launch addition, including the PR2 CLI curation surface and the ignore (map-to-null) extension ("Ignore: a translation to nothing").
 > Companions: [`categorization-overview.md`](categorization-overview.md) (umbrella; priority hierarchy — provider pass-through is priority 6), [`categorization-matching-mechanics.md`](categorization-matching-mechanics.md) (write-time precedence contract this feeds), [`architecture-shared-primitives.md`](architecture-shared-primitives.md) (layer rules, `source_type` vocabulary), `.claude/rules/identifiers.md` (source-provided IDs, FK Guard 3), `.claude/rules/database.md` (seed vs app layering, migration realism, column comments). Prerequisite for the Plaid provider-native categorizer, which shipped as [`categorization-source-model.md`](categorization-source-model.md) (M1U) — no longer parked.
 
 ## Purpose
@@ -214,13 +214,64 @@ writes at `provider_native` rank, so every rule and merchant mapping outranks
 it. That is why it sits with merchant items in `taxonomy_set` and not in
 `transactions_categorize_rules_set`. It ships in a follow-up slice.
 
+### Ignore: a translation to nothing
+
+`category_id` on `app.category_source_map` is nullable. A user row with
+`category_id IS NULL` means "this label carries no useful category signal —
+categorize nothing through it, and stop asking." `CategorySourceMapRepo.upsert`
+accepts `category_id=None` for this; `MatchApplier.resolve_source_term` and
+`moneybin categories mappings set --ignore` are the write surfaces (exactly one
+of `--into`, `--new`, `--ignore`). Consequences fall out of existing mechanics
+rather than new special-casing:
+
+- **Leaves the pending inbox.** `list_unmapped_source_terms`'s `NOT EXISTS`
+  keys on the three-column term, not on `category_id` — an ignored term has a
+  bridge row, so it no longer enumerates as unmapped.
+- **Categorizes nothing.** Both categorizer legs (`apply_plaid_categories` via
+  `_plaid_bridge_candidates`, `apply_source_category_map` via
+  `_source_category_bridge_candidates`) join the bridge's `category_id` onto
+  `core.dim_categories`; a NULL never joins, so an ignored row's transactions
+  fall through to rules/merchants/AI/manual exactly like an unmapped term.
+- **Suppresses a seed mapping.** A user row overrides a seed row at the same
+  `(source_type, source_category_code, source_subcategory_code)` key
+  regardless of what either side's `category_id` holds — an ignored user row
+  therefore switches off one of Plaid's shipped translations. This closes the
+  "Map-to-null suppression of a seed mapping" item previously deferred below.
+- **No fallback past an ignored detailed code.** The two-tier reverse lookup
+  prefers `code_level='detailed'`, falling back to `primary` only when no
+  detailed row exists at all. An *ignored* detailed row is a decision, not an
+  absence: `_plaid_bridge_candidates` ranks detailed-over-primary with a
+  `LEFT JOIN` onto `dim_categories` (so an ignored row still wins the
+  detailed-vs-primary ranking on its own merits) and only checks
+  `category_id IS NOT NULL` on the already-selected winner — never before
+  ranking. Filtering the ignored row out before ranking (an inner join, or a
+  `WHERE` clause — both evaluate ahead of `QUALIFY`) would let the primary row
+  win by elimination, which is the silent fallback this design forbids.
+  Imported-label matching (`source_category_bridge_match_predicate`) is exact
+  with no tiering, so ignore is unambiguous there — nothing to invert.
+- **Re-mappable.** `resolve_source_term --into <id>` upserts over an ignored
+  row exactly like any other update.
+- **Category deletion never produces an ignored row as a side effect.**
+  `MatchApplier._apply_category_delete_plan`'s force path calls
+  `CategorySourceMapRepo.delete_by_category`, which deletes the referencing
+  mapping rows outright; it never nulls `category_id` to leave them behind.
+  An ignored row (already `category_id IS NULL`) can never match that
+  cascade's `WHERE category_id = ?` predicate, so it is untouched by any
+  category's deletion.
+- **Audited distinctly.** `CategorySourceMapRepo.upsert` emits
+  `category_source_map.ignore` (vs. `.upsert`) so an ignore is distinguishable
+  from a real mapping in `app.audit_log` and in the
+  `moneybin_app_mutation_audit_emitted_total` metric's `action` label.
+
 ## Reverse-lookup contract
 
 The `core.bridge_category_source_map` view **is** the contract the
 provider-native categorizer consumes. Given a transaction's `(source_type,
 detailed, primary)`, it returns exactly one `category_id` (detailed
-preferred, else primary) or nothing. No Python resolver ships in this PR —
-M1U's `apply_plaid_categories`
+preferred, else primary) or nothing — nothing also covers the case where the
+detailed code resolves to an ignored row (see "Ignore" above); the lookup
+does not fall back to primary in that case. No Python resolver ships in this
+PR — M1U's `apply_plaid_categories`
 (`src/moneybin/services/categorization/orchestrator.py`) is that resolver;
 see [`categorization-source-model.md`](categorization-source-model.md).
 
@@ -288,10 +339,17 @@ rows, idempotent, wrapped in the runner's `BEGIN`/`COMMIT`) per
 ## Observability
 
 Per the app-code-touches-metrics rule, the `app.category_source_map` write
-path (rows added / updated / removed) gets counters in
-`src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
-lands with the override writer itself (see "Deferred to Tier-2b" below; no
-writer exists yet, so there is nothing to instrument). The coverage query
+path is instrumented — resolved differently than originally planned. PR2's
+`CategorySourceMapRepo.upsert` (the override writer "Deferred to Tier-2b"
+below anticipated) routes through `BaseRepo._emit_audit`, which every
+repository already uses, so it increments the existing
+`moneybin_app_mutation_audit_emitted_total` counter
+(`src/moneybin/metrics/registry.py`) labeled `repository="category_source_map"`
+— no dedicated counter was needed. The ignore extension makes an ignored
+write distinguishable on the same metric: `upsert` emits action
+`category_source_map.ignore` when `category_id=None`, `category_source_map.upsert`
+otherwise, so a mapping and an ignore are separable in `app.audit_log` and in
+that counter's `action` label without a schema change. The coverage query
 (source codes with no bridge row) shipped as observability with its first
 consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
 (M1W), not the categorizer.
@@ -330,8 +388,9 @@ spec + `INDEX.md` + `docs/roadmap.md` + CHANGELOG updates.
   (M1W) — the coverage-gap backfill, mortgage-duplicate resolution, and
   `class` reconciliation are done; the IRS Schedule C crosswalk remains
   deferred to the `us_tax` package (M2M).
-- Map-to-null suppression of a seed mapping; `parent_id` N-level nesting;
-  promoting `source_taxonomy_version` into the primary key.
+- `parent_id` N-level nesting; promoting `source_taxonomy_version` into the
+  primary key. (Map-to-null suppression of a seed mapping — previously listed
+  here — shipped; see "Ignore: a translation to nothing" above.)
 - See "Deferred to Tier-2b" immediately below for the three items pushed to
   the next increment by explicit decision.
 
@@ -350,9 +409,10 @@ consumer that needs it, rather than speculatively here:
    typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
    is still not added — M1U's categorizer shipped without needing it on the
    typed path, so this remains open for whichever future consumer needs it.
-3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
-   — an override writer still hasn't shipped; instrumenting an unwritten path
-   would be speculative.
+3. **Write-path metrics** for `app.category_source_map`. Resolved — see
+   "Observability" above: PR2's override writer routes through the generic
+   `app_mutation_audit_emitted_total` counter every repository already
+   increments, so no dedicated metric was needed.
 
 ## Coordination
 

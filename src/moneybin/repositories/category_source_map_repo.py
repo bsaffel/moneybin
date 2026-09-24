@@ -67,14 +67,14 @@ class CategorySourceMapRepo(BaseRepo):
         source_type: str,
         category: str,
         subcategory: str | None,
-        category_id: str,
+        category_id: str | None,
         code_level: str = "detailed",
         source_taxonomy_version: str | None = None,
         actor: str,
         parent_audit_id: str | None = None,
         in_outer_txn: bool = False,
     ) -> AuditEvent:
-        """Upsert one provider/exporter category-code mapping.
+        """Upsert one provider/exporter category-code mapping, or ignore it.
 
         ``category`` becomes ``source_category_code`` verbatim;
         ``subcategory`` becomes ``source_subcategory_code``, normalized to
@@ -91,9 +91,28 @@ class CategorySourceMapRepo(BaseRepo):
         mapping (``'chase_credit'``, ``'mint'``) per the owner's ruling —
         two exporters must be free to map the same category string to two
         different MoneyBin categories.
+
+        ``category_id=None`` writes an **ignored** row: the label carries no
+        useful category signal, the categorizer skips it (it categorizes
+        nothing — no reverse-lookup ever inner-joins a NULL ``category_id``
+        into a live category), and it no longer appears in the pending
+        inbox (``list_unmapped_source_terms``'s ``NOT EXISTS`` keys on the
+        three-column term, not on ``category_id``). A ``plaid`` key resolves
+        against a seed row exactly like any other user row — an ignored user
+        row suppresses that seed mapping (the anti-join in
+        ``core.bridge_category_source_map`` keys on the term alone), which is
+        how a user switches off one of Plaid's shipped translations. The
+        write is audited with a distinct action (``.ignore`` vs ``.upsert``)
+        so the two are distinguishable in ``app.audit_log`` and the
+        ``app_mutation_audit_emitted_total`` metric.
         """
         source_category_code = category
         source_subcategory_code = subcategory or ""
+        action = (
+            "category_source_map.ignore"
+            if category_id is None
+            else "category_source_map.upsert"
+        )
         with self._transaction(in_outer_txn=in_outer_txn):
             before = self._fetch_row(
                 source_type, source_category_code, source_subcategory_code
@@ -125,7 +144,7 @@ class CategorySourceMapRepo(BaseRepo):
                 source_type, source_category_code, source_subcategory_code
             )
             return self._emit_audit(
-                action="category_source_map.upsert",
+                action=action,
                 target=(
                     *self._audit_target,
                     self._target_id(

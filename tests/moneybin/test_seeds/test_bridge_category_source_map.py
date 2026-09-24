@@ -17,11 +17,11 @@ def _insert_seed_row(
     code_level: str,
     category_id: str,
 ) -> None:
-    # source_subcategory_code is explicit '' (not omitted): the app-table
-    # override below relies on app.category_source_map's schema DEFAULT ''
-    # to match this seed row's key exactly, and NULL != '' would let the
-    # anti-join's extended (source_type, source_category_code,
-    # source_subcategory_code) correlation fail to suppress this seed row.
+    # source_subcategory_code is explicit '' for readability, not because it
+    # is load-bearing: the view's anti-join applies
+    # COALESCE(s.source_subcategory_code, '') to the seed side before
+    # comparing, so a NULL here would normalize to '' the same way and still
+    # match an app-table override keyed on ''.
     db.execute(
         "INSERT INTO seeds.category_source_map "
         "(source_type, source_category_code, source_subcategory_code, "

@@ -1,0 +1,1 @@
+`moneybin categories mappings set --ignore` marks an imported category-vocabulary term (or a Plaid provider code) as carrying no useful category — it categorizes nothing, leaves the pending inbox for good, and can override a shipped Plaid translation. Existing databases migrate automatically on next open; no action needed.

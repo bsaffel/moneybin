@@ -571,12 +571,14 @@ class CategorizationService:
         subcategory: str | None,
         category_id: str | None = None,
         new_category: str | None = None,
+        ignore: bool = False,
         actor: str = "system",
-    ) -> str:
-        """Map one imported vocabulary term to a MoneyBin category.
+    ) -> str | None:
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
 
         See :meth:`MatchApplier.resolve_source_term` for the write contract
-        (exactly one of ``category_id`` / ``new_category``, atomic commit).
+        (exactly one of ``category_id`` / ``new_category`` / ``ignore``,
+        atomic commit). Returns ``None`` when ``ignore=True``.
         """
         return self._applier.resolve_source_term(
             source_origin=source_origin,
@@ -584,6 +586,7 @@ class CategorizationService:
             subcategory=subcategory,
             category_id=category_id,
             new_category=new_category,
+            ignore=ignore,
             actor=actor,
         )
 

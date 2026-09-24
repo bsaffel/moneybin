@@ -136,6 +136,8 @@ Pass exactly one of:
 ```text
 --into <category_id>   map to this existing category
 --new <name>           create a new category, then map to it
+--ignore               mark the term as meaningless -- categorizes
+                        nothing, never asked about again
 ```
 
 Examples:
@@ -143,6 +145,7 @@ Examples:
 ```console
 moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
 moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
+moneybin categories mappings set --namespace mint --category "Uncategorized" --ignore
 ```
 
 Usage: `moneybin categories mappings set [OPTIONS]`
@@ -156,4 +159,5 @@ Usage: `moneybin categories mappings set [OPTIONS]`
 | `--subcategory` | text |  | Term's imported subcategory text, if any |
 | `--into` | text |  | Map the term to this existing category_id |
 | `--new` | text |  | Create a new category with this name, then map the term to it |
+| `--ignore` | flag |  | Mark the term as carrying no useful category — categorizes nothing and leaves the pending inbox for good |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

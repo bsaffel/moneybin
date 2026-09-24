@@ -1351,16 +1351,22 @@ class MatchApplier:
         subcategory: str | None,
         category_id: str | None = None,
         new_category: str | None = None,
+        ignore: bool = False,
         actor: str,
-    ) -> str:
-        """Map one imported vocabulary term to a MoneyBin category.
+    ) -> str | None:
+        """Map one imported vocabulary term to a MoneyBin category, or ignore it.
 
         ``(source_origin, category, subcategory)`` identifies the term being
         resolved — an imported category/subcategory string pair, never
         displayed as a category, only ever used to match or mint one (the
         owner's ruling on this curation surface). Exactly one of
-        ``category_id`` (bind to an existing category) or ``new_category``
-        (create a category named ``new_category``, then bind) must be given.
+        ``category_id`` (bind to an existing category), ``new_category``
+        (create a category named ``new_category``, then bind), or
+        ``ignore=True`` (mark the term as carrying no useful category
+        signal — a NULL ``category_id`` row: it categorizes nothing and
+        leaves the pending inbox for good, per
+        docs/specs/category-source-map.md's map-to-null suppression) must be
+        given.
 
         The create path routes through :meth:`create_category` — never a
         direct ``app.user_categories`` write — and the mapping write through
@@ -1371,19 +1377,25 @@ class MatchApplier:
         atomically: if the mapping upsert fails, a category just created for
         it must not survive as an orphan nobody chose.
 
+        Returns the resolved ``category_id``, or ``None`` when ``ignore=True``.
+
         Raises:
-            UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
-                both of ``category_id`` / ``new_category`` were given.
+            UserError(code=error_codes.MUTATION_INVALID_INPUT): none, or more
+                than one, of ``category_id`` / ``new_category`` / ``ignore``
+                were given.
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
                 ``category_id`` does not name an existing category.
         """
-        if (category_id is None) == (new_category is None):
+        given = sum([category_id is not None, new_category is not None, ignore])
+        if given != 1:
             raise UserError(
-                "Specify exactly one of category_id or new_category",
+                "Specify exactly one of category_id, new_category, or ignore",
                 code=error_codes.MUTATION_INVALID_INPUT,
             )
         with self._transaction():
-            if new_category is not None:
+            if ignore:
+                resolved_category_id = None
+            elif new_category is not None:
                 resolved_category_id = self.create_category(
                     new_category, actor=actor, in_outer_txn=True
                 )

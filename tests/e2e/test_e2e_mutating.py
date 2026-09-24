@@ -1600,6 +1600,31 @@ class TestCategoriesMappingsMutating:
         assert payload["data"]["action"] == "mapped"
         assert payload["data"]["category_id"]
 
+    def test_categories_mappings_set_ignore_marks_the_term_ignored(
+        self, _mutating_profile_template: Path, tmp_path: Path
+    ) -> None:
+        """`categories mappings set --ignore` writes a NULL-category_id row."""
+        env = make_workflow_env_fast(
+            tmp_path, "cmap-set-ignore", _mutating_profile_template
+        )
+        result = run_cli(
+            "categories",
+            "mappings",
+            "set",
+            "--namespace",
+            "chase_credit",
+            "--category",
+            "Junk Label",
+            "--ignore",
+            "--output",
+            "json",
+            env=env,
+        )
+        result.assert_success()
+        payload = json.loads(result.stdout)
+        assert payload["data"]["action"] == "ignored"
+        assert payload["data"]["category_id"] is None
+
 
 class TestSecurityLinksMutating:
     """E2E smoke tests for `investments securities links set`.

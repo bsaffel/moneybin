@@ -320,7 +320,9 @@ Category taxonomy: list, create (with `--parent`), set, delete. Default
 passed. `mappings pending` lists distinct imported category-source vocabulary
 terms with no curated mapping (grouped by term, not by transaction) with
 `did_you_mean` suggestions; `mappings set` maps one term via
-`--into <category_id>` or `--new <name>`. Commands:
+`--into <category_id>` or `--new <name>`, or marks it as carrying no useful
+category via `--ignore` (categorizes nothing, never asked about again).
+Commands:
 [`reference/cli/categories.md`](../reference/cli/categories.md).
 
 ### `merchants`

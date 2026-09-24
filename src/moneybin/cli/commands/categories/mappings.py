@@ -112,6 +112,14 @@ def mappings_set(
         "--new",
         help="Create a new category with this name, then map the term to it",
     ),
+    ignore: bool = typer.Option(
+        False,
+        "--ignore",
+        help=(
+            "Mark the term as carrying no useful category — categorizes "
+            "nothing and leaves the pending inbox for good"
+        ),
+    ),
     output: OutputFormat = output_option,
 ) -> None:
     """Map one imported category-vocabulary term to a MoneyBin category.
@@ -121,16 +129,22 @@ def mappings_set(
     Pass exactly one of:
       --into <category_id>   map to this existing category
       --new <name>           create a new category, then map to it
+      --ignore               mark the term as meaningless -- categorizes
+                              nothing, never asked about again
 
     Examples:
       moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
       moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
+      moneybin categories mappings set --namespace mint --category "Uncategorized" --ignore
     """
-    if into is not None and new is not None:
-        logger.error("❌ --into and --new are mutually exclusive")
+    flags_given = sum([into is not None, new is not None, ignore])
+    if flags_given > 1:
+        logger.error("❌ --into, --new, and --ignore are mutually exclusive")
         raise typer.Exit(2)
-    if not into and not new:
-        logger.error("❌ Specify either --into <category_id> or --new <name>")
+    if flags_given == 0:
+        logger.error(
+            "❌ Specify one of --into <category_id>, --new <name>, or --ignore"
+        )
         raise typer.Exit(2)
 
     from moneybin.services.categorization import CategorizationService
@@ -143,6 +157,7 @@ def mappings_set(
                 subcategory=subcategory,
                 category_id=into,
                 new_category=new,
+                ignore=ignore,
                 actor="cli",
             )
 
@@ -151,7 +166,7 @@ def mappings_set(
         category=category,
         subcategory=subcategory,
         category_id=category_id,
-        action="mapped",
+        action="ignored" if ignore else "mapped",
     )
     if output == OutputFormat.JSON:
         from moneybin.cli.output import render_or_json
@@ -162,4 +177,7 @@ def mappings_set(
             cli_actor="categories_mappings_set",
         )
         return
-    logger.info(f"✅ {namespace}/{category} → {category_id}")
+    if ignore:
+        logger.info(f"✅ {namespace}/{category} ignored")
+    else:
+        logger.info(f"✅ {namespace}/{category} → {category_id}")

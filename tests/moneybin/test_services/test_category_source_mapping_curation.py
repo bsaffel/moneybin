@@ -306,6 +306,35 @@ class TestListUnmappedSourceTerms:
         terms = CategorizationService(db).list_unmapped_source_terms()
         assert terms == []
 
+    @pytest.mark.unit
+    def test_ignored_term_does_not_appear(self, db: Database) -> None:
+        """A term resolved with ignore=True leaves the pending inbox for good.
+
+        ``list_unmapped_source_terms``'s NOT EXISTS predicate keys only on
+        the three-column term (source_origin, category, subcategory), not on
+        category_id — an ignored row still counts as "has a bridge row."
+        """
+        refresh_views(db)
+        _insert_matched_txn(
+            db,
+            "t_ignored",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Junk Label",
+            subcategory=None,
+        )
+        CategorizationService(db).resolve_source_term(
+            source_origin="chase_credit",
+            category="Junk Label",
+            subcategory=None,
+            ignore=True,
+            actor="test",
+        )
+
+        terms = CategorizationService(db).list_unmapped_source_terms()
+
+        assert terms == []
+
 
 # ---------------------------------------------------------------------------
 # resolve_source_term
@@ -413,6 +442,108 @@ class TestResolveSourceTerm:
                 actor="test",
             )
         assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_ignore_writes_a_null_category_id_row(self, db: Database) -> None:
+        refresh_views(db)
+
+        result_id = CategorizationService(db).resolve_source_term(
+            source_origin="chase_credit",
+            category="Junk Label",
+            subcategory=None,
+            ignore=True,
+            actor="test",
+        )
+
+        assert result_id is None
+        row = db.execute(
+            "SELECT category_id FROM app.category_source_map "
+            "WHERE source_type = 'chase_credit' "
+            "AND source_category_code = 'Junk Label'"
+        ).fetchone()
+        assert row == (None,)
+
+    @pytest.mark.unit
+    def test_ignore_and_category_id_both_given_raises(self, db: Database) -> None:
+        refresh_views(db)
+        category_id = CategorizationService(db).create_category(
+            "Test Ignore Plus Into", actor="test"
+        )
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin="chase_credit",
+                category="Whatever",
+                subcategory=None,
+                category_id=category_id,
+                ignore=True,
+                actor="test",
+            )
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_ignore_and_new_category_both_given_raises(self, db: Database) -> None:
+        refresh_views(db)
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin="chase_credit",
+                category="Whatever",
+                subcategory=None,
+                new_category="Also New",
+                ignore=True,
+                actor="test",
+            )
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_all_three_given_raises(self, db: Database) -> None:
+        refresh_views(db)
+        category_id = CategorizationService(db).create_category(
+            "Test All Three", actor="test"
+        )
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin="chase_credit",
+                category="Whatever",
+                subcategory=None,
+                category_id=category_id,
+                new_category="Also New",
+                ignore=True,
+                actor="test",
+            )
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+
+    @pytest.mark.unit
+    def test_remapping_an_ignored_term_with_into_upserts_over_the_null_row(
+        self, db: Database
+    ) -> None:
+        """Re-running set --into on a previously-ignored term maps it for real."""
+        refresh_views(db)
+        CategorizationService(db).resolve_source_term(
+            source_origin="chase_credit",
+            category="Reconsidered",
+            subcategory=None,
+            ignore=True,
+            actor="test",
+        )
+        category_id = CategorizationService(db).create_category(
+            "Test Reconsidered Category", actor="test"
+        )
+
+        result_id = CategorizationService(db).resolve_source_term(
+            source_origin="chase_credit",
+            category="Reconsidered",
+            subcategory=None,
+            category_id=category_id,
+            actor="test",
+        )
+
+        assert result_id == category_id
+        row = db.execute(
+            "SELECT category_id FROM app.category_source_map "
+            "WHERE source_type = 'chase_credit' "
+            "AND source_category_code = 'Reconsidered'"
+        ).fetchone()
+        assert row == (category_id,)
 
     @pytest.mark.unit
     def test_unknown_category_id_raises_not_found(self, db: Database) -> None:

@@ -12,7 +12,7 @@ SELECT
   s.source_category_code, /* Provider category code, verbatim */
   COALESCE(s.source_subcategory_code, '') AS source_subcategory_code, /* Second half of the source key; '' means "no subcategory" (never a distinct real value) */
   s.code_level, /* 'detailed' or 'primary'; detailed wins in reverse lookup */
-  s.category_id, /* FK to core.dim_categories.category_id */
+  s.category_id, /* FK to core.dim_categories.category_id; NULL only on a user row -- means the user marked this source label as ignored and it categorizes nothing */
   s.source_taxonomy_version, /* Provider taxonomy revision curated against */
   TRUE AS is_default /* TRUE for seeded rows, FALSE for user overrides */
 FROM seeds.category_source_map AS s

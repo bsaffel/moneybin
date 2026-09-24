@@ -80,10 +80,15 @@ class CategoryMappingsPendingPayload:
 
 @dataclass(frozen=True, slots=True)
 class CategoryMappingSetPayload:
-    """Payload for ``categories_mappings_set`` — mapping confirmation."""
+    """Payload for ``categories_mappings_set`` — mapping or ignore confirmation.
+
+    ``category_id`` is ``None`` exactly when ``action == "ignored"`` — the
+    term was marked as carrying no useful category signal rather than bound
+    to one (docs/specs/category-source-map.md's map-to-null suppression).
+    """
 
     source_origin: Annotated[str, DataClass.TXN_TYPE]
     category: Annotated[str, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
-    category_id: Annotated[str, DataClass.CATEGORY]
+    category_id: Annotated[str | None, DataClass.CATEGORY]
     action: Annotated[str, DataClass.TXN_TYPE]

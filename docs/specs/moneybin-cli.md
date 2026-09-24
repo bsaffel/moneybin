@@ -436,10 +436,11 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |       |         term with the count of rows it affects and up to 3 suggestions drawn from
 |       |         active categories; most-affected first.
 |       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
-|                 --into <category_id> | --new <name>
-|                 Map one term to an existing category (--into), or create a category and
-|                 map the term to it in one transaction (--new). The two flags are mutually
-|                 exclusive; omitting both exits 2.
+|                 --into <category_id> | --new <name> | --ignore
+|                 Map one term to an existing category (--into), create a category and map
+|                 the term to it in one transaction (--new), or mark the term as carrying no
+|                 useful category (--ignore) -- categorizes nothing, never asked about again.
+|                 The three flags are mutually exclusive; passing none or more than one exits 2.
 |
 +-- merchants                      -- Merchant mappings (reference data) and link-review
 |   +-- list

@@ -124,6 +124,57 @@ def test_upsert_treats_distinct_subcategories_as_distinct_keys(db: Database) -> 
     assert rows == [("Gas", "cat-gas"), ("Repair", "cat-repair")]
 
 
+def test_upsert_with_none_category_id_writes_an_ignored_row(db: Database) -> None:
+    """category_id=None writes a NULL row, audited with the .ignore action."""
+    repo = CategorySourceMapRepo(db)
+
+    event = repo.upsert(
+        source_type="mint",
+        category="Misc",
+        subcategory=None,
+        category_id=None,
+        actor="test",
+    )
+
+    assert event.action == "category_source_map.ignore"
+    row = db.execute(
+        "SELECT category_id FROM app.category_source_map "
+        "WHERE source_type = 'mint' AND source_category_code = 'Misc'"
+    ).fetchone()
+    assert row == (None,)
+
+
+def test_upsert_ignored_row_can_be_remapped(db: Database) -> None:
+    """A second upsert with a real category_id overwrites a prior NULL row."""
+    repo = CategorySourceMapRepo(db)
+    repo.upsert(
+        source_type="mint",
+        category="Misc",
+        subcategory=None,
+        category_id=None,
+        actor="test",
+    )
+
+    event = repo.upsert(
+        source_type="mint",
+        category="Misc",
+        subcategory=None,
+        category_id="cat-misc",
+        actor="test",
+    )
+
+    assert event.action == "category_source_map.upsert"
+    assert event.before_value is not None
+    assert event.before_value["category_id"] is None
+    assert event.after_value is not None
+    assert event.after_value["category_id"] == "cat-misc"
+    row = db.execute(
+        "SELECT category_id FROM app.category_source_map "
+        "WHERE source_type = 'mint' AND source_category_code = 'Misc'"
+    ).fetchone()
+    assert row == ("cat-misc",)
+
+
 def test_upsert_is_audited_and_undoable(db: Database) -> None:
     repo = CategorySourceMapRepo(db)
 

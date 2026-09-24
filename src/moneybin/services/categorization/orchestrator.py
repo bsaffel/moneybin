@@ -963,7 +963,10 @@ class CategorizationOrchestrator:
         carries both a detailed code (category_detailed) and a primary code
         (plaid_category); either may resolve in the bridge, so the QUALIFY
         picks exactly one row per transaction, detailed preferred, primary
-        fallback. Gated at >= MEDIUM confidence. Writes
+        fallback — unless the detailed code resolves to a user row the owner
+        marked ignored (``category_id IS NULL``), in which case there is no
+        fallback: the transaction gets nothing from this pass (see
+        :meth:`_plaid_bridge_candidates`). Gated at >= MEDIUM confidence. Writes
         categorized_by='provider_native', source_type='plaid' at priority 6 —
         below every deliberate signal, above ai. Runs last of the deterministic
         categorizers so it only touches the long tail.
@@ -1035,6 +1038,18 @@ class CategorizationOrchestrator:
         Degrades to an empty list when prep.int_transactions__merged isn't
         materialized yet, or predates the PFC carry-through — see
         :meth:`apply_plaid_categories` for the full rationale.
+
+        No fallback past an ignored detailed code (owner's ruling on
+        category-source-map.md's map-to-null suppression): the bridge JOIN
+        stays a LEFT JOIN to ``dim_categories`` so an ignored detailed row
+        (``category_id IS NULL``) still competes for ``ROW_NUMBER() = 1`` on
+        its own merits — it still outranks a mapped primary row, because
+        ranking is by ``code_level`` alone. Only *after* that ranking picks a
+        winner does ``dc.category_id IS NOT NULL`` decide whether the
+        transaction gets a result at all. Filtering the ignored row out
+        *before* ranking (an inner join, or a WHERE clause — both run ahead of
+        QUALIFY) would let the primary row win the ranking by elimination,
+        which is exactly the silent fallback the owner ruled out.
         """
         tc_where = (
             "tc.transaction_id IS NULL"
@@ -1049,14 +1064,14 @@ class CategorizationOrchestrator:
                 FROM {INT_TRANSACTIONS_MERGED.full_name} AS m
                 JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     ON {plaid_bridge_match_predicate("m.category_detailed", "m.plaid_category")}
-                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+                LEFT JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
                 LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
                     ON tc.transaction_id = m.transaction_id
                 WHERE {tc_where}
                 QUALIFY ROW_NUMBER() OVER (
                     PARTITION BY m.transaction_id
                     ORDER BY (b.code_level = 'detailed') DESC
-                ) = 1
+                ) = 1 AND dc.category_id IS NOT NULL
                 """  # TableRef constants + code-constant bridge predicate; no user input
             ).fetchall()
         except (duckdb.CatalogException, duckdb.BinderException):

@@ -3281,6 +3281,101 @@ class TestApplyPlaidCategories:
         assert row == ("TRP",)
 
     @pytest.mark.unit
+    def test_ignored_detailed_code_does_not_fall_back_to_primary(
+        self, db: Database
+    ) -> None:
+        """An ignored detailed code yields nothing -- no fallback to primary.
+
+        Regression test for a bug found by reading: the reverse-lookup used
+        to INNER JOIN the bridge onto dim_categories before ranking detailed
+        vs. primary, so an ignored (NULL category_id) detailed row was
+        eliminated from contention before ranking ran, and the primary row
+        won by default -- a silent fallback the owner's ruling forbids.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="TRANSPORTATION",
+            code_level="primary",
+            category_id="TRP",
+            category="Transportation",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            " code_level, category_id) "
+            "VALUES ('plaid', 'TRANSPORTATION_BIKES_AND_SCOOTERS', '', "
+            "'detailed', NULL)"
+        )
+        _insert_plaid_txn(
+            db,
+            "t_ignored_detailed",
+            category_detailed="TRANSPORTATION_BIKES_AND_SCOOTERS",
+            plaid_category="TRANSPORTATION",
+            category_confidence="HIGH",
+        )
+        _seed_gold_transaction(db, "t_ignored_detailed")
+
+        n = apply_plaid_categories(db)
+
+        assert n == 0, (
+            "an ignored detailed code must not fall back to the primary mapping"
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories "
+                "WHERE transaction_id='t_ignored_detailed'"
+            ).fetchone()
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_user_ignore_row_suppresses_plaid_seed_row(self, db: Database) -> None:
+        """A user NULL row for a plaid key overrides the shipped seed mapping.
+
+        Closes category-source-map.md's deferred "Map-to-null suppression of
+        a seed mapping": the anti-join in core.bridge_category_source_map
+        keys on the (source_type, source_category_code,
+        source_subcategory_code) term alone, so a user override -- even one
+        with category_id NULL -- wins over the seed row at the same key.
+        """
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="FOOD_AND_DRINK_COFFEE",
+            code_level="detailed",
+            category_id="FND-COF",
+            category="Food & Drink",
+            subcategory="Coffee Shops",
+        )
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            " code_level, category_id) "
+            "VALUES ('plaid', 'FOOD_AND_DRINK_COFFEE', '', 'detailed', NULL)"
+        )
+        _insert_plaid_txn(
+            db,
+            "t_suppressed",
+            category_detailed="FOOD_AND_DRINK_COFFEE",
+            plaid_category="FOOD_AND_DRINK",
+            category_confidence="HIGH",
+        )
+        _seed_gold_transaction(db, "t_suppressed")
+
+        n = apply_plaid_categories(db)
+
+        assert n == 0, "the user's ignore row must suppress the seed mapping"
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories "
+                "WHERE transaction_id='t_suppressed'"
+            ).fetchone()
+            is None
+        )
+
+    @pytest.mark.unit
     def test_skips_low_confidence(self, db: Database) -> None:
         """A LOW confidence Plaid txn is not categorized, even with a bridge match."""
         refresh_views(db)
@@ -3562,6 +3657,42 @@ class TestApplySourceCategoryMap:
         assert (
             db.execute(
                 "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t6'"
+            ).fetchone()
+            is None
+        )
+
+    @pytest.mark.unit
+    def test_ignored_row_is_a_no_op(self, db: Database) -> None:
+        """A user row marked ignored (category_id NULL) categorizes nothing.
+
+        The bridge candidates query inner-joins onto core.dim_categories by
+        category_id, so an ignored bridge row never joins to a live category
+        and the transaction falls through to rules/merchants/AI/manual, the
+        same as an unmapped term.
+        """
+        refresh_views(db)
+        db.execute(
+            "INSERT INTO app.category_source_map "
+            "(source_type, source_category_code, source_subcategory_code, "
+            " code_level, category_id) "
+            "VALUES ('chase_credit', 'Junk Label', '', 'detailed', NULL)"
+        )
+        _insert_matched_txn(
+            db,
+            "t_ignored",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Junk Label",
+            subcategory=None,
+        )
+        _seed_gold_transaction(db, "t_ignored")
+
+        n = apply_source_category_map(db)
+
+        assert n == 0
+        assert (
+            db.execute(
+                "SELECT 1 FROM app.transaction_categories WHERE transaction_id='t_ignored'"
             ).fetchone()
             is None
         )

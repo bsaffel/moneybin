@@ -142,6 +142,7 @@ class TestMappingsSet:
             subcategory=None,
             category_id="cat-groceries",
             new_category=None,
+            ignore=False,
             actor="cli",
         )
 
@@ -174,6 +175,7 @@ class TestMappingsSet:
             subcategory="Tools",
             category_id=None,
             new_category="Housing",
+            ignore=False,
             actor="cli",
         )
 
@@ -200,6 +202,114 @@ class TestMappingsSet:
             ],
         )
         assert result.exit_code == 2
+
+    def test_set_rejects_into_and_ignore(self) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--into",
+                "cat-groceries",
+                "--ignore",
+            ],
+        )
+        assert result.exit_code == 2
+
+    def test_set_rejects_new_and_ignore(self) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--new",
+                "New One",
+                "--ignore",
+            ],
+        )
+        assert result.exit_code == 2
+
+    def test_set_rejects_all_three_flags(self) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--into",
+                "cat-groceries",
+                "--new",
+                "New One",
+                "--ignore",
+            ],
+        )
+        assert result.exit_code == 2
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.resolve_source_term")
+    def test_set_ignore_calls_service_with_ignore_true(
+        self, mock_resolve: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_resolve.return_value = None
+
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Junk Label",
+                "--ignore",
+            ],
+        )
+        assert result.exit_code == 0
+        mock_resolve.assert_called_once_with(
+            source_origin="chase_credit",
+            category="Junk Label",
+            subcategory=None,
+            category_id=None,
+            new_category=None,
+            ignore=True,
+            actor="cli",
+        )
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.resolve_source_term")
+    def test_set_ignore_json_output_shape(
+        self, mock_resolve: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_resolve.return_value = None
+
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Junk Label",
+                "--ignore",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["source_origin"] == "chase_credit"
+        assert parsed["data"]["category"] == "Junk Label"
+        assert parsed["data"]["category_id"] is None
+        assert parsed["data"]["action"] == "ignored"
 
     @patch("moneybin.cli.commands.categories.mappings.get_database")
     @patch("moneybin.services.categorization.CategorizationService.resolve_source_term")
