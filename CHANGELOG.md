@@ -1758,9 +1758,6 @@ The legacy entries below are retained for the next release preparation.
 - Five categorization correctness bugs surfaced by live OFX checking-account testing: `memo` was dropped from the matcher and LLM input; `_match_description` only operated on `description`; system-generated merchants used over-generalizing `contains` patterns; `categorize_pending` was never called after the categorize-commit tool (then `transactions_categorize_apply`) so the snowball couldn't roll; OFX `<NAME>` truncation hid merchant identity in `<MEMO>` that the matcher never saw. See [`docs/specs/categorization-matching-mechanics.md`](docs/specs/categorization-matching-mechanics.md) for the full diagnosis. (PR #122)
 
 ### Changed
-- **`reports.net_worth` gains a column.** `unanchored_account_count` is
-  inserted between `unpriced_currency_count` and `total_assets` — a column
-  position change per `.claude/rules/column-ordering.md`. (M2B.3)
 - **The storefront names the custody difference against Finances in ChatGPT.**
   `docs/comparison.md` gains a "not the best fit" row and `docs/audience.md` a
   "coming later" persona for the reader who wants a bank feed in a file they
@@ -2918,28 +2915,6 @@ M2 closing out and M3 underway. M2A curator state shipped (transaction notes, ta
   removed after one minor release.
 
 ### Added
-- **`reports.net_worth.unanchored_account_count`.** `net_worth` (and
-  `total_assets`/`total_liabilities`) is now NULL while an eligible account
-  with priced holdings or transaction activity has no balance observation at
-  all, the way an unpriced currency already NULLs the total — a silent zero
-  is no longer possible for a genuinely unanchored account. (M2B.3,
-  [`reports-net-worth-sql-surface.md`](docs/specs/reports-net-worth-sql-surface.md))
-- **`reports.net_worth_accounts` synthesizes a row for an unanchored
-  account.** An eligible account with no balance observation now appears with
-  every balance-derived column NULL and `is_observed = FALSE`, instead of
-  being invisible on the per-account rung. (M2B.3)
-- **`core.dim_holdings_broker_reported` and `core.dim_unanchored_accounts`.**
-  Two new `core.*` views: the first reduces each Plaid item's newest holdings
-  snapshot to one broker-reported position per account; the second is the
-  shared candidate relation — one account per row carrying evidence of
-  holding value with no balance row at all — read by both net-worth rungs,
-  the report runners, and `system doctor`. (M2B.3)
-- **Two `system doctor` checks close the unanchored-account release gate.**
-  `net_worth_unanchored_accounts` (`fail`) flags an eligible account holding
-  value with no balance observation, and `net_worth_stale_balance` (`warn`,
-  threshold `doctor.balance_staleness_threshold_days`, default 30) flags an
-  eligible account whose latest observed balance has aged past the
-  threshold without blocking release. (M2B.3)
 - **`system doctor` now reports an account name that collides with the reserved
   `Unnamed account` placeholder.** MoneyBin shows that exact label for an
   account nothing could name, so a second account wearing a fold of it — a
