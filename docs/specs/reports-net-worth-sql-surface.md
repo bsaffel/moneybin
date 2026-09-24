@@ -1091,9 +1091,9 @@ home_currency_code    VARCHAR        -- app.profile_settings.home_currency
 account_type          VARCHAR        -- depository / credit / loan / investment / other
 is_observed           BOOLEAN        -- FALSE means carried forward
 observation_source    VARCHAR        -- ofx / tabular / assertion / plaid; NULL when interpolated
-rate_source           VARCHAR        -- override / provider / identity; NULL when unpriced
+rate_source           VARCHAR        -- override / provider / identity behind the currency_code→home_currency_code rate; NULL when unpriced. A display_currency conversion's rates are in applied_rates instead
 balance_date          DATE           -- Grain
-rate_published_date   DATE           -- The day the rate applied here was actually published
+rate_published_date   DATE           -- Day the currency_code→home_currency_code rate was published; a display_currency conversion's rates are in applied_rates instead
 days_since_observed   INTEGER        -- 0 on an observed day
 reconciliation_delta  DECIMAL(18,2)  -- Observed minus transaction-derived; NULL on interpolated days
 account_balance       DECIMAL(18,2)  -- In currency_code

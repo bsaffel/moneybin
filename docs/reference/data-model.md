@@ -504,9 +504,9 @@ Net worth per currency per day, in that currency and converted to home. Grain: o
 |---|---|---|
 | `currency_code` | VARCHAR | Grain. NULL is the unknown-currency segment. |
 | `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`. |
-| `rate_source` | VARCHAR | `override` / `provider` / `identity`; NULL when this pair is unpriced on this date. |
+| `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted this `currency_code` to `home_currency_code`; NULL when this pair is unpriced on this date. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
-| `rate_published_date` | DATE | The day the applied rate was actually published. |
+| `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `account_count` | INTEGER | Accounts contributing on this date in this currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward, not observed. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances, in `currency_code`. |
@@ -529,9 +529,9 @@ Net worth per included account per day, in its own currency and converted to hom
 | `account_type` | VARCHAR | `depository` / `credit` / `loan` / `investment` / `other`. |
 | `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation. |
 | `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated. |
-| `rate_source` | VARCHAR | `override` / `provider` / `identity`; NULL when unpriced. |
+| `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted the account's `currency_code` to `home_currency_code`; NULL when unpriced. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
-| `rate_published_date` | DATE | The day the applied rate was actually published. |
+| `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `days_since_observed` | INTEGER | 0 on an observed day. |
 | `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days. |
 | `account_balance` | DECIMAL(18,2) | In `currency_code`. |

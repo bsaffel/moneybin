@@ -74,13 +74,18 @@ def _recompute_segment_totals(rows: list[dict[str, Any]], _currency: str) -> Non
         ),
         OutputColumn(
             "rate_source",
-            "override, provider, or identity; null when unpriced.",
+            "override, provider, or identity behind the rate that converted "
+            "this currency_code to home_currency_code; null when unpriced. "
+            "A display_currency conversion's rates appear in the response's "
+            "applied_rates instead.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn("balance_date", "Calendar date.", DataClass.TXN_DATE),
         OutputColumn(
             "rate_published_date",
-            "Day the applied rate was published.",
+            "Day the currency_code to home_currency_code rate was "
+            "published; a display_currency conversion's rates appear in "
+            "the response's applied_rates instead.",
             DataClass.TXN_DATE,
         ),
         OutputColumn(
