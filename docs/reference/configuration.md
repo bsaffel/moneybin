@@ -117,6 +117,7 @@ Transaction matching and dedup configuration.
 | `MONEYBIN_DOCTOR__AUDIT_COVERAGE_SAMPLE_CAP` | int (≥ 1) | `1000` | Maximum rows sampled per table for the audit-coverage check. `moneybin system doctor --full` bypasses the cap and scans every row. |
 | `MONEYBIN_DOCTOR__DUPLICATE_ACCOUNT_OVERLAP_RATIO` | float (> 0.0, ≤ 1.0) | `0.5` | duplicate_account_overlap warns when this fraction of one account's transactions have a same-amount counterpart within the matcher's date window on a sibling account at the same institution. Below it, the shared rows read as coincidence. |
 | `MONEYBIN_DOCTOR__DUPLICATE_ACCOUNT_MIN_DISTINCT_AMOUNTS` | int (≥ 1) | `10` | Minimum distinct amounts among the mirrored rows before duplicate_account_overlap will judge a pair. Two savings accounts posting the same interest every month mirror each other perfectly on one amount; a duplicated account mirrors many. |
+| `MONEYBIN_DOCTOR__BALANCE_STALENESS_THRESHOLD_DAYS` | int (≥ 1) | `30` | net_worth_stale_balance warns when an account's latest observed balance is more than this many days before today. 30 absorbs a monthly statement cycle. |
 
 ## investments
 

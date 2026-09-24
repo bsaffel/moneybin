@@ -899,7 +899,9 @@ def test_run_all_returns_expected_invariants(
     # + investment_match_decisions audit coverage for durable review Proposals.
     # + account_archive_intent_ambiguous (M2B.2: cascade-written exclusions
     # V063 could not tell from a chosen one).
-    assert len(report.invariants) == 64
+    # + net_worth_unanchored_accounts + net_worth_stale_balance (M2B.3: the
+    # unanchored-account net-worth guard).
+    assert len(report.invariants) == 66
     names = [r.name for r in report.invariants]
     assert "app_audit_coverage_investment_match_decisions" in names
     assert "app_audit_coverage_rule_conflicts" in names
@@ -2129,6 +2131,8 @@ def test_run_all_includes_investment_checks(
     assert "investment_unpriced_holdings" in names
     assert "investment_stale_prices" in names
     assert "investment_unmapped_price_source" in names
+    assert "net_worth_unanchored_accounts" in names
+    assert "net_worth_stale_balance" in names
 
 
 @pytest.mark.integration
@@ -2707,6 +2711,133 @@ def test_unmapped_price_source_ignores_a_row_with_no_accepted_binding(
     result = _investment_result(db, monkeypatch, "investment_unmapped_price_source")
 
     assert result.status == "pass"
+
+
+# --- M2B.3 net-worth unanchored-account guard -------------------------------
+
+
+def _net_worth_guard_ddl(db: Database) -> None:
+    """Only the columns the two net-worth checks read."""
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute("CREATE SCHEMA IF NOT EXISTS reports")
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS core.dim_accounts (account_id VARCHAR, "
+        "include_in_net_worth BOOLEAN, archived BOOLEAN)"
+    )
+    db.execute("CREATE TABLE core.dim_unanchored_accounts (account_id VARCHAR)")
+    db.execute(
+        "CREATE TABLE reports.net_worth_accounts (account_id VARCHAR, "
+        "is_observed BOOLEAN, balance_date DATE)"
+    )
+
+
+def _nw_account(
+    db: Database, account_id: str, *, include: bool = True, archived: bool = False
+) -> None:
+    db.execute(
+        "INSERT INTO core.dim_accounts (account_id, include_in_net_worth, archived) "
+        "VALUES (?, ?, ?)",
+        [account_id, include, archived],
+    )
+
+
+def _observed(db: Database, account_id: str, days_ago: int) -> None:
+    db.execute(
+        "INSERT INTO reports.net_worth_accounts VALUES (?, TRUE, CURRENT_DATE - ?::INTEGER)",
+        [account_id, days_ago],
+    )
+
+
+@pytest.mark.unit
+def test_unanchored_accounts_fails_naming_each_eligible_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    for acct in ("brk", "chk"):
+        _nw_account(db, acct)
+        db.execute("INSERT INTO core.dim_unanchored_accounts VALUES (?)", [acct])
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "fail"
+    assert result.affected_ids == ["brk", "chk"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
+def test_unanchored_accounts_passes_for_an_excluded_or_archived_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "brk", **kwargs)
+    db.execute("INSERT INTO core.dim_unanchored_accounts VALUES ('brk')")
+    result = _investment_result(db, monkeypatch, "net_worth_unanchored_accounts")
+    assert result.status == "pass"
+
+
+@pytest.mark.unit
+def test_stale_balance_warns_on_an_entirely_stale_profile(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No row dated today at all: a CURRENT_DATE filter would pass silently here."""
+    _net_worth_guard_ddl(db)
+    for acct in ("a", "b"):
+        _nw_account(db, acct)
+        _observed(db, acct, 45)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert result.affected_ids == ["a", "b"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("kwargs", [{"include": False}, {"archived": True}])
+def test_stale_balance_skips_an_excluded_or_archived_account(
+    db: Database, monkeypatch: pytest.MonkeyPatch, kwargs: dict[str, bool]
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "live")
+    _nw_account(db, "closed", **kwargs)
+    _observed(db, "live", 46)
+    _observed(db, "closed", 46)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.affected_ids == ["live"]
+
+
+@pytest.mark.unit
+def test_stale_balance_threshold_is_exclusive(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "at_threshold")
+    _nw_account(db, "past_threshold")
+    _observed(db, "at_threshold", 30)
+    _observed(db, "past_threshold", 31)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.affected_ids == ["past_threshold"]
+
+
+@pytest.mark.unit
+def test_stale_balance_reads_the_latest_observed_row_not_a_carried_one(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "a")
+    _observed(db, "a", 40)
+    db.execute(
+        "INSERT INTO reports.net_worth_accounts VALUES ('a', FALSE, CURRENT_DATE)"
+    )
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+
+
+@pytest.mark.unit
+def test_stale_balance_is_warn_so_it_never_counts_as_failing(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _net_worth_guard_ddl(db)
+    _nw_account(db, "a")
+    _observed(db, "a", 45)
+    result = _investment_result(db, monkeypatch, "net_worth_stale_balance")
+    assert result.status == "warn"
+    assert DoctorReport(invariants=[result], transaction_count=0).failing == 0
 
 
 @pytest.mark.unit

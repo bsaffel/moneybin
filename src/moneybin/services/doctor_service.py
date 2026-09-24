@@ -52,6 +52,7 @@ from moneybin.tables import (
     DIM_ACCOUNTS,
     DIM_HOLDINGS,
     DIM_SECURITIES,
+    DIM_UNANCHORED_ACCOUNTS,
     EXCHANGE_RATE_OVERRIDES,
     FCT_BALANCES,
     FCT_EXCHANGE_RATES_DAILY,
@@ -71,6 +72,7 @@ from moneybin.tables import (
     PROFILE_SETTINGS,
     PROPOSED_RULES,
     REPORTS_NET_WORTH,
+    REPORTS_NET_WORTH_ACCOUNTS,
     RULE_CONFLICTS,
     SECURITIES,
     SECURITY_LINKS,
@@ -638,6 +640,8 @@ class DoctorService:
             *app_integrity,
             orphan_app_state,
             archive_intent,
+            self._run_net_worth_unanchored_accounts(),
+            self._run_net_worth_stale_balance(),
             *investment_checks,
         ]
         invariants = [self._apply_recipe(r) for r in raw_invariants]
@@ -2089,6 +2093,94 @@ class DoctorService:
                     "seeds.price_source_map registry"
                 ),
                 affected_ids=[str(r[0]) for r in rows],
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_net_worth_unanchored_accounts(self) -> InvariantResult:
+        """Eligible accounts holding value with no balance observation (Requirement 14).
+
+        `fail`, because each one makes reports.net_worth's total NULL: the account
+        contributes nothing, and the release bar says a total is right or visibly
+        incomplete. Eligibility is the account's CURRENT state (included, not
+        archived) — shared with net_worth_stale_balance — so a closed account's
+        preserved pre-archive history never keeps this red.
+        """
+        name = "net_worth_unanchored_accounts"
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT u.account_id
+                FROM {DIM_UNANCHORED_ACCOUNTS.full_name} AS u
+                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
+                WHERE a.include_in_net_worth AND NOT a.archived
+                ORDER BY u.account_id
+                """  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # core views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"unanchored-account view unavailable: {e}",
+                affected_ids=[],
+            )
+        unanchored = [str(r[0]) for r in rows]
+        if unanchored:
+            return InvariantResult(
+                name=name,
+                status="fail",
+                detail=(
+                    f"{len(unanchored)} account(s) in net worth hold value "
+                    "(holdings or transactions) but have no balance observation, "
+                    "so the net-worth total is withheld — record a balance with "
+                    "`moneybin accounts balance assert`, or leave the account out "
+                    "with `moneybin accounts set <account_id> --exclude`"
+                ),
+                affected_ids=unanchored,
+            )
+        return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
+
+    def _run_net_worth_stale_balance(self) -> InvariantResult:
+        """Accounts whose latest observed balance is older than the threshold.
+
+        Each account's OWN latest observed row, compared against today — never a
+        shared balance_date = CURRENT_DATE filter, which finds nothing when every
+        account has gone stale together (the spine ends at the global last
+        observation, not today). `warn`: the balance still counts; it is aging, not
+        wrong.
+        """
+        name = "net_worth_stale_balance"
+        threshold = get_settings().doctor.balance_staleness_threshold_days
+        try:
+            rows = self._db.execute(
+                f"""
+                SELECT n.account_id,
+                       CAST(CURRENT_DATE - MAX(n.balance_date) AS INTEGER) AS age_days
+                FROM {REPORTS_NET_WORTH_ACCOUNTS.full_name} AS n
+                JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = n.account_id
+                WHERE n.is_observed AND a.include_in_net_worth AND NOT a.archived
+                GROUP BY n.account_id
+                ORDER BY n.account_id
+                """  # TableRef constants, no user input
+            ).fetchall()
+        except Exception as e:  # reports views absent before first transform
+            return InvariantResult(
+                name=name,
+                status="skipped",
+                detail=f"net-worth account view unavailable: {e}",
+                affected_ids=[],
+            )
+        stale = [str(aid) for aid, age in rows if is_stale(int(age), threshold)]
+        if stale:
+            return InvariantResult(
+                name=name,
+                status="warn",
+                detail=(
+                    f"{len(stale)} account(s) in net worth have no balance "
+                    f"observed in the last {threshold} days, so their balances "
+                    "are carried forward — import a recent statement, sync, or "
+                    "record one with `moneybin accounts balance assert`"
+                ),
+                affected_ids=stale,
             )
         return InvariantResult(name=name, status="pass", detail=None, affected_ids=[])
 
