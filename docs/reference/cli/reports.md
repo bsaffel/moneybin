@@ -48,13 +48,13 @@ Usage: `moneybin reports list [OPTIONS]`
 
 Run one registered report by ID or name.
 
-Usage: `moneybin reports run [OPTIONS] HANDLE`
+Usage: `moneybin reports run [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name, any tier. |
+| `handle` | text | yes | Report ID or name, any tier. |
 
 **Options**
 
@@ -78,13 +78,13 @@ intact. A parameter classed above the lowest tier keeps its placeholder in
 the executed form — rendering is not execution, so it never passes through
 the redaction the report's own rows do.
 
-Usage: `moneybin reports explain [OPTIONS] HANDLE`
+Usage: `moneybin reports explain [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name, any tier. |
+| `handle` | text | yes | Report ID or name, any tier. |
 
 **Options**
 
@@ -101,13 +101,13 @@ Save a query as a durable report.
 
 Classification is derived from the SQL and stored; you never declare it.
 
-Usage: `moneybin reports create [OPTIONS] NAME`
+Usage: `moneybin reports create [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Report name: lowercase slug, unique. |
+| `name` | text | yes | Report name: lowercase slug, unique. |
 
 **Options**
 
@@ -129,13 +129,13 @@ of one query, so a rewrite voids it while a re-declared parameter leaves both
 unchanged — and an approval whose column now derives a different class stops
 applying on its own.
 
-Usage: `moneybin reports set [OPTIONS] HANDLE`
+Usage: `moneybin reports set [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 
@@ -159,13 +159,13 @@ The audit log keeps the full prior row, so `moneybin system audit undo`
 restores it. To hide a report without deleting it, use `--archive` on
 `reports set`.
 
-Usage: `moneybin reports delete [OPTIONS] HANDLE`
+Usage: `moneybin reports delete [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 
@@ -184,13 +184,13 @@ what is masked, so it requires explicit confirmation and is audited. The
 downgrade must drop the sensitivity tier: a same-tier weakening (whole
 masking to partial) is refused whatever the reason.
 
-Usage: `moneybin reports reclassify [OPTIONS] HANDLE`
+Usage: `moneybin reports reclassify [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 

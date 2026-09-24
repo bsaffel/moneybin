@@ -196,13 +196,13 @@ identification consumes lot selections. Elect it first with
 ``moneybin investments securities set \<security-id> --method specific``;
 ``--clear`` needs no election.
 
-Usage: `moneybin investments lots select [OPTIONS] DISPOSAL_TXN_ID`
+Usage: `moneybin investments lots select [OPTIONS] {disposal_txn_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DISPOSAL_TXN_ID` | text | yes | investment_transaction_id of the disposal (a sell) |
+| `disposal_txn_id` | text | yes | investment_transaction_id of the disposal (a sell) |
 
 **Options**
 
@@ -331,15 +331,15 @@ would write successfully and value nothing for any non-USD position.
 The mark lands in app; holdings value from core. Pass --refresh to rebuild
 the models in the same command, or run 'moneybin refresh' afterwards.
 
-Usage: `moneybin investments prices set [OPTIONS] SECURITY PRICE_DATE PRICE`
+Usage: `moneybin investments prices set [OPTIONS] {security} {price_date} {price}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
-| `PRICE_DATE` | text | yes | Date the price applies to (YYYY-MM-DD) |
-| `PRICE` | text | yes | Price of one unit, e.g. 42.50 |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `price_date` | text | yes | Date the price applies to (YYYY-MM-DD) |
+| `price` | text | yes | Price of one unit, e.g. 42.50 |
 
 **Options**
 
@@ -362,14 +362,14 @@ records it, but the previous value is not restored by re-running anything.
 The removal lands in app; holdings value from core. Pass --refresh to rebuild
 the models in the same command, or run 'moneybin refresh' afterwards.
 
-Usage: `moneybin investments prices delete [OPTIONS] SECURITY PRICE_DATE`
+Usage: `moneybin investments prices delete [OPTIONS] {security} {price_date}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
-| `PRICE_DATE` | text | yes | Date of the mark to remove (YYYY-MM-DD) |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `price_date` | text | yes | Date of the mark to remove (YYYY-MM-DD) |
 
 **Options**
 
@@ -386,13 +386,13 @@ Show the resolved price series for one security, newest first.
 Reads the resolved winner per date, not every observation that competed for
 it, so 'source' names which feed or mark actually supplied each close.
 
-Usage: `moneybin investments prices list [OPTIONS] SECURITY`
+Usage: `moneybin investments prices list [OPTIONS] {security}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
+| `security` | text | yes | Security reference: ticker, CUSIP, ISIN, name, or id |
 
 **Options**
 
@@ -487,13 +487,13 @@ full history from the current method on every refresh, so changing it
 after a disposal was realized silently recomputes that disposal's cost
 basis (v1 does not enforce IRS election lock-in).
 
-Usage: `moneybin investments securities set [OPTIONS] SECURITY_ID`
+Usage: `moneybin investments securities set [OPTIONS] {security_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `SECURITY_ID` | text | yes | Security ID |
+| `security_id` | text | yes | Security ID |
 
 **Options**
 
@@ -590,13 +590,13 @@ moneybin investments securities links set dec001 --accept --into sec001aabbcc
 moneybin investments securities links set dec001 --reject
 ```
 
-Usage: `moneybin investments securities links set [OPTIONS] DECISION_ID`
+Usage: `moneybin investments securities links set [OPTIONS] {decision_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `DECISION_ID` | text | yes | Decision ID to act on (from `investments securities links pending`) |
+| `decision_id` | text | yes | Decision ID to act on (from `investments securities links pending`) |
 
 **Options**
 

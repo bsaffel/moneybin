@@ -30,10 +30,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
-import click
 import pytest
 import typer
 import typer.main
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
@@ -51,7 +52,7 @@ runner = CliRunner()
 # --------------------------------------------------------------- the rule ---
 
 
-def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
+def _leaf_commands() -> Iterator[tuple[str, Command]]:
     """Every command in the real CLI that has a body, keyed by its command path.
 
     Groups are yielded too when they carry a callback of their own: an
@@ -61,10 +62,10 @@ def _leaf_commands() -> Iterator[tuple[str, click.Command]]:
     """
     root = typer.main.get_command(app)
 
-    def walk(cmd: click.Command, path: list[str]) -> Iterator[tuple[str, Any]]:
+    def walk(cmd: Command, path: list[str]) -> Iterator[tuple[str, Any]]:
         if cmd.callback is not None and path != ["moneybin"]:
             yield " ".join(path), cmd
-        if isinstance(cmd, click.Group):
+        if isinstance(cmd, TyperGroup):
             for name in sorted(cmd.commands):
                 yield from walk(cmd.commands[name], [*path, name])
 
@@ -96,7 +97,7 @@ def _literal_actor(node: ast.Call) -> str | None:
     return None
 
 
-def _audit_actors(command: click.Command, command_path: str) -> set[str]:
+def _audit_actors(command: Command, command_path: str) -> set[str]:
     """Every actor string this command can write, from every audit site it reaches.
 
     Follows calls into module-level helpers rather than reading the callback
@@ -158,7 +159,7 @@ def _expected_actor(command_path: str) -> str:
     return "_".join(command_path.split(" ")[1:]).replace("-", "_")
 
 
-def _declared_actors(command: click.Command) -> set[str]:
+def _declared_actors(command: Command) -> set[str]:
     """Literal ``cli_actor=`` strings passed inside a command's own body.
 
     Reads the callback's source, so an actor threaded through a shared helper

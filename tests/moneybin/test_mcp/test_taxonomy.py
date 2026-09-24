@@ -636,10 +636,10 @@ async def test_taxonomy_write_registrar_advertises_maximum_destructive_risk() ->
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"taxonomy_set"}
     tool = await listed_tool(mcp, "taxonomy_set")
-    assert tool.outputSchema is None
+    assert tool.output_schema is None
     assert tool.annotations is not None
-    assert tool.annotations.destructiveHint is True
-    variants = tool.inputSchema["properties"]["items"]["items"]["oneOf"]
+    assert tool.annotations.destructive_hint is True
+    variants = tool.input_schema["properties"]["items"]["items"]["oneOf"]
     assert {variant["properties"]["kind"]["const"] for variant in variants} == {
         "category",
         "merchant",
@@ -1020,10 +1020,10 @@ async def test_taxonomy_standard_registrar_renders_closed_contract() -> None:
     tools = await mcp._list_tools()  # pyright: ignore[reportPrivateUsage]
     assert {tool.name for tool in tools} == {"taxonomy"}
     tool = await listed_tool(mcp, "taxonomy")
-    assert tool.outputSchema is None
-    assert tool.inputSchema["properties"]["include_inactive"]["type"] == "boolean"
+    assert tool.output_schema is None
+    assert tool.input_schema["properties"]["include_inactive"]["type"] == "boolean"
     assert_literal_values(
-        tool.inputSchema,
+        tool.input_schema,
         ("properties", "view"),
         {"categories", "merchants"},
     )
@@ -1057,9 +1057,9 @@ async def test_taxonomy_raw_transport_is_canonical_and_uses_public_actor(
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["data"]["kind"] == view
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["data"]["kind"] == view
     assert len(captured) == 1
     assert captured[0]["actor"] == "mcp.taxonomy"
     assert captured[0]["sensitivity"] == expected_sensitivity
@@ -1078,9 +1078,9 @@ async def test_taxonomy_cursor_error_is_canonical_and_sanitized() -> None:
 
     text = response.content[0]
     assert hasattr(text, "text")
-    assert response.structuredContent is not None
-    assert json.loads(text.text) == response.structuredContent  # type: ignore[union-attr]
-    assert response.structuredContent["error"]["code"] == "taxonomy_cursor_invalid"
+    assert response.structured_content is not None
+    assert json.loads(text.text) == response.structured_content  # type: ignore[union-attr]
+    assert response.structured_content["error"]["code"] == "taxonomy_cursor_invalid"
     assert invalid_cursor not in text.text  # type: ignore[union-attr]
 
 
@@ -1100,4 +1100,4 @@ async def test_taxonomy_raw_transport_rejects_invalid_arguments(
 
     response = await call_tool_raw(mcp, "taxonomy", arguments)
 
-    assert response.isError is True
+    assert response.is_error is True

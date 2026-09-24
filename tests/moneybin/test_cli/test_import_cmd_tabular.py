@@ -509,11 +509,12 @@ class TestPreview:
 
         from typing import cast
 
-        import click
         import typer.main
+        from typer._click import Command
+        from typer.core import TyperGroup
 
-        group = cast(click.Group, typer.main.get_command(app))
-        preview_cmd: click.Command = group.commands["preview"]
+        group = cast(TyperGroup, typer.main.get_command(app))
+        preview_cmd: Command = group.commands["preview"]
         registered: set[str] = {
             opt
             for param in preview_cmd.params
@@ -1171,14 +1172,14 @@ class TestPreview:
         import datetime
         import re
 
-        import click
+        from typer.core import TyperGroup, TyperOption
         from typer.main import get_command
 
         group = get_command(app)
-        assert isinstance(group, click.Group)
+        assert isinstance(group, TyperGroup)
         command = group.commands[command_name]
         option = next(p for p in command.params if "--date-format" in p.opts)
-        assert isinstance(option, click.Option)
+        assert isinstance(option, TyperOption)
         assert option.help is not None
         match = re.search(r"e\.g\. (\S+?)\)", option.help)
         assert match is not None, option.help

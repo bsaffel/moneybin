@@ -34,9 +34,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, cast
 
-import click
 import typer
 from pydantic import BaseModel
+
+# typer >= 0.26 runs on its own vendored click, so click.get_current_context()
+# sees no context during a command. typer exports no public accessor; this
+# private path fails at import, not silently, if typer moves it.
+from typer._click.globals import get_current_context
 
 from moneybin.cli.render import render_human_text, render_note
 from moneybin.errors import UserError
@@ -373,7 +377,7 @@ def derive_cli_actor() -> str | None:
     what that means for them; neither audit path may raise on it.
     """
     try:
-        ctx = click.get_current_context()
+        ctx = get_current_context()
     except RuntimeError:
         return None
     names: list[str] = []

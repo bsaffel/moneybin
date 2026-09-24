@@ -10,9 +10,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from click.testing import Result
 from pytest_mock import MockerFixture
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin.cli.main import app
 from moneybin.services.inbox_service import (
