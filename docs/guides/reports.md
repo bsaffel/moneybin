@@ -326,11 +326,6 @@ Report explanation
 Report:      core:spending_trend
 Tier:        builtin
 Description: Monthly spending trend with MoM, YoY, and 3-month-trailing deltas.
-
-Defaults to the last 12 calendar months when both bounds are omitted. YoY columns come from the
-underlying view (all history), so narrowing the window does not null out yoy_pct. Spending amounts
-are positive absolute outflows; comparison deltas are current spend minus comparison-period spend.
-Monetary values are denominated in each row's own currency_code.
 Reads:       reports.spending_trend
 Graduation:  already_materialized
 Updated:     -
@@ -353,7 +348,7 @@ Fingerprint: -
 └──────────────────┴────────────┴──────────┴──────────┘
 ```
 
-The `SQL:` and `Template:` blocks that follow the table, and the closing `Withheld from the rendered SQL (classed above the lowest tier): ?1, ?2` line, are trimmed here. `Updated` and `Fingerprint` print `-` because a built-in has neither. The SQL reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is a hash over the SQL text, the classes of every column it reads, and the current masking policy for each of those classes; a run whose recomputed hash differs — the SQL was rewritten, even to the same shape, or a policy moved — re-derives the classes before serving anything.
+The `SQL:` and `Template:` blocks that follow the table, the closing `Withheld from the rendered SQL (classed above the lowest tier): ?1, ?2` line, and the description's second paragraph, which wraps at this width, are trimmed here. `Updated` and `Fingerprint` print `-` because a built-in has neither. The SQL reads the `reports.spending_trend` view, which the [data model](../reference/data-model.md) documents column by column, and you can run it yourself with `moneybin sql query` once you replace each `?` with a literal: the date bounds stay withheld as `?` because their values carry a privacy class, and `sql query` binds nothing. The `class` column is what decides masking when the report leaves the machine through MCP or an export. `Graduation` says whether the report could be materialized as a view of its own; `Fingerprint`, on a saved report, is a hash over the SQL text, the classes of every column it reads, and the current masking policy for each of those classes; a run whose recomputed hash differs — the SQL was rewritten, even to the same shape, or a policy moved — re-derives the classes before serving anything.
 
 ## JSON
 
@@ -453,13 +448,9 @@ Fingerprint: a5ff30ae3f62c0dd6368d61fbc135744746672b11e247952a2d8abfba8b35a71
 │ currency_code │ currency      │ upstream │ core.fct_transactions.currency_code │
 │ spend         │ txn_amount    │ computed │ -                                   │
 └───────────────┴───────────────┴──────────┴─────────────────────────────────────┘
-SQL: SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE
-category = 'Food & Drink' GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION
-BY currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend
-Template: SELECT merchant_name, currency_code, SUM(amount) AS spend FROM core.fct_transactions WHERE
-category = $category GROUP BY merchant_name, currency_code QUALIFY ROW_NUMBER() OVER (PARTITION BY
-currency_code ORDER BY spend) BETWEEN 1 AND 5 ORDER BY currency_code, spend
 ```
+
+The `SQL:` and `Template:` lines under that table are trimmed above; they print the saved query in bound and template form and wrap at this width.
 
 A report may read `raw.*` or `prep.*` too, but those schemas declare classes for few columns, so masking there falls back to scanning values by shape — an account number of fewer than eight digits passes through. Keep saved reports on `core.*` and `reports.*` unless you have read [what the AI provider sees](what-the-ai-sees.md). When a derived class is stricter than the column deserves, `reports reclassify` lowers it for one column, with a `--reason`, and the change is audited.
 
