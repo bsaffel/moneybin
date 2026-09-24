@@ -52,7 +52,8 @@ Usage: `moneybin profile list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin profile switch
 
@@ -101,7 +102,8 @@ Usage: `moneybin profile show [OPTIONS] [name]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin profile set
 

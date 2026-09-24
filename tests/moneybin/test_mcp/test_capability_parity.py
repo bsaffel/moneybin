@@ -20,6 +20,7 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.output import OutputFormat
 from moneybin.connectors.sync_auth import SyncAuthService
 from moneybin.connectors.sync_models import DeviceAuthorizationChallenge
 from moneybin.database import get_database
@@ -290,7 +291,14 @@ def test_hidden_sync_aliases_execute_the_canonical_callback(
             "output": "text",
         }
     ]
-    assert status_calls == [{"session_id": "link_session_1", "output": "text"}]
+    assert status_calls == [
+        {
+            "session_id": "link_session_1",
+            "output": OutputFormat.TEXT,
+            "quiet": False,
+            "no_pager": False,
+        }
+    ]
 
 
 def test_mapped_service_symbols_exist_and_are_callable() -> None:
@@ -873,9 +881,11 @@ async def test_taxonomy_writes_same_category_state(
 ) -> None:
     cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
     _select_database(cli_path)
-    cli_create = CliRunner().invoke(app, ["categories", "create", "Parity Travel"])
+    cli_create = CliRunner().invoke(
+        app, ["categories", "create", "Parity Travel", "--output", "json"]
+    )
     assert cli_create.exit_code == 0, cli_create.output
-    category_id = cli_create.stdout.strip()
+    category_id = json.loads(cli_create.stdout)["data"]["category_id"]
     cli_set = CliRunner().invoke(
         app,
         ["categories", "set", category_id, "--inactive"],

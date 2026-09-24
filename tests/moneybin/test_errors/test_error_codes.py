@@ -322,6 +322,7 @@ class TestSpecificCodes:
         "code",
         [
             "import_parse_error",
+            "import_interrupted",
             "import_file_not_found",
             "import_format_unknown",
             "import_superseded",

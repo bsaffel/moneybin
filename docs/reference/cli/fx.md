@@ -43,7 +43,7 @@ Usage: `moneybin fx rate [OPTIONS] {from_currency} {to_currency} [rate_date]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin fx list
 
@@ -72,7 +72,8 @@ Usage: `moneybin fx list [OPTIONS] {from_currency} {to_currency}`
 |---|---|---|---|
 | `--since` | text |  | Only show rates from this ISO date forward |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin fx set
 
@@ -106,6 +107,7 @@ Usage: `moneybin fx set [OPTIONS] {from_currency} {to_currency} {rate_date} {rat
 |---|---|---|---|
 | `--note` | text |  | Why this rate was recorded (e.g. the bank's own rate) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin fx delete
 
@@ -132,3 +134,4 @@ Usage: `moneybin fx delete [OPTIONS] {from_currency} {to_currency} {rate_date}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |

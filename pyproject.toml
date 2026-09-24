@@ -81,6 +81,10 @@ dependencies = [
     "pyyaml>=6.0.3",
     # Modern CLI framework.
     "typer>=0.27.2",
+    # Imported directly by the terminal renderers and progress display.
+    "rich>=15.0.0",
+    # Inline, searchable choice input. Imported only for interactive prompts.
+    "prompt_toolkit>=3.0.52",
     # Observability: metrics registry
     "prometheus_client>=0.26.0",
     # Security: transitive dependency version overrides to address CVEs.
@@ -133,6 +137,9 @@ dependencies = [
     # The `regex` package's timeout= enforces a wall-clock bound per match,
     # preventing ReDoS against untrusted document text. (Req 9b dynamic bound)
     "regex>=2026.9.10",
+    # Direct runtime dependency: db kill uses Process identity guards to refuse
+    # PID reuse between its confirmed preview and SIGTERM.
+    "psutil>=7.2.2",
 ]
 
 [project.urls]

@@ -10,13 +10,21 @@ import typer
 from moneybin.cli.output import (
     OutputFormat,
     currency_label,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, column_view, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    Money,
+    build_rows,
+    build_summary,
+    column_view,
+    compose_human_result,
+)
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
 from moneybin.privacy.payloads.investments import (
     InvestmentLotSelectionEntry,
@@ -109,6 +117,7 @@ def investments_lots_list(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
     wide: bool = wide_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List tax lots with remaining quantity and basis. Open lots only by default.
 
@@ -154,27 +163,48 @@ def investments_lots_list(
             default=_LOTS_DEFAULT if open_only else _LOTS_ALL_DEFAULT,
             wide=wide,
         )
-        render_rows(
-            view.names,
-            view.rows,
-            # A lot's remaining basis is a position rather than a movement, so it
-            # renders unsigned and uncoloured. The remaining quantity is a share
-            # count, not an amount, and is left as stored.
-            money={"basis": Money("balance")},
-            numeric=("remaining",),
-            total_columns=view.total,
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_rows(
+                        view.names,
+                        view.rows,
+                        # A lot's remaining basis is a position rather than a movement, so it
+                        # renders unsigned and uncoloured. The remaining quantity is a share
+                        # count, not an amount, and is left as stored.
+                        money={"basis": Money("balance")},
+                        numeric=("remaining",),
+                        total_columns=view.total,
+                        terminal=policy,
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+            wide=wide,
         )
-    for w in result.warnings:
-        # `-q` drops status lines, not disclosures about the figures. The
-        # basis-incomplete warning is droppable because the default view keeps
-        # a per-row `⚠️ basis_incomplete` marker; a source overlap has no such
-        # fallback here — `investments holdings` leans on its `status` column
-        # and this table has none — so silencing it would leave a doubled
-        # quantity and basis on screen with nothing saying so.
-        render_note(
-            f"⚠️  {w}",
-            quiet=quiet and w != result.degraded_reason,
-            warn=True,
+    else:
+        policy = get_terminal_policy(no_pager=no_pager)
+        emit_human_result(
+            compose_human_result(
+                [
+                    build_summary(
+                        [("Tax lots", "No lots match these filters.")],
+                        title=(
+                            "Try: moneybin investments lots list --all"
+                            if open_only
+                            else "Try: moneybin investments holdings"
+                        ),
+                    )
+                ],
+                disclosures=list(result.warnings),
+            ),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
         )
 
 
@@ -248,8 +278,8 @@ def investments_lots_select(
         )
         return
     if clear:
-        typer.echo(f"✅ Cleared lot selection for {disposal_txn_id} (reverts to FIFO)")
+        typer.echo(f"Lot selection cleared for {disposal_txn_id}; FIFO will apply.")
     else:
         typer.echo(
-            f"✅ Set lot selection for {disposal_txn_id}: {len(selections)} lot(s)"
+            f"Lot selection saved for {disposal_txn_id}: {len(selections)} lots."
         )

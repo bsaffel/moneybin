@@ -81,7 +81,7 @@ Usage: `moneybin import files [OPTIONS] {file_paths}...`
 | `--save-format / --no-save-format` | flag | `true` | Auto-save detected format for future imports (default: save) |
 | `--yes, -y` | flag |  | Auto-accept the top fuzzy account match without prompting |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin import confirm
 
@@ -137,7 +137,7 @@ Usage: `moneybin import confirm [OPTIONS] {file_path}`
 | `--account-meta` | text, repeatable |  | Metadata for a 'new' account (repeatable): --account-meta REF:field=value, where REF is the @0/@1 ref the confirmation showed (or the source key), and field is one of display_name, account_subtype, last_four, currency_code. |
 | `--save-format / --no-save-format` | flag | `true` | Auto-save the confirmed mapping as a named format for future imports. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin import history
 
@@ -163,8 +163,9 @@ Usage: `moneybin import history [OPTIONS]`
 | `--limit, -n` | int | `20` | Max records to show |
 | `--import-id` | text |  | Show details for a specific import |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import revert
 
@@ -255,7 +256,8 @@ Usage: `moneybin import status [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import formats
 
@@ -294,8 +296,9 @@ Usage: `moneybin import formats list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 | `--wide` | flag |  | Render every column, not just the default set. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `--type` | one of `tabular`, `pdf`, `all` | `all` | Filter by format type: tabular (CSV/Excel/etc.), pdf, or all (default). JSON output uses a uniform list; each row carries a 'type' field. Example: --type=pdf |
 
 ## moneybin import formats show
@@ -327,7 +330,8 @@ Usage: `moneybin import formats show [OPTIONS] {name}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import formats delete
 
@@ -375,7 +379,7 @@ Usage: `moneybin import inbox [OPTIONS] COMMAND [ARGS]...`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin import inbox list
 
@@ -388,7 +392,8 @@ Usage: `moneybin import inbox list [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin import inbox path
 
@@ -401,7 +406,7 @@ Usage: `moneybin import inbox path [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin import labels
 
@@ -467,4 +472,5 @@ Usage: `moneybin import labels list [OPTIONS]`
 |---|---|---|---|
 | `--import-id` | text |  | Filter to one import (omit for distinct counts) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

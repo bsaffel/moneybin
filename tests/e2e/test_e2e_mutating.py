@@ -12,6 +12,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pexpect
 import pytest
 
 from tests.e2e.conftest import (
@@ -25,6 +26,7 @@ from tests.e2e.conftest import (
     run_cli,
     seed_pending_match,
 )
+from tests.pty_support import spawn_python_pty
 
 pytestmark = pytest.mark.e2e
 
@@ -133,27 +135,83 @@ class TestDBInit:
         result = run_cli("db", "init", "--yes", env=env)
         result.assert_success()
 
-    def test_db_init_passphrase(self, tmp_path: Path) -> None:
-        env = {
-            "MONEYBIN_HOME": str(tmp_path),
-            "MONEYBIN_PROFILE": "initpp",
-            "MONEYBIN_DATABASE__ENCRYPTION_KEY": TEST_ENCRYPTION_KEY,
-        }
-        run_cli("profile", "create", "initpp", env=env)
-        # Remove the auto-created DB so db init can create a new one
-        # with a passphrase-derived key
-        db_path = tmp_path / "profiles" / "initpp" / "moneybin.duckdb"
-        db_path.unlink(missing_ok=True)
-        passphrase_input = f"{TEST_PASSPHRASE}\n{TEST_PASSPHRASE}\n"
-        result = run_cli(
-            "db",
-            "init",
-            "--passphrase",
-            "--yes",
-            env=env,
-            input_text=passphrase_input,
+    def test_db_init_passphrase(
+        self, tmp_path: Path, request: pytest.FixtureRequest
+    ) -> None:
+        db_path = tmp_path / "passphrase-e2e.duckdb"
+        program = """
+import os
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from moneybin.cli.commands.db import app
+from moneybin.database import Database
+from moneybin.secrets import SecretNotFoundError
+
+db_path = Path(os.environ["MONEYBIN_TEST_DB_PATH"])
+settings = SimpleNamespace(
+    database=SimpleNamespace(
+        path=db_path,
+        encryption_key_mode="passphrase",
+        backup_path=db_path.parent / "backups",
+        argon2_time_cost=1,
+        argon2_memory_cost=1024,
+        argon2_parallelism=1,
+        argon2_hash_len=32,
+    )
+)
+
+class Store:
+    values = {}
+    def get_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        return self.values[name]
+    def set_key(self, name, value):
+        self.values[name] = value
+    def delete_key(self, name):
+        if name not in self.values:
+            raise SecretNotFoundError(name)
+        del self.values[name]
+
+def invoke(args):
+    app(args=args, prog_name="moneybin db", standalone_mode=False)
+
+with patch("moneybin.config.get_settings", return_value=settings), patch(
+    "moneybin.database.get_settings", return_value=settings
+), patch("moneybin.secrets.SecretStore", Store):
+    invoke(["init", "--passphrase", "--yes"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
+        db.execute("CREATE TABLE raw.test_data (id INTEGER, val VARCHAR)")
+        db.execute("INSERT INTO raw.test_data VALUES (1, 'hello')")
+    invoke(["lock"])
+    assert "DATABASE__ENCRYPTION_KEY" not in Store.values
+    invoke(["unlock"])
+    with Database(
+        db_path, secret_store=Store(), read_only=False, no_auto_upgrade=True
+    ) as db:
+        row = db.execute("SELECT val FROM raw.test_data WHERE id = 1").fetchone()
+    assert row == ("hello",)
+print("roundtrip sentinel: hello")
+"""
+        process = spawn_python_pty(
+            program, request=request, env={"MONEYBIN_TEST_DB_PATH": str(db_path)}
         )
-        result.assert_success()
+        process.child.expect("Enter passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("Confirm passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("Enter passphrase")
+        process.child.sendline(TEST_PASSPHRASE)
+        process.child.expect("roundtrip sentinel: hello")
+        process.child.expect(pexpect.EOF)
+        process.child.close()
+
+        assert process.child.exitstatus == 0
+        assert TEST_PASSPHRASE not in process.transcript.getvalue()
 
 
 class TestDBOperations:
@@ -418,12 +476,21 @@ class TestCategorizeMutating:
         result = run_cli("db", "query", insert_sql, env=env)
         result.assert_success()
 
-        # auto-review lists the pending proposal
-        result = run_cli("transactions", "categorize", "auto", "review", env=env)
-        result.assert_success()
-        assert "autoe2e0001" in result.output, (
-            f"auto-review did not surface proposal: {result.output}"
+        # JSON preserves full proposal identifiers regardless of terminal width.
+        result = run_cli(
+            "transactions",
+            "categorize",
+            "auto",
+            "review",
+            "--output",
+            "json",
+            env=env,
         )
+        result.assert_success()
+        proposals = json.loads(result.stdout)["data"]["proposals"]
+        assert any(
+            proposal["proposed_rule_id"] == "autoe2e0001" for proposal in proposals
+        ), f"auto-review did not surface proposal: {result.stdout}"
 
         # auto-stats reports the pending proposal
         result = run_cli("transactions", "categorize", "auto", "stats", env=env)
@@ -659,7 +726,8 @@ class TestImportMutating:
         env = make_workflow_env_fast(tmp_path, "importrev", _mutating_profile_template)
         fixture = FIXTURES_DIR / "tabular" / "standard.csv"
 
-        # Import
+        # First-contact layout needs an explicit confirmation; the receipt is
+        # complete but the requested import is not complete, so it exits 1.
         result = run_cli(
             "import",
             "files",
@@ -669,7 +737,10 @@ class TestImportMutating:
             "--no-refresh",
             env=env,
         )
-        result.assert_success()
+        assert result.exit_code == 1, result.output
+        assert "Confirmation required" in result.stdout
+        assert "moneybin import files" in result.stdout
+        assert "--confirm" in result.stdout
 
         # Revert with a fake ID — should fail gracefully, not crash
         result = run_cli("import", "revert", "nonexistent-id", "--yes", env=env)
@@ -1075,7 +1146,8 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 1 rule" in result.stderr
+        assert "Rules created" in result.stdout
+        assert "Created: 1" in " ".join(result.stdout.split())
 
     def test_create_from_file_batch(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1112,7 +1184,8 @@ class TestCategorizeRulesCreateCLI:
             env=env,
         )
         result.assert_success()
-        assert "Created 2 rule" in result.stderr
+        assert "Rules created" in result.stdout
+        assert "Created: 2" in " ".join(result.stdout.split())
 
     def test_create_with_json_output(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1209,7 +1282,7 @@ class TestCategorizeRulesCreateCLI:
         assert "Traceback (most recent call last)" not in result.stderr
         # Text mode surfaces per-row failure reason so the user knows what failed.
         assert "bad-rule" in result.stderr
-        assert "⚠️" in result.stderr
+        assert "Attention:" in result.stderr
 
     def test_create_from_file_directory_path_errors_cleanly(
         self, _mutating_profile_template: Path, tmp_path: Path
@@ -1261,10 +1334,10 @@ class TestCategorizeRulesCreateCLI:
         )
         assert result.exit_code == 1
         # Success line IS suppressed by --quiet.
-        assert "✅ Created" not in result.stderr
+        assert "Rules created" not in result.stdout
         # Failure warnings ARE NOT suppressed by --quiet.
         assert "bad-quiet-rule" in result.stderr
-        assert "⚠️" in result.stderr
+        assert "Attention:" in result.stderr
 
 
 class TestCategorizeRulesDeleteCLI:
@@ -1589,7 +1662,7 @@ class TestSecurityLinksMutating:
             env=env,
         )
         again.assert_success()
-        assert "No mark existed" in again.stdout
+        assert "Price mark unchanged" in again.stdout
 
     def test_fx_override_round_trips_through_the_resolver(
         self, _mutating_profile_template: Path, tmp_path: Path

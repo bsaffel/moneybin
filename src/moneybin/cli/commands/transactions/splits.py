@@ -13,15 +13,25 @@ from decimal import Decimal, InvalidOperation
 
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import UNCATEGORIZED_LABEL
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import (
+    UNCATEGORIZED_LABEL,
+    Money,
+    build_rows,
+    build_summary,
+    compose_human_result,
+)
+from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.transactions import (
     SplitAddPayload,
     SplitRemovePayload,
@@ -68,8 +78,13 @@ def transactions_splits_add(
     try:
         amount_dec = Decimal(amount)
     except InvalidOperation as e:
-        typer.echo(f"❌ Invalid amount {amount!r}", err=True)
-        raise typer.Exit(2) from e
+        abort_cli_error(
+            e,
+            output=output,
+            exit_code=2,
+            cli_actor="transactions_splits_add",
+            message=f"Invalid amount {amount!r}",
+        )
 
     try:
         with handle_cli_errors():
@@ -85,8 +100,9 @@ def transactions_splits_add(
                 )
                 residual = svc.splits_balance(transaction_id)
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_splits_add"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -96,12 +112,10 @@ def transactions_splits_add(
             output,
             cli_actor="transactions_splits_add",
         )
-    else:
-        logger.info(f"✅ Added split {split.split_id} to {transaction_id}")
-    if residual != Decimal("0"):
-        logger.warning(
-            f"⚠️  Splits do not balance: residual={residual} on {transaction_id}"
-        )
+        return
+    _emit_split_receipt(
+        "Split added", split.split_id, transaction_id, split.amount, residual
+    )
 
 
 @app.command("list")
@@ -109,6 +123,7 @@ def transactions_splits_list(
     transaction_id: str = typer.Argument(..., help="Transaction ID"),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
+    no_pager: bool = no_pager_option,
 ) -> None:
     """List splits on a transaction."""
     from moneybin.services.transaction_service import TransactionService
@@ -126,18 +141,43 @@ def transactions_splits_list(
             cli_actor="transactions_splits_list",
         )
         return
-    if not splits:
-        if not quiet:
-            logger.info(f"No splits on {transaction_id}")
-        return
-    for s in splits:
-        # NULL only, matching the `Placeholder` rule `transactions list` uses.
-        # The service refuses a blank category outright, so NULL is the only
-        # absence that reaches here and a falsy `or` would differ from this on
-        # no input at all — keep the explicit test rather than reintroduce a
-        # second reading of what absent means.
-        cat = UNCATEGORIZED_LABEL if s.category is None else s.category
-        typer.echo(f"  [{s.split_id}] {s.amount} {cat}")
+    policy = get_terminal_policy(no_pager=no_pager)
+    parts: list[object] = [
+        build_summary([("Transaction", transaction_id)], title="Transaction splits")
+    ]
+    if splits:
+        parts.append(
+            build_rows(
+                ["split id", "amount", "category", "subcategory", "note"],
+                [
+                    (
+                        split.split_id,
+                        split.amount,
+                        UNCATEGORIZED_LABEL
+                        if split.category is None
+                        else split.category,
+                        split.subcategory or "-",
+                        split.note or "-",
+                    )
+                    for split in splits
+                ],
+                money={"amount": Money("flow")},
+                terminal=policy,
+            )
+        )
+    else:
+        parts.append(build_summary([("Result", "No splits on this transaction.")]))
+    emit_human_result(
+        compose_human_result(
+            parts,
+            disclosures=(
+                () if splits else ("Next: moneybin transactions splits add --help",)
+            ),
+        ),
+        policy=policy,
+        finite_read=True,
+        no_pager=no_pager,
+    )
 
 
 @app.command("remove")
@@ -150,8 +190,20 @@ def transactions_splits_remove(
     from moneybin.services.transaction_service import TransactionService
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_splits_remove",
+                payload_type=SplitRemovePayload,
+            )
         if not typer.confirm(f"Remove split {split_id}?"):
-            logger.info("Cancelled")
+            _emit_split_cancellation("Split removal cancelled", "No split was removed")
             raise typer.Exit(0)
 
     try:
@@ -161,14 +213,19 @@ def transactions_splits_remove(
                 # Look up parent before delete so we can report residual after.
                 existing = svc.get_split(split_id)
                 if existing is None:
-                    typer.echo(f"❌ split_id={split_id} not found", err=True)
-                    raise typer.Exit(1)
+                    abort_cli_error(
+                        LookupError(f"split_id={split_id} not found"),
+                        output=output,
+                        exit_code=1,
+                        cli_actor="transactions_splits_remove",
+                    )
                 transaction_id = existing.transaction_id
                 svc.remove_split(split_id, actor="cli")
                 residual = svc.splits_balance(transaction_id)
     except LookupError as e:
-        typer.echo(f"❌ {e}", err=True)
-        raise typer.Exit(1) from e
+        abort_cli_error(
+            e, output=output, exit_code=1, cli_actor="transactions_splits_remove"
+        )
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -182,12 +239,8 @@ def transactions_splits_remove(
             output,
             cli_actor="transactions_splits_remove",
         )
-    else:
-        logger.info(f"✅ Removed split {split_id}")
-    if residual != Decimal("0"):
-        logger.warning(
-            f"⚠️  Splits do not balance: residual={residual} on {transaction_id}"
-        )
+        return
+    _emit_split_receipt("Split removed", split_id, transaction_id, None, residual)
 
 
 @app.command("clear")
@@ -200,13 +253,24 @@ def transactions_splits_clear(
     from moneybin.services.transaction_service import TransactionService
 
     if not yes:
+        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
+            abort_cli_error(
+                UserError(
+                    "Explicit confirmation is required.",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint="Re-run with --yes after reviewing the requested change.",
+                ),
+                output=output,
+                exit_code=2,
+                cli_actor="transactions_splits_clear",
+            )
         if not typer.confirm(f"Clear all splits on {transaction_id}?"):
-            logger.info("Cancelled")
+            _emit_split_cancellation("Split clear cancelled", "No splits were removed")
             raise typer.Exit(0)
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            TransactionService(db).clear_splits(transaction_id, actor="cli")
+            cleared = TransactionService(db).clear_splits(transaction_id, actor="cli")
 
     if output == OutputFormat.JSON:
         render_or_json(
@@ -218,4 +282,61 @@ def transactions_splits_clear(
             cli_actor="transactions_splits_clear",
         )
         return
-    logger.info(f"✅ Cleared splits on {transaction_id}")
+    emit_human_result(
+        compose_human_result([
+            build_summary(
+                [
+                    ("Transaction", cleared.transaction_id),
+                    ("Splits cleared", str(cleared.cleared_count)),
+                ],
+                title="Splits cleared",
+            )
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )
+
+
+def _emit_split_receipt(
+    title: str,
+    split_id: str,
+    transaction_id: str,
+    amount: Decimal | None,
+    residual: Decimal,
+) -> None:
+    """Render one unpaged split-mutation receipt from service-returned state."""
+    policy = get_terminal_policy()
+    rows: list[tuple[object, ...]] = [(split_id, transaction_id, residual)]
+    columns = ["split id", "transaction", "residual"]
+    money = {"residual": Money("magnitude")}
+    if amount is not None:
+        columns.insert(2, "amount")
+        rows = [(split_id, transaction_id, amount, residual)]
+        money["amount"] = Money("flow")
+    emit_human_result(
+        compose_human_result(
+            [
+                build_summary([("Result", title)]),
+                build_rows(columns, rows, money=money, terminal=policy),
+            ],
+            disclosures=(
+                () if residual == Decimal("0") else ("Warning: Splits do not balance.",)
+            ),
+        ),
+        policy=policy,
+        finite_read=False,
+        receipt=True,
+    )
+
+
+def _emit_split_cancellation(title: str, saved_state: str) -> None:
+    """Present a declined split mutation as a terminal outcome."""
+    emit_human_result(
+        compose_human_result([
+            build_summary([("Saved state", saved_state)], title=title)
+        ]),
+        policy=get_terminal_policy(),
+        finite_read=False,
+        receipt=True,
+    )

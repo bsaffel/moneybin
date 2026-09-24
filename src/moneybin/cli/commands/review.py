@@ -20,6 +20,7 @@ import typer
 
 from moneybin.cli.output import (
     OutputFormat,
+    no_pager_option,
     output_option,
     quiet_option,
 )
@@ -28,8 +29,8 @@ from .transactions.review import review_impl
 
 
 def review_command(
-    type_: str = typer.Option(
-        "all",
+    type_: str | None = typer.Option(
+        None,
         "--type",
         help="all | matches | categorize | account-links | merchant-links | security-links",
     ),
@@ -51,6 +52,7 @@ def review_command(
     limit: int = typer.Option(
         50, "--limit", help="Cap items per session"
     ),  # placeholder; interactive loop pending
+    no_pager: bool = no_pager_option,
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,
 ) -> None:
@@ -68,6 +70,7 @@ def review_command(
         reject_id=reject_id,
         confirm_all=confirm_all,
         limit=limit,
+        no_pager=no_pager,
         output=output,
         quiet=quiet,
     )

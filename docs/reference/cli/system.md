@@ -28,7 +28,7 @@ Usage: `moneybin system doctor [OPTIONS]`
 | `--verbose, -V` | flag |  | Show every invariant that ran, not just the ones that need attention, plus the affected transaction IDs for each failing one. |
 | `--full` | flag |  | Scan every protected app.* row for audit coverage instead of the sampled, recent-rows-only default. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin system status
 
@@ -41,7 +41,8 @@ Usage: `moneybin system status [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit
 
@@ -77,7 +78,8 @@ Usage: `moneybin system audit list [OPTIONS]`
 | `--to` | text |  | Filter occurred_at \<= timestamp |
 | `--limit` | int | `100` | Max events to return |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit show
 
@@ -96,6 +98,7 @@ Usage: `moneybin system audit show [OPTIONS] {audit_id}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit undo
 
@@ -120,6 +123,7 @@ Usage: `moneybin system audit undo [OPTIONS] {operation_id}`
 
 | Option | Type | Default | Description |
 |---|---|---|---|
+| `--yes, -y` | flag |  | Confirm the displayed undo scope |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 
 ## moneybin system audit history
@@ -140,7 +144,8 @@ Usage: `moneybin system audit history [OPTIONS]`
 | `--limit` | int | `50` | Max operations to return |
 | `--include-undone` | flag |  | Include the undo operations themselves |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress informational output (status lines, progress, ✅). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin system audit get
 
@@ -159,3 +164,4 @@ Usage: `moneybin system audit get [OPTIONS] {operation_id}`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

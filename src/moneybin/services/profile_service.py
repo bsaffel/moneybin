@@ -451,4 +451,4 @@ class ProfileService:
         section_dict[field] = coerced_value
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
-        logger.info(f"Set {key}={value} for profile {normalized}")
+        logger.info(f"Set {key} for profile {normalized}")

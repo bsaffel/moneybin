@@ -12,9 +12,28 @@ from typer.testing import CliRunner, Result
 
 from moneybin.adapters.refresh_adapters import REFRESH_CATEGORIZE_FOLLOWUP_HINT
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 from moneybin.orchestration.refresh import RefreshResult
 from moneybin.services.rate_backfill import RateBackfillResult
 from moneybin.services.refresh_outcome import StageOutcome
+
+
+def _ascii_terminal() -> TerminalPolicy:
+    """Use a redirected ASCII terminal policy for receipt assertions."""
+    return TerminalPolicy(
+        output="text",
+        interactive=False,
+        page=False,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=True,
+        ascii=True,
+        width=80,
+        height=24,
+        symbols=TerminalSymbols(success="OK", attention="!", failure="X", action=">"),
+        minus="-",
+    )
 
 
 def test_refresh_json_success(runner: CliRunner) -> None:
@@ -86,6 +105,94 @@ def test_refresh_text_failure_exits_nonzero(runner: CliRunner) -> None:
     assert result.exit_code == 1
 
 
+@pytest.mark.parametrize(
+    ("refresh_result", "expected_title"),
+    [
+        (RefreshResult(applied=True, duration_seconds=0.5), "OK Refresh complete"),
+        (
+            RefreshResult(
+                applied=True,
+                duration_seconds=0.5,
+                stages=(StageOutcome(step="categorize", ran=True, error="boom"),),
+            ),
+            "! Refresh partially completed",
+        ),
+        (
+            RefreshResult(applied=False, duration_seconds=0.5, error="boom"),
+            "X Refresh failed",
+        ),
+    ],
+)
+def test_refresh_receipt_titles_follow_ascii_terminal_policy(
+    runner: CliRunner, refresh_result: RefreshResult, expected_title: str
+) -> None:
+    """Every receipt title uses the active terminal policy's status marker."""
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=refresh_result),
+        patch("moneybin.database.get_database") as get_db,
+        patch(
+            "moneybin.cli.commands.refresh.get_terminal_policy",
+            return_value=_ascii_terminal(),
+        ),
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert expected_title in result.output
+    assert "✓ Refresh complete" not in result.output
+    assert "× Refresh failed" not in result.output
+
+
+def test_refresh_receipt_names_investment_planning_as_transform_blocker(
+    runner: CliRunner,
+) -> None:
+    """A failed planner receipt must not imply that SQLMesh apply ran."""
+    fake_result = RefreshResult(
+        applied=False,
+        duration_seconds=None,
+        error="planner boom",
+        stages=(StageOutcome(step="investment_match", ran=True, error="planner boom"),),
+    )
+    with (
+        patch("moneybin.orchestration.refresh.refresh", return_value=fake_result),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh", "--step", "transform"])
+
+    assert result.exit_code == 1
+    assert "Investment planning prevented transform" in result.output
+    assert "Transforms: rebuilt" not in result.output
+
+
+def test_interrupted_refresh_reports_unknown_saved_scope(runner: CliRunner) -> None:
+    """Cancellation never invents rollback or an empty saved scope."""
+    with (
+        patch("moneybin.orchestration.refresh.refresh", side_effect=KeyboardInterrupt),
+        patch("moneybin.database.get_database") as get_db,
+    ):
+        get_db.return_value.__enter__.return_value = MagicMock()
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 130
+    assert "Refresh cancelled" in result.stdout
+    assert "saved scope is unknown" in result.stdout.lower()
+    assert "moneybin transform status" in result.stdout
+
+
+def test_refresh_busy_database_reports_recovery(runner: CliRunner) -> None:
+    """A writer lock is surfaced as a classified refresh failure."""
+    from moneybin.database import DatabaseLockError
+
+    with patch("moneybin.database.get_database") as get_db:
+        get_db.return_value.__enter__.side_effect = DatabaseLockError("database busy")
+        result = runner.invoke(app, ["refresh"])
+
+    assert result.exit_code == 1, result.output
+    assert "database busy" in result.output
+    assert "moneybin db ps" in result.output
+
+
 def test_refresh_step_transform_only(runner: CliRunner) -> None:
     """``--step transform`` runs only the transform step."""
     fake_result = RefreshResult(applied=True, duration_seconds=0.5, error=None)
@@ -99,7 +206,8 @@ def test_refresh_step_transform_only(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh", "--step", "transform"])
 
     assert result.exit_code == 0
-    assert svc.call_args.kwargs == {"steps": ["transform"]}
+    assert svc.call_args.kwargs["steps"] == ["transform"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_identity_only(runner: CliRunner) -> None:
@@ -115,7 +223,8 @@ def test_refresh_step_identity_only(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh", "--step", "identity"])
 
     assert result.exit_code == 0, result.output
-    assert svc.call_args.kwargs == {"steps": ["identity"]}
+    assert svc.call_args.kwargs["steps"] == ["identity"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_repeatable(runner: CliRunner) -> None:
@@ -135,7 +244,8 @@ def test_refresh_step_repeatable(runner: CliRunner) -> None:
     # applied=False with error=None (transform deliberately skipped) → exit 0.
     # The user got what they asked for; only genuine errors fail the command.
     assert result.exit_code == 0
-    assert svc.call_args.kwargs == {"steps": ["match", "categorize"]}
+    assert svc.call_args.kwargs["steps"] == ["match", "categorize"]
+    assert callable(svc.call_args.kwargs["progress"])
 
 
 def test_refresh_step_json_partial_cascade(runner: CliRunner) -> None:
@@ -207,7 +317,7 @@ def test_refresh_matcher_crash_surfaced_in_json(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh", "--output", "json"])
 
-    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    assert result.exit_code == 1
     payload = json.loads(
         result.stdout
     )  # stdout stays clean JSON (warning is on stderr)
@@ -277,7 +387,7 @@ def test_refresh_warns_when_the_rates_step_itself_crashed(runner: CliRunner) -> 
         ),
     )
 
-    assert out.exit_code == 0, "the rates step is best-effort, like its siblings"
+    assert out.exit_code == 1
     assert "Exchange rate backfill failed" in out.output
     assert "✅ Refresh complete" not in out.output
 
@@ -293,7 +403,7 @@ def test_refresh_unfilled_rate_pair_warns_and_withholds_the_success_banner(
     """
     out = _invoke_refresh(runner, _rates_result(failed=("EUR/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "Exchange rates unavailable for EUR/USD" in out.output
     assert "✅ Refresh complete" not in out.output
 
@@ -310,7 +420,7 @@ def test_refresh_names_an_unsupported_pair_and_its_manual_remedy(
     """
     out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "No exchange rate series is published for JPY/USD" in out.output
     assert "moneybin fx set" in out.output
     assert "Re-run the failed step" not in out.output
@@ -330,7 +440,7 @@ def test_refresh_rate_warnings_survive_quiet(runner: CliRunner) -> None:
     """-q suppresses status and ✅, never a warning — same rule as the matcher."""
     out = _invoke_refresh(runner, _rates_result(unsupported=("JPY/USD",)), "--quiet")
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "No exchange rate series is published for JPY/USD" in out.output
 
 
@@ -347,7 +457,7 @@ def test_refresh_reports_a_pair_whose_rates_were_partly_unusable(
     """
     out = _invoke_refresh(runner, _rates_result(discarded=("GBP/USD",)))
 
-    assert out.exit_code == 0
+    assert out.exit_code == 1
     assert "Exchange rate coverage is short for GBP/USD" in out.output
     assert "Re-run the failed step" not in out.output
     assert "✅ Refresh complete" not in out.output
@@ -372,6 +482,30 @@ def test_refresh_json_carries_every_rate_pair_list(runner: CliRunner) -> None:
     assert payload["rate_pairs_discarded"] == ["GBP/USD"]
 
 
+@pytest.mark.parametrize(
+    ("backfill", "field", "pair"),
+    [
+        ({"unsupported": ("JPY/USD",)}, "rate_pairs_unsupported", "JPY/USD"),
+        ({"discarded": ("GBP/USD",)}, "rate_pairs_discarded", "GBP/USD"),
+    ],
+)
+def test_refresh_json_nonretryable_rate_partial_exits_one(
+    runner: CliRunner,
+    backfill: dict[str, tuple[str, ...]],
+    field: str,
+    pair: str,
+) -> None:
+    """Each nonretryable requested rate gap is still a failed shell outcome."""
+    out = _invoke_refresh(runner, _rates_result(**backfill), "--output", "json")
+
+    assert out.exit_code == 1
+    payload = json.loads(out.stdout)["data"]
+    assert payload[field] == [pair]
+    assert payload["rate_pairs_failed"] == []
+    for other_field in {"rate_pairs_unsupported", "rate_pairs_discarded"} - {field}:
+        assert payload[other_field] == []
+
+
 def test_refresh_clean_rates_still_prints_the_success_banner(
     runner: CliRunner,
 ) -> None:
@@ -382,7 +516,7 @@ def test_refresh_clean_rates_still_prints_the_success_banner(
     """
     out = _invoke_refresh(runner, _rates_result())
 
-    assert "✅ Refresh complete" in out.output
+    assert "Refresh complete" in out.output
 
 
 def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
@@ -395,7 +529,8 @@ def test_refresh_matcher_crash_warns_in_text(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
+    assert "Refresh partially completed" in result.output
     assert "Matching step failed" in result.output
 
 
@@ -409,7 +544,7 @@ def test_refresh_matcher_crash_warns_even_in_quiet(runner: CliRunner) -> None:
         get_db.return_value.__enter__.return_value = MagicMock()
         result = runner.invoke(app, ["refresh", "--quiet"])
 
-    assert result.exit_code == 0  # best-effort crash doesn't fail the command
+    assert result.exit_code == 1
     assert "Matching step failed" in result.output  # warning still surfaced
 
 
@@ -424,7 +559,7 @@ def test_refresh_clean_success_keeps_check_banner(runner: CliRunner) -> None:
         result = runner.invoke(app, ["refresh"])
 
     assert result.exit_code == 0
-    assert "✅ Refresh complete" in result.output
+    assert "Refresh complete" in result.output
 
 
 def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
@@ -442,7 +577,7 @@ def test_refresh_apply_failure_with_matcher_crash_suppresses_retry_hint(
     assert result.exit_code == 1
     assert "Matching step failed" in result.output  # crash still surfaced
     assert "Re-run the failed step" not in result.output  # retry hint suppressed
-    assert "Refresh failed: apply boom" in result.output
+    assert "Failed: apply boom" in result.output
 
 
 def test_refresh_warns_when_the_match_step_retired_an_accepted_transfer(
@@ -649,7 +784,7 @@ def test_refresh_stage_notes_are_silenced_by_quiet(runner: CliRunner) -> None:
     )
 
     assert invocation.exit_code == 0, invocation.output
-    assert "categorize" not in invocation.output
+    assert "400 categorized" in invocation.output
 
 
 def _run_text_refresh_quiet(runner: CliRunner, result: RefreshResult) -> Result:
@@ -732,8 +867,9 @@ def test_a_failed_apply_is_warned_about_once_not_once_per_surface(
     assert "categorizer boom" in caplog.text
 
 
+@pytest.mark.parametrize("columns", [60, 80, 120])
 def test_categorize_summary_breakdown_accounts_for_every_engine(
-    runner: CliRunner,
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, columns: int
 ) -> None:
     """The printed parts must account for the printed total.
 
@@ -756,6 +892,7 @@ def test_categorize_summary_breakdown_accounts_for_every_engine(
     assert sum(v for k, v in counts.items() if k != "total") == counts["total"], (
         "fixture must be self-consistent or it cannot detect an omitted engine"
     )
+    monkeypatch.setenv("COLUMNS", str(columns))
 
     invocation = _run_text_refresh(
         runner,
@@ -765,8 +902,9 @@ def test_categorize_summary_breakdown_accounts_for_every_engine(
     )
 
     assert invocation.exit_code == 0, invocation.output
-    assert "Categorization: 9 categorized" in invocation.output
-    assert "2 merchant" in invocation.output
-    assert "3 rule" in invocation.output
-    assert "1 provider" in invocation.output
-    assert "3 source map" in invocation.output
+    output = " ".join(invocation.output.split())
+    assert "Categorization: 9 categorized" in output
+    assert "2 merchant" in output
+    assert "3 rule" in output
+    assert "1 provider" in output
+    assert "3 source map" in output

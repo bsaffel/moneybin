@@ -22,17 +22,18 @@ import typer
 from moneybin.cli.output import (
     CLI_MAX_ROWS,
     OutputFormat,
+    applied_rates_note,
     display_currency_option,
-    echo_applied_rates,
+    emit_human_result,
+    no_pager_option,
     output_option,
     quiet_option,
     render_or_json,
     wide_option,
 )
-from moneybin.cli.render import Money, count_wide_request, render_note, render_rows
-from moneybin.cli.utils import handle_cli_errors
+from moneybin.cli.render import Money, build_rows, count_wide_request, render_note
+from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
 from moneybin.database import get_database
-from moneybin.protocol.envelope import ResponseEnvelope
 from moneybin.reports._framework.contract import (
     ORIGINAL_CURRENCY_COLUMN,
     ReportSpec,
@@ -40,6 +41,8 @@ from moneybin.reports._framework.contract import (
 )
 
 if TYPE_CHECKING:
+    from moneybin.cli.terminal import TerminalSymbols
+
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear. `catalog`
     # is deferred for the same reason — it reaches `execute`.
@@ -63,6 +66,14 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
             inspect.Parameter.POSITIONAL_OR_KEYWORD,
             default=display_currency_option,
             annotation=str | None,
+        )
+    )
+    params.append(
+        inspect.Parameter(
+            "no_pager",
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            default=no_pager_option,
+            annotation=bool,
         )
     )
     params.append(
@@ -95,6 +106,32 @@ def _cli_signature(spec: ReportSpec) -> inspect.Signature:
     return inspect.Signature(params)
 
 
+def report_note_lines(
+    result: CatalogReportResult,
+    *,
+    quiet: bool = False,
+    symbols: TerminalSymbols | None = None,
+) -> tuple[str, ...]:
+    """Build report fidelity disclosures for one complete terminal answer."""
+    if symbols is None:
+        symbols = get_terminal_policy().symbols
+    lines: list[str] = []
+    if conversion_note := applied_rates_note(
+        result.applied_rates, result.display_currency
+    ):
+        lines.append(conversion_note)
+    if result.degraded and result.degraded_reason:
+        lines.append(f"{symbols.attention} {result.degraded_reason}")
+    if result.truncated:
+        lines.append(
+            f"{symbols.attention} Showing the first {len(result.records):,} rows; more exist. "
+            "Raise --limit or narrow the report to see the rest."
+        )
+    if not quiet:
+        lines.extend(f"{symbols.action} {action}" for action in result.actions)
+    return tuple(lines)
+
+
 def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> None:
     """Echo the envelope metadata the text path would otherwise drop.
 
@@ -119,41 +156,9 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
     diagnostics about the answer, not the answer, and redirecting a report to a
     file or a downstream parser must not append prose to the data stream.
     """
-    # Requirement 10 on the surface that cannot read `summary.applied_rates`.
-    # Shared with the investments portfolio total so one disclosure has one
-    # rendering; the reasoning for its shape lives on the helper.
-    echo_applied_rates(result.applied_rates, result.display_currency)
-    # R4's verdict, on the surface that cannot see the envelope. JSON and MCP
-    # callers read `summary.degraded_reason`; without this a drifted report
-    # printed `*****` and said nothing — the silent masking that teaches a
-    # reader to skip the warning that matters.
-    if result.degraded and result.degraded_reason:
-        render_note(f"⚠️  {result.degraded_reason}", warn=True)
-    # Same gap, same surface: `truncated` rides the envelope to JSON and MCP
-    # callers, so without this the text path renders a capped table that
-    # reads as the whole answer — worse here than a masked cell, because
-    # nothing about the rows themselves looks unusual.
-    #
-    # The count of what was *not* shown is deliberately absent. A truncated
-    # execution fetches `limit + 1` rows and reports that as `total_count`,
-    # so it is a lower bound — "1,000,000 of 1,000,001" would read as one
-    # row missing when millions are, which is a more confident lie than
-    # saying nothing. `mcp.md` calls this a lower-bound total for the same
-    # reason; counting the rest means running the query again without a cap.
-    if result.truncated:
-        render_note(
-            f"⚠️  Showing the first {len(result.records):,} rows; more exist. "
-            "Raise --limit or narrow the report to see the rest.",
-            warn=True,
-        )
-    # Third instance of the same asymmetry, and the one that inverted its own
-    # intent: `inspection_hint` deliberately names a CLI command — "Run
-    # `moneybin reports explain …`" — so the surfaces that cannot run it were
-    # told to while the terminal printed `*****` and stopped. Every action is
-    # rendered, not just that hint: a runner's own `actions` are next steps for
-    # whoever called it, and the text path is a caller.
-    for action in result.actions:
-        render_note(f"💡 {action}", quiet=quiet)
+    symbols = get_terminal_policy().symbols
+    for line in report_note_lines(result, quiet=quiet, symbols=symbols):
+        render_note(line, warn=line.startswith(f"{symbols.attention} "))
 
 
 class ColumnView(NamedTuple):
@@ -320,6 +325,7 @@ def render_report_result(
     quiet: bool = False,
     columns: Sequence[str] | None = None,
     fit: bool = False,
+    no_pager: bool = False,
 ) -> None:
     """Render one report result as a table or the JSON envelope.
 
@@ -343,31 +349,48 @@ def render_report_result(
     """
     visible = list(result.columns if columns is None else columns)
 
-    def _render_text(_: ResponseEnvelope[Any]) -> None:
-        if result.records:
-            rows: list[tuple[object, ...]] = [
+    if output == OutputFormat.JSON:
+        render_or_json(
+            result.to_envelope(),
+            output,
+            cli_actor=cli_actor,
+            classes_returned=result.classes_returned,
+        )
+        return
+    policy = get_terminal_policy(no_pager=no_pager)
+    disclosures = report_note_lines(result, quiet=quiet, symbols=policy.symbols)
+    if result.records:
+        from rich.console import Group
+        from rich.text import Text
+
+        human = build_rows(
+            visible,
+            [
                 tuple(record.get(column) for column in visible)
                 for record in result.records
-            ]
-            render_rows(
-                visible,
-                rows,
-                money=money,
-                total_columns=len(result.columns),
-                fit=fit,
-            )
-        echo_report_notes(result, quiet=quiet)
+            ],
+            money=money,
+            total_columns=len(result.columns),
+            fit=fit,
+            terminal=policy,
+        )
+        if disclosures:
+            human = Group(human, Text("\n" + "\n".join(disclosures)))
+        emit_human_result(
+            human,
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
+    elif disclosures:
+        from rich.text import Text
 
-    render_or_json(
-        result.to_envelope(),
-        output,
-        render_fn=_render_text,
-        cli_actor=cli_actor,
-        # Bare-list payload + lineage-derived classes: pass them explicitly so
-        # the privacy.log audit event records the real data classes instead of an
-        # empty set (same as `sql query`).
-        classes_returned=result.classes_returned,
-    )
+        emit_human_result(
+            Text("\n".join(disclosures)),
+            policy=policy,
+            finite_read=True,
+            no_pager=no_pager,
+        )
 
 
 def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
@@ -388,6 +411,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
         # Popped for the same reason as `display_currency`: a framework option
         # the runner never declared and would reject as unknown.
         wide: bool = bool(kwargs.pop("wide", False))
+        no_pager: bool = bool(kwargs.pop("no_pager", False))
         # Popped before `kwargs` becomes `parameters`: display conversion is the
         # framework's, not the runner's, so a runner would reject it as unknown.
         display_currency: str | None = kwargs.pop("display_currency", None)
@@ -422,6 +446,7 @@ def build_cli_command(spec: ReportSpec) -> Callable[..., None]:
                 quiet=quiet,
                 columns=view.columns,
                 fit=view.fit,
+                no_pager=no_pager,
             )
 
     _impl.__name__ = spec.name

@@ -200,6 +200,33 @@ def test_accept_pending_records_repo_ids_and_reconciles_once(
     assert reconciliation_calls == 1
 
 
+def test_accept_ids_preserves_preview_order_and_reconciles_once(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bounded confirmation retains the reviewed order through finalize."""
+    _seed_match(db, match_id="first", status="pending")
+    _seed_match(db, match_id="second", status="pending")
+    reconciliation_calls = 0
+
+    def _reconcile(*args: object, **kwargs: object) -> int:
+        nonlocal reconciliation_calls
+        reconciliation_calls += 1
+        return 0
+
+    monkeypatch.setattr(
+        "moneybin.matching.application.retire_transfers_invalidated_by_dedup",
+        _reconcile,
+    )
+    db.begin()
+    app = MatchDecisionApplication(db, decisions=MatchDecisionsRepo(db), actor="test")
+    app.accept_ids(("second", "first"))
+    effects = app.finalize()
+    db.rollback()
+
+    assert [change.match_id for change in effects.changes] == ["second", "first"]
+    assert reconciliation_calls == 1
+
+
 def test_bulk_and_explicit_requests_cannot_overlap(db: Database) -> None:
     """Mixing modes would make the request set ambiguous, so it is rejected."""
     _seed_match(db, match_id="pending-4", status="pending")

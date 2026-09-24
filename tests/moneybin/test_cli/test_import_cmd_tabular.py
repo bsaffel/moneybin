@@ -370,8 +370,25 @@ class TestDeleteFormat:
         )
 
         assert result.exit_code == 0
+        assert "Format deleted" in result.stdout
+        assert "my_custom_format" in result.stdout
         service.plan_saved_format_delete.assert_called_once_with("my_custom_format")
         service.delete_saved_format_confirmed.assert_called_once()
+
+    def test_delete_requires_yes_when_noninteractive(self, mocker: Any) -> None:
+        """A saved format cannot be deleted by a piped, unanswered prompt."""
+        mocker.patch("moneybin.database.get_database", return_value=MagicMock())
+        service = mocker.patch(
+            "moneybin.services.import_service.ImportService"
+        ).return_value
+        service.plan_saved_format_delete.return_value = SavedFormatDeletePlan(
+            format_name="my_custom_format", state_sha256="reviewed-state"
+        )
+
+        result = runner.invoke(app, ["formats", "delete", "my_custom_format"])
+
+        assert result.exit_code == 1, result.output
+        service.delete_saved_format_confirmed.assert_not_called()
 
     def test_delete_rejects_a_changed_live_plan_with_canonical_error(
         self,
@@ -445,6 +462,22 @@ class TestPreview:
         result = runner.invoke(app, ["preview", str(csv_file)])
 
         assert result.exit_code == 0
+
+    def test_preview_names_the_bounded_sample_scope(self, tmp_path: Path) -> None:
+        """Parsed values render as rows with an explicit first-five sample bound."""
+        csv_file = tmp_path / "sample.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n"
+            "2025-01-01,-10.00,Coffee\n"
+            "2025-01-02,20.00,Refund\n"
+        )
+
+        result = runner.invoke(app, ["preview", str(csv_file)])
+
+        assert result.exit_code == 0, result.output
+        assert "Sample scope" in result.stdout
+        assert "first 2 of 2 parsed rows" in result.stdout
+        assert "Coffee" in result.stdout
         assert "Columns" in result.output
 
     def test_undetected_date_hint_only_names_flags_preview_accepts(
@@ -562,7 +595,7 @@ class TestPreview:
 
         assert result.exit_code == 0
         assert "Header row detected: False" in result.output
-        assert "Rows: 3" in result.output
+        assert re.search(r"Parsed rows:\s+3", result.output)
 
     def test_preview_reads_the_sheet_the_named_format_selects(
         self, tmp_path: Path, mocker: Any
@@ -617,7 +650,7 @@ class TestPreview:
 
         assert result.exit_code == 0, result.output
         # The larger "Ledger" sheet has 5 data rows; the named one has 2.
-        assert "Rows: 2" in result.output, result.output
+        assert re.search(r"Parsed rows:\s+2", result.output), result.output
         assert "Posted" not in result.output, result.output
 
     def test_preview_skips_the_preamble_the_named_format_declares(
@@ -668,7 +701,7 @@ class TestPreview:
         )
 
         assert result.exit_code == 0, result.output
-        assert "Rows: 2" in result.output, result.output
+        assert re.search(r"Parsed rows:\s+2", result.output), result.output
         assert "Header row detected: True" in result.output, result.output
         assert "transaction_date ← Date" in result.output, result.output
 
@@ -1300,11 +1333,11 @@ class TestPreview:
 
         assert result.exit_code == 1
         assert not isinstance(result.exception, PermissionError)
-        # The ❌ record has to name THIS failure (not merely be some
-        # classified error) — asserting only `startswith("❌ ")` would pass
+        # The terminal-policy failure marker has to name THIS failure (not merely be
+        # some classified error) — asserting only the marker would pass
         # for any classified error at all.
         assert any(
-            r.message.startswith("❌ ") and "Permission denied" in r.message
+            r.message.startswith("× ") and "Permission denied" in r.message
             for r in caplog.records
         )
         # The 💡 hint has to be the mode-denial one, not just any hint.
@@ -1367,9 +1400,9 @@ class TestDeclaredDateFormatConfirmConverges:
             assert preview_result.exit_code == 0, preview_result.output
             # Thousands-separated, as the command prints it — an oversized
             # file's count is the one this would otherwise silently miss.
-            assert f"Rows: {expect_rows:,}" in preview_result.output, (
-                preview_result.output
-            )
+            assert re.search(
+                rf"Parsed rows:\s+{expect_rows:,}", preview_result.output
+            ), preview_result.output
             assert f"Header row detected: {expect_header}" in preview_result.output, (
                 preview_result.output
             )
@@ -1407,7 +1440,7 @@ class TestDeclaredDateFormatConfirmConverges:
                 "--no-save-format",
             ],
         )
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.output)
 
         for _ in range(max_rounds):
@@ -1429,6 +1462,13 @@ class TestDeclaredDateFormatConfirmConverges:
             caplog.clear()
             with caplog.at_level(logging.INFO):
                 confirm_result = runner.invoke(app, tokens[2:])
+            if confirm_result.exit_code == 1:
+                assert "Account binding required" in confirm_result.output
+                confirm_result = runner.invoke(app, [*tokens[2:], "--output", "json"])
+                assert confirm_result.exit_code == 0, confirm_result.output
+                payload = json.loads(confirm_result.output)
+                assert payload["data"]["status"] == "confirmation_required", payload
+                continue
             assert confirm_result.exit_code == 0, confirm_result.output
             # A settled `import confirm` (no more confirmation_required) takes
             # the normal `--output` (default text) success-render path, not
@@ -1442,7 +1482,7 @@ class TestDeclaredDateFormatConfirmConverges:
             try:
                 payload = json.loads(confirm_result.output)
             except json.JSONDecodeError:
-                assert "✅ Imported" in caplog.text, caplog.text
+                assert "Import complete" in confirm_result.output
                 return
 
         pytest.fail(f"did not converge to status=ok within {max_rounds} rounds")
@@ -1688,7 +1728,7 @@ class TestDeclaredDateFormatConfirmConverges:
         assert "%d/%m/%Y" in line, line
         assert "does not read the mapped column" in line, line
         # Detection's own reading of the column is the value the caller needs.
-        assert "%Y-%m-%d" in line, line
+        assert re.search(r"Detection:\s+%Y-%m-%d", preview.output), preview.output
 
         imported = runner.invoke(
             app,
@@ -1712,6 +1752,47 @@ class TestDeclaredDateFormatConfirmConverges:
         )
         assert imported.exit_code == 1, imported.output
         assert "could not read" in caplog.text, caplog.text
+
+    @pytest.mark.parametrize("width", [40, 80])
+    def test_preview_keeps_date_refusal_facts_at_narrow_widths(
+        self, tmp_path: Path, mocker: Any, width: int
+    ) -> None:
+        """A wrapped receipt still names declared, detected, and refused meanings."""
+        from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+
+        csv_file = tmp_path / "iso_dates.csv"
+        csv_file.write_text(
+            "Date,Amount,Description\n2026-01-05,42.50,Coffee\n",
+            encoding="utf-8",
+        )
+        mocker.patch(
+            "moneybin.cli.commands.import_cmd.get_terminal_policy",
+            return_value=TerminalPolicy(
+                output="text",
+                interactive=False,
+                page=False,
+                color=False,
+                style=False,
+                animate_progress=False,
+                stage_chatter=True,
+                ascii=False,
+                width=width,
+                height=24,
+                symbols=TerminalSymbols("✓", "!", "×", "›"),
+                minus="−",
+            ),
+        )
+
+        result = runner.invoke(
+            app, ["preview", str(csv_file), "--date-format", "%d/%m/%Y"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "%d/%m/%Y" in result.output
+        assert re.search(r"Detection:\s+%Y-%m-%d", result.output), result.output
+        normalized = " ".join(result.output.split())
+        assert "does not read the mapped column" in normalized
+        assert "would refuse this date format" in normalized
 
     def test_confirm_hints_carry_the_size_override_that_allowed_the_read(
         self,
@@ -1833,7 +1914,9 @@ class TestDeclaredDateFormatConfirmConverges:
         assert tokens[tokens.index("--date-format") + 1] == "%Y%m%d", tokens
         preview_result = runner.invoke(app, tokens[2:])
         assert preview_result.exit_code == 0, preview_result.output
-        assert "Rows: 3" in preview_result.output, preview_result.output
+        assert re.search(r"Parsed rows:\s+3", preview_result.output), (
+            preview_result.output
+        )
         assert "Header row detected: False" in preview_result.output, (
             preview_result.output
         )

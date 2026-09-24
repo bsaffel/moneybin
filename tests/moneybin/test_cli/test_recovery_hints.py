@@ -147,20 +147,15 @@ def test_retirement_warning_is_silent_on_zero(
     assert caplog.messages == []
 
 
-def test_partial_rematch_report_publishes_runnable_recovery(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_partial_rematch_report_publishes_runnable_recovery() -> None:
     """The crash branch: counts are incomplete and some merges already landed."""
-    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(_rematch(error="boom"))
+    notices = _report_rematch(_rematch(error="boom"))
 
-    assert caplog.messages, "the partial-failure branch did not report"
-    assert_published_commands_resolve("\n".join(caplog.messages))
+    assert notices, "the partial-failure branch did not report"
+    assert_published_commands_resolve("\n".join(notices))
 
 
-def test_partial_rematch_report_names_the_decisions_that_landed(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_partial_rematch_report_names_the_decisions_that_landed() -> None:
     """The crash branch has real counts now, and hedging past them hides merges.
 
     ``MatchRunError`` carries the committed counts and ``refresh`` copies them
@@ -169,10 +164,9 @@ def test_partial_rematch_report_names_the_decisions_that_landed(
     number on a hedge — and an auto-merge is what suppresses the duplicate side
     of a transaction in the ledger.
     """
-    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
+    joined = "\n".join(
         _report_rematch(_rematch(error="boom", auto_merged=4, pending_review=2))
-
-    joined = "\n".join(caplog.messages)
+    )
     assert "4" in joined, f"the crash branch hid the merges that landed: {joined}"
     assert "2" in joined, f"the crash branch hid the proposals that landed: {joined}"
     assert_published_commands_resolve(joined)
@@ -230,15 +224,12 @@ def test_mcp_partial_rematch_states_its_counts_once() -> None:
     assert "stopped partway" in " ".join(actions)
 
 
-def test_pending_transfer_hint_publishes_runnable_recovery(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_pending_transfer_hint_publishes_runnable_recovery() -> None:
     """The clean branch that raised transfers still owes a way to review them."""
-    with caplog.at_level(logging.INFO, logger="moneybin.cli.commands.accounts.links"):
-        _report_rematch(_rematch(pending_transfers=3))
+    notices = _report_rematch(_rematch(pending_transfers=3))
 
-    assert caplog.messages, "the pending-transfer branch did not report"
-    assert_published_commands_resolve("\n".join(caplog.messages))
+    assert notices, "the pending-transfer branch did not report"
+    assert_published_commands_resolve("\n".join(notices))
 
 
 def test_only_a_reject_reports_a_null_rematch_count() -> None:
@@ -260,9 +251,7 @@ def test_only_a_reject_reports_a_null_rematch_count() -> None:
     )
 
 
-def test_an_absent_match_stage_reads_the_same_on_both_surfaces(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_an_absent_match_stage_reads_the_same_on_both_surfaces() -> None:
     """Neither twin may read a missing match stage as a clean pass.
 
     Both callers always request the match step, so an absent entry is an
@@ -278,10 +267,5 @@ def test_an_absent_match_stage_reads_the_same_on_both_surfaces(
     actions = rematch_actions(no_stages)
     assert any("could not run" in action for action in actions), actions
 
-    with caplog.at_level(
-        logging.WARNING, logger="moneybin.cli.commands.accounts.links"
-    ):
-        _report_rematch(no_stages)
-    assert any("could not run" in message for message in caplog.messages), (
-        caplog.messages
-    )
+    notices = _report_rematch(no_stages)
+    assert any("could not run" in notice for notice in notices), notices

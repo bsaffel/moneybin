@@ -62,6 +62,7 @@ Usage: `moneybin privacy grant [OPTIONS] {category}`
 | `--mode` | one of `persistent`, `one-time` | `persistent` | persistent or one-time |
 | `--yes, -y` | flag |  | Skip the confirmation prompt |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin privacy revoke
 
@@ -82,6 +83,7 @@ Usage: `moneybin privacy revoke [OPTIONS] {category}`
 | `--backend` | text |  | AI backend |
 | `--yes, -y` | flag |  | Skip confirmation |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin privacy revoke-all
 
@@ -95,6 +97,7 @@ Usage: `moneybin privacy revoke-all [OPTIONS]`
 |---|---|---|---|
 | `--yes, -y` | flag |  | Skip confirmation |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
 
 ## moneybin privacy status
 
@@ -107,6 +110,8 @@ Usage: `moneybin privacy status [OPTIONS]`
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin privacy log
 
@@ -121,3 +126,5 @@ Usage: `moneybin privacy log [OPTIONS]`
 | `--last` | int | `50` | Max events to show (capped at 1000) |
 | `--actor` | text |  | Filter by actor |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |

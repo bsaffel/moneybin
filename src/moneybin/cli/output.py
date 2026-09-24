@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import re
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -40,7 +42,7 @@ from pydantic import BaseModel
 # private path fails at import, not silently, if typer moves it.
 from typer._click.globals import get_current_context
 
-from moneybin.cli.render import render_note
+from moneybin.cli.render import render_human_text, render_note
 from moneybin.errors import UserError
 from moneybin.privacy.classified_envelope import classify
 from moneybin.privacy.log import build_tool_call_event, write_privacy_event
@@ -57,10 +59,56 @@ from moneybin.protocol.row_set import NO_ROW_SET, row_set, row_set_field
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from moneybin.cli.terminal import TerminalPolicy
     from moneybin.exports.models import ExportReceipt
     from moneybin.services.currency_service import ResolvedRate
 
 logger = logging.getLogger(__name__)
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def emit_human_result(
+    result: Any,
+    *,
+    policy: TerminalPolicy,
+    finite_read: bool,
+    no_pager: bool = False,
+    wide: bool = False,
+    live_follow: bool = False,
+    receipt: bool = False,
+) -> None:
+    """Render one complete human answer, paging eligible long finite reads.
+
+    The input is already the bounded command result.  This boundary renders it
+    once at the selected terminal width; deciding to page never asks a command
+    or service for another row.
+    """
+    text = render_human_text(result, terminal=policy)
+    visible = _ANSI_ESCAPE.sub("", text)
+    visible_lines = sum(
+        max(1, (len(line) + policy.width - 1) // policy.width)
+        for line in visible.splitlines()
+    )
+    eligible = (
+        policy.output == "text"
+        and policy.page
+        and finite_read
+        and not no_pager
+        and not live_follow
+        and not receipt
+    )
+    if eligible and visible_lines + 1 > policy.height:
+        from moneybin.cli.pager import page_text
+
+        answer = f"{text.rstrip()}\n\nq return to shell\n"
+        if page_text(answer, color=policy.color, wide=wide):
+            return
+    sys.stdout.write(text)
+
+
+# DEPRECATED: direct-human-output — migrate this text path through the shared
+# terminal policy; docs/specs/cli-human-experience.md#implementation-boundary-and-migration.
 
 CLI_MAX_ROWS = 1_000_000
 """Rows a CLI report run may return.
@@ -117,8 +165,18 @@ def echo_applied_rates(
     answer, not the answer, and redirecting to a file or a downstream parser
     must not append prose to the data stream.
     """
-    if not applied_rates:
+    note = applied_rates_note(applied_rates, target_currency)
+    if note is None:
         return
+    render_note(note)
+
+
+def applied_rates_note(
+    applied_rates: Sequence[ResolvedRate], target_currency: str | None
+) -> str | None:
+    """Describe applied conversion rates for a composed human result."""
+    if not applied_rates:
+        return None
     if len(applied_rates) == 1:
         rate = applied_rates[0]
         priced_on = (
@@ -128,16 +186,28 @@ def echo_applied_rates(
             # Requirement 10 wants that visible rather than smoothed over.
             else f"{rate.rate_date}, for {rate.requested_date}"
         )
-        render_note(
-            f"💱 Converted from {rate.from_currency} at {rate.rate} "
+        return (
+            f"Converted from {rate.from_currency} at {rate.rate} "
             f"({priced_on}, {rate.source})"
         )
-        return
     sources = sorted({rate.from_currency for rate in applied_rates})
-    render_note(
-        f"💱 Converted from {', '.join(sources)} using "
+    example = min(
+        applied_rates,
+        key=lambda rate: (
+            rate.from_currency,
+            rate.to_currency,
+            rate.requested_date,
+            rate.rate_date,
+            rate.source,
+            str(rate.rate),
+        ),
+    )
+    from moneybin.cli.utils import generated_cli_command
+
+    return (
+        f"Converted from {', '.join(sources)} using "
         f"{len(applied_rates)} stored rates; run "
-        f"'moneybin fx rate <from> {currency_label(target_currency)} <date>' "
+        f"'{generated_cli_command('fx', 'rate', example.from_currency, example.to_currency, example.requested_date)}' "
         "for one of them, or --output json for all"
     )
 
@@ -157,6 +227,14 @@ def _set_output_flag(value: OutputFormat) -> OutputFormat:
     return set_output_flag(value)
 
 
+def _set_quiet_flag(value: bool) -> bool:
+    from moneybin.cli.utils import (
+        set_quiet_flag,  # deferred: module-scope import would cycle
+    )
+
+    return set_quiet_flag(value)
+
+
 output_option: OutputFormat = typer.Option(
     OutputFormat.TEXT,
     "-o",
@@ -170,13 +248,20 @@ quiet_option: bool = typer.Option(
     False,
     "-q",
     "--quiet",
-    help="Suppress informational output (status lines, progress, ✅).",
+    help="Suppress optional status lines and progress; preserve results and recovery.",
+    callback=_set_quiet_flag,
 )
 
 wide_option: bool = typer.Option(
     False,
     "--wide",
     help="Render every column, not just the default set.",
+)
+
+no_pager_option: bool = typer.Option(
+    False,
+    "--no-pager",
+    help="Print the complete text result directly instead of opening a pager.",
 )
 
 display_currency_option: str | None = typer.Option(
@@ -529,16 +614,22 @@ def render_export_receipt(
     )
 
     def _render_text(_: ResponseEnvelope[Any]) -> None:
+        from moneybin.cli.utils import get_terminal_policy
+
+        terminal = get_terminal_policy()
         if payload.artifact_path is not None:
-            typer.echo(f"Exported artifact: {payload.artifact_path}")
+            lines = [f"Exported artifact: {payload.artifact_path}"]
             if payload.compressed_artifact_path is not None:
-                typer.echo(f"Compressed artifact: {payload.compressed_artifact_path}")
+                lines.append(f"Compressed artifact: {payload.compressed_artifact_path}")
         else:
-            typer.echo(
+            lines = [
                 f"Exported to sheets:{payload.destination.name} "
                 f"(identity={payload.sheets_identity})"
-            )
-        typer.echo("✅ Export complete.")
+            ]
+        lines.append(f"{terminal.symbols.success} Export complete.")
+        emit_human_result(
+            "\n".join(lines), policy=terminal, finite_read=False, receipt=True
+        )
 
     render_or_json(
         build_envelope(

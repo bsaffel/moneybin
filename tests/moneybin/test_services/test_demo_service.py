@@ -105,10 +105,17 @@ def _mock_pipeline(
 
     engine = mocker.patch("moneybin.synthetic.engine.GeneratorEngine")
     engine.return_value.generate.return_value = SimpleNamespace(
-        accounts=[object(), object()], transactions=[], merchant_seeds=[]
+        accounts=[object(), object()],
+        transactions=[object() for _ in range(5)],
+        merchant_seeds=[],
+        start_date=datetime.date(2024, 1, 1),
+        end_date=datetime.date(2024, 12, 31),
     )
     writer = mocker.patch("moneybin.synthetic.writer.SyntheticWriter")
-    writer.return_value.write.return_value = {"tabular_transactions": 5}
+    writer.return_value.write.return_value = {
+        "tabular_accounts": 2,
+        "tabular_transactions": 5,
+    }
 
     mocker.patch(
         "moneybin.orchestration.refresh.refresh",
@@ -228,6 +235,37 @@ def test_run_populates_fresh_demo_profile(
     from moneybin.utils.user_config import get_default_profile
 
     assert get_default_profile() == DEMO_PROFILE
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "writer_counts",
+    [
+        {"tabular_accounts": 1, "tabular_transactions": 5},
+        {"tabular_accounts": 2, "tabular_transactions": 4},
+    ],
+    ids=["accounts", "transactions"],
+)
+def test_run_refuses_writer_counts_that_disagree_with_generated_data(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: Any,
+    writer_counts: dict[str, int],
+) -> None:
+    """Demo must fail before transforms when its writer omits generated rows."""
+    monkeypatch.setenv("MONEYBIN_HOME", str(tmp_path))
+    _mock_pipeline(mocker)
+    writer = mocker.patch("moneybin.synthetic.writer.SyntheticWriter")
+    writer.return_value.write.return_value = writer_counts
+    refresh = mocker.patch("moneybin.orchestration.refresh.refresh")
+
+    with pytest.raises(
+        DemoRefreshFailedError, match="generated rows were not all saved"
+    ):
+        DemoService().run(persona="basic", seed=42)
+
+    writer.return_value.write.assert_called_once()
+    refresh.assert_not_called()
 
 
 @pytest.mark.integration

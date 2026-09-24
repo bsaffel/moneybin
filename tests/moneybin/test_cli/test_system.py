@@ -7,6 +7,7 @@ import pytest
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
 
 runner = CliRunner()
 
@@ -28,6 +29,7 @@ def test_system_status_text_output(mock_get_db: MagicMock) -> None:
     result = runner.invoke(app, ["system", "status"])
     assert result.exit_code == 0
     out = result.output.lower()
+    assert "system status" in out
     assert "accounts" in out
     assert "transactions" in out
     assert "matches pending" in out
@@ -146,3 +148,62 @@ def test_system_status_text_and_json_share_export_readiness_reasons(
         "invalid_managed_tab_prefix",
         "sheets_write_authorization_required",
     ]
+
+
+@patch("moneybin.cli.commands.system.get_database")
+def test_system_status_pages_all_configured_destinations_and_no_pager_keeps_them(
+    mock_get_db: MagicMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Destination status is unbounded configuration, so it stays one pageable answer."""
+    from moneybin.exports.service import (
+        ExportDestinationReadiness,
+        ExportReadinessStatus,
+    )
+
+    mock_db = MagicMock()
+    mock_get_db.return_value.__enter__.return_value = mock_db
+    mock_db.execute.return_value.fetchone.return_value = (0, None, None)
+    readiness = ExportReadinessStatus(
+        destinations=tuple(
+            ExportDestinationReadiness(
+                name=f"destination-{index}",
+                kind="local",
+                ready=True,
+                write_capable=True,
+                reasons=(),
+            )
+            for index in range(8)
+        )
+    )
+    policy = TerminalPolicy(
+        output="text",
+        interactive=True,
+        page=True,
+        color=False,
+        style=False,
+        animate_progress=False,
+        stage_chatter=False,
+        ascii=True,
+        width=80,
+        height=1,
+        symbols=TerminalSymbols("OK", "!", "X", ">"),
+        minus="-",
+    )
+    monkeypatch.setattr(
+        "moneybin.cli.commands.system.get_terminal_policy",
+        lambda *, no_pager=False: policy,
+    )
+    pages: list[str] = []
+
+    def capture_page(text: str, **_kwargs: object) -> bool:
+        pages.append(text)
+        return True
+
+    monkeypatch.setattr("moneybin.cli.pager.page_text", capture_page)
+    with patch("moneybin.exports.service.ExportService.status", return_value=readiness):
+        paged = runner.invoke(app, ["system", "status"])
+        direct = runner.invoke(app, ["system", "status", "--no-pager"])
+
+    assert paged.exit_code == direct.exit_code == 0
+    assert pages and "destination-7" in pages[0]
+    assert "destination-7" in direct.stdout

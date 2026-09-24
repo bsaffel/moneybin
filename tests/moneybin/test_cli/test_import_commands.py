@@ -305,8 +305,9 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
         result = runner.invoke(app, ["files", str(good), str(missing)])
-        # Batch failures don't flip exit code; service is invoked for both paths.
-        assert result.exit_code == 0, result.output
+        # The surviving file remains in the receipt, but a requested file
+        # failed, so the batch is a nonzero partial outcome.
+        assert result.exit_code == 1, result.output
         mock_import_files.assert_called_once_with(
             [str(good), str(missing)],
             refresh=True,
@@ -366,7 +367,6 @@ class TestImportFilesCommand:
         mock_import_files: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Per-file flags + multi-file warn and still route through the batch path."""
         a = tmp_path / "a.ofx"
@@ -487,7 +487,7 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
         result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.output)
         assert payload["summary"]["sensitivity"] == "medium"
 
@@ -599,8 +599,8 @@ class TestImportFilesCommand:
     ) -> None:
         """A failed file's JSON row carries error, error_code, and hint.
 
-        The batch stays "ok" here on purpose: one file imported, so this
-        isolates the per-file projection from the all-failed gate below.
+        The envelope shape stays "ok" so callers retain the established
+        per-file projection, while the command exit reports the partial outcome.
         `error_code` is what a scripted caller branches on and `hint` is the
         only thing that tells it how to recover — the classified message alone
         names the problem without naming the fix.
@@ -633,7 +633,7 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
         result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         payload = json.loads(result.stdout)
         assert payload["status"] == "ok"
         failed_row = payload["data"]["files"][0]
@@ -686,7 +686,7 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
         result = runner.invoke(app, ["files", str(a), str(b), "--output", "json"])
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1, result.output
         failed_row = json.loads(result.stdout)["data"]["files"][0]
         assert failed_row["error"] == "RuntimeError"
         assert "error_code" not in failed_row
@@ -776,7 +776,6 @@ class TestImportFilesCommand:
         mock_import_files: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Text mode is the CLI default, so it cannot be the silent one.
 
@@ -807,12 +806,16 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
 
-        with caplog.at_level("INFO"):
-            result = runner.invoke(app, ["files", str(a), str(b)])
+        result = runner.invoke(app, ["files", str(a), str(b)])
 
-        assert result.exit_code == 0, result.output  # partial success
-        assert "Operation not permitted" in caplog.text
-        assert "Grant Full Disk Access" in caplog.text
+        # A saved file does not erase the failed requested file. Text callers
+        # need the same nonzero partial-outcome signal as JSON callers while
+        # retaining both rows' facts in the receipt.
+        assert result.exit_code == 1, result.output
+        assert "Import partially completed" in result.stdout
+        rendered = " ".join(result.stdout.split())
+        assert "Operation not permitted" in rendered
+        assert "Grant Full Disk Access" in rendered
 
     def test_batch_with_a_failed_file_declares_medium_sensitivity(
         self,
@@ -1028,7 +1031,6 @@ class TestImportFilesCommand:
         mock_import_file: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
         """The single-file failure reaches the shared renderer, hint included.
 
@@ -1043,12 +1045,11 @@ class TestImportFilesCommand:
             1, "Operation not permitted", str(test_file)
         )
 
-        with caplog.at_level("INFO"):
-            result = runner.invoke(app, ["files", str(test_file)])
+        result = runner.invoke(app, ["files", str(test_file)])
 
         assert result.exit_code == 1, result.output
-        assert "Operation not permitted" in caplog.text
-        assert "💡" in caplog.text
+        assert "Import incomplete" in result.stdout
+        assert "Recovery" in result.stdout
 
     def test_clean_batch_stays_low_sensitivity(
         self,
@@ -1089,9 +1090,8 @@ class TestImportFilesCommand:
         mock_import_files: MagicMock,
         mock_get_database: MagicMock,
         tmp_path: Path,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """`-q` suppresses the per-file block, error lines included."""
+        """Quiet keeps the requested receipt and its recovery facts."""
         a = tmp_path / "a.csv"
         b = tmp_path / "b.csv"
         a.touch()
@@ -1113,10 +1113,12 @@ class TestImportFilesCommand:
             transforms_duration_seconds=None,
         )
 
-        with caplog.at_level("INFO"):
-            runner.invoke(app, ["files", str(a), str(b), "--quiet"])
+        result = runner.invoke(app, ["files", str(a), str(b), "--quiet"])
 
-        assert "Grant Full Disk Access" not in caplog.text
+        assert result.exit_code == 1, result.output
+        assert "Saved" in result.stdout
+        assert "Failed" in result.stdout
+        assert "Grant Full Disk Access" in result.stdout
 
 
 class TestImportStatusCommand:

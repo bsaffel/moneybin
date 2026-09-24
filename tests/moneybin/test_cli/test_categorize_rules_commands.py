@@ -11,12 +11,14 @@ this test only pins the CLI-to-service wiring, which had no boundary test.
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from moneybin import error_codes
+from moneybin.cli import utils as cli_utils
 from moneybin.cli.commands.transactions.categorize import app
 from moneybin.privacy.payloads.categorize import RuleConflictDetail
 from moneybin.services.categorization import (
@@ -49,6 +51,29 @@ _ARGS = [
     "--match-type",
     "contains",
 ]
+
+
+class _Stream:
+    def __init__(self, tty: bool) -> None:
+        self.tty = tty
+        self.encoding = "utf-8"
+
+    def isatty(self) -> bool:
+        return self.tty
+
+
+def _set_terminal_streams(
+    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool
+) -> None:
+    monkeypatch.setattr(
+        cli_utils,
+        "sys",
+        SimpleNamespace(
+            stdin=_Stream(stdin_tty),
+            stdout=_Stream(stdout_tty),
+            stderr=_Stream(True),
+        ),
+    )
 
 
 def _rule_result() -> RuleCreationResult:
@@ -129,17 +154,26 @@ def _resolution(
     )
 
 
+@pytest.mark.parametrize("output_args", [[], ["--output", "json"]])
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
 def test_rules_resolve_forwards_one_replace_decision(
-    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock, output_args: list[str]
 ) -> None:
     mock_get_db.return_value.__enter__.return_value = MagicMock()
     svc = mock_svc_cls.return_value
     svc.resolve_rule_conflicts.return_value = [_resolution()]
 
     result = runner.invoke(
-        app, ["rules", "resolve", "conf_aaaaaaaaaaaaaaaa", "--replace", "--yes"]
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--replace",
+            "--yes",
+            *output_args,
+        ],
     )
 
     assert result.exit_code == 0, result.output
@@ -262,16 +296,59 @@ def test_rules_resolve_refuses_no_resolution(
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
 def test_rules_resolve_declined_confirmation_changes_nothing(
-    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+    mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A human who says no must not have the batch applied anyway."""
     mock_get_db.return_value.__enter__.return_value = MagicMock()
+    _set_terminal_streams(monkeypatch, stdin_tty=True, stdout_tty=True)
 
     result = runner.invoke(
         app, ["rules", "resolve", "conf_aaaaaaaaaaaaaaaa", "--replace"], input="n\n"
     )
 
     assert result.exit_code == 0, result.output
+    assert "Rule conflict resolution cancelled" in result.stdout
+    assert "No rule conflicts were changed" in result.stdout
+    mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("output_args", "stdin_tty", "stdout_tty"),
+    [([], False, True), ([], True, False), (["--output", "json"], True, True)],
+)
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_resolve_refuses_piped_confirmation_without_yes(
+    mock_get_db: MagicMock,
+    mock_svc_cls: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    output_args: list[str],
+    stdin_tty: bool,
+    stdout_tty: bool,
+) -> None:
+    """A redirected ``y`` cannot apply a rule-conflict decision."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    _set_terminal_streams(monkeypatch, stdin_tty=stdin_tty, stdout_tty=stdout_tty)
+
+    result = runner.invoke(
+        app,
+        [
+            "rules",
+            "resolve",
+            "conf_aaaaaaaaaaaaaaaa",
+            "--replace",
+            *output_args,
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 2, result.output
+    if output_args:
+        body = json.loads(result.stdout)
+        assert body["error"]["code"] == error_codes.MUTATION_CONFIRMATION_REQUIRED
+        assert "Apply 1 rule-conflict" not in result.output
     mock_svc_cls.return_value.resolve_rule_conflicts.assert_not_called()
 
 

@@ -24,6 +24,7 @@ import importlib
 import inspect
 import json
 import textwrap
+from contextlib import contextmanager
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -443,3 +444,36 @@ def test_gsheet_list_failure_audits_as_gsheet_list(
 
     assert result.exit_code == 1
     assert _read_events(privacy_log_dir)[0]["actor"] == "cli.gsheet_list"
+
+
+@patch("moneybin.synthetic.reset.reset_synthetic_rows")
+@patch("moneybin.cli.commands.synthetic._reset_safety_check")
+@patch("moneybin.database.get_database")
+def test_synthetic_reset_regeneration_failure_audits_as_reset(
+    mock_get_database: MagicMock,
+    _mock_safety_check: MagicMock,
+    _mock_reset_rows: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regeneration phase retains the reset command's audit identity."""
+    actors: list[str | None] = []
+
+    @contextmanager
+    def record_error_actor(*, cli_actor: str | None = None, **_kwargs: object) -> Any:
+        actors.append(cli_actor)
+        yield
+
+    monkeypatch.setattr("moneybin.cli.utils.handle_cli_errors", record_error_actor)
+    safety_context = MagicMock()
+    safety_context.__enter__.return_value = MagicMock()
+    generation_context = MagicMock()
+    generation_context.__enter__.side_effect = DatabaseLockError("busy")
+    mock_get_database.side_effect = [safety_context, safety_context, generation_context]
+
+    result = runner.invoke(
+        app,
+        ["synthetic", "reset", "--persona", "basic", "--yes"],
+    )
+
+    assert result.exit_code == 1
+    assert actors == ["synthetic_reset", "synthetic_reset"]
