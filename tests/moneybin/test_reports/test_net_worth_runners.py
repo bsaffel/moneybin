@@ -25,6 +25,7 @@ from moneybin.reports.definitions._shared import (
     unanchored_candidates_ctes,
 )
 from moneybin.reports.definitions.net_worth import net_worth
+from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
 from moneybin.tables import REPORTS_NET_WORTH, REPORTS_NET_WORTH_ACCOUNTS
 
 # These sibling test modules deliberately name their fixture builders private
@@ -851,3 +852,89 @@ def test_net_worth_runner_range_without_candidates_is_empty(
     _install_net_worth_sources(model_db)
     _install_report(model_db, "net_worth")
     assert _nw_rows(model_db, from_date="2025-01-01", to_date="2025-03-31") == []
+
+
+# ---------------------------------------------------------------------------
+# core:net_worth_accounts's per-candidate ranged fallback (M2B.3)
+# ---------------------------------------------------------------------------
+
+
+def _acct_rows(db: Database, **params: str) -> list[dict[str, object]]:
+    return _run(db, net_worth_accounts(db, **params))  # type: ignore[arg-type]
+
+
+def _mixed(db: Database, *, brk_archived_at: str | None = None) -> None:
+    """Checking anchored 2025-01-01..2025-01-31 (spine max), brk unanchored."""
+    _install_net_worth_sources(db)
+    _home(db, "USD")
+    _account(db, "chk", "Checking", "USD")
+    _account(
+        db,
+        "brk",
+        "Brokerage",
+        "USD",
+        account_type="investment",
+        archived=brk_archived_at is not None,
+        archived_at=brk_archived_at,
+    )
+    _balance(db, "chk", "2025-01-01", "100.00", "USD")
+    _balance(db, "chk", "2025-01-31", "100.00", "USD", observed=False)
+    _unanchored(db, "brk")
+    _install_report(db, "net_worth_accounts")
+
+
+def test_accounts_runner_range_containing_the_spine_max_lists_the_candidate_once(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-31")
+    brk = [r for r in rows if r["account_id"] == "brk"]
+    assert len(brk) == 1
+    assert str(brk[0]["balance_date"]) == "2025-01-31"
+
+
+def test_accounts_runner_range_excluding_the_spine_max_synthesizes_per_candidate(
+    model_db: Database,
+) -> None:
+    """Other accounts' rows are present, so a whole-result-empty trigger would drop brk."""
+    _mixed(model_db)
+    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-15")
+    assert {r["account_id"] for r in rows} == {"chk", "brk"}
+    brk = next(r for r in rows if r["account_id"] == "brk")
+    assert str(brk["balance_date"]) == "2025-01-15"
+    assert brk["account_balance"] is None
+    assert brk["is_observed"] is False
+
+
+def test_accounts_runner_unranged_omits_a_candidate_archived_before_the_spine_max(
+    model_db: Database,
+) -> None:
+    _mixed(model_db, brk_archived_at="2025-01-10")
+    rows = _acct_rows(model_db)
+    assert [r["account_id"] for r in rows] == ["chk"]
+
+
+def test_accounts_runner_range_spanning_archival_dates_at_archived_at(
+    model_db: Database,
+) -> None:
+    _mixed(model_db, brk_archived_at="2025-01-10")
+    rows = _acct_rows(model_db, from_date="2025-01-01", to_date="2025-01-31")
+    brk = [r for r in rows if r["account_id"] == "brk"]
+    assert len(brk) == 1
+    assert str(brk[0]["balance_date"]) == "2025-01-10"
+
+
+def test_accounts_runner_range_after_archival_omits_the_candidate(
+    model_db: Database,
+) -> None:
+    _mixed(model_db, brk_archived_at="2025-01-10")
+    rows = _acct_rows(model_db, from_date="2025-01-20", to_date="2025-01-31")
+    assert "brk" not in {r["account_id"] for r in rows}
+
+
+def test_accounts_runner_future_lower_bound_synthesizes_nothing(
+    model_db: Database,
+) -> None:
+    _mixed(model_db)
+    future = (_today(model_db) + timedelta(days=30)).isoformat()
+    assert _acct_rows(model_db, from_date=future) == []

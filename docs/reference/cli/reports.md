@@ -384,7 +384,7 @@ Usage: `moneybin reports net-worth-currencies [OPTIONS]`
 
 Net worth per account per day: the account-grain rung of the ladder.
 
-One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given.
+One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given. On an explicit range, an eligible unanchored candidate missing from the range gets its own synthesized row, dated independently per candidate rather than gated on the whole result being empty.
 
 Usage: `moneybin reports net-worth-accounts [OPTIONS]`
 
