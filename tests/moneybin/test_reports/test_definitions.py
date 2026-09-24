@@ -72,7 +72,7 @@ _FLOW_REPORTS = (
 )
 #: The one promise every report's `fx_basis` makes, however it converts. What
 #: each report does with a display currency differs — five price their rows,
-#: four aggregate per currency and cannot — and which reports do which is pinned
+#: five aggregate per currency and cannot — and which reports do which is pinned
 #: by set equality in `test_only_reports_whose_rows_price_exactly_declare_an_fx_date`.
 #: What none of them may do is put two currencies behind one figure.
 _NEVER_BLENDED = "segmented per currency_code, never blended"
