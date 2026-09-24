@@ -85,7 +85,7 @@ async def test_export_write_schemas_keep_event_and_target_state_separate() -> No
         (
             "export_run",
             {
-                "subject": {"kind": "bundle", "report_id": "core:networth"},
+                "subject": {"kind": "bundle", "report_id": "core:net_worth"},
                 "destination": {"kind": "local", "name": "exports"},
                 "redaction_mode": "redacted",
             },

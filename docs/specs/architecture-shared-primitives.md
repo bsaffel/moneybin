@@ -177,7 +177,7 @@ class WhateverService:
         """Writes to app.* (or raw.*). Returns a typed result. Raises classified UserError."""
 ```
 
-Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.py`) is a clean read-only example; `CategorizationService` (`src/moneybin/services/categorization/__init__.py`, a façade over the `matcher` / `applier` / `orchestrator` modules in the same package, PR #155) is a clean transactional example.
+Concrete reference: `DoctorService` (`src/moneybin/services/doctor_service.py`) is a clean read-only example; `CategorizationService` (`src/moneybin/services/categorization/__init__.py`, a façade over the `matcher` / `applier` / `orchestrator` modules in the same package, PR #155) is a clean transactional example.
 
 ### What every consumer can assume
 
@@ -189,7 +189,7 @@ Concrete reference: `NetworthService` (`src/moneybin/services/networth_service.p
 
 ### Read-only vs. transactional services
 
-The same shape covers both. A read-only service (e.g., `NetworthService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
+The same shape covers both. A read-only service (e.g., `DoctorService`) only reads from `core.*` / `reports.*`. A transactional service (e.g., `CategorizationService`, `AccountService`) reads from `core` / `reports` and writes to `app.*` (or, in the `import` family, to `raw.*`). Transactional services use `db.begin() / commit() / rollback()` for multi-statement units of work. Transactional services compose `*Repo` classes (`src/moneybin/repositories/`) for protected `app.*` writes; raw mutation SQL against a protected `app.*` table inside a service is a contract violation under [Invariant 10](#architecture-invariants).
 
 ## MCP/CLI/SQL Symmetry
 
@@ -206,7 +206,7 @@ Per [`moneybin-cli.md`](moneybin-cli.md) §"Cross-Interface Taxonomy":
 | Concept | CLI | MCP | HTTP (future) |
 |---|---|---|---|
 | List accounts | `accounts list` | `accounts` | `GET /accounts` |
-| Net worth report | `reports networth` | `reports(report_id="core:networth", parameters={...})` | `GET /reports/networth` |
+| Net worth report | `reports net-worth` | `reports(report_id="core:net_worth", parameters={...})` | `GET /reports/net-worth` |
 | Decide a match | `transactions matches set <id> --status accepted` | `reviews_decide(decisions=[{"kind":"match","decision_id":"<id>","decision":"accept"}])` | `POST /transactions/matches/{id}/decision` |
 
 Each surface uses its native operation shape while preserving the same result. The architecture spec's job here is to point at the rule, not force identical spelling.

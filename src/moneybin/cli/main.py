@@ -54,6 +54,7 @@ from .commands import (
 from .commands import (
     budget as budget_cmd,
 )
+from .navigation import RootGroup, configure_root_help, show_start_menu
 from .utils import resolve_profile, stash_cli_flags
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,10 @@ app = typer.Typer(
     help="MoneyBin: Personal financial data aggregation and analysis tool",
     add_completion=True,
     rich_markup_mode="rich",
-    no_args_is_help=True,
+    cls=RootGroup,
+    no_args_is_help=False,
+    invoke_without_command=True,
+    subcommand_metavar="[COMMAND] [ARGS]...",
     # Pinned, not merely inherited: frames on the database-open path hold the
     # plaintext encryption key and profile passphrases as locals, and a rich
     # traceback is not a log record, so SanitizedLogFormatter cannot redact it.
@@ -162,6 +166,17 @@ def main_callback(
     (``moneybin logs`` with no stream) never trigger the wizard or write
     profile dirs before the leaf command surfaces its own response.
     """
+    if ctx.invoked_subcommand is None:
+        if profile_name is not None:
+            from moneybin.utils.user_config import normalize_profile_name
+
+            try:
+                normalize_profile_name(profile_name)
+            except ValueError as e:
+                raise typer.BadParameter(str(e), param_hint="--profile") from e
+        show_start_menu()
+        return
+
     stash_cli_flags(profile_name, verbose)
     setup_observability(stream="cli", verbose=verbose, profile=None)
 
@@ -206,102 +221,35 @@ def main_callback(
         mark_profile_resolution_pending()
 
 
-# Command groups ordered by workflow: setup → ingest → enrich → pipeline → analyze → output → integrations → ops
-app.add_typer(
-    profile.app,
-    name="profile",
-    help="Manage user profiles (create, list, switch, delete, show, set)",
-)
-app.command(
-    name="demo",
-    help="Set up a demo profile with synthetic data and a first answer",
-)(demo.demo_command)
-app.add_typer(
-    import_cmd.app,
-    name="import",
-    help="Import financial files into MoneyBin",
-)
-app.add_typer(
-    sync.app,
-    name="sync",
-    help="Sync transactions from external services",
-)
-app.add_typer(
-    gsheet.app,
-    name="gsheet",
-    help="Connect Google Sheets workbooks (direct OAuth, user-controlled storage)",
-)
-app.add_typer(
-    accounts.app,
-    name="accounts",
-    help="Account listing, settings, and lifecycle ops",
-)
-app.add_typer(
-    reports.app,
-    name="reports",
-    help="Cross-domain analytical reports",
-)
-app.command(
-    name="review",
-    help=(
-        "Pending counts across all review queues (matches, categorize, "
-        "account-links, merchant-links, security-links)"
-    ),
-)(review.review_command)
-app.add_typer(transactions.app, name="transactions")
+# Root help grouping and summaries are applied below from navigation.py.
+app.add_typer(accounts.app, name="accounts")
 app.add_typer(assets.app, name="assets")
-app.add_typer(
-    investments.app,
-    name="investments",
-    help="Investment ledger, positions, lots, gains, and securities catalog",
-)
+app.add_typer(investments.app, name="investments")
+app.add_typer(reports.app, name="reports")
+app.add_typer(transactions.app, name="transactions")
 app.add_typer(categories.app, name="categories")
+app.add_typer(fx.app, name="fx")
 app.add_typer(merchants.app, name="merchants")
-app.add_typer(
-    privacy.app, name="privacy", help="Privacy utilities: redaction and audit"
-)
-app.add_typer(budget_cmd.app, name="budget", hidden=True)
-app.add_typer(
-    fx.app,
-    name="fx",
-    help="Exchange rates: inspect cached reference rates and record corrections",
-)
+app.command(name="review")(review.review_command)
+app.add_typer(export.export_app, name="export")
+app.add_typer(gsheet.app, name="gsheet")
+app.add_typer(import_cmd.app, name="import")
+app.command(name="refresh")(refresh.refresh_command)
+app.add_typer(sync.app, name="sync")
+app.command(name="demo")(demo.demo_command)
+app.add_typer(mcp.app, name="mcp")
+app.add_typer(privacy.app, name="privacy")
+app.add_typer(profile.app, name="profile")
+app.add_typer(db.app, name="db")
+app.command(name="logs")(logs.logs_command)
+app.add_typer(sql.app, name="sql")
+app.command(name="stats")(stats.stats_command)
+app.add_typer(synthetic.app, name="synthetic")
 app.add_typer(system.app, name="system")
-app.command(
-    name="refresh",
-    help="Refresh derived tables: matching, transforms, categorization (leaf)",
-)(refresh.refresh_command)
-app.add_typer(
-    transform.app,
-    name="transform",
-    help="Run data transformations",
-)
-app.add_typer(
-    synthetic.app,
-    name="synthetic",
-    help="Generate and manage synthetic financial data for testing",
-)
-app.command(name="stats", help="Show lifetime metric aggregates")(stats.stats_command)
-app.add_typer(
-    sql.app,
-    name="sql",
-    help="Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking)",
-)
-app.add_typer(export.export_app, name="export", help="Export data to external formats")
-app.add_typer(
-    mcp.app,
-    name="mcp",
-    help="MCP server for AI assistant integration",
-)
-app.add_typer(
-    db.app,
-    name="db",
-    help="Database management and exploration",
-)
-app.command(
-    name="logs",
-    help="View, prune, or locate MoneyBin log files for the active profile.",
-)(logs.logs_command)
+app.add_typer(transform.app, name="transform")
+app.add_typer(budget_cmd.app, name="budget", hidden=True)
+
+configure_root_help(app)
 
 # Add db migrate as a sub-typer of db
 db.app.add_typer(migrate.app, name="migrate", help="Database migration management")

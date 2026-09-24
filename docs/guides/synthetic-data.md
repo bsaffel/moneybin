@@ -119,28 +119,24 @@ full transform; raw-only generation succeeds but leaves reports unmaterialized.
 Read the reports against the fresh data:
 
 ```console
-$ moneybin --profile bob reports networth
-USD as of 2025-12-31
-Net worth:   420,080.77
-Assets:      420,080.77
-Liabilities: 0.00
-Accounts:    4
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Ally Bank savings …0002   │  33,000.00 │ USD      │         │
-│ Chase Bank checking …0001 │ 387,080.77 │ USD      │         │
-│ Chase Bank credit card    │       0.00 │ USD      │ tabular │
-│ Citi credit card          │       0.00 │ USD      │ tabular │
-└───────────────────────────┴────────────┴──────────┴─────────┘
-› Run reports(report_id='core:networth_history', parameters={'from_date':
-  'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series
-› Run accounts_balances(view='history', reference='<account>') to drill into one
-  account
-› Run accounts(include_closed=True) to inspect closed or excluded accounts
+$ moneybin --profile bob reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name        ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings   │ USD           │       33,000.00 │                    - │
+│ …0002               │               │                 │                      │
+│ Chase Bank checking │ USD           │      387,080.77 │                    - │
+│ …0001               │               │                 │                      │
+│ Chase Bank credit   │ USD           │            0.00 │                    - │
+│ card                │               │                 │                      │
+│ Citi credit card    │ USD           │            0.00 │                    - │
+└─────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
 ```
 
-`reports networth` shows balance composition across all generated accounts; `reports cash-flow`
+The three trailing next-step hints are trimmed above. `account_balance_home` is `-`
+because the profile has no home currency yet. `reports net-worth-accounts` shows
+each generated account's latest balance; `reports cash-flow`
 rolls up monthly inflow, outflow, and net, grouped by account, category, or both;
 `reports recurring-subscriptions` lists the detected recurring stream (rent, utilities,
 subscriptions, statement payments). These are the same commands that run against real

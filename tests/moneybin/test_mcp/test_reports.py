@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from contextlib import AbstractContextManager
 from datetime import date
 from decimal import Decimal
@@ -21,22 +20,20 @@ from moneybin.privacy.taxonomy import CLASSIFICATION, DataClass, Tier
 from moneybin.reports._framework.catalog import (
     DEGRADED_PENDING_DEDUP,
     ReportCatalog,
-    ServiceReportSpec,
 )
 from moneybin.reports._framework.contract import (
     OutputColumn,
     ParamSpec,
+    ReportQuery,
     ReportSemantics,
+    ReportSpec,
 )
 from moneybin.reports._framework.dynamic import DEGRADED_STALE_CLASSIFICATION
-from moneybin.reports._framework.execute import (
-    CatalogReportExecution,
-    CatalogReportResult,
-    build_catalog_execution,
-)
+from moneybin.reports._framework.execute import CatalogReportResult
 from moneybin.reports._framework.registry import register_generic_reports_tool
 from moneybin.services.currency_service import ResolvedRate
 from moneybin.services.matching_service import PENDING_MATCHES_HINT
+from moneybin.tables import TableRef
 from tests.database_mocks import without_a_profile
 from tests.moneybin.db_helpers import create_core_tables_raw, seed_pending_dedup_pair
 
@@ -65,40 +62,26 @@ _COLUMNS = (
 _CLASSES = {column.name: column.data_class for column in _COLUMNS}
 
 
-def _transport_report() -> ServiceReportSpec:
-    def execute(
+def _transport_report() -> ReportSpec:
+    def runner(
         db: Database,  # contract handle
-        parameters: Mapping[str, JsonValue],
-        limit: int | None,
-    ) -> CatalogReportExecution:
-        return build_catalog_execution(
-            spec,
-            parameters=parameters,
-            records=[
-                {
-                    "period_date": date(2026, 7, 1),
-                    "amount": Decimal("12.34"),
-                    "account_id": "acct_11112222",
-                },
-                {
-                    "period_date": date(2026, 7, 2),
-                    "amount": Decimal("-5.67"),
-                    "account_id": "acct_99998888",
-                },
-            ],
-            columns=[column.name for column in _COLUMNS],
-            column_types=["DATE", "DECIMAL(18,2)", "VARCHAR"],
-            max_rows=limit,
+        *,
+        account_filters: dict[str, str],
+    ) -> ReportQuery:
+        return ReportQuery(
+            "SELECT period_date, amount, account_id FROM reports.transport_test",
+            [],
             actions=["Inspect another registered report."],
             period="2026-07-01 to 2026-07-02",
-            sql=None,
         )
 
-    spec = ServiceReportSpec(
+    return ReportSpec(
         report_id="test:transport",
         name="transport",
         description="Transport fidelity report.",
-        parameters=(
+        view=TableRef("reports", "transport_test"),
+        runner=runner,
+        params=(
             ParamSpec(
                 "account_filters",
                 dict[str, str],
@@ -112,9 +95,7 @@ def _transport_report() -> ServiceReportSpec:
         semantics=_SEMANTICS,
         classes=_CLASSES,
         examples=(),
-        executor=execute,
     )
-    return spec
 
 
 def _mock_database() -> Database:
@@ -125,6 +106,25 @@ def _mock_database() -> Database:
     Tests taking the real ``db`` fixture answer the read for themselves.
     """
     return cast(Database, without_a_profile(MagicMock(spec=Database)))
+
+
+def _transport_database() -> Database:
+    """``_mock_database()``, plus ``_transport_report()``'s own two-row cursor.
+
+    ``db.execute`` returns the same child mock for every call, so this
+    configures both the home-currency probe (``fetchone`` → None, set by
+    ``without_a_profile``) and the transport report's own SELECT
+    (``description`` / ``fetchmany``) on that one shared cursor.
+    """
+    raw = MagicMock(spec=Database)
+    without_a_profile(raw)
+    cursor = raw.execute.return_value
+    cursor.description = [(column.name,) for column in _COLUMNS]
+    cursor.fetchmany.return_value = [
+        (date(2026, 7, 1), Decimal("12.34"), "acct_11112222"),
+        (date(2026, 7, 2), Decimal("-5.67"), "acct_99998888"),
+    ]
+    return cast(Database, raw)
 
 
 def _database_context(
@@ -461,6 +461,123 @@ async def test_reports_with_id_opens_one_read_only_database_and_executes() -> No
 
 
 @pytest.mark.unit
+async def test_reports_with_id_passes_through_a_priced_home_currency() -> None:
+    """A converted core:net_worth_accounts read carries summary.home_currency.
+
+    Same failure mode as `applied_rates` above: this tool builds its envelope
+    by hand rather than through `ReportResult.to_envelope`, so a field the
+    result carries reaches the agent only if this function repeats it —
+    `home_currency` went missing here until this test caught it.
+    """
+    result = CatalogReportResult(
+        report_id="core:net_worth_accounts",
+        parameters={},
+        semantics=_SEMANTICS,
+        provenance=_SEMANTICS.provenance,
+        records=[
+            {
+                "period_date": date(2026, 6, 1),
+                "amount": Decimal("125.00"),
+                "account_id": "****2222",
+            }
+        ],
+        columns=[column.name for column in _COLUMNS],
+        output_classes=_CLASSES,
+        tier=Tier.CRITICAL,
+        total_count=1,
+        truncated=False,
+        actions=[],
+        period=None,
+        display_currency="EUR",
+        applied_rates=(
+            ResolvedRate(
+                from_currency="USD",
+                to_currency="EUR",
+                requested_date=date(2026, 6, 1),
+                rate_date=date(2026, 6, 1),
+                rate=Decimal("0.90"),
+                source="frankfurter",
+            ),
+        ),
+        home_currency="USD",
+    )
+    catalog = MagicMock(spec=ReportCatalog)
+    catalog.execute.return_value = result
+    db = _mock_database()
+    database_context = _database_context(db)
+
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=database_context,
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(
+            report_id="core:net_worth_accounts",
+            display_currency="EUR",
+        )
+
+    assert response.summary.home_currency == "USD"
+    assert response.summary.to_dict()["home_currency"] == "USD"
+
+
+@pytest.mark.unit
+async def test_reports_with_id_omits_home_currency_when_nothing_was_priced_from_it() -> (
+    None
+):
+    """A read that never priced a home-basis column carries no summary.home_currency."""
+    result = CatalogReportResult(
+        report_id="core:spending_trend",
+        parameters={},
+        semantics=_SEMANTICS,
+        provenance=_SEMANTICS.provenance,
+        records=[
+            {
+                "period_date": date(2026, 6, 1),
+                "amount": Decimal("12.34"),
+                "account_id": "****2222",
+            }
+        ],
+        columns=[column.name for column in _COLUMNS],
+        output_classes=_CLASSES,
+        tier=Tier.CRITICAL,
+        total_count=1,
+        truncated=False,
+        actions=[],
+        period=None,
+        # home_currency defaults to None: this result never priced a
+        # home-basis column, converted or not.
+    )
+    catalog = MagicMock(spec=ReportCatalog)
+    catalog.execute.return_value = result
+    db = _mock_database()
+    database_context = _database_context(db)
+
+    with (
+        patch(
+            "moneybin.mcp.tools.reports.get_report_catalog",
+            return_value=catalog,
+        ),
+        patch(
+            "moneybin.mcp.tools.reports.get_database",
+            return_value=database_context,
+        ),
+        patch("moneybin.mcp.tools.reports.get_max_rows", return_value=50),
+        patch("moneybin.mcp.decorator.write_privacy_event"),
+    ):
+        response = await reports(report_id="core:spending_trend")
+
+    assert response.summary.home_currency is None
+    assert "home_currency" not in response.summary.to_dict()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("requested", "expected"),
     [
@@ -474,7 +591,7 @@ async def test_reports_caps_positive_limits(
     expected: int,
 ) -> None:
     catalog = ReportCatalog((_transport_report(),))
-    db = _mock_database()
+    db = _transport_database()
 
     with (
         patch(
@@ -502,7 +619,7 @@ async def test_reports_caps_positive_limits(
 @pytest.mark.parametrize("limit", [0, -1])
 async def test_reports_rejects_non_positive_limit(limit: int) -> None:
     catalog = ReportCatalog((_transport_report(),))
-    db = _mock_database()
+    db = _transport_database()
 
     with (
         patch(
@@ -607,7 +724,7 @@ async def test_generic_reports_fastmcp_result_transport_and_dynamic_audit() -> N
     mcp = FastMCP("reports-contract")
     register_generic_reports_tool(mcp)
     catalog = ReportCatalog((_transport_report(),))
-    db = _mock_database()
+    db = _transport_database()
     captured: list[dict[str, Any]] = []
     sensitive_key = "acct_key_11112222"
     sensitive_value = "acct_value_99998888"

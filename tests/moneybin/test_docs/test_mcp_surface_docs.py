@@ -1537,7 +1537,7 @@ def test_cli_mcp_examples_use_coarse_operations_with_selectors() -> None:
     for mapping in (
         '`accounts get <id>` | `accounts(view="detail", reference=<id>)`',
         '`accounts balance history` | `accounts_balances(view="history", reference=...)`',
-        '`reports networth` | `reports(report_id="core:networth")`',
+        '`reports net-worth` | `reports(report_id="core:net_worth")`',
         '`transactions matches pending` | `reviews(kind="matches", status="pending")`',
         '`transactions matches run` | `refresh_run(steps=["match"])`',
     ):
@@ -2347,7 +2347,7 @@ def test_mcp_contract_scan_does_not_treat_contract_subjects_as_schema_details(
         "Run the CLI command `moneybin transform validate`.",
         "The internal `ImportService.import_file` method owns ingestion.",
         "The SQL model `reports.spending_trend` is queryable.",
-        "The report ID is `core:networth_history`.",
+        "The report ID is `core:net_worth_currencies`.",
         "The request discriminator is `kind='match'`.",
         "The internal `LedgerService.transactions(date_from='2026-01-01')` method is not an MCP call.",
         'The internal function `reviews(kind="match")` returns rows.',
@@ -2992,10 +2992,14 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     assert "include_closed is a read filter" in account_management
     assert "data.warnings" in account_management
     assert 'reports(report_id="core:spending_trend")' in privacy
-    assert 'reports(report_id="core:networth_history"' in privacy
+    assert 'reports(report_id="core:net_worth_currencies")' in privacy
     assert privacy.count("| high |") >= 2
     assert "Eight registered report routes" in index
     assert "seven `reports.*` SQLMesh views" in index
+    assert "As shipped by M2A" in index
+    assert "Superseded by M2B.2" in index
+    assert "10 registered routes, all `@report`-backed over 10" in index
+    assert "no service-backed route remains" in index
     assert "Report rows use `reports(report_id=..., parameters=...)`" in extensions
 
 
@@ -3031,6 +3035,10 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     assert default_sequence in recovery
     assert default_sequence in features
     assert "8 registered report routes" in roadmap
+    assert "As shipped:" in roadmap
+    assert "Superseded by M2B.2" in roadmap
+    assert "10 registered routes, all `@report`-backed over 10" in roadmap
+    assert "no service-backed route remains" in roadmap
     assert "seven `reports.*` SQLMesh views" in reports
     assert "six `@report` SQL runners" in reports
     assert "two service-backed net-worth routes" in reports
@@ -3043,13 +3051,17 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
     report_views = {
         table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
     }
-    assert len(report_views) == 8
-    assert len(report_routes) == 9
+    assert len(report_views) == 10
+    assert len(report_routes) == 10
 
+    words = (
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve",
+    )  # fmt: skip
     current_surface_summary = (
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight')[len(report_views)]} "
+        f"{words[len(report_views)]} "
         "SQLMesh report views back "
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')[len(report_routes)]} "
+        f"{words[len(report_routes)]} "
         "report routes"
     )
     queryable_schemas = QUERYABLE_INTERNAL_SCHEMAS_SPEC.read_text()

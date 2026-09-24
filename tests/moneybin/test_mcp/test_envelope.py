@@ -104,7 +104,7 @@ class TestResponseEnvelope:
     @pytest.mark.unit
     def test_catalog_result_with_frozen_metadata_serializes_canonically(self) -> None:
         result = CatalogReportResult(
-            report_id="core:networth",
+            report_id="core:net_worth",
             parameters=MappingProxyType({
                 "account_map": MappingProxyType({
                     "entry_count": 1,

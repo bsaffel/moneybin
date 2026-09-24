@@ -9,7 +9,6 @@ import json
 import re
 from functools import cache
 from pathlib import Path
-from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock, patch
 
@@ -23,7 +22,6 @@ from moneybin.mcp.surface import STANDARD_TOOL_NAMES
 from moneybin.mcp.tools.reports import reports
 from moneybin.protocol.pagination import decode_keyset_cursor
 from moneybin.reports._framework.catalog import get_report_catalog
-from moneybin.reports._framework.contract import ReportSpec
 
 _ROOT = Path(__file__).parents[3]
 _SRC_DIR = _ROOT / "src/moneybin"
@@ -324,57 +322,41 @@ def test_report_result_actions_use_executable_standard_calls() -> None:
         "core:cash_flow": {},
         "core:large_transactions": {},
         "core:merchant_activity": {},
-        "core:networth": {},
-        "core:networth_history": {
+        "core:net_worth": {
             "from_date": "2026-01-01",
             "to_date": "2026-07-01",
         },
+        "core:net_worth_currencies": {},
+        "core:net_worth_accounts": {},
         "core:recurring_subscriptions": {},
         "core:spending_trend": {},
     }
     unresolved: dict[str, list[str]] = {}
     catalog = get_report_catalog()
-    networth = MagicMock()
-    networth.current.return_value = SimpleNamespace(
-        balance_date=None,
-        currency_code=None,
-        net_worth=0,
-        total_assets=0,
-        total_liabilities=0,
-        account_count=0,
-        per_currency=[],
-        per_account=[],
-    )
-    networth.history.return_value = SimpleNamespace(points=[])
-    with patch(
-        "moneybin.reports.service_reports.NetworthService",
-        return_value=networth,
-    ):
-        for report_id, supplied in parameters.items():
-            spec = catalog.resolve(report_id)
-            db_mock = MagicMock(spec=Database)
-            if isinstance(spec, ReportSpec):
-                cursor = MagicMock()
-                cursor.description = [(column.name,) for column in spec.columns]
-                cursor.fetchmany.return_value = []
-                db_mock.execute.return_value = cursor
-            db = cast(Database, db_mock)
-            result = catalog.execute(
-                db,
-                report_id=report_id,
-                parameters=supplied,
-                limit=0,
+    for report_id, supplied in parameters.items():
+        spec = catalog.resolve(report_id)
+        cursor = MagicMock()
+        cursor.description = [(column.name,) for column in spec.columns]
+        cursor.fetchmany.return_value = []
+        db_mock = MagicMock(spec=Database)
+        db_mock.execute.return_value = cursor
+        db = cast(Database, db_mock)
+        result = catalog.execute(
+            db,
+            report_id=report_id,
+            parameters=supplied,
+            limit=0,
+        )
+        invalid = [
+            action
+            for action in result.actions
+            if (
+                not _mentioned_names(action, STANDARD_TOOL_NAMES)
+                or _tool_references(action) - STANDARD_TOOL_NAMES
             )
-            invalid = [
-                action
-                for action in result.actions
-                if (
-                    not _mentioned_names(action, STANDARD_TOOL_NAMES)
-                    or _tool_references(action) - STANDARD_TOOL_NAMES
-                )
-            ]
-            if invalid:
-                unresolved[report_id] = invalid
+        ]
+        if invalid:
+            unresolved[report_id] = invalid
 
     assert unresolved == {}
 

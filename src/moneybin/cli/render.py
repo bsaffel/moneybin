@@ -165,9 +165,9 @@ def format_money(value: object, kind: MoneyKind, *, minus: str = MINUS) -> str:
     number nobody stored. It is a dash rather than a blank because that is what
     absence is already spelled as across this CLI — ``confidence_cell``, the
     review queues, ``accounts list`` — and because a blank money cell beside a
-    dashed one reads as two different facts. The first period of a
-    ``networth history`` series has no prior to difference against, so this is
-    the common case, not an edge.
+    dashed one reads as two different facts. The first bucket of a
+    ``net-worth --interval`` series has no prior to difference against, so this
+    is the common case, not an edge.
 
     A ``−`` is never dropped, whatever the kind. "Balances unsigned" exists so
     a checking balance carries no decorative ``+``; read as licence to drop the
@@ -516,10 +516,11 @@ def build_rows(
     more screen than the result they describe.
 
     **One line per record, always** (requirement 35). This renderer never
-    deduplicates, merges, or suppresses a row. `reports networth` currently
-    sums an account once per balance source, so a doubled account shows as
-    repeated rows; collapsing them here would make the output look right while
-    the total stayed wrong, removing the symptom that finds the defect.
+    deduplicates, merges, or suppresses a row. `reports net-worth-accounts` is
+    one row per (account, date), so one real account that cross-source dedup
+    left as two unlinked accounts shows as two rows on the same date;
+    collapsing them here would make the output look right while the total
+    stayed wrong, removing the symptom that finds the defect.
     """
     from rich import box  # defer heavy import
     from rich.console import (
@@ -779,8 +780,8 @@ def render_summary(
     :func:`format_money`, so this renderer never stringifies one itself.
 
     ``title`` heads the block when a command prints more than one of them and
-    the reader needs to know which is which; `reports networth` emits one per
-    currency the profile holds.
+    the reader needs to know which is which; `stats` emits one per metric
+    domain.
     """
     from rich.console import Console
 
@@ -911,3 +912,36 @@ def _as_decimal(value: object) -> Decimal | None:
             return None
         return parsed if parsed.is_finite() else None
     return None
+
+
+def render_command_menu(
+    sections: Sequence[tuple[str, Sequence[tuple[str, str]]]],
+    *,
+    terminal: TerminalPolicy,
+) -> None:
+    """Print a compact discovery menu using the shared terminal styles."""
+    from rich.console import Group
+    from rich.padding import Padding
+    from rich.table import Table
+    from rich.text import Text
+
+    parts: list[RenderableType] = [
+        Text("MoneyBin - understand your finances", style=str(Style.HIERARCHY))
+    ]
+    name_width = max(len(name) for _, commands in sections for name, _ in commands)
+    for title, commands in sections:
+        if not commands:
+            continue
+        parts.extend([Text(), Text(title, style=str(Style.HIERARCHY))])
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style=str(Style.ACTION), no_wrap=True, width=name_width)
+        table.add_column()
+        for name, description in commands:
+            table.add_row(name, description)
+        parts.append(Padding(table, (0, 0, 0, 2)))
+    parts.extend([
+        Text(),
+        Text("Run moneybin --help for all commands."),
+        Text("Run moneybin <command> --help for details."),
+    ])
+    typer.echo(render_human_text(Group(*parts), terminal=terminal), nl=False)

@@ -253,11 +253,10 @@ def _reports_assertions(db: Database) -> list[AssertionResult]:
     return results
 
 
-# The two service-backed net-worth routes take a required window; every other
-# built-in runs on its declared defaults.
-_RUNNER_PARAMETERS: dict[str, dict[str, str]] = {
-    "core:networth_history": {"from_date": "2024-01-01", "to_date": "2024-12-31"},
-}
+# Every built-in report runs on its declared defaults — including all three
+# net-worth rungs, whose from_date/to_date are optional and default to the
+# latest available day.
+_RUNNER_PARAMETERS: dict[str, dict[str, str]] = {}
 
 
 def _runner_assertions(db: Database) -> list[AssertionResult]:

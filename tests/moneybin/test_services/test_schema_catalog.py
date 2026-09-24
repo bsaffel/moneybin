@@ -118,22 +118,23 @@ def test_every_money_aggregating_example_names_its_currency() -> None:
 # that query — not that truncation is unlikely to reach it.
 _CURRENCY_FIRST_SORT_OK: dict[tuple[str, str], str] = {
     (
-        "reports.net_worth",
-        "Net worth today, one row per currency",
-    ): (
-        "reports.net_worth is grained (balance_date, currency_code) and this "
-        "example pins one date, so the result is exactly one row per currency. "
-        "No ordering survives truncation better: any prefix of k rows holds k "
-        "currencies whatever the sort key is."
-    ),
-    (
         "core.fct_investment_lots",
         "Total remaining cost basis across all open lots in an account "
         "(substitute YOUR_ACCOUNT_ID)",
     ): (
         "GROUP BY currency_code alone, so the result is one row per currency — "
-        "the same argument as above. Ordering cannot recover a currency that a "
+        "the same argument as below. Ordering cannot recover a currency that a "
         "cap dropped when every currency costs one row."
+    ),
+    (
+        "reports.net_worth_currencies",
+        "Today's net worth by currency, in each currency's own unit and in home currency",
+    ): (
+        "reports.net_worth_currencies is grained (balance_date, currency_code) "
+        "and this example pins one date, so the result is exactly one row per "
+        "currency: at most one row per currency can exist for a single pinned "
+        "balance_date, so any truncated prefix of k rows holds k currencies "
+        "whatever the sort key is."
     ),
 }
 

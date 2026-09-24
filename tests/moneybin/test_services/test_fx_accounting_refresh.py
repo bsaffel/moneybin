@@ -76,6 +76,27 @@ def test_restate_fx_accounting_restates_only_the_root_model(
     restate.assert_called_once_with(["core.bridge_currency_conversions"])
 
 
+def test_a_fetched_rate_also_restates_the_rate_spine(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def model_presence(_db: Database) -> ModelPresence:
+        return _model_presence()
+
+    monkeypatch.setattr(
+        "moneybin.services.fx_accounting_refresh.sqlmesh_registry.model_presence",
+        model_presence,
+    )
+    restate = MagicMock(return_value=ApplyResult(applied=True, duration_seconds=0.1))
+    monkeypatch.setattr(TransformService, "restate_models", restate)
+
+    restate_fx_accounting(db, committed_change="exchange rate")
+
+    restate.assert_called_once_with([
+        "core.bridge_currency_conversions",
+        "core.fct_exchange_rates_daily",
+    ])
+
+
 @pytest.mark.parametrize(
     ("account_currency_changed", "missing_root"),
     [

@@ -42,7 +42,6 @@ from rich.console import Console
 from rich.table import Table
 
 import moneybin.reports.definitions as definitions
-import moneybin.reports.service_reports as service_reports
 
 # Ahead of `cli_register` deliberately: `moneybin.cli.__init__` imports the
 # whole command tree, which reaches back into `cli_register`, so importing that
@@ -51,12 +50,11 @@ import moneybin.reports.service_reports as service_reports
 # anyway — the glyph a money cell really carries.
 from moneybin.cli.render import MINUS
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import RegisteredReport
 from moneybin.reports._framework.cli_register import (
     resolve_default_columns,
     visible_columns,
 )
-from moneybin.reports._framework.contract import OutputColumn
+from moneybin.reports._framework.contract import OutputColumn, ReportSpec
 from moneybin.reports._framework.registry import discover_reports, spec_of
 from moneybin.reports.definitions._shared import (
     DRIFT_STATUSES,
@@ -120,13 +118,18 @@ _MAX_WIDTH_BY_REPORT: Mapping[str, int] = {"core:realized_fx": 106}
 #: if one appears without one, so this cannot go quietly stale.
 _COLUMN_BEARING_PARAMETERS: Mapping[str, Mapping[str, Sequence[object]]] = {
     "core:spending_trend": {"compare": SPENDING_COMPARES},
+    # `None` is its own vocabulary member, not an absence: unlike `compare`
+    # (always a real value; the runner's own default stands in for "unset"),
+    # `interval` genuinely changes shape between "omitted" and "given" — the
+    # narrow 3-column set has no change columns at all, so it must be measured
+    # in its own right rather than folded into one of the three interval values.
+    "core:net_worth": {"interval": (None, "daily", "weekly", "monthly")},
 }
 
 
-def _in_tree_reports() -> list[RegisteredReport]:
-    """Every report defined in this repository, both kinds."""
-    runner_backed = [spec_of(runner) for runner in discover_reports(definitions)]
-    return [*runner_backed, *service_reports.SERVICE_REPORTS]
+def _in_tree_reports() -> list[ReportSpec]:
+    """Every report defined in this repository."""
+    return [spec_of(runner) for runner in discover_reports(definitions)]
 
 
 def _sample(report_id: str, column: OutputColumn) -> str:
@@ -168,7 +171,7 @@ def _parameter_combinations(report_id: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
-def test_every_report_declares_a_default_column_set(spec: RegisteredReport) -> None:
+def test_every_report_declares_a_default_column_set(spec: ReportSpec) -> None:
     """Requirement 6: an in-tree report never relies on the renderer's fit.
 
     Fitting to the terminal is what a surface does when nobody told it which
@@ -185,7 +188,7 @@ def test_every_report_declares_a_default_column_set(spec: RegisteredReport) -> N
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
 def test_every_default_column_set_fits_eighty_characters(
-    spec: RegisteredReport,
+    spec: ReportSpec,
 ) -> None:
     """Requirement 9, over every parameter combination that changes the set."""
     by_name = {column.name: column for column in spec.columns}
