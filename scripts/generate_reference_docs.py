@@ -27,11 +27,14 @@ import typing
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
-import click
 from pydantic import BaseModel, SecretStr
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings
 from rich.text import Text
+from typer._click import Command, Context, Parameter
+from typer._click.types import FloatRange, IntRange
+from typer._types import TyperChoice
+from typer.core import TyperArgument, TyperGroup, TyperOption
 
 from moneybin.mcp.surface import first_sentence
 
@@ -148,23 +151,23 @@ def _help_blocks(text: str | None) -> str:
     )
 
 
-def _option_names(option: click.Option) -> str:
+def _option_names(option: TyperOption) -> str:
     names = ", ".join(option.opts)
     if option.secondary_opts:
         names += " / " + ", ".join(option.secondary_opts)
     return names
 
 
-def _param_type(param: click.Parameter) -> str:
+def _param_type(param: Parameter) -> str:
     kind = param.type
-    if isinstance(param, click.Option) and param.is_flag:
+    if isinstance(param, TyperOption) and param.is_flag:
         return "flag"
-    if isinstance(param, click.Option) and param.count:
+    if isinstance(param, TyperOption) and param.count:
         return "count"
-    if isinstance(kind, click.Choice):
+    if isinstance(kind, TyperChoice):
         rendered = "one of " + ", ".join(_code(choice) for choice in kind.choices)
-    elif isinstance(kind, (click.IntRange, click.FloatRange)):
-        base = "int" if isinstance(kind, click.IntRange) else "float"
+    elif isinstance(kind, (IntRange, FloatRange)):
+        base = "int" if isinstance(kind, IntRange) else "float"
         bounds = []
         if kind.min is not None:
             bounds.append(f"≥ {kind.min}")
@@ -174,11 +177,14 @@ def _param_type(param: click.Parameter) -> str:
     else:
         rendered = {
             "text": "text",
+            "str": "text",
             "integer": "int",
+            "int": "int",
             "float": "float",
             "boolean": "bool",
             "path": "path",
             "file": "file",
+            "filename": "file",
             "datetime": "datetime",
             "uuid": "uuid",
         }.get(kind.name, kind.name)
@@ -187,11 +193,8 @@ def _param_type(param: click.Parameter) -> str:
     return rendered
 
 
-_CLICK_UNSET = getattr(click.core, "UNSET", None)  # click 8.3's "no default" sentinel
-
-
 def _render_default(value: object) -> str:
-    if value is None or value is PydanticUndefined or value is _CLICK_UNSET:
+    if value is None or value is PydanticUndefined:
         return ""
     if isinstance(value, enum.Enum):
         value = value.value
@@ -206,7 +209,7 @@ def _render_default(value: object) -> str:
     return _code(value)
 
 
-def _option_default(option: click.Option, ctx: click.Context) -> str:
+def _option_default(option: TyperOption, ctx: Context) -> str:
     bare_flag = option.is_flag and not option.secondary_opts
     if bare_flag or option.show_default is False:
         return ""
@@ -215,7 +218,7 @@ def _option_default(option: click.Option, ctx: click.Context) -> str:
     return _render_default(option.get_default(ctx, call=True))
 
 
-def _option_description(option: click.Option) -> str:
+def _option_description(option: TyperOption) -> str:
     """The option's help, prefixed when required and suffixed with its env var."""
     parts = ["Required." if option.required else "", _help_prose(option.help)]
     envvar = option.envvar
@@ -225,9 +228,7 @@ def _option_description(option: click.Option) -> str:
     return " ".join(part for part in parts if part)
 
 
-def _option_rows(
-    options: Iterable[click.Option], ctx: click.Context
-) -> list[list[str]]:
+def _option_rows(options: Iterable[TyperOption], ctx: Context) -> list[list[str]]:
     return [
         [
             _code(_option_names(option)),
@@ -239,25 +240,23 @@ def _option_rows(
     ]
 
 
-def _walk(
-    command: click.Command, ctx: click.Context
-) -> list[tuple[click.Command, click.Context]]:
+def _walk(command: Command, ctx: Context) -> list[tuple[Command, Context]]:
     """Depth-first (command, context) pairs below ``command``, skipping hidden ones."""
-    found: list[tuple[click.Command, click.Context]] = []
-    if not isinstance(command, click.Group):
+    found: list[tuple[Command, Context]] = []
+    if not isinstance(command, TyperGroup):
         return found
     for name in command.list_commands(ctx):
         child = command.get_command(ctx, name)
         if child is None or child.hidden:
             continue
-        child_ctx = click.Context(child, info_name=name, parent=ctx)
+        child_ctx = Context(child, info_name=name, parent=ctx)
         found.append((child, child_ctx))
         found.extend(_walk(child, child_ctx))
     return found
 
 
 def _command_section(
-    command: click.Command, ctx: click.Context, level: int = 2, intro: str = ""
+    command: Command, ctx: Context, level: int = 2, intro: str = ""
 ) -> list[str]:
     path = ctx.command_path
     lines = [f"{'#' * level} {path}", ""]
@@ -272,7 +271,7 @@ def _command_section(
     # an inline span (the docs guard holds fenced blocks to "runs as written").
     usage = " ".join([path, *command.collect_usage_pieces(ctx)])
     lines += [f"Usage: `{usage}`", ""]
-    if isinstance(command, click.Group):
+    if isinstance(command, TyperGroup):
         rows = []
         for name in command.list_commands(ctx):
             child = command.get_command(ctx, name)
@@ -291,7 +290,7 @@ def _command_section(
     arguments = [
         p
         for p in command.params
-        if isinstance(p, click.Argument) and not getattr(p, "hidden", False)
+        if isinstance(p, TyperArgument) and not getattr(p, "hidden", False)
     ]
     if arguments:
         rows = [
@@ -306,9 +305,7 @@ def _command_section(
         lines += ["**Arguments**", ""]
         lines += _table(["Argument", "Type", "Required", "Description"], rows)
         lines.append("")
-    options = [
-        p for p in command.params if isinstance(p, click.Option) and not p.hidden
-    ]
+    options = [p for p in command.params if isinstance(p, TyperOption) and not p.hidden]
     if options:
         lines += ["**Options**", ""]
         lines += _table(
@@ -326,16 +323,16 @@ _PAGE_INTRO = (
 )
 
 
-def render_cli_pages(root: click.Group) -> dict[str, str]:
+def render_cli_pages(root: TyperGroup) -> dict[str, str]:
     """Return ``{relative path: text}`` for the CLI reference directory."""
-    root_ctx = click.Context(root, info_name="moneybin")
+    root_ctx = Context(root, info_name="moneybin")
     pages: dict[str, str] = {}
     index_rows: list[list[str]] = []
     for name in root.list_commands(root_ctx):
         command = root.get_command(root_ctx, name)
         if command is None or command.hidden:
             continue
-        ctx = click.Context(command, info_name=name, parent=root_ctx)
+        ctx = Context(command, info_name=name, parent=root_ctx)
         summary = command.get_short_help_str(limit=200)
         index_rows.append([f"[{_code('moneybin ' + name)}]({name}.md)", summary])
         lines = [_marker("the Typer command tree")]
@@ -345,7 +342,7 @@ def render_cli_pages(root: click.Group) -> dict[str, str]:
         pages[f"{name}.md"] = "\n".join(lines).rstrip() + "\n"
 
     root_options = [
-        p for p in root.params if isinstance(p, click.Option) and not p.hidden
+        p for p in root.params if isinstance(p, TyperOption) and not p.hidden
     ]
     index = [
         _marker("the Typer command tree"),
@@ -1070,8 +1067,8 @@ def generated_pages() -> dict[Path, str]:
     from moneybin.config import MoneyBinSettings
 
     root = get_command(app)
-    if not isinstance(root, click.Group):
-        raise TypeError("the moneybin root command is not a click.Group")
+    if not isinstance(root, TyperGroup):
+        raise TypeError("the moneybin root command is not a TyperGroup")
     pages = {Path("cli") / name: text for name, text in render_cli_pages(root).items()}
     pages[Path("mcp-tools.md")] = render_mcp_tools(*live_mcp_surface())
     pages[Path("configuration.md")] = render_configuration(MoneyBinSettings)

@@ -14,8 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat

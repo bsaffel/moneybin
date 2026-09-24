@@ -11,8 +11,9 @@ trio, which predates the helper and inlines its own message.
 import ast
 from pathlib import Path
 
-import click
 import pytest
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -59,12 +60,12 @@ MIXED_GROUPS = ("db key",)
 PARTIALLY_IMPLEMENTED_COMMANDS = ("transactions review",)
 
 
-def _walk_commands() -> dict[str, click.Command]:
+def _walk_commands() -> dict[str, Command]:
     """Map every executable command path to its click command."""
-    found: dict[str, click.Command] = {}
+    found: dict[str, Command] = {}
 
-    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
-        if isinstance(command, click.Group):
+    def walk(command: Command, prefix: tuple[str, ...]) -> None:
+        if isinstance(command, TyperGroup):
             if command.invoke_without_command and prefix:
                 found[" ".join(prefix)] = command
             for name, child in command.commands.items():
@@ -76,17 +77,17 @@ def _walk_commands() -> dict[str, click.Command]:
     return found
 
 
-def _walk_groups() -> dict[str, click.Group]:
+def _walk_groups() -> dict[str, TyperGroup]:
     """Map every command group path to its click group.
 
     Separate from ``_walk_commands`` because a group built with
     ``no_args_is_help=True`` does not set ``invoke_without_command``, so it
     never lands in the executable-command map.
     """
-    found: dict[str, click.Group] = {}
+    found: dict[str, TyperGroup] = {}
 
-    def walk(command: click.Command, prefix: tuple[str, ...]) -> None:
-        if not isinstance(command, click.Group):
+    def walk(command: Command, prefix: tuple[str, ...]) -> None:
+        if not isinstance(command, TyperGroup):
             return
         if prefix:
             found[" ".join(prefix)] = command

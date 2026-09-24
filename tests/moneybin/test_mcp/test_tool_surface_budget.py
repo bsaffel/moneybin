@@ -126,11 +126,18 @@ _REPLACED_TOOL_NAME_COHORTS = {
     }),
 }
 
+# Every figure below moved once on the mcp 2 upgrade, for two reasons that are
+# not about any tool's own prose: the protocol gained a `title` per tool, and
+# the inventory now dumps with by_alias=True, so the metadata key is its real
+# wire name `_meta` rather than `meta` — one byte per tool. Each candidate grew
+# by its title plus that byte; each replaced-cohort sum grew by one byte per
+# tool in the cohort. The per-tool comments below predate that shift and still
+# describe the prose growth that earned each figure.
 _CANONICAL_CARRYING_WEIGHT_BYTES = {
-    "system_status": (896, 2_725),
-    "system_audit": (746, 1_958),
-    "accounts": (823, 2_240),
-    "accounts_balances": (1_069, 2_786),
+    "system_status": (921, 2_728),
+    "system_audit": (770, 1_961),
+    "accounts": (843, 2_244),
+    "accounts_balances": (1_098, 2_790),
     # Grew 116 bytes when display conversion gave the holdings total a currency
     # to be denominated in: `data.total_market_value` is now published across
     # currencies, so the description has to say which unit it is in and when it
@@ -149,31 +156,31 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # agent that cannot read it from the description reports a double-counted
     # portfolio as an incomplete one — and, told only about holdings, walks
     # from the withheld figure to the double-counted one next door.
-    "investments": (1_767, 4_908),
-    "transactions": (1_287, 2_383),
-    "transactions_categorize_rules": (564, 318),
+    "investments": (1_790, 4_913),
+    "transactions": (1_311, 2_384),
+    "transactions_categorize_rules": (605, 319),
     # Grew 244 bytes for the rule-conflict queue: one more `kind` enum member
     # plus the sentence saying what that queue holds. A caller who cannot read
     # from the description that `rule_conflicts` names both rules and the
     # category each assigns has to open the queue to find out what it is.
     # Plus 21 bytes for the investment_matches read selector.
-    "reviews": (968, 8_687),
-    "taxonomy": (669, 620),
-    "import_status": (642, 1_236),
-    "gsheet": (441, 1_016),
-    "privacy": (590, 1_007),
+    "reviews": (987, 8_698),
+    "taxonomy": (689, 622),
+    "import_status": (667, 1_239),
+    "gsheet": (459, 1_018),
+    "privacy": (609, 1_009),
     # This tool, transactions_categorize_rules_set, and identity_links_decide
     # each grew 4–16 bytes when their undo hint spelled its keyword
     # (`system_audit_undo(operation_id=...)`): the docs scanner requires keyword
     # arguments in every public call example, and the generated MCP reference
     # makes each description public text.
-    "accounts_balance_assert": (1_420, 1_679),
-    "transactions_annotate": (3_457, 3_653),
+    "accounts_balance_assert": (1_455, 1_681),
+    "transactions_annotate": (3_490, 3_659),
     # Plus the conflict refusal: a target claiming an active rule's matcher
     # under a different category fails the *whole* batch with
     # `taxonomy_rule_conflict`. An agent that reads the refusal as a partial
     # failure retries the batch instead of opening the conflict queue.
-    "transactions_categorize_rules_set": (3_289, 2_670),
+    "transactions_categorize_rules_set": (3_334, 2_672),
     # The one cohort whose candidate now costs more than the four tools it
     # replaced (4,127 vs 2,566). The overrun is two disclosures the replaced
     # tools never owed. First: accepting a match can reverse a transfer the
@@ -187,7 +194,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # the two fixtures this test loads. (The figure has drifted before —
     # because nothing fails when a comment goes stale. Recompute it from the
     # fixtures rather than trusting this line.)
-    "reviews_decide": (4_127, 2_566),
+    "reviews_decide": (4_153, 2_568),
     # Grew by the same disclosure, for the same reason: accepting an account
     # decision re-runs matching, which can reverse a transfer the user
     # accepted. Still less than half the cohort it replaced.
@@ -198,7 +205,7 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # description is the only place the agent can learn it: one that omitted it
     # would have the agent retry a merge with a token, read the refusal as a
     # bug, and route around the confirmation this exists to enforce.
-    "identity_links_decide": (3_497, 5_762),
+    "identity_links_decide": (3_530, 5_765),
     # Grew 172 bytes advertising the rule its model validator already enforced:
     # a merchant subcategory requires a category. `SplitTarget` has carried the
     # same conditional in its JSON schema all along, so a client that validates
@@ -209,8 +216,8 @@ _CANONICAL_CARRYING_WEIGHT_BYTES = {
     # 36 of those bytes came back when the condition dropped its redundant
     # `state` test: the `absent` branch already forbids `subcategory`, so
     # naming `state` narrowed the `if` without narrowing what validates.
-    "taxonomy_set": (3_652, 3_223),
-    "privacy_consent_set": (1_217, 2_188),
+    "taxonomy_set": (3_676, 3_227),
+    "privacy_consent_set": (1_248, 2_190),
 }
 
 _STANDARD_CALLBACK_NAMES = {
@@ -319,7 +326,7 @@ def _tool(
     return Tool(
         name=name,
         description=description,
-        inputSchema={"type": "object"},
+        input_schema={"type": "object"},
     )
 
 
@@ -456,7 +463,7 @@ def test_standard_surface_is_smaller_than_baseline() -> None:
     baseline = _load_inventory(BASELINE_PATH)
     standard = _inventory_server_sync()
 
-    assert baseline.total_bytes == 90_734
+    assert baseline.total_bytes == 90_839
     assert standard.tool_count == 50
     assert standard.total_bytes < baseline.total_bytes
     assert {
@@ -560,16 +567,16 @@ async def test_live_tools_preserve_callback_schema_annotation_and_actor_identity
         )
         assert tool.output_schema is None
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is getattr(
+        assert tool.annotations.read_only_hint is getattr(
             callback, "_mcp_read_only", True
         )
-        assert tool.annotations.destructiveHint is getattr(
+        assert tool.annotations.destructive_hint is getattr(
             callback, "_mcp_destructive", False
         )
-        assert tool.annotations.idempotentHint is getattr(
+        assert tool.annotations.idempotent_hint is getattr(
             callback, "_mcp_idempotent", True
         )
-        assert tool.annotations.openWorldHint is getattr(
+        assert tool.annotations.open_world_hint is getattr(
             callback, "_mcp_open_world", False
         )
 

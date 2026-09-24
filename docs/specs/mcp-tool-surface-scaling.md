@@ -426,15 +426,25 @@ If either gate fails, MoneyBin spends the additional tool slot deliberately.
 
 The deterministic current
 [`standard.json`](../../tests/fixtures/mcp_surface/standard.json) snapshot
-contains 50 tools, 62,356 bytes of serialized metadata, zero advertised output schemas,
+contains 50 tools, 63,711 bytes of serialized metadata, zero advertised output schemas,
 and registry SHA-256
-`60206db0a25b5e99bc07add35c5cf9a389fcb0e8800a49706c8708fca63dad44`.
-The frozen baseline is 90,734 bytes with SHA-256
-`ea87a21b01e0f5181b80cef120beef2e9f46b31df121c7941329d9c493b48f79`.
-The delta is -28,378 bytes (-31.3%). The deterministic estimate is 15,589
+`a03929338819e37b055a26838a19947b68615f2aaf1341a316bc830068ddecea`.
+The frozen baseline is 90,839 bytes with SHA-256
+`b789459f13f3e7e5caa476ca7d4d1e2fa4f19f9b107bc93f2edbceeeb2abe7a7`.
+The delta is -27,128 bytes (-29.9%). The deterministic estimate is 15,928
 metadata tokens; a percentage of context is
 recorded only with observed host/model evidence because this contract does not
 invent a context-window size.
+
+Both totals moved once on the mcp 2 upgrade, which is why older text quotes the
+baseline as 90,734 rather than 90,839. mcp 2 renamed the protocol models'
+Python attributes, so the inventory now serializes with `by_alias=True` to hold
+the camelCase wire spelling — restoring `_meta` as the metadata key, one byte
+per tool that the unaliased dump had been dropping. The standard snapshot also
+gained the protocol's new per-tool `title`, which fastmcp emits for every tool
+because some hosts drop a tool that lacks one. No tool was added, removed, or
+reworded by that upgrade: the frozen captures were re-derived from their own
+stored definitions and still list the same tools in the same order.
 
 ### Evaluation coverage for admitted tools
 

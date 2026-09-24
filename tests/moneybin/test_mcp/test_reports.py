@@ -551,14 +551,14 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
 
     assert {tool.name for tool in tools} == {"reports"}
     tool = tools[0]
-    assert tool.outputSchema is None
-    assert set(tool.inputSchema["properties"]) == {
+    assert tool.output_schema is None
+    assert set(tool.input_schema["properties"]) == {
         "report_id",
         "parameters",
         "limit",
         "display_currency",
     }
-    properties = tool.inputSchema["properties"]
+    properties = tool.input_schema["properties"]
     assert {
         branch.get("type") for branch in properties["display_currency"]["anyOf"]
     } == {
@@ -583,7 +583,7 @@ async def test_generic_reports_fastmcp_schema_and_catalog_transport() -> None:
         if branch.get("type") == "integer"
     )
     assert integer_limit["minimum"] == 1
-    assert "sql" not in tool.inputSchema["properties"]
+    assert "sql" not in tool.input_schema["properties"]
     assert "catalog" in (tool.description or "").lower()
     assert "registered read-only report" in (tool.description or "").lower()
     assert "never accepts sql" in (tool.description or "").lower()

@@ -85,13 +85,13 @@ Usage: `moneybin system audit list [OPTIONS]`
 
 Show one audit event plus any chained children (parent_audit_id matches).
 
-Usage: `moneybin system audit show [OPTIONS] AUDIT_ID`
+Usage: `moneybin system audit show [OPTIONS] {audit_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `AUDIT_ID` | text | yes | Audit event ID |
+| `audit_id` | text | yes | Audit event ID |
 
 **Options**
 
@@ -111,13 +111,13 @@ restoring the captured row would write back a value the write path no longer
 admits (``undo_value_inadmissible`` — e.g. a pre-existing blank category).
 The returned ``undo_operation_id`` is itself undoable.
 
-Usage: `moneybin system audit undo [OPTIONS] OPERATION_ID`
+Usage: `moneybin system audit undo [OPTIONS] {operation_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `OPERATION_ID` | text | yes | Operation id to reverse |
+| `operation_id` | text | yes | Operation id to reverse |
 
 **Options**
 
@@ -151,13 +151,13 @@ Usage: `moneybin system audit history [OPTIONS]`
 
 Show full before/after for every row of one operation before undoing it.
 
-Usage: `moneybin system audit get [OPTIONS] OPERATION_ID`
+Usage: `moneybin system audit get [OPTIONS] {operation_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `OPERATION_ID` | text | yes | Operation id to inspect |
+| `operation_id` | text | yes | Operation id to inspect |
 
 **Options**
 
