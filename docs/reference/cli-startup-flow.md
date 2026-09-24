@@ -258,7 +258,7 @@ By the time the leaf command body runs:
 - The profile is resolved (eagerly or lazily) and `_current_profile` is set.
 - `get_settings()` returns a frozen `MoneyBinSettings` for that profile.
 - The first `get_database()` call inside the body opens the encrypted connection.
-- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `❌`-prefixed log line and `typer.Exit(1)`.
+- The body typically wraps work in `with handle_cli_errors():` (or `with sqlmesh_command(...)` for SQLMesh-fronted operations) to route classified user errors to the standard `×`-prefixed console line and `typer.Exit(1)`.
 
 Output rendering follows the `--output {text,json}` contract from [`.claude/rules/cli.md`](../../.claude/rules/cli.md); JSON output uses the response envelope defined in `moneybin.protocol.envelope`. Diagnostic output goes to stderr; data output goes to stdout. Exit codes follow the docker/kubectl convention (`0` success, `1` runtime error, `2` usage error) — see [`docs/guides/cli-reference.md`](../guides/cli-reference.md) for the full table.
 

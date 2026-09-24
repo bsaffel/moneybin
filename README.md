@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-09 -->
+<!-- Last reviewed: 2026-09-23 -->
 <!-- markdownlint-disable MD033 MD041 -->
 <div align="center">
   <picture>

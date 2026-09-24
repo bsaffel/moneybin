@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-17 -->
+<!-- Last reviewed: 2026-09-23 -->
 # CLI Reference
 
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
