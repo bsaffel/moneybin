@@ -71,6 +71,7 @@ app = typer.Typer(
     cls=RootGroup,
     no_args_is_help=False,
     invoke_without_command=True,
+    subcommand_metavar="[COMMAND] [ARGS]...",
     # Pinned, not merely inherited: frames on the database-open path hold the
     # plaintext encryption key and profile passphrases as locals, and a rich
     # traceback is not a log record, so SanitizedLogFormatter cannot redact it.
@@ -166,6 +167,13 @@ def main_callback(
     profile dirs before the leaf command surfaces its own response.
     """
     if ctx.invoked_subcommand is None:
+        if profile_name is not None:
+            from moneybin.utils.user_config import normalize_profile_name
+
+            try:
+                normalize_profile_name(profile_name)
+            except ValueError as e:
+                raise typer.BadParameter(str(e), param_hint="--profile") from e
         show_start_menu()
         return
 

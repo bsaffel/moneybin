@@ -3,7 +3,7 @@
 
 One page per top-level command, generated from the registered command tree. Hidden commands are omitted, as they are from `--help`. For the conventions every command shares (standard flags, exit codes, output envelopes, date formats) read the hand-written [CLI reference](../../guides/cli-reference.md).
 
-Usage: `moneybin [OPTIONS] COMMAND [ARGS]...`
+Usage: `moneybin [OPTIONS] [COMMAND] [ARGS]...`
 
 **Global options**
 

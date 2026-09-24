@@ -98,7 +98,7 @@ def configure_root_help(app: typer.Typer) -> None:
     }
     for command in [*app.registered_commands, *app.registered_groups]:
         if command.name in entries:
-            command.rich_help_panel, command.help = entries[command.name]
+            command.rich_help_panel, command.short_help = entries[command.name]
 
 
 def show_start_menu() -> None:

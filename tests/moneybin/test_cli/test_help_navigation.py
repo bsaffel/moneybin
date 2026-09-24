@@ -9,6 +9,7 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from moneybin.cli.main import app
+from moneybin.cli.navigation import HELP_SECTIONS, SHORT_COMMANDS
 
 GROUPS = {
     "Your finances": ["accounts", "assets", "investments", "reports", "transactions"],
@@ -37,6 +38,21 @@ SHORT = {
     "demo",
 }
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+
+def _plain(text: str) -> str:
+    """Normalize Rich/Click styling before asserting textual navigation."""
+    return _ANSI_RE.sub("", text)
+
+
+def test_layout_contract_matches_navigation_constants() -> None:
+    """Independent acceptance data must name the same root layout as production."""
+    assert GROUPS == {
+        section: list(commands) for section, commands in HELP_SECTIONS.items()
+    }
+    assert SHORT == SHORT_COMMANDS
+
 
 def _commands(text: str) -> list[str]:
     names = "|".join(name for commands in GROUPS.values() for name in commands)
@@ -55,11 +71,12 @@ def test_short_menu_expands_without_moving_commands(
     full = runner.invoke(app, ["--help"])
     assert short.exit_code == full.exit_code == 0
     expected = [name for names in GROUPS.values() for name in names]
-    assert _commands(full.stdout) == expected
+    full_text = _plain(full.stdout)
+    assert _commands(full_text) == expected
     assert _commands(short.stdout) == [name for name in expected if name in SHORT]
     headings = list(GROUPS)
-    assert [full.stdout.index(heading) for heading in headings] == sorted(
-        full.stdout.index(heading) for heading in headings
+    assert [full_text.index(heading) for heading in headings] == sorted(
+        full_text.index(heading) for heading in headings
     )
     assert "Advanced tools" not in short.stdout
     assert "moneybin --help" in short.stdout
@@ -69,7 +86,62 @@ def test_short_menu_expands_without_moving_commands(
     command = get_command(app)
     assert isinstance(command, TyperGroup)
     visible = {name for name, child in command.commands.items() if not child.hidden}
-    assert set(_commands(full.stdout)) == visible
+    assert set(_commands(full_text)) == visible
+
+
+def test_root_help_uses_short_summaries_without_replacing_group_help() -> None:
+    """Root navigation must not flatten the detailed help of child groups."""
+    runner = CliRunner()
+
+    root = runner.invoke(app, ["--help"])
+    sql = runner.invoke(app, ["sql", "--help"])
+    accounts = runner.invoke(app, ["accounts", "--help"])
+
+    assert root.exit_code == sql.exit_code == accounts.exit_code == 0
+    assert "Run privacy-safe SQL queries" in root.stdout
+    assert "View and manage accounts" in root.stdout
+    assert "Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking)" in (
+        sql.stdout
+    )
+    assert "Account listing, settings, and lifecycle ops" in accounts.stdout
+
+
+def test_root_usage_marks_the_command_operand_optional() -> None:
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Usage: moneybin [OPTIONS] [COMMAND] [ARGS]..." in result.stdout
+
+
+def test_invalid_profile_for_bare_menu_exits_without_runtime_side_effects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A malformed explicit profile is rejected before the bare-menu return."""
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail(
+            "invalid bare-menu profiles must not initialize runtime or mutate state"
+        )
+
+    monkeypatch.setattr("moneybin.cli.main.stash_cli_flags", forbidden)
+    monkeypatch.setattr("moneybin.cli.main.setup_observability", forbidden)
+    monkeypatch.setattr("moneybin.cli.main.set_current_profile", forbidden)
+    monkeypatch.setattr("moneybin.cli.main.register_profile_resolver", forbidden)
+    monkeypatch.setattr("moneybin.cli.main.mark_profile_resolution_pending", forbidden)
+    monkeypatch.setattr("moneybin.cli.main.show_start_menu", forbidden)
+
+    result = CliRunner().invoke(app, ["--profile", "///"])
+
+    assert result.exit_code == 2
+    assert "--profile" in result.stderr
+
+
+def test_normalizable_profile_for_bare_menu_still_shows_the_menu() -> None:
+    """Profile normalization remains available outside commands."""
+    result = CliRunner().invoke(app, ["--profile", "bad/name"])
+
+    assert result.exit_code == 0
+    assert "MoneyBin - understand your finances" in result.stdout
 
 
 @pytest.mark.parametrize("args", [[], ["--help"]])
