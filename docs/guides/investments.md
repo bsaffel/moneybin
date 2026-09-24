@@ -249,7 +249,7 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 
 ## Net worth
 
-`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
+`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and the report reads the assertion only after a rebuild; until both, it is absent from net worth entirely:
 
 ```console
 $ uv run moneybin accounts balance assert 3413a05bad01 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
@@ -257,6 +257,12 @@ Balance asserted
 Account: 3413a05bad01
 Date:    2025-12-31
 Balance: 17125.00 USD
+$ uv run moneybin refresh --step transform
+Applying reports
+✓ Refresh complete
+Outcome:          Requested refresh steps completed
+investment_match: Investment matching: 0 unique, 0 competing, 0 stale, 0 suppressed
+transform:        Transforms: rebuilt
 $ uv run moneybin reports net-worth-accounts
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
