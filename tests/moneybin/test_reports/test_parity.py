@@ -20,11 +20,10 @@ from unittest.mock import patch
 
 import typer
 from fastmcp import Client, FastMCP
-from typer.testing import CliRunner
 
 from moneybin.cli.commands import reports as reports_commands
 from moneybin.database import Database
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.catalog import ReportCatalog, get_report_catalog
 from moneybin.reports._framework.contract import (
     Binding,
@@ -33,7 +32,6 @@ from moneybin.reports._framework.contract import (
     ReportSpec,
 )
 from moneybin.reports._framework.dynamic import spec_from_row
-from moneybin.reports._framework.execute import ReportResult
 from moneybin.reports._framework.introspect import build_spec
 from moneybin.reports._framework.registry import (
     register_generic_reports_tool,
@@ -44,7 +42,6 @@ from moneybin.reports.definitions import ALL_REPORTS
 from moneybin.repositories.user_reports_repo import UserReportsRepo
 from moneybin.services.user_reports_service import UserReportsService
 from moneybin.tables import TableRef
-from tests.database_mocks import no_profile_database
 from tests.moneybin.test_reports._metadata import TEST_SEMANTICS, output_columns
 
 REPORTS_APP = reports_commands.app
@@ -57,17 +54,21 @@ _EXPECTED_CLI = {
     "large-transactions",
     "balance-drift",
     "realized-fx",
+    "net-worth-currencies",
+    "net-worth-accounts",
+    "net-worth",
 }
 _EXPECTED_CATALOG_CLI = {
     "core:balance_drift": "balance-drift",
     "core:cash_flow": "cash-flow",
     "core:large_transactions": "large-transactions",
     "core:merchant_activity": "merchant-activity",
-    "core:networth": "networth",
-    "core:networth_history": "networth-history",
     "core:realized_fx": "realized-fx",
     "core:recurring_subscriptions": "recurring-subscriptions",
     "core:spending_trend": "spending-trend",
+    "core:net_worth_currencies": "net-worth-currencies",
+    "core:net_worth_accounts": "net-worth-accounts",
+    "core:net_worth": "net-worth",
 }
 #: R5's tier-spanning catalog/runner plus the CLI-only lifecycle verbs. These
 #: share the group namespace with the generated per-report commands, so a report
@@ -86,17 +87,6 @@ _EXPECTED_LIFECYCLE_CLI = {
 def registered_report_command_names(app: typer.Typer) -> set[str]:
     """Return the public report command names registered on one Typer app."""
     return {command.name for command in app.registered_commands if command.name}
-
-
-def _result(records: list[dict[str, object]]) -> ReportResult:
-    return ReportResult(
-        records=records,
-        columns=list(records[0]) if records else [],
-        output_classes={"value": DataClass.AGGREGATE},
-        tier=Tier.LOW,
-        total_count=len(records),
-        truncated=False,
-    )
 
 
 async def test_mcp_surface_matches_expected_set() -> None:
@@ -147,103 +137,6 @@ def test_catalog_ids_map_one_to_one_to_public_cli_commands() -> None:
     }
     assert mapping == _EXPECTED_CATALOG_CLI
     assert len(set(mapping.values())) == len(mapping)
-
-
-def test_networth_preserves_flags_and_executes_through_catalog() -> None:
-    help_result = CliRunner().invoke(REPORTS_APP, ["networth", "--help"])
-    assert help_result.exit_code == 0, help_result.output
-    assert "--as-of" in help_result.output
-    assert "--account" in help_result.output
-    assert "--as-of-date" not in help_result.output
-
-    database_context = no_profile_database()
-    database = database_context.__enter__.return_value
-    with (
-        patch(
-            "moneybin.cli.commands.reports.networth.get_database",
-            return_value=database_context,
-        ),
-        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
-        patch("moneybin.cli.commands.reports.networth.render_or_json"),
-    ):
-        mock_catalog.return_value.execute.return_value = _result([{"value": 1}])
-        result = CliRunner().invoke(
-            REPORTS_APP,
-            [
-                "networth",
-                "--as-of",
-                "2026-07-01",
-                "--account",
-                "acct-a",
-                "--account",
-                "acct-b",
-                "--output",
-                "json",
-            ],
-        )
-
-    assert result.exit_code == 0, result.output
-    mock_catalog.return_value.execute.assert_called_once_with(
-        database,
-        report_id="core:networth",
-        parameters={
-            "as_of": "2026-07-01",
-            "account_ids": ["acct-a", "acct-b"],
-        },
-        limit=1_000_000,
-        display_currency=None,
-        home_currency=None,
-    )
-
-
-def test_networth_history_preserves_flags_and_executes_through_catalog() -> None:
-    help_result = CliRunner().invoke(REPORTS_APP, ["networth-history", "--help"])
-    assert help_result.exit_code == 0, help_result.output
-    assert "--from" in help_result.output
-    assert "--to" in help_result.output
-    assert "--interval" in help_result.output
-    assert "--from-date" not in help_result.output
-    assert "--to-date" not in help_result.output
-
-    database_context = no_profile_database()
-    database = database_context.__enter__.return_value
-    with (
-        patch(
-            "moneybin.cli.commands.reports.networth.get_database",
-            return_value=database_context,
-        ),
-        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
-        patch("moneybin.cli.commands.reports.networth.render_or_json"),
-    ):
-        mock_catalog.return_value.execute.return_value = _result([{"value": 1}])
-        result = CliRunner().invoke(
-            REPORTS_APP,
-            [
-                "networth-history",
-                "--from",
-                "2026-01-01",
-                "--to",
-                "2026-07-01",
-                "--interval",
-                "weekly",
-                "--output",
-                "json",
-            ],
-        )
-
-    assert result.exit_code == 0, result.output
-    mock_catalog.return_value.execute.assert_called_once_with(
-        database,
-        report_id="core:networth_history",
-        parameters={
-            "from_date": "2026-01-01",
-            "to_date": "2026-07-01",
-            "interval": "weekly",
-        },
-        limit=1_000_000,
-        display_currency=None,
-        home_currency=None,
-    )
 
 
 def test_every_report_targets_a_reports_view() -> None:

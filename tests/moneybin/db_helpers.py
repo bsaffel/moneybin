@@ -216,12 +216,38 @@ CREATE TABLE IF NOT EXISTS core.fct_balances_daily (
 REPORTS_NET_WORTH_DDL = """\
 CREATE VIEW IF NOT EXISTS reports.net_worth AS
 SELECT
+    CAST(NULL AS VARCHAR) AS home_currency_code,
     CURRENT_DATE AS balance_date,
-    CAST(NULL AS VARCHAR) AS currency_code,
-    0.00::DECIMAL(18, 2) AS net_worth,
     0 AS account_count,
+    0 AS carried_forward_count,
+    0 AS currency_count,
+    0 AS unpriced_currency_count,
     0.00::DECIMAL(18, 2) AS total_assets,
-    0.00::DECIMAL(18, 2) AS total_liabilities
+    0.00::DECIMAL(18, 2) AS total_liabilities,
+    0.00::DECIMAL(18, 2) AS net_worth
+WHERE FALSE;
+"""
+
+# core:net_worth_currencies reads this rung, not reports.net_worth (the
+# day-grain total) — stubbed here so any fixture built on
+# create_core_tables() / create_core_tables_raw() can exercise
+# core:net_worth_currencies without a full SQLMesh build.
+REPORTS_NET_WORTH_CURRENCIES_DDL = """\
+CREATE VIEW IF NOT EXISTS reports.net_worth_currencies AS
+SELECT
+    CAST(NULL AS VARCHAR) AS currency_code,
+    CAST(NULL AS VARCHAR) AS home_currency_code,
+    CAST(NULL AS VARCHAR) AS rate_source,
+    CURRENT_DATE AS balance_date,
+    CAST(NULL AS DATE) AS rate_published_date,
+    0 AS account_count,
+    0 AS carried_forward_count,
+    0.00::DECIMAL(18, 2) AS total_assets,
+    0.00::DECIMAL(18, 2) AS total_liabilities,
+    0.00::DECIMAL(18, 2) AS net_worth,
+    0.00::DECIMAL(18, 2) AS total_assets_home,
+    0.00::DECIMAL(18, 2) AS total_liabilities_home,
+    0.00::DECIMAL(18, 2) AS net_worth_home
 WHERE FALSE;
 """
 
@@ -611,6 +637,7 @@ def create_core_tables(db: Database) -> None:
     db.execute(CORE_FCT_BALANCES_DDL)
     db.execute(CORE_FCT_BALANCES_DAILY_DDL)
     db.execute(REPORTS_NET_WORTH_DDL)
+    db.execute(REPORTS_NET_WORTH_CURRENCIES_DDL)
 
 
 def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
@@ -629,6 +656,7 @@ def create_core_tables_raw(conn: duckdb.DuckDBPyConnection) -> None:
     conn.execute(CORE_FCT_BALANCES_DDL)
     conn.execute(CORE_FCT_BALANCES_DAILY_DDL)
     conn.execute(REPORTS_NET_WORTH_DDL)
+    conn.execute(REPORTS_NET_WORTH_CURRENCIES_DDL)
 
 
 # Table and column comments for core tables — mirror the SQLMesh model

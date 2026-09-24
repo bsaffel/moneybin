@@ -299,8 +299,6 @@ def reports_explain(
             disclosures.append(
                 format_cli_attention(explanation.drift_reason, policy=policy)
             )
-        if explanation.sql_unavailable:
-            disclosures.append(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:
             disclosures.append(
                 "Withheld from the rendered SQL (classed above the lowest tier): "
@@ -332,7 +330,6 @@ def reports_explain(
                 "tier": explanation.tier,
                 "sql": explanation.sql,
                 "sql_template": explanation.sql_template,
-                "sql_unavailable": explanation.sql_unavailable,
                 "withheld_parameters": list(explanation.withheld_parameters),
                 "sql_suppressed_by": list(explanation.sql_suppressed_by),
                 "columns": [

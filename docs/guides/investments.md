@@ -276,32 +276,17 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 
 ## Net worth
 
-`reports networth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
+`reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
 
 ```console
 $ uv run moneybin accounts balance assert f2b870002664 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
 Using profile: demo
 Asserted balance for account f2b****...2664 on 2025-12-31
 ✅ Asserted balance for f2b870002664 on 2025-12-31: 17125.00 USD
-$ uv run moneybin reports networth
-Using profile: demo
-USD as of 2025-12-31
-Net worth:   437,205.77
-Assets:      437,205.77
-Liabilities: 0.00
-Accounts:    5
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source    ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━┩
-│ Ally Bank savings …0002   │  33,000.00 │ USD      │           │
-│ Brokerage                 │  17,125.00 │ USD      │ assertion │
-│ Chase Bank checking …0001 │ 387,080.77 │ USD      │           │
-│ Chase Bank credit card    │       0.00 │ USD      │ tabular   │
-│ Citi credit card          │       0.00 │ USD      │ tabular   │
-└───────────────────────────┴────────────┴──────────┴───────────┘
+$ uv run moneybin reports net-worth-accounts
 ```
 
-The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
+The report's output is omitted here; on and after 2025-12-31 the brokerage row carries the asserted 17,125.00. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
 
 ## From an AI client
 
@@ -329,7 +314,7 @@ One read tool and three write tools cover the surface. `investments(view=...)` r
 ## What is not built yet
 
 - **No real-broker 1099-B tie-out.** The four methods reconcile against a hand-labeled full-tax-year fixture. Until they tie to a real broker's 1099-B, treat `investments gains` as a number to check against the form, not a replacement for it.
-- **Positions do not fold into net worth.** `reports networth` reads balances; a brokerage counts at its reported or asserted balance, and `investments holdings` is the only place market value appears. There is no daily series of what a position was worth on a past date.
+- **Positions do not fold into net worth.** `reports net-worth` reads balances; a brokerage counts at its reported or asserted balance, and `investments holdings` is the only place market value appears. There is no daily series of what a position was worth on a past date.
 - **No wash-sale detection, Schedule D, or Form 8949.** Lot selection is the tax-loss-harvesting primitive; the workflow around it is planned as a reference package on top of this ledger.
 - **Options, margin, short positions, and derivatives** are outside the ledger. A merger or spin-off is recorded as a `transfer_out` and `transfer_in` pair carrying the basis; there is no single command for either.
 - **A recorded event has no edit or delete.** `import revert` on the event's batch is the undo — including a wrong `--currency`: revert the batch, re-record with the correct value, then `moneybin refresh`. Revert only deletes the batch's rows from the raw layer; events, lots, gains, and holdings read from materialized `core.*` tables, so the reverted event stays visible until refresh rebuilds them.

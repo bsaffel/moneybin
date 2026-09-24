@@ -1,4 +1,4 @@
-"""Unified catalog behavior for SQL-backed and service-backed reports."""
+"""Unified catalog behavior for SQL-backed reports."""
 
 from __future__ import annotations
 
@@ -8,20 +8,16 @@ import logging
 import re
 import shlex
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from functools import partial
 from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-import sqlglot
 import typer
 from pydantic import JsonValue
-from pytest_mock import MockerFixture
-from sqlglot import exp
 from typer._click import Command, Context
 from typer.core import TyperGroup
 
@@ -33,26 +29,18 @@ from moneybin.database import (
 )
 from moneybin.errors import UserError
 from moneybin.matching.persistence import count_pending_matches
-from moneybin.privacy.payloads.networth import (
-    NetWorthAccountRow,
-    NetWorthCurrencySegment,
-    NetWorthHistoryPayload,
-    NetWorthHistoryPoint,
-    NetWorthSnapshotPayload,
-)
 from moneybin.privacy.payloads.reports import (
     ReportCatalogEntry,
     ReportOutputColumn,
     ReportSemanticsPayload,
 )
-from moneybin.privacy.taxonomy import DataClass, Tier
+from moneybin.privacy.taxonomy import DataClass
 from moneybin.protocol.envelope import PayloadEncoder
 from moneybin.reports._framework import registry
 from moneybin.reports._framework.catalog import (
     DEGRADED_PENDING_DEDUP,
     STALE_DEDUP_HINT,
     ReportCatalog,
-    ServiceReportSpec,
     catalog_classes_returned,
     catalog_sensitivity,
     get_report_catalog,
@@ -80,23 +68,12 @@ from moneybin.reports._framework.registry import (
     register_reports_cli,
 )
 from moneybin.reports.definitions import ALL_REPORTS
-from moneybin.reports.service_reports import (
-    NETWORTH_HISTORY_REPORT,
-    NETWORTH_REPORT,
-)
 from moneybin.repositories.match_decisions_repo import MatchDecisionsRepo
 from moneybin.services.matching_service import (
     PENDING_MATCHES_HINT,
     MatchingService,
 )
-from moneybin.services.networth_service import NetworthService
-from moneybin.tables import (
-    FCT_TRANSACTIONS,
-    MATCH_DECISIONS,
-    MODEL_FRESHNESS,
-    TableRef,
-)
-from tests.database_mocks import without_a_profile
+from moneybin.tables import FCT_TRANSACTIONS, TableRef
 from tests.moneybin.db_helpers import record_model_execution, seed_pending_dedup_pair
 
 _SEMANTICS = ReportSemantics(
@@ -167,34 +144,6 @@ def _sql_report(
     )
 
 
-def _service_report(
-    executor: MagicMock,
-    *,
-    report_id: str = "retirement:summary",
-    name: str = "summary",
-) -> ServiceReportSpec:
-    return ServiceReportSpec(
-        report_id=report_id,
-        name=name,
-        description="Test service report.",
-        parameters=(
-            ParamSpec(
-                "year",
-                int,
-                None,
-                True,
-                "Tax year.",
-                DataClass.TXN_DATE,
-            ),
-        ),
-        columns=_COLUMNS,
-        semantics=_SEMANTICS,
-        classes=_CLASSES,
-        examples=(),
-        executor=executor,
-    )
-
-
 def _db_with_rows(*rows: tuple[object, ...]) -> Database:
     cursor = MagicMock()
     cursor.description = [("value",)]
@@ -205,26 +154,26 @@ def _db_with_rows(*rows: tuple[object, ...]) -> Database:
 
 
 def test_catalog_lists_reports_in_full_id_order() -> None:
-    catalog = ReportCatalog((NETWORTH_REPORT, _sql_report()))
+    catalog = ReportCatalog((
+        _sql_report(report_id="core:alpha", name="alpha"),
+        _sql_report(),
+    ))
 
     assert tuple(report.report_id for report in catalog.list()) == (
-        "core:networth",
+        "core:alpha",
         "core:summary",
     )
 
 
 def test_registered_account_id_metadata_uses_opaque_record_id_class() -> None:
-    """Exact account-id fields stay unmasked across both report kinds."""
+    """Exact account-id fields stay unmasked."""
     problems: list[str] = []
     for report in get_report_catalog().list():
         if report.classes.get("account_id") is not None and (
             report.classes["account_id"] is not DataClass.RECORD_ID
         ):
             problems.append(f"{report.report_id}.account_id output")
-        parameters = (
-            report.params if isinstance(report, ReportSpec) else report.parameters
-        )
-        for parameter in parameters:
+        for parameter in report.params:
             if parameter.name in {"account_id", "account_ids"} and (
                 parameter.data_class is not DataClass.RECORD_ID
             ):
@@ -242,16 +191,44 @@ def test_every_money_bearing_report_projects_the_currency_it_is_denominated_in()
     violate Requirement 5" is one that sums money and cannot tell two
     currencies apart. Enumerating the live catalog (rather than a hand-kept
     list) is what makes a future report unable to ship unsegmented.
+
+    Keyed on the report's *own* declared currency column
+    (`semantics.currency`, falling back to `currency_code` for a report that
+    declares none — `realized_fx`'s mixed-unit rows already declare
+    `currency_code` itself) rather than a literal `"currency_code"`:
+    `core:net_worth` is already blended into one home-currency total by the
+    time this rung reads it, so its rows carry no per-row `currency_code` at
+    all — it names its own currency as `home_currency_code` instead, and this
+    check follows that declaration rather than needing a hand-kept exemption
+    for it.
     """
     monetary = {DataClass.TXN_AMOUNT, DataClass.BALANCE}
     unsegmented = [
         report.report_id
         for report in get_report_catalog().list()
         if monetary.intersection(report.classes.values())
-        and report.classes.get("currency_code") is not DataClass.CURRENCY
+        and report.classes.get(report.semantics.currency or "currency_code")
+        is not DataClass.CURRENCY
     ]
 
     assert unsegmented == []
+
+
+def test_net_worth_declares_home_currency_code_as_its_own_currency() -> None:
+    """The one blended-total report names `home_currency_code`, not `currency_code`.
+
+    It is not a gap in the guard above — it is the grain: every account and
+    currency already collapsed into one home-currency position, so there is no
+    per-row currency left to segment by.
+    """
+    report = next(
+        item
+        for item in get_report_catalog().list()
+        if item.report_id == "core:net_worth"
+    )
+
+    assert report.classes.get("home_currency_code") is DataClass.CURRENCY
+    assert "currency_code" not in report.classes
 
 
 def test_realized_fx_declares_every_currency_in_its_mixed_unit_rows() -> None:
@@ -292,141 +269,16 @@ def test_only_reports_whose_rows_price_exactly_declare_an_fx_date() -> None:
     assert declared == {
         "core:balance_drift",
         "core:large_transactions",
-        "core:networth",
+        "core:net_worth_currencies",
+        "core:net_worth_accounts",
+        "core:net_worth",
     }
-
-
-def test_service_report_privacy_maps_match_independent_contract() -> None:
-    """Every service-backed report has an explicit, independently reviewed map."""
-    expected = {
-        "core:networth": {
-            "columns": {
-                "balance_date": DataClass.TXN_DATE,
-                "currency_code": DataClass.CURRENCY,
-                "net_worth": DataClass.BALANCE,
-                "total_assets": DataClass.BALANCE,
-                "total_liabilities": DataClass.BALANCE,
-                "account_count": DataClass.AGGREGATE,
-                "account_id": DataClass.RECORD_ID,
-                "account_name": DataClass.USER_NOTE,
-                "account_balance": DataClass.BALANCE,
-                "observation_source": DataClass.TXN_TYPE,
-            },
-            "parameters": {
-                "as_of": DataClass.TXN_DATE,
-                "account_ids": DataClass.RECORD_ID,
-            },
-        },
-        "core:networth_history": {
-            "columns": {
-                "period": DataClass.TXN_DATE,
-                "currency_code": DataClass.CURRENCY,
-                "net_worth": DataClass.BALANCE,
-                "change_abs": DataClass.BALANCE,
-                "change_pct": DataClass.AGGREGATE,
-            },
-            "parameters": {
-                "from_date": DataClass.TXN_DATE,
-                "to_date": DataClass.TXN_DATE,
-                "interval": DataClass.TXN_TYPE,
-            },
-        },
-    }
-    service_reports = {
-        report.report_id: report
-        for report in get_report_catalog().list()
-        if isinstance(report, ServiceReportSpec)
-    }
-
-    assert set(service_reports) == set(expected)
-    for report_id, contract in expected.items():
-        report = service_reports[report_id]
-        assert report.classes == contract["columns"]
-        assert {
-            parameter.name: parameter.data_class for parameter in report.parameters
-        } == contract["parameters"]
-
-
-def test_service_report_provenance_matches_the_tables_its_query_reads() -> None:
-    """Declared ``provenance`` is pinned to what the service's own SQL reads.
-
-    ``pending_dedup_caveat`` reads ``ReportSemantics.provenance`` to decide
-    whether a report is downstream of ``core.fct_transactions`` and therefore
-    owed the pending-dedup caveat (#409). A SQL-backed report's ``provenance``
-    is checked against SQLMesh's own parse of its model
-    (``test_model_reads_match_the_dependencies_sqlmesh_parses`` in
-    ``test_sqlmesh_registry.py``); a service report has no SQL model for that,
-    so a future service report reading a new table without updating its
-    hand-authored ``provenance`` would silently never earn the caveat. This
-    pins the declared tuple to sqlglot's parse of the SQL the service's own
-    executor actually issues, mirroring that guard for the one report kind
-    that hand-authors its provenance.
-
-    Enumerating the live catalog rather than a hand-kept dict is what forces a
-    new service report to add coverage here, exactly as
-    ``test_service_report_privacy_maps_match_independent_contract`` does for
-    its privacy map.
-    """
-
-    class _CapturingDB:
-        """Records every SQL statement executed; answers with one throwaway row."""
-
-        def __init__(self) -> None:
-            self.statements: list[str] = []
-
-        def execute(self, sql: str, params: object = None) -> _CapturingDB:
-            del params
-            self.statements.append(sql)
-            return self
-
-        def fetchall(self) -> list[tuple[object, ...]]:
-            # One generic row wide enough for any of these queries' positional
-            # reads; `None` in position 0 keeps `history()`'s
-            # `row[0].isoformat() if row[0] else None` on its falsy branch.
-            return [(None, "USD", Decimal("0"), Decimal("0"), Decimal("0"), 0)]
-
-    def _tables_read(statements: list[str]) -> frozenset[str]:
-        tables: set[str] = set()
-        for sql in statements:
-            tree = sqlglot.parse_one(sql, dialect="duckdb")
-            cte_names = {cte.alias_or_name.lower() for cte in tree.find_all(exp.CTE)}
-            tables.update(
-                f"{table.db.lower()}.{table.name.lower()}"
-                for table in tree.find_all(exp.Table)
-                if table.db and table.name.lower() not in cte_names
-            )
-        return frozenset(tables)
-
-    checks: dict[str, Callable[[Database], object]] = {
-        "core:networth": lambda db: NetworthService(db).current(),
-        "core:networth_history": lambda db: NetworthService(db).history(
-            date(2026, 1, 1), date(2026, 2, 1)
-        ),
-    }
-    service_reports = {
-        report.report_id: report
-        for report in get_report_catalog().list()
-        if isinstance(report, ServiceReportSpec)
-    }
-    assert set(service_reports) == set(checks)
-
-    for report_id, invoke in checks.items():
-        capture = _CapturingDB()
-        invoke(cast(Database, capture))
-        actual = _tables_read(capture.statements)
-        declared = frozenset(
-            relation.lower()
-            for relation in service_reports[report_id].semantics.provenance
-        )
-        assert actual == declared, (
-            f"{report_id}: query reads {sorted(actual)}, "
-            f"provenance declares {sorted(declared)}"
-        )
 
 
 def test_catalog_resolves_namespaced_and_unique_short_ids() -> None:
     sql_report = _sql_report()
-    catalog = ReportCatalog((sql_report, NETWORTH_REPORT))
+    other = _sql_report(report_id="core:other", name="other")
+    catalog = ReportCatalog((sql_report, other))
 
     assert catalog.resolve("core:summary").report_id == "core:summary"
     assert catalog.resolve("summary").report_id == "core:summary"
@@ -465,8 +317,10 @@ def test_the_collision_warning_names_the_reports_and_not_the_name(
 
 
 def test_ambiguous_short_id_lists_sorted_namespaced_candidates() -> None:
-    executor = MagicMock()
-    catalog = ReportCatalog((_sql_report(), _service_report(executor)))
+    catalog = ReportCatalog((
+        _sql_report(),
+        _sql_report(report_id="retirement:summary"),
+    ))
 
     with pytest.raises(UserError) as raised:
         catalog.resolve("summary")
@@ -498,42 +352,38 @@ def test_duplicate_full_report_ids_are_rejected() -> None:
     ("parameters", "code", "details"),
     [
         (
-            {"year": 2026, "account_number": "sensitive"},
+            {"count": 5, "account_number": "sensitive"},
             "report_parameter_unknown",
-            {
-                "report_id": "retirement:summary",
-                "parameters": ["account_number"],
-            },
+            {"report_id": "core:summary", "parameters": ["account_number"]},
         ),
         (
             {},
             "report_parameter_missing",
-            {"report_id": "retirement:summary", "parameters": ["year"]},
+            {"report_id": "core:summary", "parameters": ["count"]},
         ),
         (
-            {"year": "2026"},
+            {"count": True},
             "report_parameter_invalid_type",
             {
-                "report_id": "retirement:summary",
-                "parameter": "year",
+                "report_id": "core:summary",
+                "parameter": "count",
                 "expected": "int",
             },
         ),
     ],
 )
-def test_service_parameters_are_rejected_before_executor_dispatch(
+def test_sql_parameters_are_rejected_before_query_dispatch(
     parameters: dict[str, object],
     code: str,
     details: dict[str, object],
 ) -> None:
-    executor = MagicMock()
-    catalog = ReportCatalog((_service_report(executor),))
+    catalog = ReportCatalog((_sql_report(),))
     db = MagicMock(spec=Database)
 
     with pytest.raises(UserError) as raised:
         catalog.execute(
             cast(Database, db),
-            report_id="retirement:summary",
+            report_id="core:summary",
             parameters=parameters,  # type: ignore[arg-type]  # invalid JSON types under test
             limit=100,
         )
@@ -541,23 +391,6 @@ def test_service_parameters_are_rejected_before_executor_dispatch(
     assert raised.value.code == code
     assert raised.value.details == details
     assert "sensitive" not in raised.value.message
-    executor.assert_not_called()
-    db.execute.assert_not_called()
-
-
-def test_sql_parameters_are_rejected_before_query_dispatch() -> None:
-    catalog = ReportCatalog((_sql_report(),))
-    db = MagicMock(spec=Database)
-
-    with pytest.raises(UserError, match="invalid type") as raised:
-        catalog.execute(
-            cast(Database, db),
-            report_id="core:summary",
-            parameters={"count": True},
-            limit=100,
-        )
-
-    assert raised.value.code == "report_parameter_invalid_type"
     db.execute.assert_not_called()
 
 
@@ -741,59 +574,6 @@ def test_report_result_currency_default_is_not_a_currency_literal(
     assert default is None
 
 
-def test_service_report_dispatch_uses_same_result_contract() -> None:
-    executor = MagicMock()
-    service_report = _service_report(executor)
-    execution = build_catalog_execution(
-        service_report,
-        parameters={"year": 2026},
-        records=[{"value": 7}],
-        columns=["value"],
-        column_types=["BIGINT"],
-        max_rows=25,
-        sql=None,
-    )
-    executor.return_value = execution
-    catalog = ReportCatalog((service_report,))
-    db = MagicMock(spec=Database)
-
-    result = catalog.execute(
-        cast(Database, db),
-        report_id="retirement:summary",
-        parameters={"year": 2026},
-        limit=25,
-    )
-
-    assert result.records == [{"value": 7}]
-    assert result.report_id == "retirement:summary"
-    executor.assert_called_once_with(
-        cast(Database, db),
-        {"year": 2026},
-        25,
-    )
-    db.execute.assert_not_called()
-
-
-def test_catalog_resolve_request_validates_service_parameters_without_execution() -> (
-    None
-):
-    executor = MagicMock()
-    validator = MagicMock()
-    report = replace(_service_report(executor), validator=validator)
-    catalog = ReportCatalog((report,))
-
-    resolved, parameters = catalog.resolve_request(
-        report_id="summary",
-        parameters={"year": 2026},
-        limit=None,
-    )
-
-    assert resolved is report
-    assert parameters == {"year": 2026}
-    validator.assert_called_once_with({"year": 2026})
-    executor.assert_not_called()
-
-
 def test_catalog_execute_raw_returns_unredacted_execution() -> None:
     report = _sql_report()
     catalog = ReportCatalog((report,))
@@ -827,27 +607,23 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
 ) -> None:
     dispatched: dict[str, JsonValue] = {}
 
-    def executor(
+    def runner(
         db: Database,  # contract handle
-        parameters: Mapping[str, JsonValue],
-        limit: int | None,
-    ) -> CatalogReportExecution:
-        dispatched.update(parameters)
-        return build_catalog_execution(
-            spec,
-            parameters=parameters,
-            records=[{"value": 1}],
-            columns=["value"],
-            column_types=["BIGINT"],
-            max_rows=limit,
-            sql=None,
-        )
+        **params: JsonValue,
+    ) -> ReportQuery:
+        dispatched.update(params)
+        return ReportQuery("SELECT ? AS value", [Binding(1, DataClass.AGGREGATE)])
 
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:nested",
         name="nested",
         description="Nested parameter report.",
-        parameters=(
+        view=TableRef("reports", "test_nested"),
+        runner=runner,
+        classes=_CLASSES,
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+        params=(
             ParamSpec(
                 "accounts",
                 dict[str, str],
@@ -857,18 +633,14 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
                 sensitive_class,
             ),
         ),
-        columns=_COLUMNS,
-        semantics=_SEMANTICS,
-        classes=_CLASSES,
         examples=(),
-        executor=executor,
     )
     raw_accounts: dict[str, JsonValue] = {
         "acct_key_11112222": "acct_value_99998888",
     }
 
     result = ReportCatalog((spec,)).execute(
-        cast(Database, MagicMock(spec=Database)),
+        _db_with_rows((1,)),
         report_id="test:nested",
         parameters={"accounts": raw_accounts},
         limit=100,
@@ -892,12 +664,16 @@ def test_sensitive_mapping_parameter_metadata_is_summarized_without_keys(
 
 
 def test_low_mapping_parameter_metadata_retains_frozen_json_shape() -> None:
-    executor = MagicMock()
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:low_mapping",
         name="low_mapping",
         description="Low-safe mapping report.",
-        parameters=(
+        view=TableRef("reports", "test_low_mapping"),
+        runner=_sql_runner,
+        columns=_COLUMNS,
+        semantics=_SEMANTICS,
+        classes=_CLASSES,
+        params=(
             ParamSpec(
                 "categories",
                 dict[str, list[str]],
@@ -907,11 +683,7 @@ def test_low_mapping_parameter_metadata_retains_frozen_json_shape() -> None:
                 DataClass.CATEGORY,
             ),
         ),
-        columns=_COLUMNS,
-        semantics=_SEMANTICS,
-        classes=_CLASSES,
         examples=(),
-        executor=executor,
     )
 
     result = build_catalog_result(
@@ -927,241 +699,8 @@ def test_low_mapping_parameter_metadata_retains_frozen_json_shape() -> None:
     }
 
 
-def test_networth_service_report_is_tabular_redacted_and_truncated(
-    mocker: MockerFixture,
-) -> None:
-    current = mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code="USD",
-            net_worth=Decimal("1234.56000000"),
-            total_assets=Decimal("1500.12000000"),
-            total_liabilities=Decimal("-265.56000000"),
-            account_count=2,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code="USD",
-                    net_worth=Decimal("1234.56000000"),
-                    total_assets=Decimal("1500.12000000"),
-                    total_liabilities=Decimal("-265.56000000"),
-                    account_count=2,
-                ),
-            ],
-            per_account=[
-                NetWorthAccountRow(
-                    account_id="acct_11112222",
-                    display_name="Checking",
-                    balance=Decimal("500.12000000"),
-                    observation_source="asserted",
-                    currency_code="USD",
-                ),
-                NetWorthAccountRow(
-                    account_id="acct_99998888",
-                    display_name="Brokerage",
-                    balance=Decimal("1000.00000000"),
-                    observation_source="derived",
-                    currency_code="USD",
-                ),
-            ],
-        ),
-    )
-    db = without_a_profile(MagicMock(spec=Database))
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, db),
-        report_id="core:networth",
-        parameters={"as_of": "2026-07-02"},
-        limit=1,
-    )
-
-    current.assert_called_once_with(
-        as_of_date=date(2026, 7, 2),
-        account_ids=None,
-    )
-    assert result.report_id == "core:networth"
-    assert result.semantics.kind == "position"
-    assert result.semantics.valuation_basis == (
-        "resolved transaction-adjusted daily positions on or before the "
-        "resolved balance_date"
-    )
-    assert result.semantics.fx_date == "balance_date"
-    assert result.parameters == {"as_of": "2026-07-02", "account_ids": None}
-    # limit=1 keeps the currency's position and drops the breakdown, because
-    # totals lead: a page capped below the row count still answers "what am I
-    # worth" rather than showing one account and calling it the snapshot.
-    assert result.records == [
-        {
-            "balance_date": date(2026, 7, 1),
-            "currency_code": "USD",
-            "net_worth": Decimal("1234.56000000"),
-            "total_assets": Decimal("1500.12000000"),
-            "total_liabilities": Decimal("-265.56000000"),
-            "account_count": 2,
-            "account_id": None,
-            "account_name": None,
-            "account_balance": None,
-            "observation_source": None,
-        }
-    ]
-    assert result.output_classes["account_id"] is DataClass.RECORD_ID
-    assert result.tier is Tier.HIGH
-    assert result.truncated is True
-    # `max_rows + 1`, the deliberate lower bound a truncated execution reports —
-    # three rows exist here (one totals, two accounts).
-    assert result.total_count == 2
-    envelope = result.to_envelope().to_dict()
-    assert envelope["summary"]["display_currency"] == "USD"
-    # Net worth is downstream of the transactions fact and reads it through a
-    # materialized model, so the framework's own reads run: the pending count,
-    # the model's rebuild stamp, and the decided-since count. `without_a_profile`
-    # answers each with no row. The report's rows still never come from SQL here.
-    pending_read, freshness_read, settled_read = db.execute.call_args_list
-    assert MATCH_DECISIONS.full_name in pending_read.args[0]
-    assert pending_read.args[1] == ["dedup"]
-    assert MODEL_FRESHNESS.full_name in freshness_read.args[0]
-    assert freshness_read.args[1] == ["core.fct_balances_daily"]
-    assert MATCH_DECISIONS.full_name in settled_read.args[0]
-    assert settled_read.args[1] == ["dedup"]
-
-
-def test_networth_account_id_parameter_metadata_preserves_opaque_ids(
-    mocker: MockerFixture,
-) -> None:
-    current = mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=None,
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=0,
-            per_currency=[],
-            per_account=[],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth",
-        parameters={"account_ids": ["acct_11112222"]},
-        limit=100,
-    )
-
-    current.assert_called_once_with(
-        as_of_date=None,
-        account_ids=["acct_11112222"],
-    )
-    assert result.parameters == {
-        "as_of": None,
-        "account_ids": ("acct_11112222",),
-    }
-
-
-def test_networth_service_report_preserves_explicit_no_data(
-    mocker: MockerFixture,
-) -> None:
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=None,
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=0,
-            per_currency=[],
-            per_account=[],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="networth",
-        parameters={},
-        limit=100,
-    )
-
-    assert len(result.records) == 1
-    assert result.records[0]["account_id"] is None
-    assert result.records[0]["balance_date"] is None
-    assert result.records[0]["net_worth"] is None
-    assert result.records[0]["total_assets"] is None
-    assert result.records[0]["total_liabilities"] is None
-    assert result.total_count == 1
-    assert result.truncated is False
-    assert result.period is None
-
-
-def test_networth_history_service_report_preserves_numeric_fidelity(
-    mocker: MockerFixture,
-) -> None:
-    history = mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.history",
-        return_value=NetWorthHistoryPayload(
-            points=[
-                NetWorthHistoryPoint(
-                    period="2026-06-01",
-                    currency_code="USD",
-                    net_worth=Decimal("1000.12345678"),
-                    change_abs=None,
-                    change_pct=None,
-                ),
-                NetWorthHistoryPoint(
-                    period="2026-07-01",
-                    currency_code="USD",
-                    net_worth=Decimal("1100.87654321"),
-                    change_abs=Decimal("100.75308643"),
-                    change_pct=Decimal("0.10074065"),
-                ),
-            ]
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_HISTORY_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth_history",
-        parameters={
-            "from_date": "2026-06-01",
-            "to_date": "2026-07-31",
-            "interval": "monthly",
-        },
-        limit=1,
-    )
-
-    history.assert_called_once_with(
-        date(2026, 6, 1),
-        date(2026, 7, 31),
-        interval="monthly",
-    )
-    assert result.semantics.kind == "position"
-    assert result.semantics.valuation_basis == (
-        "last resolved transaction-adjusted daily position in each selected period"
-    )
-    columns = {column.name: column for column in NETWORTH_HISTORY_REPORT.columns}
-    assert columns["net_worth"].description == (
-        "Resolved transaction-adjusted period-end position in currency_code."
-    )
-    assert result.records == [
-        {
-            "period": "2026-06-01",
-            "currency_code": "USD",
-            "net_worth": Decimal("1000.12345678"),
-            "change_abs": None,
-            "change_pct": None,
-        }
-    ]
-    assert isinstance(result.records[0]["net_worth"], Decimal)
-    assert result.truncated is True
-    assert result.total_count == 2
-
-
-@pytest.mark.parametrize("kind", ["sql", "service"])
-def test_negative_limit_is_rejected_before_dispatch(kind: str) -> None:
-    executor = MagicMock()
-    report: ReportSpec | ServiceReportSpec
-    report = _sql_report() if kind == "sql" else _service_report(executor)
+def test_negative_limit_is_rejected_before_dispatch() -> None:
+    report = _sql_report()
     catalog = ReportCatalog((report,))
     db = MagicMock(spec=Database)
 
@@ -1169,13 +708,12 @@ def test_negative_limit_is_rejected_before_dispatch(kind: str) -> None:
         catalog.execute(
             cast(Database, db),
             report_id=report.report_id,
-            parameters={"count": 1} if kind == "sql" else {"year": 2026},
+            parameters={"count": 1},
             limit=-1,
         )
 
     assert raised.value.code == "report_limit_invalid"
     assert raised.value.details == {"minimum": 0}
-    executor.assert_not_called()
     db.execute.assert_not_called()
 
 
@@ -1192,96 +730,10 @@ def test_zero_limit_is_valid_and_reports_truncation() -> None:
     assert result.total_count == 1
 
 
-@pytest.mark.parametrize(
-    ("spec", "parameters", "code", "details"),
-    [
-        (
-            NETWORTH_REPORT,
-            {"as_of": "not-a-date"},
-            "report_parameter_invalid_value",
-            {
-                "report_id": "core:networth",
-                "parameter": "as_of",
-                "expected": "ISO date (YYYY-MM-DD)",
-            },
-        ),
-        (
-            NETWORTH_REPORT,
-            {"as_of": "20260702"},
-            "report_parameter_invalid_value",
-            {
-                "report_id": "core:networth",
-                "parameter": "as_of",
-                "expected": "ISO date (YYYY-MM-DD)",
-            },
-        ),
-        (
-            NETWORTH_REPORT,
-            {"as_of": "2026-W27-4"},
-            "report_parameter_invalid_value",
-            {
-                "report_id": "core:networth",
-                "parameter": "as_of",
-                "expected": "ISO date (YYYY-MM-DD)",
-            },
-        ),
-        (
-            NETWORTH_REPORT,
-            {"as_of": "2026-02-30"},
-            "report_parameter_invalid_value",
-            {
-                "report_id": "core:networth",
-                "parameter": "as_of",
-                "expected": "ISO date (YYYY-MM-DD)",
-            },
-        ),
-        (
-            NETWORTH_HISTORY_REPORT,
-            {
-                "from_date": "2026-07-02",
-                "to_date": "2026-07-01",
-            },
-            "report_parameter_invalid_range",
-            {
-                "report_id": "core:networth_history",
-                "parameters": ["from_date", "to_date"],
-                "relation": "from_date <= to_date",
-            },
-        ),
-    ],
-)
-def test_service_value_validation_runs_before_executor(
-    spec: ServiceReportSpec,
-    parameters: dict[str, object],
-    code: str,
-    details: dict[str, object],
-) -> None:
-    executor = MagicMock()
-    guarded = replace(spec, executor=executor)
-
-    with pytest.raises(UserError) as raised:
-        ReportCatalog((guarded,)).execute(
-            cast(Database, MagicMock(spec=Database)),
-            report_id=guarded.report_id,
-            parameters=parameters,  # type: ignore[arg-type]  # invalid values under test
-            limit=100,
-        )
-
-    assert raised.value.code == code
-    assert raised.value.details == details
-    serialized_error = json.dumps({
-        "message": raised.value.message,
-        "details": raised.value.details,
-    })
-    for value in parameters.values():
-        if isinstance(value, str):
-            assert value not in serialized_error
-    executor.assert_not_called()
-
-
-def test_service_report_metadata_is_frozen() -> None:
+def test_registered_report_metadata_is_frozen() -> None:
+    report = _sql_report()
     with pytest.raises(AttributeError):
-        NETWORTH_REPORT.name = "changed"  # type: ignore[misc]  # frozen contract
+        report.name = "changed"  # type: ignore[misc]  # frozen contract
 
 
 def test_extension_reports_join_fresh_catalog_without_surface_side_effects(
@@ -1385,7 +837,7 @@ def test_the_catalog_serves_the_packaged_tiers_when_no_database_exists() -> None
             report_ids = {report.report_id for report in catalog.list()}
 
     assert db is None
-    assert "core:networth" in report_ids
+    assert "core:net_worth" in report_ids
 
 
 def test_a_locked_database_is_still_an_error_when_browsing() -> None:
@@ -1476,349 +928,6 @@ def test_catalog_classes_returned_follows_the_elevated_sensitivity() -> None:
     assert catalog_classes_returned(
         catalog_sensitivity([_listing_entry(tier="user")])
     ) == ["aggregate", "user_note"]
-
-
-def test_report_envelope_names_the_currency_its_rows_are_denominated_in(
-    mocker: MockerFixture,
-) -> None:
-    """summary.display_currency follows the rows, instead of asserting USD."""
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code="GBP",
-            net_worth=Decimal("1000.00"),
-            total_assets=Decimal("1000.00"),
-            total_liabilities=Decimal("0.00"),
-            account_count=1,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code="GBP",
-                    net_worth=Decimal("1000.00"),
-                    total_assets=Decimal("1000.00"),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=1,
-                ),
-            ],
-            per_account=[
-                NetWorthAccountRow(
-                    account_id="acct_11112222",
-                    display_name="Current",
-                    balance=Decimal("1000.00"),
-                    observation_source="asserted",
-                    currency_code="GBP",
-                ),
-            ],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth",
-        parameters={},
-        limit=100,
-    )
-
-    assert result.to_envelope().to_dict()["summary"]["display_currency"] == "GBP"
-
-
-@pytest.mark.parametrize(
-    ("second_currency", "case"),
-    [
-        ("USD", "two known currencies"),
-        (None, "one known currency plus an unknown one"),
-    ],
-)
-def test_report_envelope_names_no_currency_when_its_rows_disagree(
-    mocker: MockerFixture, second_currency: str | None, case: str
-) -> None:
-    """Rows in more than one currency leave summary.display_currency null.
-
-    The envelope default is "USD", so a resolver that declines to answer here
-    silently labels the whole response USD — the same blend Requirement 5
-    forbids in the rows, moved up into the summary. The unknown-currency case
-    is the sharper one: it must not resolve to the one currency it *does* know.
-    """
-    segment = partial(
-        NetWorthCurrencySegment,
-        net_worth=Decimal("1000.00"),
-        total_assets=Decimal("1000.00"),
-        total_liabilities=Decimal("0.00"),
-        account_count=1,
-    )
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=2,
-            per_currency=[
-                segment(currency_code="GBP"),
-                segment(currency_code=second_currency),
-            ],
-            per_account=[
-                NetWorthAccountRow(
-                    account_id="acct_11112222",
-                    display_name="Current",
-                    balance=Decimal("1000.00"),
-                    observation_source="asserted",
-                    currency_code="GBP",
-                ),
-                NetWorthAccountRow(
-                    account_id="acct_33334444",
-                    display_name="Other",
-                    balance=Decimal("1000.00"),
-                    observation_source="asserted",
-                    currency_code=second_currency,
-                ),
-            ],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth",
-        parameters={},
-        limit=100,
-    )
-
-    assert result.to_envelope().to_dict()["summary"]["display_currency"] is None, case
-
-
-def test_networth_keeps_every_currency_within_the_returned_page(
-    mocker: MockerFixture,
-) -> None:
-    """Truncation must not be able to drop a whole currency.
-
-    Rows are one per account, so a profile with two dollar accounts and one
-    euro account pushes the euro row third. Any limit below that returns a
-    response that looks single-currency — blend by omission, the same failure
-    the segmentation prevents inside a row. Ordering one representative per
-    currency first makes the guarantee "every currency survives any limit at
-    least as large as the currency count."
-    """
-    segment = partial(
-        NetWorthCurrencySegment,
-        total_assets=Decimal("1000.00"),
-        total_liabilities=Decimal("0.00"),
-        account_count=1,
-    )
-    account = partial(
-        NetWorthAccountRow,
-        balance=Decimal("1000.00"),
-        observation_source="asserted",
-    )
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=3,
-            per_currency=[
-                segment(currency_code="USD", net_worth=Decimal("2000.00")),
-                segment(currency_code="EUR", net_worth=Decimal("1000.00")),
-            ],
-            per_account=[
-                account(
-                    account_id="acct_usd00001",
-                    display_name="Checking",
-                    currency_code="USD",
-                ),
-                account(
-                    account_id="acct_usd00002",
-                    display_name="Savings",
-                    currency_code="USD",
-                ),
-                account(
-                    account_id="acct_eur00001",
-                    display_name="Euro",
-                    currency_code="EUR",
-                ),
-            ],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth",
-        parameters={},
-        limit=2,
-    )
-
-    assert {row["currency_code"] for row in result.records} == {"USD", "EUR"}
-
-
-def test_networth_keeps_every_currency_when_the_breakdown_is_filtered(
-    mocker: MockerFixture,
-) -> None:
-    """An account_ids filter narrows the breakdown, not the reported position."""
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code=None,
-            net_worth=None,
-            total_assets=None,
-            total_liabilities=None,
-            account_count=2,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code="EUR",
-                    net_worth=Decimal("800.00"),
-                    total_assets=Decimal("800.00"),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=1,
-                ),
-                NetWorthCurrencySegment(
-                    currency_code="USD",
-                    net_worth=Decimal("500.00"),
-                    total_assets=Decimal("500.00"),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=1,
-                ),
-            ],
-            # Only the USD account survived the filter.
-            per_account=[
-                NetWorthAccountRow(
-                    account_id="acct_usd",
-                    display_name="Checking",
-                    balance=Decimal("500.00"),
-                    observation_source="asserted",
-                    currency_code="USD",
-                ),
-            ],
-        ),
-    )
-
-    result = ReportCatalog((NETWORTH_REPORT,)).execute(
-        cast(Database, MagicMock(spec=Database)),
-        report_id="core:networth",
-        parameters={"account_ids": ["acct_usd"]},
-        limit=100,
-    )
-
-    by_currency = {
-        record["currency_code"]: record["net_worth"]
-        for record in result.records
-        if record["account_id"] is None
-    }
-    assert by_currency == {"USD": Decimal("500.00"), "EUR": Decimal("800.00")}
-
-
-def test_networth_separates_currency_totals_from_account_balances(
-    mocker: MockerFixture,
-) -> None:
-    """A currency's position is one row; each account's balance is another.
-
-    Fusing the headline onto every account row makes two dollar accounts two
-    rows that each claim the same $2,000 position. Display conversion prices
-    rows one at a time, so once both are relabelled into the display currency
-    nothing distinguishes them from two separate positions, and anything that
-    adds them up double-counts. Separate rows keep the grain conversion has to
-    preserve.
-    """
-    account = partial(
-        NetWorthAccountRow,
-        observation_source="asserted",
-        currency_code="USD",
-    )
-    mocker.patch(
-        "moneybin.reports.service_reports.NetworthService.current",
-        return_value=NetWorthSnapshotPayload(
-            balance_date=date(2026, 7, 1),
-            currency_code="USD",
-            net_worth=Decimal("2000.00"),
-            total_assets=Decimal("2000.00"),
-            total_liabilities=Decimal("0.00"),
-            account_count=2,
-            per_currency=[
-                NetWorthCurrencySegment(
-                    currency_code="USD",
-                    net_worth=Decimal("2000.00"),
-                    total_assets=Decimal("2000.00"),
-                    total_liabilities=Decimal("0.00"),
-                    account_count=2,
-                )
-            ],
-            per_account=[
-                account(
-                    account_id="acct_usd00001",
-                    display_name="Checking",
-                    balance=Decimal("1200.00"),
-                ),
-                account(
-                    account_id="acct_usd00002",
-                    display_name="Savings",
-                    balance=Decimal("800.00"),
-                ),
-            ],
-        ),
-    )
-
-    records = (
-        ReportCatalog((NETWORTH_REPORT,))
-        .execute(
-            cast(Database, MagicMock(spec=Database)),
-            report_id="core:networth",
-            parameters={},
-            limit=100,
-        )
-        .records
-    )
-
-    totals = [row for row in records if row["account_id"] is None]
-    accounts = [row for row in records if row["account_id"] is not None]
-    assert [row["net_worth"] for row in totals] == [Decimal("2000.00")]
-    assert [row["account_count"] for row in totals] == [2]
-    # The position is stated once. An account row repeating it would be counted
-    # again by anything summing the column.
-    assert [row["net_worth"] for row in accounts] == [None, None]
-    assert [row["account_count"] for row in accounts] == [None, None]
-    assert [row["account_balance"] for row in accounts] == [
-        Decimal("1200.00"),
-        Decimal("800.00"),
-    ]
-    # Both kinds still say what they hold and when: conversion prices every row
-    # it is handed, and segments the whole result if one cannot answer either.
-    assert {row["currency_code"] for row in records} == {"USD"}
-    assert {row["balance_date"] for row in records} == {date(2026, 7, 1)}
-    # Totals lead, so a limit eats breakdown rows before it eats a position.
-    assert records[0]["account_id"] is None
-
-    # Requirement 6, and the reason this report's default set spans both row
-    # shapes: every row has to render something. An account-only set turns the
-    # leading position row into a blank line, and a profile holding no accounts
-    # into a table of one empty row — the headline figure absent from the
-    # default text view of a report whose whole subject is that figure.
-    # Measured against each shape's *exclusive* columns, not against anything
-    # it populates: `currency_code` and `balance_date` are filled on both, so a
-    # set naming only those passes a weaker check while every totals row still
-    # renders as a label with no figure beside it.
-    declared_columns = NETWORTH_REPORT.default_columns
-    assert declared_columns is not None and not callable(declared_columns), (
-        "this report declares a static set"
-    )
-    declared = set(declared_columns)
-    totals_filled = {
-        name for row in totals for name, value in row.items() if value is not None
-    }
-    accounts_filled = {
-        name for row in accounts for name, value in row.items() if value is not None
-    }
-    assert declared & (totals_filled - accounts_filled), (
-        f"default columns {sorted(declared)} name nothing a totals row fills, "
-        "so every position renders as a blank line"
-    )
-    assert declared & (accounts_filled - totals_filled), (
-        f"default columns {sorted(declared)} name nothing an account row fills, "
-        "so every breakdown row renders as a blank line"
-    )
 
 
 def _transaction_total_runner(db: Database) -> ReportQuery:  # contract handle
@@ -2019,13 +1128,23 @@ def test_rejecting_a_duplicate_proposal_never_marks_a_total_provisional(
 def test_a_rebuilt_materialization_clears_the_provisional_marking(
     saved_db: Database,
 ) -> None:
-    """Once the FULL model is rebuilt past the decision, the number is final."""
+    """Once the FULL model is rebuilt past the decision, the number is final.
+
+    ``reports.net_worth`` reads two FULL models — ``core.fct_balances_daily``
+    directly and ``core.fct_exchange_rates_daily`` via the rate join's
+    ``balances_domain`` — and ``_last_rebuilt_at`` treats a missing stamp on
+    either one as "nothing can be assumed rebuilt" (fail-closed), so both
+    need a post-decision rebuild stamp for the caveat to actually clear.
+    """
     seed_pending_dedup_pair(saved_db)
     MatchingService(saved_db).set_status(
         "match00000001", status="accepted", decided_by="user", actor="test"
     )
     record_model_execution(
         saved_db, "core.fct_balances_daily", _naive_utc(timedelta(hours=1))
+    )
+    record_model_execution(
+        saved_db, "core.fct_exchange_rates_daily", _naive_utc(timedelta(hours=1))
     )
 
     result = ReportCatalog((

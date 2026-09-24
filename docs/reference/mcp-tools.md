@@ -529,7 +529,7 @@ Access: write, idempotent. Sensitivity: at least `medium`.
 
 ### reports
 
-Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.
+Browse registered financial reports or run one by stable report ID. Omit `report_id` to return catalog metadata; supply it to execute a registered read-only report. Amounts are in the currency named by `summary.display_currency`; set `display_currency` to price a report's rows into one currency, which defaults to the profile's home currency. `summary.applied_rates` names the exact rate, source, and date behind any converted figure, and `summary.home_currency` names the home currency actually priced into a home-basis column such as `net_worth_home`, absent when no conversion put a value in one. A report that cannot be priced stays segmented per currency and says why in `summary.degraded_reason`. Its `status` filter, where it has one, selects before conversion. This tool never accepts SQL; use `sql_query` separately for arbitrary read-only SQL.
 
 Access: read-only, idempotent. Sensitivity: up to `critical`.
 

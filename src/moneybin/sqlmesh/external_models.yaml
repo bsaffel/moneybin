@@ -111,6 +111,12 @@
     decided_at: TIMESTAMPNTZ
     reversed_at: TIMESTAMPNTZ
     reversed_by: TEXT
+- name: '"moneybin"."app"."profile_settings"'
+  columns:
+    scope: TEXT
+    home_currency: TEXT
+    display_currency_targets: TEXT[]
+    updated_at: TIMESTAMPNTZ
 - name: '"moneybin"."app"."securities"'
   columns:
     security_id: TEXT

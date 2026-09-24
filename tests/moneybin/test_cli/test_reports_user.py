@@ -301,11 +301,11 @@ def test_list_reports_the_sensitivity_of_the_rows_it_returned(
     monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
     catalog = MagicMock()
     catalog.list.return_value = [
-        MagicMock(report_id="core:networth"),
+        MagicMock(report_id="core:net_worth"),
         MagicMock(report_id="user:rab12cd34ef56"),
     ]
     entries = [
-        _catalog_entry("core:networth"),
+        _catalog_entry("core:net_worth"),
         _catalog_entry("user:rab12cd34ef56", name="monthly_spend"),
     ]
     with (
@@ -335,7 +335,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     away. The rendered table must carry the distinction, not just the JSON.
     """
     entries = [
-        _catalog_entry("core:networth", archived=False),
+        _catalog_entry("core:net_worth", archived=False),
         _catalog_entry("user:put_away", archived=True),
     ]
     with (
@@ -361,7 +361,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     )
     assert "archived" in archived_line
     active_line = next(
-        line for line in result.output.splitlines() if "networth" in line
+        line for line in result.output.splitlines() if "net_worth" in line
     )
     assert "archived" not in active_line
 
@@ -1588,7 +1588,6 @@ def _explanation(**overrides: Any) -> ReportExplanation:
         "sql_template": (
             "SELECT account_id FROM core.dim_accounts WHERE routing_number = $rn"
         ),
-        "sql_unavailable": None,
         "withheld_parameters": ("rn",),
         "sql_suppressed_by": (),
         "columns": (

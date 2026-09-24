@@ -40,9 +40,6 @@ from moneybin.reports.definitions.balance_drift import (
 from moneybin.reports.definitions.large_transactions import (
     _blank_original_currency_analytics,  # pyright: ignore[reportPrivateUsage]  # ditto
 )
-from moneybin.reports.service_reports import (
-    _restate_networth_total,  # pyright: ignore[reportPrivateUsage]  # ditto
-)
 from moneybin.services.currency_service import CurrencyService
 from moneybin.tables import TableRef
 
@@ -815,11 +812,11 @@ def test_a_placeholder_row_holding_no_amount_is_not_degraded(
 ) -> None:
     """Declaring a money column is not the same as holding money in it.
 
-    ``core:networth`` on an empty profile returns one placeholder row whose
-    amounts and ``currency_code`` are all NULL. Reading that as "some rows do
-    not record which currency they hold" reports a conversion that failed, when
-    in fact there was nothing to price — the same state as a report with no
-    money columns at all, which is already not degraded.
+    A report that synthesizes one placeholder row for an otherwise-empty
+    result has amounts and ``currency_code`` all NULL. Reading that as "some
+    rows do not record which currency they hold" reports a conversion that
+    failed, when in fact there was nothing to price — the same state as a
+    report with no money columns at all, which is already not degraded.
     """
     service = CurrencyService(saved_db)
 
@@ -962,7 +959,7 @@ def test_a_successful_conversion_reports_the_currency_it_converted_into(
 
 
 def _drop_the_second_row(rows: list[dict[str, Any]], _currency: str) -> None:
-    """Stand-in for a collapsing callback, e.g. `core:networth`'s totals merge."""
+    """Stand-in for a collapsing ``on_converted`` callback that merges rows."""
     del rows[1:]
 
 
@@ -1499,153 +1496,6 @@ def test_rebucketing_leaves_a_status_that_names_no_magnitude() -> None:
     ]
 
 
-def test_net_worth_is_restated_from_its_own_converted_parts() -> None:
-    """Rounding each column alone can leave a report's own identity false.
-
-    assets 1.00 and liabilities -0.01 at rate 0.5 round to 0.50 and -0.01, while
-    net worth 0.99 rounds to 0.50 — so the parts sum to 0.49 while the total
-    says 0.50. Each number is individually correct, which is what makes the
-    disagreement hard to spot.
-    """
-    rows: list[dict[str, Any]] = [
-        {
-            "total_assets": Decimal("0.50"),
-            "total_liabilities": Decimal("-0.01"),
-            "net_worth": Decimal("0.50"),
-            "account_id": None,
-        }
-    ]
-
-    _restate_networth_total(rows, "USD")
-
-    assert rows[0]["net_worth"] == Decimal("0.49")
-
-
-def test_restating_the_total_skips_an_account_breakdown_row() -> None:
-    """Only a totals row states the identity, so only it can break it.
-
-    An account row carries nulls in all three; computing over it would turn a
-    breakdown line into a second, wrong headline.
-    """
-    rows: list[dict[str, Any]] = [
-        _totals("USD", Decimal("1.00"), Decimal("-0.01"), Decimal("0.50"), 1),
-        {
-            "total_assets": None,
-            "total_liabilities": None,
-            "net_worth": None,
-            "account_balance": Decimal("12.00"),
-            "account_id": "acct-1",
-        },
-    ]
-
-    _restate_networth_total(rows, "USD")
-
-    assert rows[1]["net_worth"] is None
-    assert rows[1]["account_balance"] == Decimal("12.00")
-
-
-def _totals(
-    currency: str,
-    assets: Decimal,
-    liabilities: Decimal,
-    net_worth: Decimal,
-    account_count: int,
-) -> dict[str, Any]:
-    """One ``core:networth`` totals row, shaped as ``_totals_row`` builds it."""
-    return {
-        "balance_date": date(2026, 8, 17),
-        "currency_code": currency,
-        "net_worth": net_worth,
-        "total_assets": assets,
-        "total_liabilities": liabilities,
-        "account_count": account_count,
-        "account_id": None,
-        "account_name": None,
-        "account_balance": None,
-        "observation_source": None,
-    }
-
-
-def test_converted_totals_collapse_into_one_headline() -> None:
-    """Two currencies priced into one leave one position, not two headlines.
-
-    Conversion relabels every row into the display currency, so a two-currency
-    snapshot arrives as two totals rows both claiming USD. Publishing both
-    leaves an MCP consumer reading "the totals row" holding an arbitrary half
-    of the position, which is the blend-by-omission the row split exists to
-    prevent (reports-net-worth.md).
-    """
-    rows: list[dict[str, Any]] = [
-        _totals("USD", Decimal("100.00"), Decimal("-20.00"), Decimal("80.00"), 2),
-        _totals("USD", Decimal("50.00"), Decimal("-5.00"), Decimal("45.00"), 1),
-        {
-            "balance_date": date(2026, 8, 17),
-            "currency_code": "USD",
-            "net_worth": None,
-            "total_assets": None,
-            "total_liabilities": None,
-            "account_count": None,
-            "account_id": "acct-1",
-            "account_name": "Checking",
-            "account_balance": Decimal("12.00"),
-            "observation_source": "ofx",
-        },
-    ]
-
-    _restate_networth_total(rows, "USD")
-
-    totals = [row for row in rows if row["account_id"] is None]
-    assert len(totals) == 1
-    assert totals[0]["total_assets"] == Decimal("150.00")
-    assert totals[0]["total_liabilities"] == Decimal("-25.00")
-    assert totals[0]["net_worth"] == Decimal("125.00")
-    assert totals[0]["account_count"] == 3
-    assert totals[0]["currency_code"] == "USD"
-    assert len(rows) == 2, "the account breakdown row must survive the collapse"
-
-
-def test_the_collapsed_headline_claims_no_single_original_currency() -> None:
-    """Summing several currencies leaves a figure no one rate priced.
-
-    The headline is built by keeping the first totals row and adding the others
-    into it, so it would otherwise inherit that row's original currency and
-    report a EUR+GBP position as having started in EUR — the misattribution the
-    column was added to prevent, in the one place a row stops mapping to a
-    single rate. Null for the same reason ``currency_code`` is relabelled: the
-    per-account rows beneath it still carry their own.
-    """
-    rows: list[dict[str, Any]] = [
-        _totals("USD", Decimal("100.00"), Decimal("-20.00"), Decimal("80.00"), 2)
-        | {ORIGINAL_CURRENCY_COLUMN: "EUR"},
-        _totals("USD", Decimal("50.00"), Decimal("-5.00"), Decimal("45.00"), 1)
-        | {ORIGINAL_CURRENCY_COLUMN: "GBP"},
-    ]
-
-    _restate_networth_total(rows, "USD")
-
-    assert len(rows) == 1
-    assert rows[0][ORIGINAL_CURRENCY_COLUMN] is None
-    assert rows[0]["net_worth"] == Decimal("125.00")
-
-
-def test_a_single_currency_snapshot_keeps_its_one_totals_row() -> None:
-    """Collapsing must not disturb the ordinary single-currency read.
-
-    Most profiles hold one currency, so the collapse has to be a no-op there
-    rather than a rebuild that could drop a field the segment carried.
-    """
-    rows: list[dict[str, Any]] = [
-        _totals("EUR", Decimal("10.00"), Decimal("-4.00"), Decimal("6.00"), 1)
-    ]
-
-    _restate_networth_total(rows, "EUR")
-
-    assert len(rows) == 1
-    assert rows[0]["total_assets"] == Decimal("10.00")
-    assert rows[0]["net_worth"] == Decimal("6.00")
-    assert rows[0]["account_count"] == 1
-
-
 # --- The row limit applies to the answer, not to conversion's inputs ----------
 
 
@@ -1665,7 +1515,7 @@ def _two_currency_runner(db: Database) -> ReportQuery:  # contract handle
 
 
 def _collapse_into_one_row(rows: list[dict[str, Any]], _currency: str) -> None:
-    """Stand-in for `core:networth` merging its per-currency totals once priced."""
+    """Stand-in for an ``on_converted`` callback merging per-currency totals."""
     total = sum((row["amount"] for row in rows), Decimal(0))
     rows[:] = [{**rows[0], "amount": total}]
 
@@ -1694,10 +1544,11 @@ def test_a_collapsing_conversion_sees_every_row_the_limit_would_have_cut(
 ) -> None:
     """Truncating before conversion hands the collapse a subset of its own inputs.
 
-    ``core:networth`` emits one totals row per currency held and merges them
-    only once conversion has priced them into a single unit. Cutting to
-    ``limit`` first means a two-currency profile read at ``limit=1`` collapses
-    one surviving subtotal and publishes it as the whole position — blend by
+    A report whose ``on_converted`` callback emits one totals row per
+    currency held merges them only once conversion has priced them into a
+    single unit. Cutting to ``limit`` first means a two-currency profile read
+    at ``limit=1`` collapses one surviving subtotal and publishes it as the
+    whole position — blend by
     omission, which is the same defect as blend by summation and exactly what
     the per-currency split exists to prevent.
     """
@@ -1836,12 +1687,13 @@ def test_the_cap_drops_the_rate_that_priced_only_a_discarded_row(
 def test_a_row_naming_no_original_currency_keeps_every_rate(
     saved_db: Database,
 ) -> None:
-    """The collapsed net-worth headline was priced by rates it cannot name.
+    """A collapsed headline was priced by rates it cannot name.
 
-    ``_restate_networth_total`` sums several currencies into one row and nulls
-    its ``original_currency_code`` precisely because no single stored rate
-    priced it. Narrowing provenance to what the surviving rows can name would
-    drop the rates behind that figure, so a row that names none keeps them all.
+    A collapsing ``on_converted`` callback that sums several currencies into
+    one row nulls its ``original_currency_code`` precisely because no single
+    stored rate priced it. Narrowing provenance to what the surviving rows can
+    name would drop the rates behind that figure, so a row that names none
+    keeps them all.
     """
     _seed_rate(saved_db, "EUR", "USD", date(2026, 3, 5), Decimal("1.09"))
     _seed_rate(saved_db, "GBP", "USD", date(2026, 3, 6), Decimal("1.27"))
