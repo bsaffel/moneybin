@@ -325,7 +325,7 @@ Plaid unmapped:  0
 Scope: excludes transfers, archived and unresolved accounts.
 ```
 
-The create receipt counts rules, not rows: the 79 transactions `--reapply` recategorized appear only in the `By rule:` line of the following `categorize stats`. Run `stats` after any `--reapply` to see what the rule touched.
+The create receipt counts rules, not rows: the 79 transactions `--reapply` recategorized appear only in the `By rule:` line of the following `categorize stats`. That line reads as this rule's count only because no other rule was active. `By rule:` totals every rule-sourced categorization and no command reports a per-rule count, so on a profile with existing rules read `By rule:` before and after the create and take the difference.
 
 Without `--reapply` the rule is created and nothing is categorized until the next refresh.
 
