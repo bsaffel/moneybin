@@ -11,10 +11,9 @@ decision unit is the term); `set` resolves one term.
 
 from __future__ import annotations
 
-import logging
-
 import typer
 
+from moneybin import error_codes
 from moneybin.cli.output import (
     OutputFormat,
     emit_human_result,
@@ -24,11 +23,12 @@ from moneybin.cli.output import (
 )
 from moneybin.cli.render import build_rows, build_summary, compose_human_result
 from moneybin.cli.utils import (
-    format_cli_failure,
+    abort_cli_error,
     get_terminal_policy,
     handle_cli_errors,
 )
 from moneybin.database import get_database
+from moneybin.errors import UserError
 from moneybin.privacy.payloads.category_mappings import (
     CategoryMappingSetPayload,
     CategoryMappingsPendingPayload,
@@ -39,7 +39,6 @@ app = typer.Typer(
     help="Curate imported category text mappings",
     no_args_is_help=True,
 )
-logger = logging.getLogger(__name__)
 
 
 @app.command("pending")
@@ -166,14 +165,20 @@ def mappings_set(
       moneybin categories mappings set --namespace chase_credit --category Groceries --into cat-food
       moneybin categories mappings set --namespace mint --category "Home Improvement" --new "Housing"
     """
+    # Usage errors go through the output-aware seam so --output json still
+    # returns an error envelope, while keeping the usage exit code.
+    usage_error: str | None = None
     if into is not None and new is not None:
-        logger.error(format_cli_failure("--into and --new are mutually exclusive"))
-        raise typer.Exit(2)
-    if not into and not new:
-        logger.error(
-            format_cli_failure("Specify either --into <category_id> or --new <name>")
+        usage_error = "--into and --new are mutually exclusive"
+    elif not into and not new:
+        usage_error = "Specify either --into <category_id> or --new <name>"
+    if usage_error is not None:
+        abort_cli_error(
+            UserError(usage_error, code=error_codes.MUTATION_INVALID_INPUT),
+            output=output,
+            exit_code=2,
+            cli_actor="categories_mappings_set",
         )
-        raise typer.Exit(2)
 
     from moneybin.services.categorization import CategorizationService
 

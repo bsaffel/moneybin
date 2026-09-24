@@ -202,6 +202,29 @@ class TestMappingsSet:
         )
         assert result.exit_code == 2
 
+    def test_set_usage_error_under_json_is_an_error_envelope(self) -> None:
+        """An agent asking for JSON gets a parseable error, not bare stderr text."""
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "Groceries",
+                "--into",
+                "cat-groceries",
+                "--new",
+                "New One",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 2
+        parsed = json.loads(result.stdout)
+        assert parsed["status"] == "error"
+        assert parsed["error"]["code"] == "mutation_invalid_input"
+
     @patch("moneybin.cli.commands.categories.mappings.get_database")
     @patch("moneybin.services.categorization.CategorizationService.resolve_source_term")
     def test_set_json_output_shape(
