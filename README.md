@@ -108,6 +108,9 @@ $ uv run moneybin reports net-worth-accounts
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
 
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total
     FROM core.fct_transactions
@@ -124,11 +127,11 @@ $ uv run moneybin sql query "
 └─────────────────────┴──────┴───────────┘
 ```
 
-The transcript is stdout, trimmed by whole lines only: the three `›` next-step
-hints `reports networth` prints under its table, and the five diagnostic lines
-`demo` writes to stderr (two SQLMesh notices about reseeded tables, a two-line
-pandas `FutureWarning` a dependency emits, and one naming the merchant patterns
-it skipped because two categories claim them).
+The transcript is stdout, trimmed by whole lines only: the five diagnostic
+lines `demo` writes to stderr (two SQLMesh notices about reseeded tables, a
+two-line pandas `FutureWarning` a dependency emits, and one naming the merchant
+patterns it skipped because two categories claim them), and a third next-step hint
+pointing at `profile set home_currency <CODE>` for converted totals.
 
 The demo is deterministic synthetic data pushed through the real pipeline —
 import, transform, dedup, categorization, integrity checks. Its window is the

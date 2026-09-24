@@ -3,7 +3,7 @@
 
 From a clean machine to a first report and a first question to your AI assistant, in eight steps: install from source, try the synthetic demo, create a profile, import one bank file, check what landed, read the first reports, categorize, and wire the MCP server into a client. Budget about an hour, most of it on your bank's download page.
 
-Every transcript below is real output from a fresh profile holding one synthetic 20-transaction January statement, captured at 100 columns with color off and both streams redirected to a file, so it merges stdout and stderr and nothing pages or prompts. It is trimmed only by whole lines — 13 in total across three blocks: nine lines of local file paths and the labels they wrapped away from, two SQLMesh notices about reseeded tables, and a two-line deprecation warning a dependency prints. Each block names the lines it lost. The one edit inside a line: where a hint wraps at 100 columns the terminal leaves a trailing space on the broken line, and those spaces are stripped. Your numbers will differ; the shape will not.
+Every transcript below is real output from a fresh profile holding one synthetic 20-transaction January statement, captured at 100 columns with color off and both streams redirected to a file, so it merges stdout and stderr and nothing pages or prompts. It is trimmed only by whole lines — 15 in total across four blocks: nine lines of local file paths and the labels they wrapped away from, two SQLMesh notices about reseeded tables, a two-line deprecation warning a dependency prints, and a two-line next-step hint pointing at `profile set home_currency <CODE>`. Each block names the lines it lost. The one edit inside a line: where a hint wraps at 100 columns the terminal leaves a trailing space on the broken line, and those spaces are stripped. Your numbers will differ; the shape will not.
 
 ## What you need
 
@@ -148,9 +148,18 @@ The one warning is expected on a first import and is step 7; a warn alone keeps 
 
 ```console
 $ uv run moneybin reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name                ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Example Bank checking …7890 │ USD           │        4,317.87 │                    - │
+└─────────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
+A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above. Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
 
 ```console
 $ uv run moneybin transactions list --limit 5

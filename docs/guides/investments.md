@@ -252,14 +252,28 @@ The same sale now draws all 50 March shares and 70 of the January 100. Total rea
 `reports net-worth` reads balance observations, not positions. A brokerage synced through Plaid reports a balance that already is its total position value, so it counts once at that figure. A brokerage you keep by hand has no balance until you assert one, and until then it is absent from net worth entirely:
 
 ```console
-$ uv run moneybin accounts balance assert f2b870002664 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
-Using profile: demo
-Asserted balance for account f2b****...2664 on 2025-12-31
-✅ Asserted balance for f2b870002664 on 2025-12-31: 17125.00 USD
+$ uv run moneybin accounts balance assert 3413a05bad01 2025-12-31 17125.00 --notes "year-end statement: cash plus positions" --yes
+Balance asserted
+Account: 3413a05bad01
+Date:    2025-12-31
+Balance: 17125.00 USD
 $ uv run moneybin reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Ally Bank savings …0002   │ USD           │       33,000.00 │                    - │
+│ Brokerage                 │ USD           │       17,125.00 │                    - │
+│ Chase Bank checking …0001 │ USD           │      387,080.77 │                    - │
+│ Chase Bank credit card    │ USD           │            0.00 │                    - │
+│ Citi credit card          │ USD           │            0.00 │                    - │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-The report's output is omitted here; on and after 2025-12-31 the brokerage row carries the asserted 17,125.00. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
+The brokerage row carries the asserted 17,125.00 on and after 2025-12-31; the other four rows are the demo's own accounts. Two lines are trimmed above: the report's third hint, which points to `moneybin profile set home_currency` because the demo profile has none. The asserted figure is what the statement says the account is worth on that date, cash and positions together; MoneyBin does not derive it from the ledger, and the ledger's own cash legs are not transactions, so `reports balance-drift` compares the assertion against the two deposits alone. Folding market value into net worth without counting a brokerage twice is designed and not built; see below.
 
 ## From an AI client
 

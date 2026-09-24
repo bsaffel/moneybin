@@ -1,7 +1,7 @@
 <!-- Last reviewed: 2026-09-23 -->
 # Reports
 
-Nine built-in reports answer the standing questions — what am I worth, where
+Ten built-in reports answer the standing questions — what am I worth, where
 does the money go, what recurs, what is unusual, and what did I gain or lose
 converting currency — from the canonical tables, and you can save your own SQL
 beside them. One catalog serves every surface: `moneybin reports …` on the CLI,
@@ -37,7 +37,6 @@ Each command's reference page lists every flag with its type and default. The fl
 
 ```console
 $ uv run moneybin reports net-worth-accounts
-Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
@@ -47,18 +46,18 @@ Using profile: demo
 │ Citi credit card          │ USD           │            0.00 │                    - │
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
-💡 Run reports(report_id='core:net_worth') for the single home-currency total
-💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
+A third hint, pointing at `profile set home_currency <CODE>` for converted totals, is trimmed above. With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
 
 ### Net worth over time
 
 ```console
 $ uv run moneybin profile set home_currency USD
 $ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --to-date 2025-12-31
-Using profile: demo
 ┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
 ┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
 ┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
@@ -70,12 +69,17 @@ Using profile: demo
 │ 2025-06-30   │ 0                       │ 352,756.07 │ +10,691.70 │
 │ 2025-07-31   │ 0                       │ 362,791.60 │ +10,035.53 │
 │ 2025-08-31   │ 0                       │ 381,166.67 │ +18,375.07 │
-│ 2025-09-30   │ 0                       │ 390,658.51 │  +9,491.84 │
-│ 2025-10-31   │ 0                       │ 400,767.89 │ +10,109.38 │
+│ 2025-09-30   │ 0                       │ 390,621.39 │  +9,454.72 │
+│ 2025-10-31   │ 0                       │ 400,767.89 │ +10,146.50 │
 │ 2025-11-30   │ 0                       │ 410,775.08 │ +10,007.19 │
 │ 2025-12-31   │ 0                       │ 420,080.77 │  +9,305.69 │
 └──────────────┴─────────────────────────┴────────────┴────────────┘
 4 of 11 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth') for the single latest-day total
+› Run reports(report_id='core:net_worth_accounts') for the account-level breakdown
+› Set from_date to bound a recent window — rows return oldest-first, so a row limit keeps the
+earliest buckets, not the most recent
 ```
 
 `net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
@@ -304,11 +308,10 @@ same report is available to an agent as
 
 `reports list` prints the whole catalog — name, id, tier, parameters, description. Tiers are `builtin` (the ten above, ids prefixed `core:`), `extension` (reports a MoneyBin extension package registers), and `user` (yours, prefixed `user:`). `--tier` filters, `--include-archived` adds saved reports you have archived.
 
-`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `💡` hints — without the dedicated command's own layout, such as `spending-trend`'s chosen comparison column, so the dedicated command is the better read when one exists:
+`reports run HANDLE` executes any of them by id or name, with `--param key=value` for each parameter and `--limit` for a row cap. It prints the rows through the shared renderer — default columns, the footer, and the `›` hints — without the dedicated command's own layout, such as `spending-trend`'s chosen comparison column, so the dedicated command is the better read when one exists:
 
 ```console
 $ uv run moneybin reports run core:net_worth_accounts
-Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
@@ -318,8 +321,9 @@ Using profile: demo
 │ Citi credit card          │ USD           │            0.00 │                 0.00 │
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
-💡 Run reports(report_id='core:net_worth') for the single home-currency total
-💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
 `reports explain HANDLE` runs nothing. It prints the report's description, every output column with its privacy class and where it comes from, the tables it reads, and, for a report that is a `SELECT`, the SQL in bound and template form:
@@ -502,7 +506,6 @@ See the [multi-currency guide](multi-currency.md) for where a row's currency com
 
 ```console
 $ uv run moneybin reports net-worth-accounts --display-currency EUR
-Using profile: demo
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
 ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
@@ -512,8 +515,9 @@ Using profile: demo
 │ Citi credit card          │ USD           │            0.00 │                 0.00 │
 └───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
 4 of 14 columns shown — --wide for all
-💡 Run reports(report_id='core:net_worth') for the single home-currency total
-💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
 Between the table and the hints the command prints the reason, two lines trimmed from the transcript above: `! no stored USD->EUR rates at all; run 'moneybin refresh' to gather them, and record one with 'moneybin fx set' if refresh reports the pair unsupported`. In JSON the same sentence is `summary.degraded_reason`. On this profile, declare the target before refreshing (`profile set display_currency_targets EUR`); refresh then gathers the direct USD→EUR pair for currencies your rows hold. You can also make EUR the home currency (`profile set home_currency EUR`, then `moneybin refresh`) or record the pair yourself with `moneybin fx set`.
