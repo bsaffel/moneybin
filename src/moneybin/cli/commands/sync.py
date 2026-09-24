@@ -708,10 +708,13 @@ def sync_disconnect(
                     f"Disconnect {target} (provider_item_id={plan.provider_item_id})?",
                     default=False,
                 ):
+                    target_label = (
+                        "Institution" if plan.institution_name else "Provider item ID"
+                    )
                     _emit_sync_receipt(
                         "Disconnect cancelled",
                         [
-                            ("Institution", target),
+                            (target_label, target),
                             ("Outcome", "No connection was removed"),
                         ],
                     )
@@ -737,9 +740,12 @@ def sync_disconnect(
             cli_actor="sync_disconnect",
         )
     else:
+        resolved_label = (
+            "Institution" if disconnected.institution_name else "Provider item ID"
+        )
         _emit_sync_receipt(
             "Disconnect complete",
-            [("Institution", resolved), ("Outcome", "Disconnected")],
+            [(resolved_label, resolved), ("Outcome", "Disconnected")],
         )
 
 

@@ -1013,6 +1013,36 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
 
 @pytest.mark.unit
 @patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_completion_receipt_labels_nameless_connection(
+    mock_build: MagicMock,
+) -> None:
+    """A connection with no institution_name gets a 'Provider item ID' label.
+
+    Regression: the receipt hardcoded the row label "Institution" even when
+    the value fell back to the bare provider_item_id.
+    """
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--provider-item-id", "item_c", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Provider item ID: item_c" in result.output
+    assert "Institution:" not in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_rejects_both_institution_and_provider_item_id(
     mock_build: MagicMock,
 ) -> None:
@@ -1299,8 +1329,10 @@ def test_sync_disconnect_ambiguous_institution_fails_before_prompt(
         "multiple connected institutions match 'Chase': "
         "item_a (linked 2026-01-05 09:00 UTC), "
         "item_b (linked 2026-02-10 14:30 UTC). "
-        "Target one by provider_item_id; `moneybin sync status --wide` "
-        "lists every connection's id.",
+        "Only disconnect can target one of several same-named connections: "
+        "remove the extra one by provider_item_id "
+        "(`moneybin sync disconnect --provider-item-id <id>`, or "
+        "`sync_disconnect` over MCP), then retry.",
         code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
     )
     mock_build.return_value.__enter__.return_value = service

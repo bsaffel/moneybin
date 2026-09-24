@@ -574,8 +574,10 @@ class SyncService:
             )
             raise UserError(
                 f"multiple connected institutions match '{name}': {candidates}. "
-                f"Target one by provider_item_id; `moneybin sync status --wide` "
-                f"lists every connection's id.",
+                f"Only disconnect can target one of several same-named "
+                f"connections: remove the extra one by provider_item_id "
+                f"(`moneybin sync disconnect --provider-item-id <id>`, or "
+                f"`sync_disconnect` over MCP), then retry.",
                 code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
             )
         return matches[0] if matches else None

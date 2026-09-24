@@ -703,8 +703,9 @@ def test_resolve_institution_raises_on_ambiguous_name(
     """Two connections sharing institution_name must not silently map to one.
 
     The message must be self-sufficient: it names both candidate ids and both
-    linked timestamps, and points at `sync status --wide` (issue #408) —
-    `sync status` alone narrows the id column away by default.
+    linked timestamps, and points at the one caller (disconnect) that can
+    actually target a single connection by provider_item_id — `pull`,
+    `initiate_link`, and `plan_disconnect` itself have no way to accept one.
     """
     mock_client.list_institutions.return_value = [
         ConnectedInstitution(
@@ -733,7 +734,12 @@ def test_resolve_institution_raises_on_ambiguous_name(
     message = str(exc_info.value)
     assert "item_a (linked 2026-01-05 09:00 UTC)" in message
     assert "item_b (linked 2026-02-10 14:30 UTC)" in message
-    assert "sync status --wide" in message
+    assert (
+        "Only disconnect can target one of several same-named connections: "
+        "remove the extra one by provider_item_id "
+        "(`moneybin sync disconnect --provider-item-id <id>`, or "
+        "`sync_disconnect` over MCP), then retry."
+    ) in message
 
 
 def test_list_connections_returns_views_with_guidance(
