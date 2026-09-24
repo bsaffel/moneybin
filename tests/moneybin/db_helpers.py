@@ -515,6 +515,17 @@ WHERE FALSE;
 # (LEFT JOINed from the newest holdings snapshot in production) — same types as
 # the ledger-derived columns they mirror.
 
+# core.dim_holdings_broker_reported — SQLMesh-managed view in production
+# (the broker's claim, reduced to one row per account). Column shape mirrors
+# dim_holdings_broker_reported.sql's final SELECT.
+CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL = """\
+CREATE OR REPLACE VIEW core.dim_holdings_broker_reported AS
+SELECT CAST(NULL AS VARCHAR) AS account_id,
+       CAST(NULL AS BOOLEAN) AS has_position,
+       CAST(NULL AS DATE) AS as_of
+WHERE FALSE;
+"""
+
 # core.fct_security_prices — SQLMesh SQL FULL-kind table in production.
 # Column shape mirrors fct_security_prices.sql's final SELECT.
 CORE_FCT_SECURITY_PRICES_DDL = """\
@@ -614,6 +625,7 @@ def create_core_dim_stub_views(db: Database) -> None:
     db.execute(CORE_FCT_CURRENCY_LOTS_DDL)
     db.execute(CORE_FCT_REALIZED_FX_GAINS_DDL)
     db.execute(CORE_DIM_HOLDINGS_STUB_DDL)
+    db.execute(CORE_DIM_HOLDINGS_BROKER_REPORTED_STUB_DDL)
     db.execute(CORE_FCT_SECURITY_PRICES_DDL)
     db.execute(CORE_UNCATEGORIZED_QUEUE_STUB_DDL)
     db.execute(CORE_FCT_EXCHANGE_RATES_DAILY_DDL)

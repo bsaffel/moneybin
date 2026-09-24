@@ -894,6 +894,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         "source_type": DataClass.TXN_TYPE,
         "updated_at": DataClass.TIMESTAMP_OBSERVABILITY,
     },
+    ("core", "dim_holdings_broker_reported"): {
+        "account_id": DataClass.RECORD_ID,
+        # A boolean flag: every boolean in this taxonomy takes TXN_TYPE
+        # (fct_investment_lots.is_open is the closest analogue).
+        "has_position": DataClass.TXN_TYPE,
+        # A receipt's own date, same reasoning as dim_holdings.provider_reported_as_of.
+        "as_of": DataClass.TIMESTAMP_OBSERVABILITY,
+    },
     ("core", "dim_categories"): {
         "category": DataClass.CATEGORY,
         "category_id": DataClass.CATEGORY,

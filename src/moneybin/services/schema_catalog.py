@@ -708,6 +708,17 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.dim_holdings_broker_reported": [
+        Example(
+            question="Which accounts does the broker say still hold a position, "
+            "and as of when?",
+            sql="""
+                SELECT account_id, has_position, as_of
+                FROM core.dim_holdings_broker_reported
+                ORDER BY account_id
+            """,
+        ),
+    ],
     "core.fct_security_prices": [
         Example(
             question="Price history for one security, most recent first "
