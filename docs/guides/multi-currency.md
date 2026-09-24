@@ -36,49 +36,46 @@ uv run moneybin --profile cli-ux-international synthetic generate --persona inte
 ```
 
 The capture generated history from 2024-01-01 through 2025-12-31. The profile
-started with no home currency, so net worth stayed split by currency:
+started with no home currency, so net worth stayed split by currency.
+`reports net-worth-currencies` prints one row per currency and
+`reports net-worth-accounts` one row per account:
 
 ```console
-$ uv run moneybin --profile cli-ux-international reports networth --no-pager
-AED as of 2025-12-27
-Net worth:   40,748.33
-Assets:      40,748.33
-Liabilities: 0.00
-Accounts:    1
-CAD as of 2025-12-27
-Net worth:   14,035.34
-Assets:      14,035.34
-Liabilities: 0.00
-Accounts:    1
-EUR as of 2025-12-27
-Net worth:   61,072.11
-Assets:      61,072.11
-Liabilities: 0.00
-Accounts:    1
-GBP as of 2025-12-27
-Net worth:   8,786.52
-Assets:      8,786.52
-Liabilities: 0.00
-Accounts:    1
-USD as of 2025-12-27
-Net worth:   6,294.20
-Assets:      6,294.20
-Liabilities: 0.00
-Accounts:    1
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                       ┃   balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Barclays checking             │  8,786.52 │ GBP      │         │
-│ Chase Bank checking …0005     │  6,294.20 │ USD      │         │
-│ Emirates NBD checking         │ 40,748.33 │ AED      │ tabular │
-│ ING checking …0001            │ 61,072.11 │ EUR      │         │
-│ RBC Royal Bank checking …0003 │ 14,035.34 │ CAD      │         │
-└───────────────────────────────┴───────────┴──────────┴─────────┘
-› Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date':
-'YYYY-MM-DD'}) for the time series
-› Run accounts_balances(view='history', reference='<account>') to drill into one account
-› Run accounts(include_closed=True) to inspect closed or excluded accounts
+$ uv run moneybin --profile cli-ux-international reports net-worth-currencies --no-pager
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃ currency_code ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ AED           │ 2025-12-27   │ 40,748.33 │              - │
+│ CAD           │ 2025-12-27   │ 14,035.34 │              - │
+│ EUR           │ 2025-12-27   │ 61,072.11 │              - │
+│ GBP           │ 2025-12-27   │  8,786.52 │              - │
+│ USD           │ 2025-12-27   │  6,294.20 │              - │
+└───────────────┴──────────────┴───────────┴────────────────┘
+4 of 13 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth') for the single home-currency total
+› Run reports(report_id='core:net_worth_accounts') for the account-level
+breakdown
+
+$ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no-pager
+┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name        ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Barclays checking   │ GBP           │        8,786.52 │                    - │
+│ Chase Bank checking │ USD           │        6,294.20 │                    - │
+│ …0005               │               │                 │                      │
+│ Emirates NBD        │ AED           │       40,748.33 │                    - │
+│ checking            │               │                 │                      │
+│ ING checking …0001  │ EUR           │       61,072.11 │                    - │
+│ RBC Royal Bank      │ CAD           │       14,035.34 │                    - │
+│ checking …0003      │               │                 │                      │
+└─────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
 ```
+
+Each report's third hint, which points to `moneybin profile set home_currency`
+because this profile has none, and the account report's other two hints are
+trimmed above. The `*_home` columns stay `-` until a home currency is set.
 
 The doctor reports this as a warning: the profile is internally coherent, but
 it cannot produce one combined figure until it has rates for the requested
@@ -141,50 +138,89 @@ never fetches. `fx delete <from> <to> <date>` withdraws one override.
 
 The fixture uses four explicit overrides at its latest report date: EUR/USD
 1.10000000, GBP/USD 1.25000000, CAD/USD 0.75000000, and AED/USD 0.27200000.
-With all four stored, net worth collapses into USD while keeping each account's
-original currency available in JSON:
+With all four stored, net worth collapses into one USD figure, and each
+currency's row keeps its source currency beside it:
 
 ```console
-$ uv run moneybin --profile cli-ux-international reports networth --as-of 2025-12-27 --no-pager
-USD as of 2025-12-27
-Net worth:   106,066.73
-Assets:      106,066.73
-Liabilities: 0.00
-Accounts:    5
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                       ┃   balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Barclays checking             │ 10,983.15 │ USD      │         │
-│ Chase Bank checking …0005     │  6,294.20 │ USD      │         │
-│ Emirates NBD checking         │ 11,083.55 │ USD      │ tabular │
-│ ING checking …0001            │ 67,179.32 │ USD      │         │
-│ RBC Royal Bank checking …0003 │ 10,526.51 │ USD      │         │
-└───────────────────────────────┴───────────┴──────────┴─────────┘
-Converted from AED, CAD, EUR, GBP using 4 stored rates; run 'moneybin --profile cli-ux-international
-fx rate AED USD 2025-12-27' for one of them, or --output json for all
-› Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date':
-'YYYY-MM-DD'}) for the time series
-› Run accounts_balances(view='history', reference='<account>') to drill into one account
-› Run accounts(include_closed=True) to inspect closed or excluded accounts
+$ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ 2025-12-27   │ 0                       │ 106,066.73 │
+└──────────────┴─────────────────────────┴────────────┘
+3 of 9 columns shown — --wide for all
+
+› Run reports(report_id='core:net_worth', parameters={'interval': 'monthly'})
+for period-over-period change
+› Run reports(report_id='core:net_worth_currencies') for the currency-level
+breakdown
+
+$ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
+┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
+┃               ┃ original_currenc ┃              ┃           ┃                ┃
+┃ currency_code ┃ y_code           ┃ balance_date ┃ net_worth ┃ net_worth_home ┃
+┡━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━━━━━━┩
+│ USD           │ AED              │ 2025-12-27   │ 11,083.55 │      11,083.55 │
+│ USD           │ CAD              │ 2025-12-27   │ 10,526.51 │      10,526.51 │
+│ USD           │ EUR              │ 2025-12-27   │ 67,179.32 │      67,179.32 │
+│ USD           │ GBP              │ 2025-12-27   │ 10,983.15 │      10,983.15 │
+│ USD           │ USD              │ 2025-12-27   │  6,294.20 │       6,294.20 │
+└───────────────┴──────────────────┴──────────────┴───────────┴────────────────┘
+5 of 14 columns shown — --wide for all
 ```
 
-`--output json` carries `summary.applied_rates`, including each requested date,
-the date actually priced, rate, and source. Every account row retains
-`original_currency_code`. If any required rate is missing, a converting report
-falls back to per-currency subtotals rather than mixing converted and original
-values. An explicitly requested display currency discloses the degradation in
-text and `summary.degraded_reason` in JSON.
+The currency report's closing disclosure and two next-step hints are trimmed
+above. The disclosure reads "Converted from AED, CAD, EUR, GBP using 4 stored
+rates" and points to `moneybin fx rate AED USD 2025-12-27` for any one of them,
+or `--output json` for all.
+`reports net-worth-accounts` takes the same dates and prices each account the
+same way.
 
-`networth`, `large-transactions`, and `balance-drift` convert because their rows
-are dated events. `networth-history`, `cash-flow`, `spending-trend`,
+`--output json` carries `summary.applied_rates`, including each requested date,
+the date actually priced, rate, and source. Every converted row retains
+`original_currency_code`, and a row of the currency or account report names
+the `rate_source` that priced it. A row on
+the three net-worth reports carries two units — its own currency and a
+home-currency column beside it (`net_worth_home` and its siblings) — and
+`applied_rates` names each rate's own pair, never which of the two it priced.
+`summary.home_currency` closes that: it names the home currency actually priced
+into a home-basis column on this response, and is absent when no conversion put
+a value in one.
+
+If any required rate is missing, a converting report falls back to
+per-currency subtotals rather than mixing converted and original values. An
+explicitly requested display currency discloses the degradation in text and
+`summary.degraded_reason` in JSON.
+
+Five reports convert because their rows are dated events: the three net-worth
+reports (`net-worth`, `net-worth-currencies`, `net-worth-accounts`),
+`large-transactions`, and `balance-drift`. `cash-flow`, `spending-trend`,
 `recurring-subscriptions`, and `merchant-activity` retain `currency_code` in
 their grouping key, so their totals remain per currency whatever home currency
 is set.
 
+Net worth over time is not per currency: `net-worth --interval` buckets the
+single home-currency total, so a bucket whose last day holds an unpriced
+currency reports no figure. Here the four overrides cover 2025-12-27 only:
+
+```console
+$ uv run moneybin --profile cli-ux-international reports net-worth --interval monthly --from-date 2025-10-01 --to-date 2025-12-31 --no-pager
+┏━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━━┓
+┃ balance_date ┃ unpriced_currency_count ┃  net_worth ┃ change_abs ┃
+┡━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━━┩
+│ 2025-10-31   │ 4                       │          - │          - │
+│ 2025-11-30   │ 4                       │          - │          - │
+│ 2025-12-27   │ 0                       │ 106,066.73 │          - │
+└──────────────┴─────────────────────────┴────────────┴────────────┘
+4 of 11 columns shown — --wide for all
+```
+
+The three next-step hints are trimmed above.
+
 ## From an AI client
 
 The `profile` tool reads the home currency. `profile_set(home_currency="EUR")`
-sets it with an audit row. `reports(report_id="core:networth",
+sets it with an audit row. `reports(report_id="core:net_worth",
 display_currency="EUR")` is the converted read and returns applied rates and
 any degraded reason. FX writes and provider refresh are CLI-only; the [MCP tool
 reference](../reference/mcp-tools.md) lists the agent-facing report parameters.
@@ -195,7 +231,7 @@ reference](../reference/mcp-tools.md) lists the agent-facing report parameters.
   `moneybin reports realized-fx` reports per consumed lot, but it still needs a
   bank-statement expectation checked within $0.01.
 - **Investment positions do not count toward net worth.** `investments holdings`
-  values them; `reports networth` reads balances only.
+  values them; `reports net-worth` reads balances only.
 - **Coverage is checked at span edges.** A missing interior provider weekday can
   surface only when a report needs that date.
 - **Two currencies on one account are drift.** A transaction whose currency

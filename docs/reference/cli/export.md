@@ -36,13 +36,13 @@ Usage: `moneybin export bundle [OPTIONS]`
 
 Export one catalog report and typed parameter binding.
 
-Usage: `moneybin export report [OPTIONS] REPORT_ID`
+Usage: `moneybin export report [OPTIONS] {report_id}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `REPORT_ID` | text | yes | Stable catalog report ID. |
+| `report_id` | text | yes | Stable catalog report ID. |
 
 **Options**
 
@@ -88,13 +88,13 @@ Usage: `moneybin export destination list [OPTIONS]`
 
 Remove MoneyBin configuration without deleting destination content.
 
-Usage: `moneybin export destination remove [OPTIONS] NAME`
+Usage: `moneybin export destination remove [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Saved destination name or ID. |
+| `name` | text | yes | Saved destination name or ID. |
 
 **Options**
 
@@ -120,14 +120,14 @@ Usage: `moneybin export destination add [OPTIONS] COMMAND [ARGS]...`
 
 Add or replace a local artifact destination.
 
-Usage: `moneybin export destination add local [OPTIONS] NAME PATH`
+Usage: `moneybin export destination add local [OPTIONS] {name} {path}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Unique saved destination name. |
-| `PATH` | path | yes | Local directory used for new artifacts. |
+| `name` | text | yes | Unique saved destination name. |
+| `path` | path | yes | Local directory used for new artifacts. |
 
 **Options**
 
@@ -139,14 +139,14 @@ Usage: `moneybin export destination add local [OPTIONS] NAME PATH`
 
 Authorize and add or replace a Google Sheets destination.
 
-Usage: `moneybin export destination add sheets [OPTIONS] NAME URL`
+Usage: `moneybin export destination add sheets [OPTIONS] {name} {url}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Unique saved destination name. |
-| `URL` | text | yes | Google Sheets workbook URL. |
+| `name` | text | yes | Unique saved destination name. |
+| `url` | text | yes | Google Sheets workbook URL. |
 
 **Options**
 

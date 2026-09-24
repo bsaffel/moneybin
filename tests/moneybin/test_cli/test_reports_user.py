@@ -17,8 +17,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 import typer
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.commands.reports import user_reports
@@ -302,11 +301,11 @@ def test_list_reports_the_sensitivity_of_the_rows_it_returned(
     monkeypatch.setattr("moneybin.cli.output.write_privacy_event", captured.update)
     catalog = MagicMock()
     catalog.list.return_value = [
-        MagicMock(report_id="core:networth"),
+        MagicMock(report_id="core:net_worth"),
         MagicMock(report_id="user:rab12cd34ef56"),
     ]
     entries = [
-        _catalog_entry("core:networth"),
+        _catalog_entry("core:net_worth"),
         _catalog_entry("user:rab12cd34ef56", name="monthly_spend"),
     ]
     with (
@@ -336,7 +335,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     away. The rendered table must carry the distinction, not just the JSON.
     """
     entries = [
-        _catalog_entry("core:networth", archived=False),
+        _catalog_entry("core:net_worth", archived=False),
         _catalog_entry("user:put_away", archived=True),
     ]
     with (
@@ -362,7 +361,7 @@ def test_list_marks_an_archived_row_it_was_asked_to_include() -> None:
     )
     assert "archived" in archived_line
     active_line = next(
-        line for line in result.output.splitlines() if "networth" in line
+        line for line in result.output.splitlines() if "net_worth" in line
     )
     assert "archived" not in active_line
 
@@ -1172,7 +1171,7 @@ def test_delete_proceeds_without_a_prompt_under_yes() -> None:
 def test_delete_reports_an_unaskable_confirmation_through_the_envelope() -> None:
     """A closed stdin is not a decline — and it must not skip the envelope.
 
-    ``typer.confirm`` raises ``click.Abort`` on EOF, which is what a piped or
+    ``typer.confirm`` raises ``typer.Abort`` on EOF, which is what a piped or
     non-TTY invocation without ``--yes`` produces. ``classify_user_error`` does not
     recognize ``Abort``, so letting it escape spent the whole interaction on a bare
     ``Aborted.``: no error code, and no JSON for a caller that asked for JSON.
@@ -1589,7 +1588,6 @@ def _explanation(**overrides: Any) -> ReportExplanation:
         "sql_template": (
             "SELECT account_id FROM core.dim_accounts WHERE routing_number = $rn"
         ),
-        "sql_unavailable": None,
         "withheld_parameters": ("rn",),
         "sql_suppressed_by": (),
         "columns": (

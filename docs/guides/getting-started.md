@@ -77,7 +77,7 @@ home_currency:            (not set)
 display_currency_targets: (not set)
 ```
 
-Six lines are trimmed from `profile show`: the `Path:` and `Database:` labels and the four lines their values wrapped onto. `--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — and a profile that only ever reads in its own currency never needs it; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
+`--profile personal` on any single command does the same job for one invocation. `home_currency` stays unset until you choose one — MoneyBin never assumes USD — but the three net-worth reports price their totals into it, so a profile without one reads `net-worth` as an empty total with `unpriced_currency_count` at 1 even in a single currency; the [reports guide](reports.md#one-display-currency) says when it matters. Everything else about profiles — several of them, moving one between machines, deleting one — is in the [profiles guide](profiles.md).
 
 ## 4. Import your first file
 
@@ -147,24 +147,10 @@ The one warning is expected on a first import and is step 7; a warn alone keeps 
 ## 6. First reports
 
 ```console
-$ uv run moneybin reports networth
-USD as of 2026-01-31
-Net worth:   4,317.87
-Assets:      4,317.87
-Liabilities: 0.00
-Accounts:    1
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━┓
-┃ account                     ┃  balance ┃ currency ┃ source ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━┩
-│ Example Bank checking …7890 │ 4,317.87 │ USD      │ ofx    │
-└─────────────────────────────┴──────────┴──────────┴────────┘
-› Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date':
-'YYYY-MM-DD'}) for the time series
-› Run accounts_balances(view='history', reference='<account>') to drill into one account
-› Run accounts(include_closed=True) to inspect closed or excluded accounts
+$ uv run moneybin reports net-worth-accounts
 ```
 
-The as-of date is the latest balance the file carried, and `source` names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
+Each row is an account at the latest balance the file carried, and `--wide` adds `observation_source`, which names where that balance was observed — `ofx` is the ledger balance the statement itself reports.
 
 ```console
 $ uv run moneybin transactions list --limit 5
@@ -180,7 +166,7 @@ $ uv run moneybin transactions list --limit 5
 5 of 20 shown · raise --limit for more · 5 uncategorized
 ```
 
-Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending-trend`, `merchant-activity`, `recurring-subscriptions`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cash-flow` and `reports spending-trend` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all nine built-in reports on a populated profile and shows how to save your own.
+Negative is money out, positive is money in, for every transaction-level amount — the CLI, JSON, SQL, and the MCP tools all carry the same sign on a row. The reports that total outflow (`reports spending-trend`, `merchant-activity`, `recurring-subscriptions`) print it as a positive absolute figure; the [Signs bullet](reports.md#reading-the-output) in the reports guide lists which is which. `reports cash-flow` and `reports spending-trend` run too, but on one uncategorized month they show a single row with an empty category. The [reports guide](reports.md) walks all ten built-in reports on a populated profile and shows how to save your own.
 
 ## 7. Categorize
 
@@ -216,12 +202,12 @@ Restart the client fully, then ask in your own words:
 - *"What did I spend at Whole Foods in January?"*
 - *"Show me the SQL behind that number."*
 
-The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a SQL-backed report, with `?` where a withheld value goes, and the two service-backed net-worth reports have no SQL to print. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
+The assistant calls the same catalog the CLI reads — `reports`, `transactions`, `accounts`, `sql_query`, and 46 other tools — over local stdio. An answer that came through `sql_query` is a query you can rerun with `moneybin sql query`. One that came through the `reports` tool carries rows and a report id, not SQL; `moneybin reports explain <id>` prints the query behind a report, with `?` where a withheld value goes. Tools that write are flagged as such to the client, and the ones that delete or merge ask for MoneyBin's own exact confirmation; read a prompt before approving it. The [Claude Desktop guide](setting-up-claude-desktop.md) is the happy path, the [MCP clients guide](mcp-clients.md) covers the other seven clients and carries the troubleshooting table, and [What the AI provider sees](what-the-ai-sees.md) states exactly what leaves the machine.
 
 ## Next
 
 - [Data import](data-import.md) — more formats, the watched inbox, migrating from Tiller, Mint, or YNAB.
-- [Reports](reports.md) — the nine built-in reports and your own.
+- [Reports](reports.md) — the ten built-in reports and your own.
 - [Categorization](categorization.md) — rules, merchant mappings, LLM assist.
 - [Database and security](database-security.md) — backups, passphrase mode, and [env-var key injection](database-security.md#headless-and-cron-deployments) for a NAS, a container, or cron.
 - [Direct SQL access](sql-access.md) — the encrypted file from DuckDB's own CLI or UI.

@@ -587,7 +587,7 @@ by its decorator, and its report-derived result supplies the per-call tier.
 | `reports(report_id="core:spending_trend")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | transaction-amount aggregates |
 | `accounts(view="list", limit=100)` | Registered `accounts_coarse` route; raw bypasses only `build_classified_envelope` terminal redaction and audit | dynamic, up to critical | ~4-row list (critical fields masked) |
 | Budget status (test-only synthetic egress) | `BudgetService.status()` under `@mcp_tool`; setup creates one active `Housing & Utilities` budget through `BudgetService.set_budget()` | high | aggregate + nonempty per-budget rows; no public route is added |
-| Net-worth history (test-only typed egress) | `NetworthService.history()` under `@mcp_tool`; the public route is `reports(report_id="core:networth_history", parameters={...})` | high | balance time-series |
+| `reports(report_id="core:net_worth_currencies")` | Actual report route with terminal row redaction and audit bypassed only in the test raw path, vs the unchanged protected route | high | balance time-series |
 
 The gate proves each protected callback produces the expected redacted result
 and writes privacy-audit events before timing it. Concrete numbers are

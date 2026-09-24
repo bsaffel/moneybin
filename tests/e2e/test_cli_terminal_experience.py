@@ -19,9 +19,10 @@ from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
-import click
 import pexpect
 import pytest
+from typer._click import Command
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -55,21 +56,21 @@ def _paths(text: str) -> frozenset[PathKey]:
 
 
 def _leaves(
-    command: click.Command, prefix: tuple[str, ...] = ()
+    command: Command, prefix: tuple[str, ...] = ()
 ) -> Iterator[tuple[str, ...]]:
     """Yield registered leaves without invoking a command callback."""
-    if isinstance(command, click.Group):
+    if isinstance(command, TyperGroup):
         for name, child in command.commands.items():
             yield from _leaves(child, (*prefix, name))
         return
     yield prefix
 
 
-def _options(root: click.Command, path: tuple[str, ...]) -> set[str]:
+def _options(root: Command, path: tuple[str, ...]) -> set[str]:
     """Return one registered leaf's declared spellings without executing it."""
     command = root
     for segment in path:
-        assert isinstance(command, click.Group), path
+        assert isinstance(command, TyperGroup), path
         command = command.commands[segment]
     return {option for param in command.params for option in param.opts}
 
@@ -164,7 +165,7 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
     """An accidental registration change must not evade the hand-written help list."""
     leaves = set(_leaves(get_command(app)))
 
-    assert len(leaves) == 207
+    assert len(leaves) == 208
     assert ("assets",) not in leaves
     assert {
         ("sync", "connect"),
@@ -176,6 +177,9 @@ def test_registration_inventory_keeps_generated_reports_aliases_and_no_assets_le
         ("reports", "large-transactions"),
         ("reports", "balance-drift"),
         ("reports", "realized-fx"),
+        ("reports", "net-worth"),
+        ("reports", "net-worth-currencies"),
+        ("reports", "net-worth-accounts"),
         ("mcp", "config", "path"),
         ("logs",),
     } <= leaves
@@ -200,8 +204,9 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
         ("reports", "list"),
         ("reports", "run"),
         ("reports", "explain"),
-        ("reports", "networth"),
-        ("reports", "networth-history"),
+        ("reports", "net-worth"),
+        ("reports", "net-worth-currencies"),
+        ("reports", "net-worth-accounts"),
         ("reports", "spending-trend"),
         ("reports", "cash-flow"),
         ("reports", "recurring-subscriptions"),
@@ -441,7 +446,7 @@ def test_every_declared_finite_read_keeps_the_shared_human_and_agent_controls() 
 def test_native_artifact_and_callback_modes_keep_their_explicit_exceptions() -> None:
     """Mode contracts, rather than a blanket all-flags rule, own these leaves."""
     root = get_command(app)
-    assert isinstance(root, click.Group)
+    assert isinstance(root, TyperGroup)
     assert "--no-pager" not in _options(root, ("db", "query"))
     assert "--output" not in _options(root, ("import", "preview"))
     assert "--output" not in _options(root, ("privacy", "redact"))
@@ -450,9 +455,9 @@ def test_native_artifact_and_callback_modes_keep_their_explicit_exceptions() -> 
     assert "--follow" in _options(root, ("logs",))
 
     mcp = root.commands["mcp"]
-    assert isinstance(mcp, click.Group)
+    assert isinstance(mcp, TyperGroup)
     config = mcp.commands["config"]
-    assert isinstance(config, click.Group)
+    assert isinstance(config, TyperGroup)
     assert config.invoke_without_command
     assert config.callback is not None
 

@@ -155,11 +155,13 @@ Owned by services (Python). The `app` schema holds anything you do *to* a transa
 
 ### `reports.*` — curated presentation views
 
-One view per CLI/MCP report, with one exception: `reports.net_worth` also backs the `networth-history` report (below). Read-only by design; the privacy middleware enforces it. Adding a new report means adding a new view here, not changing core.
+One view per CLI/MCP report. Read-only by design; the privacy middleware enforces it. Adding a new report means adding a new view here, not changing core.
 
 | View | Powers |
 |---|---|
-| `reports.net_worth` | `moneybin reports networth` / `reports(report_id='core:networth')`, and `moneybin reports networth-history` / `reports(report_id='core:networth_history')` (period-bucketed re-query of the same view; no separate `reports.*` table) |
+| `reports.net_worth` | `moneybin reports net-worth` / `reports(report_id='core:net_worth')` — day-grain, home-currency total |
+| `reports.net_worth_currencies` | `moneybin reports net-worth-currencies` / `reports(report_id='core:net_worth_currencies')` — day×currency breakdown |
+| `reports.net_worth_accounts` | `moneybin reports net-worth-accounts` / `reports(report_id='core:net_worth_accounts')` — day×account breakdown |
 | `reports.cash_flow` | `moneybin reports cash-flow` / `reports(report_id='core:cash_flow')` |
 | `reports.spending_trend` | `moneybin reports spending-trend` / `reports(report_id='core:spending_trend')` |
 | `reports.recurring_subscriptions` | `moneybin reports recurring-subscriptions` / `reports(report_id='core:recurring_subscriptions')` |

@@ -17,11 +17,9 @@ import pytest
 import moneybin.cli  # noqa: F401  # pyright: ignore[reportUnusedImport]
 import moneybin.reports.definitions as definitions
 from moneybin.privacy.taxonomy import DataClass
-from moneybin.reports._framework.catalog import RegisteredReport
 from moneybin.reports._framework.cli_register import resolve_default_columns
-from moneybin.reports._framework.contract import OutputColumn
+from moneybin.reports._framework.contract import OutputColumn, ReportSpec
 from moneybin.reports._framework.registry import discover_reports, spec_of
-from moneybin.reports.service_reports import SERVICE_REPORTS
 
 pytestmark = pytest.mark.unit
 
@@ -70,13 +68,12 @@ def _ranked(columns: Sequence[OutputColumn]) -> list[tuple[str, int]]:
     return [(c.name, rank) for c in columns if (rank := _rank(c)) is not None]
 
 
-def _in_tree_reports() -> list[RegisteredReport]:
-    runner_backed = [spec_of(runner) for runner in discover_reports(definitions)]
-    return [*runner_backed, *SERVICE_REPORTS]
+def _in_tree_reports() -> list[ReportSpec]:
+    return [spec_of(runner) for runner in discover_reports(definitions)]
 
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
-def test_declared_columns_follow_grain_first(spec: RegisteredReport) -> None:
+def test_declared_columns_follow_grain_first(spec: ReportSpec) -> None:
     """Rule B over the whole declared projection."""
     ranked = _ranked(spec.columns)
     ranks = [rank for _, rank in ranked]
@@ -87,7 +84,7 @@ def test_declared_columns_follow_grain_first(spec: RegisteredReport) -> None:
 
 
 @pytest.mark.parametrize("spec", _in_tree_reports(), ids=lambda spec: spec.report_id)
-def test_default_columns_follow_grain_first(spec: RegisteredReport) -> None:
+def test_default_columns_follow_grain_first(spec: ReportSpec) -> None:
     """Rule B over the narrow text table, which orders independently."""
     by_name = {column.name: column for column in spec.columns}
     names = resolve_default_columns(spec, {})

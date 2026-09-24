@@ -115,7 +115,7 @@ async def test_listed_tool_reads_rendered_input_schema() -> None:
 
     tool = await listed_tool(mcp, "strict_probe")
 
-    assert tool.inputSchema["properties"]["enabled"]["type"] == "boolean"
+    assert tool.input_schema["properties"]["enabled"]["type"] == "boolean"
 
 
 @pytest.mark.integration
@@ -164,20 +164,20 @@ async def test_live_standard_read_selectors_render_exactly() -> None:
     for (name, field), expected in expected_literals.items():
         tool = await listed_tool(mcp, name)
         assert_literal_values(
-            tool.inputSchema,
+            tool.input_schema,
             ("properties", field),
             expected,
         )
 
     status = await listed_tool(mcp, "system_status")
     assert_literal_values(
-        status.inputSchema["properties"]["sections"]["anyOf"][0],
+        status.input_schema["properties"]["sections"]["anyOf"][0],
         ("items",),
         {"overview", "doctor", "categorization", "exports"},
     )
     import_status = await listed_tool(mcp, "import_status")
     assert_literal_values(
-        import_status.inputSchema["properties"]["sections"]["anyOf"][0],
+        import_status.input_schema["properties"]["sections"]["anyOf"][0],
         ("items",),
         {"imports", "formats", "inbox"},
     )
@@ -189,7 +189,7 @@ async def test_strict_probe_does_not_coerce(bad: str) -> None:
 
     response = await call_tool_raw(mcp, "strict_probe", {"enabled": bad})
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 async def _assert_canonical_variant(
@@ -202,10 +202,10 @@ async def _assert_canonical_variant(
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
     )
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    assert response.structuredContent["data"]["kind"] == expected_kind
-    return response.structuredContent
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    assert response.structured_content["data"]["kind"] == expected_kind
+    return response.structured_content
 
 
 async def _assert_canonical_error(
@@ -218,12 +218,12 @@ async def _assert_canonical_error(
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
     )
-    assert response.isError is False
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    assert response.structuredContent["status"] == "error"
-    assert response.structuredContent["error"]["code"] == expected_code
-    return response.structuredContent
+    assert response.is_error is False
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    assert response.structured_content["status"] == "error"
+    assert response.structured_content["error"]["code"] == expected_code
+    return response.structured_content
 
 
 async def test_system_coarse_tools_render_schema_contract() -> None:
@@ -232,25 +232,25 @@ async def test_system_coarse_tools_render_schema_contract() -> None:
     status = await listed_tool(mcp, "system_status")
     audit = await listed_tool(mcp, "system_audit")
 
-    assert status.outputSchema is None
-    assert audit.outputSchema is None
+    assert status.output_schema is None
+    assert audit.output_schema is None
     assert status.annotations is not None
-    assert status.annotations.readOnlyHint is False
+    assert status.annotations.read_only_hint is False
     assert audit.annotations is not None
-    assert audit.annotations.readOnlyHint is True
-    sections_schema = status.inputSchema["properties"]["sections"]["anyOf"][0]
+    assert audit.annotations.read_only_hint is True
+    sections_schema = status.input_schema["properties"]["sections"]["anyOf"][0]
     assert_literal_values(
         sections_schema,
         ("items",),
         {"overview", "doctor", "categorization", "exports"},
     )
     assert_literal_values(
-        status.inputSchema,
+        status.input_schema,
         ("properties", "detail"),
         {"summary", "full"},
     )
     assert_literal_values(
-        audit.inputSchema,
+        audit.input_schema,
         ("properties", "view"),
         {"events", "history", "detail"},
     )
@@ -355,7 +355,7 @@ async def test_system_coarse_tools_reject_invalid_raw_arguments(
 
     response = await call_tool_raw(mcp, name, arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 async def test_accounts_coarse_tools_render_schema_contract() -> None:
@@ -364,28 +364,28 @@ async def test_accounts_coarse_tools_render_schema_contract() -> None:
     accounts = await listed_tool(mcp, "accounts")
     balances = await listed_tool(mcp, "accounts_balances")
 
-    assert accounts.outputSchema is None
-    assert balances.outputSchema is None
+    assert accounts.output_schema is None
+    assert balances.output_schema is None
     assert accounts.annotations is not None
-    assert accounts.annotations.readOnlyHint is True
+    assert accounts.annotations.read_only_hint is True
     assert balances.annotations is not None
-    assert balances.annotations.readOnlyHint is True
+    assert balances.annotations.read_only_hint is True
     assert_literal_values(
-        accounts.inputSchema,
+        accounts.input_schema,
         ("properties", "view"),
         {"list", "detail", "summary", "resolve"},
     )
     assert_literal_values(
-        balances.inputSchema,
+        balances.input_schema,
         ("properties", "view"),
         {"latest", "history", "assertions", "reconcile"},
     )
-    assert accounts.inputSchema["properties"]["include_closed"]["type"] == "boolean"
-    threshold_schema = json.dumps(balances.inputSchema["properties"]["threshold"])
+    assert accounts.input_schema["properties"]["include_closed"]["type"] == "boolean"
+    threshold_schema = json.dumps(balances.input_schema["properties"]["threshold"])
     assert '"number"' in threshold_schema
     assert '"string"' not in threshold_schema
     for field in ("start", "end"):
-        date_schema = balances.inputSchema["properties"][field]["anyOf"][0]
+        date_schema = balances.input_schema["properties"][field]["anyOf"][0]
         assert date_schema["type"] == "string"
         assert date_schema["format"] == "date"
 
@@ -741,7 +741,7 @@ async def test_accounts_coarse_tools_reject_invalid_raw_arguments(
 
     response = await call_tool_raw(mcp, name, arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 async def test_investment_and_transaction_coarse_tools_render_schema_contract() -> None:
@@ -751,28 +751,28 @@ async def test_investment_and_transaction_coarse_tools_render_schema_contract() 
     investments = await listed_tool(investments_mcp, "investments")
     transactions = await listed_tool(transactions_mcp, "transactions")
 
-    assert investments.outputSchema is None
-    assert transactions.outputSchema is None
+    assert investments.output_schema is None
+    assert transactions.output_schema is None
     assert investments.annotations is not None
-    assert investments.annotations.readOnlyHint is True
+    assert investments.annotations.read_only_hint is True
     assert transactions.annotations is not None
-    assert transactions.annotations.readOnlyHint is True
+    assert transactions.annotations.read_only_hint is True
     assert_literal_values(
-        investments.inputSchema,
+        investments.input_schema,
         ("properties", "view"),
         {"events", "holdings", "lots", "gains", "securities"},
     )
-    open_only_schema = investments.inputSchema["properties"]["open_only"]
+    open_only_schema = investments.input_schema["properties"]["open_only"]
     assert open_only_schema["anyOf"][0]["type"] == "boolean"
     for field in ("start", "end"):
-        investment_date = investments.inputSchema["properties"][field]["anyOf"][0]
-        transaction_date = transactions.inputSchema["properties"][field]["anyOf"][0]
+        investment_date = investments.input_schema["properties"][field]["anyOf"][0]
+        transaction_date = transactions.input_schema["properties"][field]["anyOf"][0]
         assert investment_date["type"] == "string"
         assert investment_date["format"] == "date"
         assert transaction_date["type"] == "string"
         assert transaction_date["format"] == "date"
     for field in ("min_amount", "max_amount"):
-        amount_schema = json.dumps(transactions.inputSchema["properties"][field])
+        amount_schema = json.dumps(transactions.input_schema["properties"][field])
         assert '"number"' in amount_schema
         assert '"string"' not in amount_schema
 
@@ -810,10 +810,10 @@ async def test_transaction_coarse_transport_is_canonical_and_numeric(
         block.text for block in response.content if isinstance(block, TextContent)
     )
 
-    assert response.isError is False
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    amount = response.structuredContent["data"]["transactions"][0]["amount"]
+    assert response.is_error is False
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    amount = response.structured_content["data"]["transactions"][0]["amount"]
     assert isinstance(amount, int | float)
     assert amount == -25.5
 
@@ -1036,7 +1036,7 @@ async def test_investment_and_transaction_coarse_reject_invalid_raw_arguments(
 
     response = await call_tool_raw(mcp, name, arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 async def test_import_gsheet_privacy_coarse_render_schema_contract() -> None:
@@ -1048,27 +1048,27 @@ async def test_import_gsheet_privacy_coarse_render_schema_contract() -> None:
     gsheet_tool = await listed_tool(gsheet_mcp, "gsheet")
     privacy_tool = await listed_tool(privacy_mcp, "privacy")
 
-    assert import_tool.outputSchema is None
-    assert gsheet_tool.outputSchema is None
-    assert privacy_tool.outputSchema is None
+    assert import_tool.output_schema is None
+    assert gsheet_tool.output_schema is None
+    assert privacy_tool.output_schema is None
     assert_literal_values(
-        import_tool.inputSchema["properties"]["sections"]["anyOf"][0],
+        import_tool.input_schema["properties"]["sections"]["anyOf"][0],
         ("items",),
         {"imports", "formats", "inbox"},
     )
     assert_literal_values(
-        gsheet_tool.inputSchema,
+        gsheet_tool.input_schema,
         ("properties", "view"),
         {"connections", "status"},
     )
     assert_literal_values(
-        privacy_tool.inputSchema,
+        privacy_tool.input_schema,
         ("properties", "view"),
         {"status", "log"},
     )
     for tool in (import_tool, gsheet_tool, privacy_tool):
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is True
+        assert tool.annotations.read_only_hint is True
 
 
 async def test_import_coarse_transport_variants(mcp_db: object) -> None:
@@ -1167,7 +1167,7 @@ async def test_import_gsheet_privacy_coarse_reject_invalid_raw_arguments(
 
     response = await call_tool_raw(mcp, name, arguments)
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 @pytest.mark.parametrize(

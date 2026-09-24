@@ -1158,9 +1158,9 @@ class TestStandardCoarseBalanceAssertionWrite:
         assert [tool.name for tool in tools] == ["accounts_balance_assert"]
         tool = tools[0]
         assert tool.annotations is not None
-        assert tool.annotations.readOnlyHint is False
-        assert tool.annotations.destructiveHint is True
-        assert tool.annotations.idempotentHint is True
+        assert tool.annotations.read_only_hint is False
+        assert tool.annotations.destructive_hint is True
+        assert tool.annotations.idempotent_hint is True
 
 
 class TestNarrowToolsRemoved:
@@ -1994,4 +1994,4 @@ async def test_links_run_does_not_promise_a_safe_retry() -> None:
     tool = next(t for t in await srv._list_tools() if t.name == "accounts_links_run")  # pyright: ignore[reportPrivateUsage]
 
     assert tool.annotations is not None
-    assert tool.annotations.idempotentHint is False
+    assert tool.annotations.idempotent_hint is False

@@ -18,8 +18,6 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports set`](#moneybin-reports-set) | Update one saved report: rename, re-describe, re-query, archive, restore. |
 | [`moneybin reports delete`](#moneybin-reports-delete) | Delete one saved report permanently. |
 | [`moneybin reports reclassify`](#moneybin-reports-reclassify) | Lower one column's masking floor, permanently, for this report. |
-| [`moneybin reports networth`](#moneybin-reports-networth) | Show current or as-of net worth + per-account breakdown. |
-| [`moneybin reports networth-history`](#moneybin-reports-networth-history) | Net worth time series with period-over-period change. |
 | [`moneybin reports spending-trend`](#moneybin-reports-spending-trend) | Monthly spending trend with MoM, YoY, and 3-month-trailing deltas. |
 | [`moneybin reports cash-flow`](#moneybin-reports-cash-flow) | Monthly cash flow rollup: inflow/outflow/net per account x category. |
 | [`moneybin reports recurring-subscriptions`](#moneybin-reports-recurring-subscriptions) | Likely-recurring subscription candidates with confidence scores. |
@@ -27,6 +25,9 @@ Usage: `moneybin reports [OPTIONS] COMMAND [ARGS]...`
 | [`moneybin reports large-transactions`](#moneybin-reports-large-transactions) | Top transactions by absolute amount with per-account/category z-scores. |
 | [`moneybin reports balance-drift`](#moneybin-reports-balance-drift) | Balance reconciliation drift: asserted vs computed, one row per assertion. |
 | [`moneybin reports realized-fx`](#moneybin-reports-realized-fx) | Realized FX gain/loss by disposal and lot allocation. |
+| [`moneybin reports net-worth-currencies`](#moneybin-reports-net-worth-currencies) | Net worth per currency per day: the currency-grain rung of the ladder. |
+| [`moneybin reports net-worth-accounts`](#moneybin-reports-net-worth-accounts) | Net worth per account per day: the account-grain rung of the ladder. |
+| [`moneybin reports net-worth`](#moneybin-reports-net-worth) | Net worth per day in the home currency: the day-grain rung of the ladder. |
 
 ## moneybin reports list
 
@@ -48,13 +49,13 @@ Usage: `moneybin reports list [OPTIONS]`
 
 Run one registered report by ID or name.
 
-Usage: `moneybin reports run [OPTIONS] HANDLE`
+Usage: `moneybin reports run [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name, any tier. |
+| `handle` | text | yes | Report ID or name, any tier. |
 
 **Options**
 
@@ -78,13 +79,13 @@ intact. A parameter classed above the lowest tier keeps its placeholder in
 the executed form — rendering is not execution, so it never passes through
 the redaction the report's own rows do.
 
-Usage: `moneybin reports explain [OPTIONS] HANDLE`
+Usage: `moneybin reports explain [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name, any tier. |
+| `handle` | text | yes | Report ID or name, any tier. |
 
 **Options**
 
@@ -101,13 +102,13 @@ Save a query as a durable report.
 
 Classification is derived from the SQL and stored; you never declare it.
 
-Usage: `moneybin reports create [OPTIONS] NAME`
+Usage: `moneybin reports create [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Report name: lowercase slug, unique. |
+| `name` | text | yes | Report name: lowercase slug, unique. |
 
 **Options**
 
@@ -129,13 +130,13 @@ of one query, so a rewrite voids it while a re-declared parameter leaves both
 unchanged — and an approval whose column now derives a different class stops
 applying on its own.
 
-Usage: `moneybin reports set [OPTIONS] HANDLE`
+Usage: `moneybin reports set [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 
@@ -159,13 +160,13 @@ The audit log keeps the full prior row, so `moneybin system audit undo`
 restores it. To hide a report without deleting it, use `--archive` on
 `reports set`.
 
-Usage: `moneybin reports delete [OPTIONS] HANDLE`
+Usage: `moneybin reports delete [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 
@@ -184,13 +185,13 @@ what is masked, so it requires explicit confirmation and is audited. The
 downgrade must drop the sensitivity tier: a same-tier weakening (whole
 masking to partial) is refused whatever the reason.
 
-Usage: `moneybin reports reclassify [OPTIONS] HANDLE`
+Usage: `moneybin reports reclassify [OPTIONS] {handle}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `HANDLE` | text | yes | Report ID or name of a saved report. |
+| `handle` | text | yes | Report ID or name of a saved report. |
 
 **Options**
 
@@ -201,41 +202,6 @@ Usage: `moneybin reports reclassify [OPTIONS] HANDLE`
 | `--reason` | text |  | Required. Why this column reveals less than its derived class. |
 | `--yes, -y` | flag |  | Confirm the downgrade without the prompt. This is a human decision: an assistant driving this command must not supply it unasked. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-
-## moneybin reports networth
-
-Show current or as-of net worth + per-account breakdown.
-
-Usage: `moneybin reports networth [OPTIONS]`
-
-**Options**
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--as-of` | text |  | ISO date (YYYY-MM-DD); shows networth on or before |
-| `--account` | text, repeatable |  | Filter per-account breakdown to specific account_id(s); repeatable |
-| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
-| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
-| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
-
-## moneybin reports networth-history
-
-Net worth time series with period-over-period change.
-
-Usage: `moneybin reports networth-history [OPTIONS]`
-
-**Options**
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `--from` | text |  | Required. ISO date (YYYY-MM-DD) |
-| `--to` | text |  | Required. ISO date (YYYY-MM-DD) |
-| `--interval` | text | `monthly` | daily \| weekly \| monthly |
-| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
-| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
-| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
-| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin reports spending-trend
 
@@ -388,6 +354,71 @@ Usage: `moneybin reports realized-fx [OPTIONS]`
 | `--to-date` | text |  | Latest disposal date to include, as YYYY-MM-DD. |
 | `--currency` | text |  | ISO 4217 disposed Currency; case and surrounding spaces ignored. |
 | `--coverage` | text | `all` | complete \| incomplete \| all. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports net-worth-currencies
+
+Net worth per currency per day: the currency-grain rung of the ladder.
+
+One row per (currency_code, balance_date), summing every included account's balance in that currency, plus the home-currency conversion of both totals. Defaults to the latest available day when no range is given.
+
+Usage: `moneybin reports net-worth-currencies [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports net-worth-accounts
+
+Net worth per account per day: the account-grain rung of the ladder.
+
+One row per (account_id, balance_date), in the account's own currency_code and in the profile's home currency. Defaults to the latest available day when no range is given.
+
+Usage: `moneybin reports net-worth-accounts [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
+| `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
+| `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
+| `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
+
+## moneybin reports net-worth
+
+Net worth per day in the home currency: the day-grain rung of the ladder.
+
+One row per balance_date, fail-closed to null measures on any date where a held currency has no rate. Defaults to the latest available day when no range or interval is given.
+
+With interval, one row per bucket instead — the row whose balance_date is the bucket's last available date — plus change_abs and change_pct against the immediately preceding returned bucket. Weekly buckets are ISO weeks starting Monday (DuckDB's date_trunc('week', ...)), not Sunday-start. Passing interval with no range buckets the whole history rather than defaulting to the latest day: unlike the unbucketed read, a rollup with only its latest bucket would have no prior bucket to compare against.
+
+Rows are returned oldest-first (ORDER BY balance_date), on both the bucketed and unbucketed reads, so a row cap keeps the earliest dates in the requested range rather than the most recent — bound a recent window with from_date instead of relying on a limit.
+
+Usage: `moneybin reports net-worth [OPTIONS]`
+
+**Options**
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `--from-date` | text |  | Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper end open when given alone. |
+| `--to-date` | text |  | Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower end open when given alone. |
+| `--interval` | one of `daily`, `weekly`, `monthly` |  | daily \| weekly \| monthly — buckets the range into one row per bucket with change_abs/change_pct. Weekly buckets are ISO weeks starting Monday. Omitted returns the plain day-grain rows with no change columns. |
 | `--display-currency` | text |  | ISO-4217 display currency to request (e.g. EUR). Reports convert only when each row declares one amount currency and one exact date; otherwise amounts retain their declared currencies and the result says why. 'moneybin refresh' stores rates for your home currency and profile display targets; set targets with 'moneybin profile set display_currency_targets EUR,GBP'. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |

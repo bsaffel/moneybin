@@ -12,6 +12,17 @@ implemented
 > historical context; the live model lives at
 > `src/moneybin/sqlmesh/models/reports/net_worth.sql`.
 
+> **Superseded surface (2026-09-19):** the §MCP Interface paragraphs below
+> describing the two-row-kind envelope (a totals row per currency followed by
+> account rows), why the totals row leads, and the currency collapse applied
+> before `limit` describe the service-backed `core:networth` /
+> `core:networth_history` surface, retired by
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md).
+> The live surface is three SQL-backed reports at `core:net_worth`,
+> `core:net_worth_currencies`, and `core:net_worth_accounts`. Everything
+> else in this spec — the balance spine, carry-forward interpolation, and
+> reconciliation — stays in force.
+
 ## Goal
 
 Provide accurate, authoritative balance tracking per account and net worth computation over time. Balances are either sourced from authoritative observations (institution statements, Plaid snapshots, user assertions) or absent — never best-effort estimates from transaction sums alone.

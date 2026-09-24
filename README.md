@@ -99,18 +99,14 @@ Or ask your AI assistant (MCP):
   "What did I spend on dining last month?"
   "Show my net-worth trend."
 
-$ uv run moneybin reports networth
-USD as of 2025-12-27
-Net worth:   211,413.05
-Assets:      211,413.05
-Liabilities: 0.00
-Accounts:    2
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
-┃ account                   ┃    balance ┃ currency ┃ source  ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
-│ Capital One credit card   │       0.00 │ USD      │ tabular │
-│ Chase Bank checking …0001 │ 211,413.05 │ USD      │         │
-└───────────────────────────┴────────────┴──────────┴─────────┘
+$ uv run moneybin reports net-worth-accounts
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ account_name              ┃ currency_code ┃ account_balance ┃ account_balance_home ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ Capital One credit card   │ USD           │            0.00 │                    - │
+│ Chase Bank checking …0001 │ USD           │      211,413.05 │                    - │
+└───────────────────────────┴───────────────┴─────────────────┴──────────────────────┘
+4 of 14 columns shown — --wide for all
 
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total
@@ -185,7 +181,7 @@ use it before migrating.
 
 - [What works today](docs/features.md) — the shipped capability boundary
 - [Data import](docs/guides/data-import.md) — files, Plaid, Sheets, migrations
-- [Reports](docs/guides/reports.md) — the nine built-ins with their output, saved reports, one display currency
+- [Reports](docs/guides/reports.md) — the ten built-ins with their output, saved reports, one display currency
 - [MCP server](docs/guides/mcp-server.md) — tool catalog, envelope, redaction
 - [Database and security](docs/guides/database-security.md) — encryption, backups, profiles
 - [Architecture](docs/architecture.md) — the data layers and the contracts they keep

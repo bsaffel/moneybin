@@ -13,8 +13,8 @@ def test_inventory_accounts_for_serialized_components() -> None:
     tool = Tool(
         name="example",
         description="Example.",
-        inputSchema={"type": "object", "properties": {}},
-        annotations=ToolAnnotations(readOnlyHint=True),
+        input_schema={"type": "object", "properties": {}},
+        annotations=ToolAnnotations(read_only_hint=True),
     )
     inventory = SurfaceInventory.from_tools([tool])
     row = inventory.tools[0]
@@ -37,10 +37,10 @@ def test_inventory_accounts_for_serialized_components() -> None:
 def test_inventory_total_is_framed_canonical_tool_definitions() -> None:
     for tools in (
         [],
-        [Tool(name="a", inputSchema={"type": "object"})],
+        [Tool(name="a", input_schema={"type": "object"})],
         [
-            Tool(name="a", inputSchema={"type": "object"}),
-            Tool(name="b", inputSchema={"type": "object"}),
+            Tool(name="a", input_schema={"type": "object"}),
+            Tool(name="b", input_schema={"type": "object"}),
         ],
     ):
         inventory = SurfaceInventory.from_tools(tools)
@@ -53,8 +53,8 @@ def test_inventory_total_is_framed_canonical_tool_definitions() -> None:
 
 
 def test_inventory_is_independent_of_tool_order() -> None:
-    first = Tool(name="a", inputSchema={"type": "object"})
-    second = Tool(name="b", inputSchema={"type": "object"})
+    first = Tool(name="a", input_schema={"type": "object"})
+    second = Tool(name="b", input_schema={"type": "object"})
     assert SurfaceInventory.from_tools([second, first]).to_dict() == (
         SurfaceInventory.from_tools([first, second]).to_dict()
     )
@@ -62,7 +62,7 @@ def test_inventory_is_independent_of_tool_order() -> None:
 
 def test_inventory_omits_bytes_for_absent_components() -> None:
     inventory = SurfaceInventory.from_tools([
-        Tool(name="example", inputSchema={"type": "object"})
+        Tool(name="example", input_schema={"type": "object"})
     ])
     row = inventory.tools[0]
     assert row.description_bytes == 0
@@ -74,8 +74,8 @@ def test_inventory_accounts_for_advertised_output_schema() -> None:
     inventory = SurfaceInventory.from_tools([
         Tool(
             name="example",
-            inputSchema={"type": "object"},
-            outputSchema={"type": "object", "properties": {}},
+            input_schema={"type": "object"},
+            output_schema={"type": "object", "properties": {}},
         )
     ])
     row = inventory.tools[0]
