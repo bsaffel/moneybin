@@ -911,3 +911,36 @@ def _as_decimal(value: object) -> Decimal | None:
             return None
         return parsed if parsed.is_finite() else None
     return None
+
+
+def render_command_menu(
+    sections: Sequence[tuple[str, Sequence[tuple[str, str]]]],
+    *,
+    terminal: TerminalPolicy,
+) -> None:
+    """Print a compact discovery menu using the shared terminal styles."""
+    from rich.console import Group
+    from rich.padding import Padding
+    from rich.table import Table
+    from rich.text import Text
+
+    parts: list[RenderableType] = [
+        Text("MoneyBin - understand your finances", style=str(Style.HIERARCHY))
+    ]
+    name_width = max(len(name) for _, commands in sections for name, _ in commands)
+    for title, commands in sections:
+        if not commands:
+            continue
+        parts.extend([Text(), Text(title, style=str(Style.HIERARCHY))])
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style=str(Style.ACTION), no_wrap=True, width=name_width)
+        table.add_column()
+        for name, description in commands:
+            table.add_row(name, description)
+        parts.append(Padding(table, (0, 0, 0, 2)))
+    parts.extend([
+        Text(),
+        Text("Run moneybin --help for all commands."),
+        Text("Run moneybin <command> --help for details."),
+    ])
+    typer.echo(render_human_text(Group(*parts), terminal=terminal), nl=False)

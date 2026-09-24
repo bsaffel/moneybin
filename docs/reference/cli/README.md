@@ -20,28 +20,28 @@ Usage: `moneybin [OPTIONS] COMMAND [ARGS]...`
 
 | Command | Purpose |
 |---|---|
-| [`moneybin demo`](demo.md) | Set up a demo profile with synthetic data and a first answer |
-| [`moneybin review`](review.md) | Pending counts across all review queues (matches, categorize, account-links, merchant-links, security-links) |
-| [`moneybin refresh`](refresh.md) | Refresh derived tables: matching, transforms, categorization (leaf) |
-| [`moneybin stats`](stats.md) | Show lifetime metric aggregates |
-| [`moneybin logs`](logs.md) | View, prune, or locate MoneyBin log files for the active profile. |
-| [`moneybin profile`](profile.md) | Manage user profiles (create, list, switch, delete, show, set) |
-| [`moneybin import`](import.md) | Import financial files into MoneyBin |
-| [`moneybin sync`](sync.md) | Sync transactions from external services |
-| [`moneybin gsheet`](gsheet.md) | Connect Google Sheets workbooks (direct OAuth, user-controlled storage) |
-| [`moneybin accounts`](accounts.md) | Account listing, settings, and lifecycle ops |
-| [`moneybin reports`](reports.md) | Cross-domain analytical reports |
-| [`moneybin transactions`](transactions.md) | Transactions and workflows on them (matches, categorize, review, notes, tags, splits, audit) |
-| [`moneybin assets`](assets.md) | Physical assets (real estate, vehicles, valuables) |
-| [`moneybin investments`](investments.md) | Investment ledger, positions, lots, gains, and securities catalog |
-| [`moneybin categories`](categories.md) | Category taxonomy management |
-| [`moneybin merchants`](merchants.md) | Merchant mappings management |
-| [`moneybin privacy`](privacy.md) | Privacy utilities: redaction and audit |
-| [`moneybin fx`](fx.md) | Exchange rates: inspect cached reference rates and record corrections |
-| [`moneybin system`](system.md) | System and data status |
+| [`moneybin accounts`](accounts.md) | View and manage accounts |
+| [`moneybin assets`](assets.md) | Track property, vehicles, and valuables |
+| [`moneybin investments`](investments.md) | Explore positions, lots, and gains |
+| [`moneybin reports`](reports.md) | View financial reports |
+| [`moneybin transactions`](transactions.md) | Browse and manage transactions |
+| [`moneybin categories`](categories.md) | Manage your category taxonomy |
+| [`moneybin fx`](fx.md) | Inspect and correct exchange rates |
+| [`moneybin merchants`](merchants.md) | Manage merchant mappings |
+| [`moneybin review`](review.md) | See pending decisions across review queues |
+| [`moneybin export`](export.md) | Export data to other formats |
+| [`moneybin gsheet`](gsheet.md) | Connect Google Sheets workbooks |
+| [`moneybin import`](import.md) | Import financial files |
+| [`moneybin refresh`](refresh.md) | Update derived data and categorization |
+| [`moneybin sync`](sync.md) | Pull data from connected services |
+| [`moneybin demo`](demo.md) | Try MoneyBin with sample data |
+| [`moneybin mcp`](mcp.md) | Connect MoneyBin to AI assistants |
+| [`moneybin privacy`](privacy.md) | Inspect redaction and privacy audit tools |
+| [`moneybin profile`](profile.md) | Create, switch, and manage profiles |
+| [`moneybin db`](db.md) | Inspect and manage the database |
+| [`moneybin logs`](logs.md) | View and manage application logs |
+| [`moneybin sql`](sql.md) | Run privacy-safe SQL queries |
+| [`moneybin stats`](stats.md) | View lifetime operational metrics |
+| [`moneybin synthetic`](synthetic.md) | Generate and manage test data |
+| [`moneybin system`](system.md) | Check system and data status |
 | [`moneybin transform`](transform.md) | Run data transformations |
-| [`moneybin synthetic`](synthetic.md) | Generate and manage synthetic financial data for testing |
-| [`moneybin sql`](sql.md) | Privacy-safe ad-hoc SQL (lineage classification + CRITICAL masking) |
-| [`moneybin export`](export.md) | Export data to external formats |
-| [`moneybin mcp`](mcp.md) | MCP server for AI assistant integration |
-| [`moneybin db`](db.md) | Database management and exploration |
