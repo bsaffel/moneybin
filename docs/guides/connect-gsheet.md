@@ -193,7 +193,7 @@ Will show something like:
 ```
 abc123  status=healthy  adapter=seed  last_success=2026-07-24T14:32:00  failures=0
 def456  status=drift_detected  adapter=transactions  last_success=2026-07-23T09:00:00  failures=1
-   ⚠️  missing headers: ['description']
+   ! missing headers: ['description']
 ```
 
 To recover, run:
