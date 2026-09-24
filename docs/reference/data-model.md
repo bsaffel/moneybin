@@ -50,9 +50,9 @@ If you sum `outflow` from `cash_flow` and `total_spend` from `spending_trend` in
 
 `core.fct_transactions.currency_code`, `core.fct_investment_transactions.currency_code` and `core.dim_accounts.currency_code` are ISO 4217 strings. `fct_transactions.currency_code` resolves to the transaction's own captured currency (from OFX `CURDEF` or Plaid), else its account's `currency_code`, else `NULL`, and `fct_investment_transactions.currency_code` resolves the same way from the event's own currency (typed at `investments add`, or reported by Plaid); `dim_accounts.currency_code` resolves to the user's `accounts set --currency` override, else the currency the account's own source reported (OFX `CURDEF`, Plaid `iso_currency_code`, the tabular `currency` column), else `NULL`. There is no `'USD'` fallback: an account nobody stated a currency for is unknown, and `moneybin system doctor` reports it rather than guessing.
 
-Every `reports.*` view that sums money carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth` is one row per `(balance_date, currency_code)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
+Every `reports.*` view that sums money per currency carries a `currency_code` column and groups by it, so a mixed-currency profile gets one sub-total per currency rather than one combined number. A `NULL` currency is its own segment — never resolved to the home currency, because that guess is one nothing downstream could flag. All unknown-currency rows share that one segment and are summed together, since nothing distinguishes two unknowns; `moneybin system doctor` fails on any of them, and `accounts set --currency` is the fix. `reports.net_worth_currencies` is one row per `(currency_code, balance_date)`; a consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated. `reports.net_worth` is the exception among the net-worth rungs: it is already collapsed to one home-currency total per `balance_date`, with no `currency_code` column at all. `reports.balance_drift` projects `currency_code` without grouping by it — asserted and computed balances belong to the same account, so the comparison is single-currency by construction.
 
-`moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, and reports price into it by default; `--display-currency` overrides it per call. Conversion is presentation-only — nothing writes a converted amount, and every `core.*` column keeps its original. Three reports convert: `core:large_transactions`, `core:balance_drift`, and `core:networth`, each of whose rows carries one amount and one date to price it on. Five reports aggregate per `currency_code`, so pricing a row would leave several rows sharing one grain key; those stay segmented and say why in `summary.degraded_reason`. `core:realized_fx` is deliberately mixed-unit instead: `disposed_amount` remains in `currency_code`, while proceeds, basis, fees, and gain/loss remain in `home_currency`, so display conversion does not re-price the audited row. One row that cannot be priced segments a converting report's whole result rather than converting part of it, and `summary.display_currency` then names the currency the rows are already in.
+`moneybin profile set home_currency <ISO 4217>` records which currency a profile treats as home, and reports price into it by default; `--display-currency` overrides it per call. Conversion is presentation-only — nothing writes a converted amount, and every `core.*` column keeps its original. Five reports convert: the three net-worth reports (`core:net_worth`, `core:net_worth_currencies`, `core:net_worth_accounts`), `core:large_transactions`, and `core:balance_drift`, each of whose rows carries one amount and one date to price it on. Four reports aggregate per `currency_code` (`core:cash_flow`, `core:spending_trend`, `core:recurring_subscriptions`, `core:merchant_activity`), so pricing a row would leave several rows sharing one grain key; those stay segmented and say why in `summary.degraded_reason`. `core:realized_fx` is deliberately mixed-unit instead: `disposed_amount` remains in `currency_code`, while proceeds, basis, fees, and gain/loss remain in `home_currency`, so display conversion does not re-price the audited row. One row that cannot be priced segments a converting report's whole result rather than converting part of it, and `summary.display_currency` then names the currency the rows are already in.
 
 ### Pending and posted
 
@@ -148,7 +148,7 @@ Canonical accounts dimension. Grain: one row per `account_id` (`FULL` model). Jo
 | `holder_category` | VARCHAR | `personal` / `business` / `joint`. |
 | `currency_code` | VARCHAR | ISO-4217. User override, else the currency the account's own source reported; `NULL` when nobody stated one — there is no `'USD'` default. See "Currency handling" above. |
 | `credit_limit` | DECIMAL(18,2) | User-asserted; drives utilization metrics. |
-| `archived` | BOOLEAN | Hides from default lists and `reports.net_worth`. |
+| `archived` | BOOLEAN | Hides from default lists. With an `archived_at` date, excludes the account from the three net-worth reports only for dates after it; balances on or before it still count. With `archived_at` NULL, excludes it on every date — the predicate has no date to scope to. |
 | `include_in_net_worth` | BOOLEAN | Independent toggle, not forced by archiving. |
 | `archived_at` | DATE | The date the account stopped being part of the position. NULL while active. |
 
@@ -470,7 +470,7 @@ All `reports.*` are `VIEW` kind. Consumers (CLI `moneybin reports …`, MCP `rep
 | What did I spend, by category, over time? | `reports.spending_trend` | Time-series with MoM / YoY / trailing-3mo windows. Outflow-only, positive values (`SUM(ABS(amount))`). |
 | Where did I spend, by merchant? | `reports.merchant_activity` | Lifetime per-merchant aggregates. Top-N is `ORDER BY total_spend DESC LIMIT N`. |
 | Income vs. spend by account × category, by month? | `reports.cash_flow` | Signed `inflow` / `outflow` / `net`. Outflow stays negative. |
-| What's my net worth? | `reports.net_worth` | Daily snapshot from `fct_balances_daily`. |
+| What's my net worth? | `reports.net_worth` | Day-grain home-currency total. `reports.net_worth_currencies` (currency × day) and `reports.net_worth_accounts` (account × day) answer the same question at finer grain. |
 | Which transactions are unusually large? | `reports.large_transactions` | Modified z-scores against account and category baselines + `is_top_100`. |
 | Which subscriptions am I paying for? | `reports.recurring_subscriptions` | Heuristic candidates with confidence scores; does not auto-classify. |
 | Are my balances drifting from reality? | `reports.balance_drift` | Per-assertion deltas vs computed balance; query it directly; `moneybin system doctor` does not read it. |
@@ -482,15 +482,60 @@ When `cash_flow`, `spending_trend`, and `merchant_activity` overlap (e.g., "spen
 
 ### `reports.net_worth`
 
-Cross-account daily net-worth rollup. Grain: one row per `balance_date`. Excludes accounts where `archived = TRUE` or `include_in_net_worth = FALSE`.
+Cross-account daily net-worth rollup, converted to the profile's home currency. Grain: one row per `balance_date`. Excludes an account where `include_in_net_worth = FALSE`, or where `archived = TRUE` for any date after its `archived_at`.
 
 | Column | Type | Description |
 |---|---|---|
+| `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`; NULL until the user chooses one, and then every measure below is NULL. |
 | `balance_date` | DATE | Calendar date. |
-| `account_count` | INTEGER | Distinct accounts contributing. |
-| `total_assets` | DECIMAL(18,2) | `SUM(balance WHERE balance > 0)`. |
-| `total_liabilities` | DECIMAL(18,2) | `SUM(balance WHERE balance < 0)`; **kept negative**. |
-| `net_worth` | DECIMAL(18,2) | `SUM(balance)` across included accounts. |
+| `account_count` | INTEGER | Accounts contributing on this date, across every currency. |
+| `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
+| `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
+| `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means the totals below are complete. |
+| `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0`. |
+| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0`. |
+| `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0`. |
+
+### `reports.net_worth_currencies`
+
+Net worth per currency per day, in that currency and converted to home. Grain: one row per `(currency_code, balance_date)`. Same account eligibility as `reports.net_worth`. A consumer that re-aggregates it must keep `currency_code` in its own `GROUP BY` or it re-blends what the view separated.
+
+| Column | Type | Description |
+|---|---|---|
+| `currency_code` | VARCHAR | Grain. NULL is the unknown-currency segment. |
+| `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`. |
+| `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted this `currency_code` to `home_currency_code`; NULL when this pair is unpriced on this date. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
+| `balance_date` | DATE | Grain. |
+| `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
+| `account_count` | INTEGER | Accounts contributing on this date in this currency. |
+| `carried_forward_count` | INTEGER | How many of them are carried forward, not observed. |
+| `total_assets` | DECIMAL(18,2) | Sum of positive balances, in `currency_code`. |
+| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances, kept negative, in `currency_code`. |
+| `net_worth` | DECIMAL(18,2) | This currency's segment, in its own unit. |
+| `total_assets_home` | DECIMAL(18,2) | Assets converted at `rate_source`'s rate; NULL when unpriced on this date. |
+| `total_liabilities_home` | DECIMAL(18,2) | Liabilities converted at that rate; NULL when unpriced on this date. |
+| `net_worth_home` | DECIMAL(18,2) | Headline: `total_assets_home + total_liabilities_home`, not a converted `net_worth` — rounding each side independently keeps a row's own columns from disagreeing by a cent. NULL when unpriced. |
+
+### `reports.net_worth_accounts`
+
+Net worth per included account per day, in its own currency and converted to home. Grain: one row per `(account_id, balance_date)`.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | Grain. Foreign key to `core.dim_accounts`. |
+| `account_name` | VARCHAR | Resolved `dim_accounts.display_name`. |
+| `currency_code` | VARCHAR | The account's own denomination; NULL is the unknown segment and is never priced. |
+| `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`. |
+| `account_type` | VARCHAR | `depository` / `credit` / `loan` / `investment` / `other`. |
+| `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation. |
+| `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated. |
+| `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted the account's `currency_code` to `home_currency_code`; NULL when unpriced. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
+| `balance_date` | DATE | Grain. |
+| `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
+| `days_since_observed` | INTEGER | 0 on an observed day. |
+| `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days. |
+| `account_balance` | DECIMAL(18,2) | In `currency_code`. |
+| `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced. |
 
 ### `reports.cash_flow`
 
@@ -708,7 +753,7 @@ ORDER BY balance_date DESC
 LIMIT 1;
 ```
 
-Use `reports.net_worth` for the snapshot. Reach down to `core.fct_balances_daily` only when you need per-account detail or want to apply non-default account filters (e.g., include archived accounts).
+Use `reports.net_worth` for the snapshot; `reports.net_worth_accounts` for per-account detail. Reach down to `core.fct_balances_daily` only when you want to apply non-default account filters (e.g., include archived accounts) that the two views' own eligibility filter excludes.
 
 ### Splits-sum invariant
 

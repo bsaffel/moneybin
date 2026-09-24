@@ -1,0 +1,1 @@
+Report responses now carry `summary.home_currency` on the CLI's `--output json` and the `reports` MCP tool, naming the home currency actually priced into a home-basis column such as `net_worth_home`. It is absent when no conversion put a value in one, so a row carrying two units no longer leaves the second unattributed.

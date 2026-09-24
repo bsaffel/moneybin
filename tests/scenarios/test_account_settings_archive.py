@@ -16,10 +16,15 @@ Expectations (independently derived from fixture file before running):
   - Post-archive: CHECKING1 has archived=TRUE, archived_at=today,
                   include_in_net_worth=TRUE (untouched -- no cascade).
                   SAVINGS1 is unchanged.
-  - reports.net_worth after second transform: CHECKING1 still excluded --
-                  the `NOT a.archived` half of the eligibility filter is
-                  unchanged by this slice -- account_count on the balance
-                  date must be 1 (SAVINGS1 only).
+  - reports.net_worth is date-scoped (Requirement 9): an archived account is
+    excluded only for balance_date > archived_at, never retroactively. The
+    fixture's single balance_date (2026-01-31) precedes "today", so
+    archiving via AccountService (which always stamps archived_at=today)
+    does NOT exclude CHECKING1 on that date -- account_count stays 2. The
+    exclusion side is exercised by backdating archived_at ahead of that
+    balance_date (AccountService has no path to stamp a historical archive
+    date, so this precondition is set directly): once archived_at precedes
+    the balance_date, account_count drops to 1 (SAVINGS1 only).
   - list_accounts(include_archived=False): 1 account (SAVINGS1).
   - list_accounts(include_archived=True):  2 accounts (both).
 """
@@ -170,16 +175,63 @@ def test_archive_excludes_from_networth_without_cascading_include() -> None:
         assert savings_archived_at is None, "SAVINGS1.archived_at must remain NULL"
         assert savings_include is True, "SAVINGS1.include_in_net_worth must remain TRUE"
 
-        # reports.net_worth is a VIEW that re-evaluates on every read. The
-        # `NOT a.archived` half of the eligibility filter is unchanged by this
-        # slice, so CHECKING1 is still excluded outright → account_count=1.
-        # (Derived independently: fixture has 1 non-archived account after the
-        # mutation.)
-        post_nw = db.execute(
-            "SELECT account_count FROM reports.net_worth ORDER BY balance_date LIMIT 1"
+        # --- Requirement 9: net-worth eligibility is date-scoped, not retroactive ---
+        # The fixture's daily spine has exactly one balance_date (derived from
+        # the OFX statement date, not observed-and-pasted from a report read).
+        spine_date = db.execute(
+            "SELECT DISTINCT balance_date FROM core.fct_balances_daily"
+        ).fetchall()
+        assert spine_date == [(date(2026, 1, 31),)], (
+            f"expected exactly one fixture balance_date, got {spine_date}"
+        )
+        balance_date = spine_date[0][0]
+
+        # reports.net_worth is a VIEW that re-evaluates on every read. archived_at
+        # is stamped with today's date (asserted above), which is *after* the
+        # fixture's balance_date, so the eligibility filter's
+        # `archived_at IS NOT NULL AND balance_date <= archived_at` arm still
+        # counts CHECKING1 on this date: account_count stays 2, not 1.
+        assert balance_date <= checking_archived_at, (
+            "this assertion only proves what it claims when the fixture date "
+            "actually precedes today's stamped archived_at"
+        )
+        on_or_before_nw = db.execute(
+            "SELECT account_count FROM reports.net_worth WHERE balance_date = ?",
+            [balance_date],
         ).fetchone()
-        assert post_nw is not None and post_nw[0] == 1, (
-            f"Expected account_count=1 after archive (SAVINGS1 only), got {post_nw}"
+        assert on_or_before_nw is not None and on_or_before_nw[0] == 2, (
+            "Expected account_count=2 on/before archived_at (CHECKING1 still "
+            f"counts retroactively), got {on_or_before_nw}"
+        )
+
+        # Exercise the exclusion side of the same rule. AccountService.archive()
+        # always stamps archived_at=today, so there is no production path to a
+        # historical archive date within this test; back it up past the
+        # fixture's balance_date directly (the mechanism under test here is the
+        # read-side date comparison, already isolated from the write path by
+        # the assertions above) and restate so core.dim_accounts picks it up.
+        backdated_archived_at = date(2020, 1, 1)
+        assert backdated_archived_at < balance_date, (
+            "backdated archived_at must actually precede the fixture's balance_date"
+        )
+        db.execute(
+            "UPDATE app.account_settings SET archived_at = ? WHERE account_id = ?",
+            [backdated_archived_at, checking_id],
+        )
+        with sqlmesh_context(db) as ctx:
+            ctx.plan(
+                restate_models=_ARCHIVE_RESTATE_MODELS,
+                auto_apply=True,
+                no_prompts=True,
+            )
+
+        after_nw = db.execute(
+            "SELECT account_count FROM reports.net_worth WHERE balance_date = ?",
+            [balance_date],
+        ).fetchone()
+        assert after_nw is not None and after_nw[0] == 1, (
+            "Expected account_count=1 once archived_at precedes the balance_date "
+            f"(CHECKING1 excluded, SAVINGS1 only), got {after_nw}"
         )
 
         # AccountService.list_accounts() default hides archived → 1 result.

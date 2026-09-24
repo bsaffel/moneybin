@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     # Type-only: importing `execute` here would pull sql_lineage → sqlglot into
     # the CLI cold-start path, which this module exists to keep clear. `catalog`
     # is deferred for the same reason — it reaches `execute`.
-    from moneybin.reports._framework.catalog import RegisteredReport
     from moneybin.reports._framework.execute import CatalogReportResult
 
 
@@ -146,11 +145,10 @@ def echo_report_notes(result: CatalogReportResult, *, quiet: bool = False) -> No
 
     ``render_or_json`` renders the envelope on the JSON path only, so every
     text renderer of a report result has to say these three things itself.
-    Shared rather than copied: the report commands with hand-written renderers
-    (``reports networth`` and ``networth-history``) printed none of them, so a
-    conversion that fell back to per-currency segmentation showed segmented
-    positions and never said why — the silent masking these echoes exist to
-    prevent, reappearing on the surface that skipped them.
+    Shared rather than copied: a hand-written report renderer that skips them
+    would let a conversion that fell back to per-currency segmentation show
+    segmented positions and never say why — the silent masking these echoes
+    exist to prevent, reappearing on the surface that skipped them.
 
     All of it goes to stderr (``cli.md`` "Exit Codes & stderr"): these are
     diagnostics about the answer, not the answer, and redirecting a report to a
@@ -169,7 +167,7 @@ class ColumnView(NamedTuple):
 
 
 def column_view(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
@@ -208,7 +206,7 @@ def column_view(
 
 
 def visible_columns(
-    spec: RegisteredReport,
+    spec: ReportSpec,
     result_columns: Sequence[str],
     *,
     parameters: Mapping[str, Any],
@@ -269,7 +267,7 @@ def visible_columns(
 
 
 def resolve_default_columns(
-    spec: RegisteredReport, parameters: Mapping[str, Any]
+    spec: ReportSpec, parameters: Mapping[str, Any]
 ) -> tuple[str, ...]:
     """The names a report's declaration resolves to, before any intersection.
 
@@ -301,7 +299,7 @@ def resolve_default_columns(
     return tuple(declared)
 
 
-def money_columns(spec: RegisteredReport) -> dict[str, Money]:
+def money_columns(spec: ReportSpec) -> dict[str, Money]:
     """Build the renderer's money declarations from a report's own columns.
 
     Requirement 12: the kind is declared where the meaning is known — beside

@@ -445,15 +445,37 @@ FX_RATE_FETCH_DURATION_SECONDS = Histogram(
     ["source_type"],
 )
 
-# The rate spine's row and coverage counts (Requirement 12 of
-# reports-net-worth-sql-surface.md) land with the work that consumes the spine,
-# not here. Every gauge in this family is set from a Python SQLMesh model —
-# fct_currency_lots.py, fct_realized_fx_gains.py, bridge_currency_conversions.py
-# all call set_fx_accounting_rows — and the three rate-spine models are plain
-# .sql with no equivalent hook. A labeled Gauge emits no sample until a child is
-# instantiated, so declaring them now would put two metrics in the registry that
-# never appear in a scrape at all: absent rather than zero, which reads as
-# "not collected" and is worse than an honestly missing metric.
+# The rate spine's per-outcome coverage counts (Requirement 12 of
+# reports-net-worth-sql-surface.md) would land with the work that consumes the
+# spine, not here — every gauge in that family is set from a Python SQLMesh
+# model (fct_currency_lots.py, fct_realized_fx_gains.py,
+# bridge_currency_conversions.py all call set_fx_accounting_rows), and the
+# three rate-spine models are plain .sql with no equivalent hook. A labeled
+# Gauge emits no sample until a child is instantiated, so declaring one now
+# would put a metric in the registry that never appears in a scrape at all:
+# absent rather than zero, which reads as "not collected" and is worse than an
+# honestly missing metric.
+#
+# The two gauges below are not that case: both are **unlabeled**, so — unlike
+# a labeled gauge with no child — they emit a sample the instant the process
+# starts, whether or not currency_integrity has ever run. Doctor's
+# currency_integrity check (doctor_service.py) sets them, each from its own
+# COUNT in its own try/except, so an install whose core layer predates the
+# rate spine or the net-worth rung skips one gauge without failing the check
+# or the other gauge.
+
+FX_RATE_SPINE_ROWS = Gauge(
+    "moneybin_fx_rate_spine_rows",
+    "Rows in core.fct_exchange_rates_daily",
+)
+
+NET_WORTH_UNPRICED_DATES = Gauge(
+    "moneybin_net_worth_unpriced_dates",
+    # A date where a held currency had no rate, so reports.net_worth's
+    # measures are NULL there by design (fail-closed) rather than silently
+    # partial — this gauge is how an operator notices without querying.
+    "Dates on which reports.net_worth is null because a held currency has no rate",
+)
 
 # ── Categorization ────────────────────────────────────────────────────────────
 
@@ -1214,11 +1236,13 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_fx_accounting_rows": "Multi-currency integrity",
     "moneybin_profile_currencies": "Multi-currency integrity",
     "moneybin_unknown_currency_rows": "Multi-currency integrity",
+    "moneybin_net_worth_unpriced_dates": "Multi-currency integrity",
     # Exchange rates
     "moneybin_fx_rate_rows_written": "Exchange rates",
     "moneybin_fx_rate_resolution": "Exchange rates",
     "moneybin_fx_rate_backfill_pairs": "Exchange rates",
     "moneybin_fx_rate_fetch_duration_seconds": "Exchange rates",
+    "moneybin_fx_rate_spine_rows": "Exchange rates",
     # Categorization
     "moneybin_categorization_auto_rate": "Categorization",
     "moneybin_categorization_rules_fired": "Categorization",

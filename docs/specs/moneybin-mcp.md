@@ -213,7 +213,7 @@ and confirmation contracts.
 
   A value **derived** from a converted amount is restated so it cannot describe
   the old currency: `core:balance_drift` re-buckets its clean/warning/drift
-  verdict against the converted drift, and `core:networth` recomputes
+  verdict against the converted drift, and `core:net_worth` recomputes
   `net_worth` from its own converted parts so per-column rounding cannot leave
   the total disagreeing with assets plus liabilities. `no-data` and
   `currency-mismatch` are left alone — neither states a magnitude. The

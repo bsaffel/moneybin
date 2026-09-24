@@ -1,0 +1,1 @@
+An archived account now drops out of the three net-worth reports only for dates after its recorded archive date, instead of retroactively rewriting its whole history. A profile with no home currency gets no net-worth total at all — the reports fail closed the same way an unpriced currency already made them, and now name `moneybin profile set home_currency <CODE>` as the fix.

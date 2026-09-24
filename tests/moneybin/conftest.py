@@ -260,19 +260,19 @@ def schema_catalog_db(
         "CAST(NULL AS VARCHAR) AS status "
         "WHERE FALSE"
     )
-    realized_fx_model = (
-        SQLMESH_ROOT / "models" / "reports" / "realized_fx.sql"
-    ).read_text()
-    realized_fx_body = re.sub(
-        r"^.*?MODEL\s*\(.*?\);\s*",
-        "",
-        realized_fx_model,
-        count=1,
-        flags=re.DOTALL,
-    ).strip()
-    database.execute(
-        f"CREATE OR REPLACE VIEW reports.realized_fx AS {realized_fx_body}"
-    )
+    # These three install their real model bodies rather than the hand-written
+    # typed NULL stubs above, so their projections cannot drift from the models.
+    for model_name in ("realized_fx", "net_worth_accounts", "net_worth_currencies"):
+        body = re.sub(
+            r"^.*?MODEL\s*\(.*?\);\s*",
+            "",
+            (SQLMESH_ROOT / "models" / "reports" / f"{model_name}.sql").read_text(),
+            count=1,
+            flags=re.DOTALL,
+        ).strip()
+        database.execute(  # test-selected shipped model name
+            f"CREATE OR REPLACE VIEW reports.{model_name} AS {body}"
+        )
 
     # Inject fixture DB so any call to get_database() returns it without
     # opening a new connection (which would fail: no settings, no key).

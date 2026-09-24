@@ -56,9 +56,17 @@ HISTORICAL_TOOL_HEADINGS = (
     ROOT / "tests/fixtures/mcp_surface/historical-tool-headings.json"
 )
 OUTCOME_MAP = ROOT / "tests/fixtures/mcp_capabilities/outcome-map.json"
+# The first two hashes were repinned once, on the mcp 2 upgrade. That release
+# renamed the protocol models' Python attributes, so the inventory now dumps
+# with by_alias=True to hold the camelCase wire spelling — which also restores
+# `_meta` as the metadata key, one byte per tool that the unaliased dump had
+# been dropping. Both files were re-derived from their own stored tool
+# definitions: the tools they record are unchanged and still in their captured
+# order, and only the byte accounting moved (105 and 47 bytes, exactly one per
+# tool). HISTORICAL_TOOL_HEADINGS records names alone, so it did not move.
 FROZEN_HISTORICAL_MCP_EVIDENCE = {
-    BASELINE_SNAPSHOT: "89c641f7d39cad5026bb0f5d6a20254669b5f42d748b8ade8db6123d9085ae69",
-    BASELINE_EVAL_CAPTURE: "39739e016c660b2461a7868795ab28028544b10782f07f902ed45a5a5c416294",
+    BASELINE_SNAPSHOT: "f6ecb6b6e8a740cf7bda1fe9d6d9671e425f89564ae936e12fe2b6aa0d4b88ae",
+    BASELINE_EVAL_CAPTURE: "c404b5c336a25163c7b3a6a060262e0ad953873cea968decb97fe1b92fb2d144",
     HISTORICAL_TOOL_HEADINGS: "cd94d16725857c45ba32138fc15a000407f991f25835215f4332e03e31616498",
 }
 CURRENT_PUBLIC_ROOTS = tuple(
@@ -1529,7 +1537,7 @@ def test_cli_mcp_examples_use_coarse_operations_with_selectors() -> None:
     for mapping in (
         '`accounts get <id>` | `accounts(view="detail", reference=<id>)`',
         '`accounts balance history` | `accounts_balances(view="history", reference=...)`',
-        '`reports networth` | `reports(report_id="core:networth")`',
+        '`reports net-worth` | `reports(report_id="core:net_worth")`',
         '`transactions matches pending` | `reviews(kind="matches", status="pending")`',
         '`transactions matches run` | `refresh_run(steps=["match"])`',
     ):
@@ -1872,7 +1880,7 @@ async def test_current_public_docs_use_the_live_mcp_contract() -> None:
         tools = await client.list_tools()
         resources = await client.list_resources()
         prompts = await client.list_prompts()
-    live_schemas = {tool.name: dict(tool.inputSchema) for tool in tools}
+    live_schemas = {tool.name: dict(tool.input_schema) for tool in tools}
     live_resources = frozenset(str(resource.uri) for resource in resources)
     live_prompts = frozenset(prompt.name for prompt in prompts)
     expected_prompts = frozenset(prompt.__name__ for prompt in PROMPT_FUNCTIONS)
@@ -2339,7 +2347,7 @@ def test_mcp_contract_scan_does_not_treat_contract_subjects_as_schema_details(
         "Run the CLI command `moneybin transform validate`.",
         "The internal `ImportService.import_file` method owns ingestion.",
         "The SQL model `reports.spending_trend` is queryable.",
-        "The report ID is `core:networth_history`.",
+        "The report ID is `core:net_worth_currencies`.",
         "The request discriminator is `kind='match'`.",
         "The internal `LedgerService.transactions(date_from='2026-01-01')` method is not an MCP call.",
         'The internal function `reviews(kind="match")` returns rows.',
@@ -2984,10 +2992,14 @@ def test_final_review_architecture_and_current_prose_match_runtime() -> None:
     assert "include_closed is a read filter" in account_management
     assert "data.warnings" in account_management
     assert 'reports(report_id="core:spending_trend")' in privacy
-    assert 'reports(report_id="core:networth_history"' in privacy
+    assert 'reports(report_id="core:net_worth_currencies")' in privacy
     assert privacy.count("| high |") >= 2
     assert "Eight registered report routes" in index
     assert "seven `reports.*` SQLMesh views" in index
+    assert "As shipped by M2A" in index
+    assert "Superseded by M2B.2" in index
+    assert "10 registered routes, all `@report`-backed over 10" in index
+    assert "no service-backed route remains" in index
     assert "Report rows use `reports(report_id=..., parameters=...)`" in extensions
 
 
@@ -3023,6 +3035,10 @@ def test_final_review_refresh_and_report_counts_match_runtime() -> None:
     assert default_sequence in recovery
     assert default_sequence in features
     assert "8 registered report routes" in roadmap
+    assert "As shipped:" in roadmap
+    assert "Superseded by M2B.2" in roadmap
+    assert "10 registered routes, all `@report`-backed over 10" in roadmap
+    assert "no service-backed route remains" in roadmap
     assert "seven `reports.*` SQLMesh views" in reports
     assert "six `@report` SQL runners" in reports
     assert "two service-backed net-worth routes" in reports
@@ -3035,13 +3051,17 @@ def test_current_report_docs_match_live_catalog_and_interface_views() -> None:
     report_views = {
         table.full_name for table in INTERFACE_TABLES if table.schema == "reports"
     }
-    assert len(report_views) == 8
-    assert len(report_routes) == 9
+    assert len(report_views) == 10
+    assert len(report_routes) == 10
 
+    words = (
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve",
+    )  # fmt: skip
     current_surface_summary = (
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight')[len(report_views)]} "
+        f"{words[len(report_views)]} "
         "SQLMesh report views back "
-        f"{('zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine')[len(report_routes)]} "
+        f"{words[len(report_routes)]} "
         "report routes"
     )
     queryable_schemas = QUERYABLE_INTERNAL_SCHEMAS_SPEC.read_text()

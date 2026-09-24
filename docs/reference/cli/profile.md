@@ -27,13 +27,13 @@ left unregistered by a bare `db init`, a hand `mkdir`, or an interrupted delete
 is completed in place rather than refused — an existing database is preserved
 untouched. Refuses only when a fully registered profile already exists.
 
-Usage: `moneybin profile create [OPTIONS] NAME`
+Usage: `moneybin profile create [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name (will be normalized) |
+| `name` | text | yes | Profile name (will be normalized) |
 
 **Options**
 
@@ -59,25 +59,25 @@ Usage: `moneybin profile list [OPTIONS]`
 
 Set a different profile as the active default.
 
-Usage: `moneybin profile switch [OPTIONS] NAME`
+Usage: `moneybin profile switch [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name to switch to |
+| `name` | text | yes | Profile name to switch to |
 
 ## moneybin profile delete
 
 Delete a profile and all its data (database, logs, config).
 
-Usage: `moneybin profile delete [OPTIONS] NAME`
+Usage: `moneybin profile delete [OPTIONS] {name}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `NAME` | text | yes | Profile name to delete |
+| `name` | text | yes | Profile name to delete |
 
 **Options**
 
@@ -89,13 +89,13 @@ Usage: `moneybin profile delete [OPTIONS] NAME`
 
 Show resolved settings for a profile.
 
-Usage: `moneybin profile show [OPTIONS] [NAME]`
+Usage: `moneybin profile show [OPTIONS] [name]`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `[NAME]` | text | no | Profile name (defaults to active profile) |
+| `name` | text | no | Profile name (defaults to active profile) |
 
 **Options**
 
@@ -113,14 +113,14 @@ Dotted ``section.field`` keys write the profile's ``config.yaml``. Undotted
 managed keys (``home_currency``, ``display_currency_targets``) write ``app.profile_settings`` in the
 profile's database, where the report guards can read them.
 
-Usage: `moneybin profile set [OPTIONS] KEY VALUE`
+Usage: `moneybin profile set [OPTIONS] {key} {value}`
 
 **Arguments**
 
 | Argument | Type | Required | Description |
 |---|---|---|---|
-| `KEY` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets) |
-| `VALUE` | text | yes | Value to set |
+| `key` | text | yes | Config key (e.g., logging.level) or managed key (home_currency, display_currency_targets) |
+| `value` | text | yes | Value to set |
 
 **Options**
 

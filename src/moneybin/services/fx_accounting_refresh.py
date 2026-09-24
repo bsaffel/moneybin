@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 _FX_ACCOUNTING_ROOT_MODEL = "core.bridge_currency_conversions"
 _ACCOUNT_ROOT_MODEL = "core.dim_accounts"
+_RATE_SPINE_ROOT_MODEL = "core.fct_exchange_rates_daily"
 
 
 CommittedChange = Literal["setting", "exchange rate", "match decision", "undo"]
@@ -42,9 +43,13 @@ def restate_fx_accounting(
     committed_change: CommittedChange = "setting",
 ) -> None:
     """Rebuild FX accounting after a relevant committed App mutation."""
-    root_model = (
+    roots = [
         _ACCOUNT_ROOT_MODEL if account_currency_changed else _FX_ACCOUNTING_ROOT_MODEL
-    )
+    ]
+    if committed_change == "exchange rate":
+        # A fetched rate changes the spine the net-worth rungs join. It is
+        # kind FULL, so without this it stays stale until the next full run.
+        roots.append(_RATE_SPINE_ROOT_MODEL)
     try:
         presence = sqlmesh_registry.model_presence(db)
     except UserError as exc:
@@ -52,7 +57,7 @@ def restate_fx_accounting(
     if presence.never_built:
         return
 
-    result = TransformService(db).restate_models([root_model])
+    result = TransformService(db).restate_models(roots)
     if result.applied:
         return
 

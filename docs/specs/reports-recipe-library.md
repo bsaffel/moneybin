@@ -14,15 +14,31 @@
 > `src/moneybin/sqlmesh/models/core/uncategorized_queue.sql`, and its
 > `TableRef` is `CORE_UNCATEGORIZED_QUEUE`.
 
+> **Superseded surface (2026-09-18):**
+> every `networth` / `networth-history` recipe below is retired. The net-worth
+> recipes now target three `@report` SQL runners: `core:net_worth` (day grain,
+> one home-currency total), `core:net_worth_currencies` (currency × day), and
+> `core:net_worth_accounts` (account × day), reached as `reports net-worth`,
+> `reports net-worth-currencies`, and `reports net-worth-accounts`.
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md) holds
+> the current contract; what follows records what M2A shipped.
+
 ## Goal
 
 Ship the first wave of seven `reports.*` SQLMesh views and eight registered report routes. Seven SQLMesh report views back eight report routes: six `@report` SQL runners plus two service-backed net-worth routes that share `reports.net_worth`. Establish the read-only `reports` schema as a first-class consumer interface (per [`architecture-shared-primitives.md`](architecture-shared-primitives.md)).
 
-The current catalog has since grown: eight SQLMesh report views back nine report
-routes, with seven `@report` SQL runners plus the same two service-backed
-net-worth routes. The added `reports.realized_fx` view is specified by
+The current catalog has since grown: ten SQLMesh report views back ten
+report routes, every one now a `@report` SQL runner — no service-backed
+route survives. The added `reports.realized_fx` view is specified by
 [`multi-currency.md`](multi-currency.md), not by this initial recipe-library
-slice.
+slice. `reports.net_worth_accounts`, `reports.net_worth_currencies`, and
+`reports.net_worth`, specified by
+[`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md), now
+back their own `@report` SQL runners (`core:net_worth_accounts` /
+`core:net_worth_currencies` / `core:net_worth`), so every view is accounted
+for. That spec's §Files to Delete retired `NetworthService`, `core:networth`,
+and `core:networth_history` — the last of the service-backed routes this
+section originally shipped.
 
 Bundle in three migrations that should ship alongside the inaugurating `reports.*` work:
 

@@ -14,8 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
-from click.testing import Result
-from typer.testing import CliRunner
+from typer.testing import CliRunner, Result
 
 from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
@@ -667,8 +666,8 @@ def _money_result() -> ReportResult:
 def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
     """The generated command is the only path carrying requirement 12.
 
-    Every built-in report but ``networth`` renders through this command, and
-    the kinds they declare are inert unless ``money_columns`` is wired into
+    Every built-in report renders through this command, and the kinds they
+    declare are inert unless ``money_columns`` is wired into
     ``render_report_result``. Asserting the rendered string rather than the
     dict is what makes that wiring load-bearing: a ``money_columns`` returning
     ``{}`` leaves every column reaching the table through ``str()``, which no
@@ -692,6 +691,58 @@ def test_a_reports_declared_money_kind_reaches_its_rendered_table() -> None:
     # not the value's, so a `+` here would read as income.
     assert "+1,234.50" not in result.output
     assert "1,234.50" in result.output
+
+
+def test_an_ascii_terminal_signs_a_negative_amount_with_its_own_minus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The terminal policy's minus reaches the generated command's amounts.
+
+    Carried over from the retired hand-written net-worth command, whose summary
+    was the one surface where a dropped minus inverts the answer.
+    """
+    monkeypatch.setattr(
+        "moneybin.reports._framework.cli_register.get_terminal_policy",
+        lambda *, no_pager=False: _ascii_policy(),
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _money_result()
+        result = _runner_cli.invoke(_money_app(), ["money"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    assert "-1,234.50" in result.output
+    assert "−" not in result.output
+
+
+def test_an_empty_result_still_prints_its_disclosures() -> None:
+    """No rows is not no answer: why the read degraded still has to reach the reader."""
+    empty = replace(
+        _money_result(),
+        records=[],
+        total_count=0,
+        degraded=True,
+        degraded_reason="rate unavailable",
+        actions=["Run `moneybin refresh`"],
+    )
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = empty
+        result = _runner_cli.invoke(_money_app(), ["money"])
+
+    assert result.exit_code == 0, result.output
+    assert "rate unavailable" in result.output
+    assert "Run `moneybin refresh`" in result.output
 
 
 def test_every_declared_money_column_survives_spec_registration() -> None:

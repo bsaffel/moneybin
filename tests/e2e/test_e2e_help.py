@@ -154,8 +154,9 @@ _HELP_COMMANDS: list[list[str]] = [
     ["reports", "set"],
     ["reports", "delete"],
     ["reports", "reclassify"],
-    ["reports", "networth"],
-    ["reports", "networth-history"],
+    ["reports", "net-worth"],
+    ["reports", "net-worth-currencies"],
+    ["reports", "net-worth-accounts"],
     ["reports", "cash-flow"],
     ["reports", "spending-trend"],
     ["reports", "recurring-subscriptions"],
@@ -208,3 +209,13 @@ class TestHelpCommandBootSmoke:
         result = run_cli("--help")
         result.assert_success()
         assert "Usage" in result.stdout or "usage" in result.stdout.lower()
+
+    def test_start_menu_via_subprocess(self) -> None:
+        result = run_cli()
+        result.assert_success()
+        assert "Your finances" in result.stdout
+        assert "Import, sync, and export" in result.stdout
+        assert "export" in result.stdout
+        assert "moneybin --help" in result.stdout
+        assert "Advanced tools" not in result.stdout
+        assert not result.stderr

@@ -12,7 +12,9 @@
 > brainstorm.
 > Companions: [`reports-recipe-library.md`](reports-recipe-library.md) (the seven
 > shipped built-in views), [`reports-net-worth.md`](reports-net-worth.md)
-> (`NetworthService`-backed exception), [`extension-contracts.md`](extension-contracts.md)
+> (balance spine; the MCP row-kind design it originally shipped is superseded by
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)'s
+> three SQL-backed rungs), [`extension-contracts.md`](extension-contracts.md)
 > (report contract, Quality Scale, `/moneybin-create-report`),
 > [`queryable-internal-schemas.md`](queryable-internal-schemas.md) (the `sql_query`
 > surface dynamic reports are built on), [`privacy-data-classification.md`](privacy-data-classification.md)
@@ -279,17 +281,23 @@ enumerate the *exposed* set.
 
 - ~~**Is a bespoke-tool report a permanent sanctioned category, or a migration
   state?**~~ — **migration state; the migration landed in the MCP surface
-  consolidation.** The decorator no longer couples declaring a contract with
-  generating a tool: every report is reached by `report_id` through the single
-  `reports` catalog/runner and consumes no tool slot. `net_worth` is a
-  `ServiceReportSpec` — an `executor` over `NetworthService`, not a `ReportSpec`
-  with a SQL `runner` (`reports-dynamic.md` R6 keeps the two kinds distinct, and
-  `reports_explain` returns declared provenance for the service-backed one since
-  it has no query). That backing survives; what disappeared is its hand-written
-  tool identity, and with it the collision that made the category look
-  permanent. Generation-required was indeed the dominant population — M2P.2 and
-  M2P.3 now inherit the same access path as the built-in rather than a second
-  one.
+  consolidation, and the service-backed kind it produced has since retired
+  too.** The decorator no longer couples declaring a contract with generating a
+  tool: every report is reached by `report_id` through the single `reports`
+  catalog/runner and consumes no tool slot. Net worth started as a
+  `ServiceReportSpec` — an `executor` over `NetworthService`, not a
+  `ReportSpec` with a SQL `runner` — but
+  [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)
+  retired that kind onto three ordinary `@report` runners
+  (`core:net_worth`, `core:net_worth_currencies`, `core:net_worth_accounts`),
+  so `reports-dynamic.md` R6 now distinguishes only the two SQL-backed kinds
+  (stored template vs. `runner`) and every report has a real query for
+  `reports_explain` to render. What disappeared with the hand-written tool
+  identity was the collision that made the category look permanent, and what
+  disappeared with the service-backed kind was the remaining exception to
+  "every report is SQL." Generation-required was indeed the dominant
+  population — M2P.2 and M2P.3 now inherit the same access path as the
+  built-in rather than a second one.
 - **When does a dynamic report earn materialization?** Cost/latency judgment, or
   an explicit user/agent action? Resolve in C.
 - **Does a report's envelope sensitivity count its parameters?** Today it does

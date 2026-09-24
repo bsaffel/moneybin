@@ -1091,9 +1091,9 @@ home_currency_code    VARCHAR        -- app.profile_settings.home_currency
 account_type          VARCHAR        -- depository / credit / loan / investment / other
 is_observed           BOOLEAN        -- FALSE means carried forward
 observation_source    VARCHAR        -- ofx / tabular / assertion / plaid; NULL when interpolated
-rate_source           VARCHAR        -- override / provider / identity; NULL when unpriced
+rate_source           VARCHAR        -- override / provider / identity behind the currency_code→home_currency_code rate; NULL when unpriced. A display_currency conversion's rates are in applied_rates instead
 balance_date          DATE           -- Grain
-rate_published_date   DATE           -- The day the rate applied here was actually published
+rate_published_date   DATE           -- Day the currency_code→home_currency_code rate was published; a display_currency conversion's rates are in applied_rates instead
 days_since_observed   INTEGER        -- 0 on an observed day
 reconciliation_delta  DECIMAL(18,2)  -- Observed minus transaction-derived; NULL on interpolated days
 account_balance       DECIMAL(18,2)  -- In currency_code
@@ -1109,6 +1109,18 @@ after it.
 [`asset-tracking.md`](asset-tracking.md) and implemented by
 [`investments-price-feeds.md`](investments-price-feeds.md); it is the same
 concept and must not acquire a second spelling.
+
+**This rung is not an exact summand of the currency rung.**
+`account_balance_home` rounds once per account, while
+`reports.net_worth_currencies` converts a per-currency subtotal and so rounds
+once per `(currency_code, balance_date)`. Summing this view's
+`account_balance_home` over a currency-day can therefore differ from that
+row's `total_assets_home + total_liabilities_home` by a fraction of a cent —
+bounded by half a cent per account, and in practice under a cent per currency
+per day. Expected, and the price of a per-account column that itself adds up
+to the cent; reconcile the rungs at the cent rather than the sub-cent, and do
+not "fix" it by deriving one rung from another (`assert_acyclic` forbids that
+anyway).
 
 **An eligible unanchored account is `M2B.3`'s addition to this rung too, and
 it needs no count column of its own.** `reports.net_worth`'s guard needs
@@ -1267,9 +1279,9 @@ by id rather than only a count.
 ```
 currency_code            VARCHAR        -- Grain. NULL is the unknown-currency segment
 home_currency_code       VARCHAR
+rate_source              VARCHAR
 balance_date             DATE           -- Grain
 rate_published_date      DATE
-rate_source              VARCHAR
 account_count            INTEGER        -- Accounts contributing on this date in this currency
 carried_forward_count    INTEGER        -- How many of them are carried forward, not observed
 total_assets             DECIMAL(18,2)
@@ -1279,6 +1291,11 @@ total_assets_home        DECIMAL(18,2)
 total_liabilities_home   DECIMAL(18,2)
 net_worth_home           DECIMAL(18,2)  -- NULL when this currency is unpriced on this date
 ```
+
+`rate_source` is a `DataClass.TXN_TYPE` dimension
+(`src/moneybin/privacy/taxonomy.py`), so Rule B
+(`.claude/rules/column-ordering.md`) places it before the date block, same as
+`reports.net_worth_accounts` above.
 
 The existing six columns keep their names, types, and meanings; the additions
 are additive, which is what M2B.1 Key Decision 5 anticipated when it said
@@ -1456,19 +1473,14 @@ Four properties define it:
   `fct_security_prices`. A user override is *not* in that set — it must apply
   the moment it is written, which is why it is not materialized here.
 
-**Known deferral: not on the provider-rate refresh path.**
-`CurrencyService._store()` restates only `core.bridge_currency_conversions` and
-its downstream dependents when `moneybin fx rate` caches a newly fetched quote.
-This table is not restated, so a pair/date fetched after the last `sqlmesh run`
-stays stale — or entirely absent — here (and in
-`core.fct_exchange_rates_effective`, which reads it) until the next full run.
-This mirrors the shipped precedent of `PriceService.pull` never restating
-`core.fct_security_prices`, also `kind FULL`, and is deliberately out of scope
-for the PR that introduced this model: nothing reads it yet. It **must** be
-resolved — either wire this model into the provider-rate refresh path, or
-accept the staleness explicitly — before the net-worth ladder rungs below
-(`reports/net_worth_accounts.sql`, `reports/net_worth_currencies.sql`; see
-§Implementation Plan) start reading it.
+**On the provider-rate refresh path.** `CurrencyService._store()` restates
+this model in the same `TransformService.restate_models` call as
+`core.bridge_currency_conversions` whenever `moneybin fx rate` caches a newly
+fetched quote (`committed_change="exchange rate"`). A pair/date fetched by that
+path reaches this model — and `core.fct_exchange_rates_effective`, which reads
+it — immediately, with no separate `sqlmesh run`. A user override still applies
+only at read time in `core.fct_exchange_rates_effective` and triggers no
+restatement here.
 
 The identity arm reads `core.dim_accounts` and `core.fct_balances_daily` for its
 date domain, which couples this model to the balance spine. That is accepted:
@@ -2139,6 +2151,66 @@ now makes two calls. That buys a relation per question, each with one grain and
 no null-branching, which is the trade `.claude/rules/surface-design.md` and
 AGENTS.md's AX bias both point at.
 
+### Deviations recorded during implementation
+
+Decisions the plan above left implicit, made concrete while building M2B.2:
+
+- **`interval` with no range buckets the whole history, not the latest day.**
+  `resolve_date_range` (`src/moneybin/reports/definitions/_shared.py:186-259`)
+  defaults an unranged call to `WHERE balance_date = MAX(balance_date)` —
+  the same "now" default every rung shares — unless the caller passes
+  `default_latest=False`. `core:net_worth`'s runner passes `False` exactly
+  when `interval` is given: a bucketed read (weekly/monthly rollups, and the
+  `LAG`-driven `change_abs`/`change_pct`) needs every available day to bucket,
+  not the single latest one, so `reports(report_id="core:net_worth",
+  parameters={"interval": "monthly"})` with no `from_date`/`to_date` returns
+  the whole history bucketed, not one row.
+- **`net_worth_home` (and `core:net_worth`'s own `net_worth`) is the sum of
+  the converted components, not a converted sum.** Both views compute
+  `total_assets_home + total_liabilities_home` rather than
+  `ROUND(net_worth * rate, 2)`: rounding each side independently before
+  summing keeps a row's own columns from disagreeing by a cent, the same
+  reasoning `_recompute_net_worth_and_change`'s docstring gives in
+  `src/moneybin/reports/definitions/net_worth.py`.
+- **A converted envelope's `summary` carries `home_currency`.** `execute.py`'s
+  `_priced_home_currency` is a framework-level rule rather than a net-worth
+  one — any report could satisfy it — but it publishes narrowly: only on a
+  read that actually applied a non-identity rate, whose spec declares a
+  `currency_basis="home"` column, and where a surviving row holds a non-null
+  value in one. The three net-worth rungs are the only reports declaring such
+  a column today, so they are the only ones that publish it.
+  `ReportResult.to_envelope` and `mcp/tools/reports.py` both surface it, so a
+  caller reads the denominating currency without re-deriving it from
+  `display_currency` or a row's own `home_currency_code` column.
+- **An unset home currency names its own remedy.** The three rungs fail closed
+  on a profile with no home currency — every home-basis column NULL,
+  `unpriced_currency_count` at least 1 — which reads as broken rates unless
+  something says otherwise. `redact_catalog_execution` appends
+  `HOME_CURRENCY_HINT` ("Run `moneybin profile set home_currency <CODE>` to
+  get converted totals; this profile has no usable home currency") whenever
+  `execution.home_currency is None` **and** the spec declares at least one
+  `currency_basis="home"` column. Gated on the declaration rather than on
+  `applied_rates`, which is false in exactly the case being explained, and
+  quiet on every report that never converts.
+- **`days_since_observed` is `DataClass.AGGREGATE`.** Declared on
+  `core:net_worth_accounts` (`net_worth_accounts.py`), matching the same
+  concept's declaration in `investments-price-feeds.md`.
+- **`reconciliation_delta` uses `DataClass.BALANCE` (`money_kind="balance"`).**
+  Stated in §Data Model above: it is a measure, not provenance, because its
+  `money_kind` is what Rule B ranks on.
+- **The bucketed default columns are `(balance_date, unpriced_currency_count,
+  net_worth, change_abs)`.** `core:net_worth`'s `_default_columns`
+  (`net_worth.py:47-65`) switches on whether `interval` was given:
+  unbucketed keeps the ordinary day-grain set, bucketed narrows to these four
+  so a text-table read shows the headline and its period-over-period change
+  without the coverage-count columns crowding it out.
+- **`_derived_classes.py` is unaffected.** All three net-worth rungs are
+  `@report`-decorated runners, so their classes live in the `classes={...}`
+  map on each `@report` call (`.claude/rules/reports.md` §"Materialized
+  reports need three parts") and are verified against derivation in CI, the
+  same as every other runner-backed report. `_derived_classes.py` covers
+  runner-less views only; none of the three rungs is one.
+
 ## Testing Strategy
 
 ### Tier 1 — Unit
@@ -2536,6 +2608,15 @@ multi-currency, and thirteen for `M2B.3`:
 - A rate-observation gap of more than one non-publication day inside a pair's
   window, so `days_since_published` takes a value greater than 1.
 
+Both additions ship as scenario-level fixtures in
+`tests/scenarios/test_net_worth_rungs.py`, not as persona YAML or generator
+changes: the generator (`src/moneybin/synthetic/`) has no rate-fetch or
+archival channel of its own, so the rate gap is a direct
+`raw.exchange_rates` INSERT and the archive goes through
+`AccountService.settings_update` (per Requirement 9's own contract — archival
+must go through the service, never a direct column write) with the wall
+clock frozen to a date inside the account's balance span.
+
 - For `M2B.3`: a persona account holding priced securities with no balance
   observation of any kind, added to an existing balance-backed persona, so
   the unanchored guard's holdings arm is exercised against a shipped fixture
@@ -2623,6 +2704,13 @@ general rule in §Data Model, never hard-coded to `to_date` or `CURRENT_DATE`:
 a fixture whose range straddles an eligible candidate's `archived_at` must
 derive the expected date from that same rule (which can instead resolve to
 `archived_at_floor`), matching the acceptance case above.
+
+The expected NULL-date set is exact in both directions, derived from the
+fixture rather than sampled: every held balance date through the archive
+boundary is NULL (with `unpriced_currency_count >= 1` on each), and none
+after it through the last priced or carried date, with the boundary itself
+(the archive date, and the day immediately after it) asserted explicitly
+rather than left implicit in a range check.
 
 ## Dependencies
 

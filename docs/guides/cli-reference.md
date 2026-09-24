@@ -1,6 +1,12 @@
 <!-- Last reviewed: 2026-09-17 -->
 # CLI Reference
 
+Run `moneybin` for a short menu of common commands, or `moneybin --help` for
+all commands and global options. Both views use the same task sections and
+alphabetical command order; the full view adds entries without moving the
+familiar ones. Use `moneybin <command> --help` for a command's options and
+subcommands. These discovery commands do not open a profile or database.
+
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
@@ -57,7 +63,7 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
+`error` is present when `status` is `"error"`; `next_cursor` is present when more rows remain. Four `summary` keys are conditional on conversion: `degraded` and `degraded_reason` when the read could not price what was asked for, `applied_rates` when at least one real rate was applied, and `home_currency` when one of those rates put a value into a home-basis column — the `_home` columns on the three net-worth reports. `home_currency` names the currency those columns are in; `display_currency` names the rest of the row. Three concrete shapes follow — every other command's `data` payload is inferable by running it with `--output json` once. `Decimal` values serialize as JSON numbers, not strings.
 
 **Read response — `transactions list`** (list payload):
 
@@ -72,22 +78,21 @@ Diagnostic output goes to stderr (fd 2). Data output goes to stdout (fd 1). Pipe
 }
 ```
 
-**Report response — `reports networth`** (list payload, not a single record — a totals row per currency, then one row per account; captured against a synthetic profile):
+**Report response — `reports net-worth-accounts`** (list payload, one row per included account per day; captured against a synthetic profile):
 
 ```json
 {
   "status": "ok",
-  "summary": {"total_count": 3, "returned_count": 3, "has_more": false, "sensitivity": "high", "display_currency": "USD"},
+  "summary": {"total_count": 4, "returned_count": 4, "has_more": false, "sensitivity": "high", "display_currency": "USD"},
   "data": [
-    {"account_id": null, "account_name": null, "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": 2, "account_balance": null, "total_assets": 69788.0, "total_liabilities": 0.0, "net_worth": 69788.0},
-    {"account_id": "SYN00010001", "account_name": "Chase Bank checking …0001", "currency_code": "USD", "observation_source": null, "balance_date": "2025-12-31", "account_count": null, "account_balance": 69696.79, "total_assets": null, "total_liabilities": null, "net_worth": null},
-    {"account_id": "SYN00010002", "account_name": "Capital One credit card", "currency_code": "USD", "observation_source": "tabular", "balance_date": "2025-12-31", "account_count": null, "account_balance": 91.21, "total_assets": null, "total_liabilities": null, "net_worth": null}
+    {"account_id": "SYN00420002", "account_name": "Ally Bank savings …0002", "currency_code": "USD", "home_currency_code": "USD", "account_type": "depository", "is_observed": false, "observation_source": null, "rate_source": "identity", "balance_date": "2025-12-31", "rate_published_date": "2025-12-31", "days_since_observed": 1096, "reconciliation_delta": null, "account_balance": 33000.0, "account_balance_home": 33000.0},
+    {"account_id": "SYN00420001", "account_name": "Chase Bank checking …0001", "currency_code": "USD", "home_currency_code": "USD", "account_type": "depository", "is_observed": false, "observation_source": null, "rate_source": "identity", "balance_date": "2025-12-31", "rate_published_date": "2025-12-31", "days_since_observed": 1096, "reconciliation_delta": null, "account_balance": 387080.77, "account_balance_home": 387080.77}
   ],
-  "actions": ["Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date': 'YYYY-MM-DD'}) for the time series"]
+  "actions": ["Run reports(report_id='core:net_worth') for the single home-currency total", "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown"]
 }
 ```
 
-The totals row carries `account_id: null` and fills the four headline columns (`account_count`, `total_assets`, `total_liabilities`, `net_worth`); each account row carries only its own `account_balance` and leaves the totals columns null. One totals row per currency the profile holds.
+Two of the four rows are trimmed above. Every row carries the same columns — one per included account per balance date — with `account_balance` in the account's own currency and `account_balance_home` converted, `null` when the pair is unpriced. There is no separate totals row; `reports net-worth` is the home-currency total and `reports net-worth-currencies` is the per-currency breakdown, both named in `actions`.
 
 **Mutating response — `transactions categorize commit`** (write summary):
 
@@ -347,16 +352,16 @@ escape hatch for a duplicate no signal reaches. Commands:
 [`reference/cli/accounts.md`](../reference/cli/accounts.md).
 
 `accounts set`'s `--archive`/`--unarchive` and `--include`/`--exclude` are
-independent flags with different jobs. `--archive` already excludes the
-account from net worth entirely today, history included, via the existing
-blanket filter; the archive date is recorded for a future release that will
-scope that exclusion by date, not applied yet. `--include`/`--exclude` toggle
-net-worth inclusion independently of archived status and persist through a
-later `--unarchive` — reach for `--exclude` alongside `--archive` only when
-the account should stay out of net worth at every date, even once it becomes
-active again; `--archive` alone already excludes it today and reverses
-cleanly on `--unarchive`. At least one field flag is required, and each
-structural field has a `--clear-<field>` twin.
+independent flags with different jobs. `--archive` excludes the account from
+the three net-worth reports only after its recorded archive date — balances
+on or before that date still count, so archiving does not retroactively
+rewrite history. `--include`/`--exclude` toggle net-worth inclusion
+independently of archived status and persist through a later `--unarchive` —
+reach for `--exclude` alongside `--archive` only when the account should stay
+out of net worth at every date, even once it becomes active again; `--archive`
+alone excludes it only from its archive date forward and reverses cleanly on
+`--unarchive`. At least one field flag is required, and each structural field
+has a `--clear-<field>` twin.
 
 **Related guides:** [`profiles.md`](profiles.md), [`data-pipeline.md`](data-pipeline.md).
 
@@ -427,16 +432,16 @@ only change the number.
 ## Reports
 
 Cross-domain analytical views. All commands support `--output json` and return
-the standard envelope. The nine built-in reports — `networth`,
-`networth-history`, `cash-flow`, `spending-trend`, `recurring-subscriptions`, `merchant-activity`,
-`large-transactions`, `balance-drift`, `realized-fx` — each have their own
-command with the filters that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
-`spending-trend`, `--from`/`--to` on `networth-history`, `--since` on
-`balance-drift`, `--from-date`/`--to-date` on `realized-fx`, `--as-of` on snapshots,
-`--account` and `--category` where
-they apply);
-[`features.md`](../features.md#reports) says what each one shows, and the
-[reports guide](reports.md) shows each one's output. Commands:
+the standard envelope. The ten built-in reports — `net-worth`,
+`net-worth-currencies`, `net-worth-accounts`, `cash-flow`, `spending-trend`,
+`recurring-subscriptions`, `merchant-activity`, `large-transactions`,
+`balance-drift`, `realized-fx` — each have their own command with the filters
+that fit their grain (`--from-month`/`--to-month` on `cash-flow` and
+`spending-trend`, `--from-date`/`--to-date` on the three `net-worth` commands,
+`large-transactions`, and `realized-fx`, `--interval daily|weekly|monthly` on
+`net-worth` only, `--since` on `balance-drift`, `--account` and `--category`
+where they apply); [`features.md`](../features.md#reports) says what each one
+shows, and the [reports guide](reports.md) shows each one's output. Commands:
 [`reference/cli/reports.md`](../reference/cli/reports.md).
 
 ### Any report, any tier
@@ -644,7 +649,7 @@ moneybin import files ~/Downloads/*.ofx     # any OFX files you downloaded
 moneybin refresh                            # run the post-load pipeline
 moneybin transactions categorize pending    # see what's still uncategorized
 # ... categorize via review or transactions categorize rules ...
-moneybin reports networth                   # this month's net worth
+moneybin reports net-worth                  # latest net worth (home currency; no figure without one)
 moneybin reports cash-flow                  # this month's income vs spending
 ```
 
@@ -656,7 +661,7 @@ Each step is idempotent — re-run safely if interrupted. `import files` auto-ru
 moneybin profile create personal
 moneybin import files ~/Downloads/checking.qfx
 moneybin transactions categorize run
-moneybin reports networth
+moneybin reports net-worth
 ```
 
 `categorize run` is a no-op until you have rules or merchant mappings — the auto-rule snowball kicks in after a few LLM-assist cycles.

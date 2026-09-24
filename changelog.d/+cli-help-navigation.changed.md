@@ -1,0 +1,1 @@
+Bare `moneybin` now shows a compact menu of nine common commands and exits successfully. Full `--help` groups all commands by task, with consistent ordering and concise descriptions across both views.

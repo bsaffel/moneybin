@@ -66,16 +66,16 @@ def _receipt(destination: ExportDestination, artifact: Path) -> ExportReceipt:
 
 def _sheets_report_receipt(destination: ExportDestination) -> ExportReceipt:
     return ExportReceipt(
-        subject={"kind": "report", "report_id": "core:networth", "parameters": {}},
+        subject={"kind": "report", "report_id": "core:net_worth", "parameters": {}},
         format="sheets",
         redaction_mode="redacted",
         destination=destination,
         artifact_path=None,
         compressed_artifact_path=None,
         sheets_identity="MoneyBin:20260721T120000Z",
-        row_counts={"core:networth": 1},
-        output_classes={"core:networth": {"net_worth": "balance"}},
-        checksums={"core:networth": "sum123"},
+        row_counts={"core:net_worth": 1},
+        output_classes={"core:net_worth": {"net_worth": "balance"}},
+        checksums={"core:net_worth": "sum123"},
         recovery_actions=(),
     )
 
@@ -84,9 +84,9 @@ def _structured(response: Any) -> dict[str, Any]:
     text = next(
         block.text for block in response.content if isinstance(block, TextContent)
     )
-    assert response.structuredContent is not None
-    assert json.loads(text) == response.structuredContent
-    return response.structuredContent
+    assert response.structured_content is not None
+    assert json.loads(text) == response.structured_content
+    return response.structured_content
 
 
 def _observable_delivery(data: dict[str, Any], request: Any) -> dict[str, Any]:
@@ -112,14 +112,14 @@ async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
     export = await listed_tool(mcp, "export_run")
     destinations = await listed_tool(mcp, "exports_set")
 
-    assert export.outputSchema is None
-    assert destinations.outputSchema is None
+    assert export.output_schema is None
+    assert destinations.output_schema is None
     assert export.annotations is not None
-    assert export.annotations.readOnlyHint is False
-    assert export.annotations.idempotentHint is False
+    assert export.annotations.read_only_hint is False
+    assert export.annotations.idempotent_hint is False
     assert destinations.annotations is not None
-    assert destinations.annotations.readOnlyHint is False
-    assert destinations.annotations.idempotentHint is True
+    assert destinations.annotations.read_only_hint is False
+    assert destinations.annotations.idempotent_hint is True
     assert {tool.name for tool in await mcp._list_tools()} == {  # pyright: ignore[reportPrivateUsage]
         "export_run",
         "exports_set",
@@ -131,22 +131,22 @@ async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
             for branch in schema["properties"][field]["oneOf"]
         }
 
-    assert variants(export.inputSchema, "subject") == {
+    assert variants(export.input_schema, "subject") == {
         "bundle": {"kind"},
         "report": {"kind", "report_id"},
     }
-    assert variants(export.inputSchema, "destination") == {
+    assert variants(export.input_schema, "destination") == {
         "local": {"kind", "name"},
         "sheets": {"kind", "name"},
     }
-    assert variants(destinations.inputSchema, "target") == {
+    assert variants(destinations.input_schema, "target") == {
         "local": {"kind", "state", "name"},
         "sheets": {"kind", "state", "name"},
     }
 
     rendered = json.dumps({
-        "export_run": export.inputSchema,
-        "exports_set": destinations.inputSchema,
+        "export_run": export.input_schema,
+        "exports_set": destinations.input_schema,
     })
     assert '"operation"' not in rendered
     assert '"action"' not in rendered
@@ -170,8 +170,8 @@ async def test_export_tools_render_two_narrow_discriminated_contracts() -> None:
         {
             "subject": {
                 "kind": "report",
-                "report_id": "core:networth",
-                "parameters": {"as_of": "2026-07-01"},
+                "report_id": "core:net_worth",
+                "parameters": {"from_date": "2026-07-01"},
             },
             "destination": {"kind": "sheets", "name": "dashboard"},
             "redaction_mode": "unredacted",
@@ -203,16 +203,16 @@ async def test_export_run_builds_one_typed_service_request(
     receipt = _receipt(destination, artifact)
     if destination.kind == "sheets":
         receipt = ExportReceipt(
-            subject={"kind": "report", "report_id": "core:networth"},
+            subject={"kind": "report", "report_id": "core:net_worth"},
             format="sheets",
             redaction_mode="unredacted",
             destination=destination,
             artifact_path=None,
             compressed_artifact_path=None,
             sheets_identity="MoneyBin:20260721T120000Z",
-            row_counts={"core:networth": 1},
-            output_classes={"core:networth": {"net_worth": "balance"}},
-            checksums={"core:networth": "sum123"},
+            row_counts={"core:net_worth": 1},
+            output_classes={"core:net_worth": {"net_worth": "balance"}},
+            checksums={"core:net_worth": "sum123"},
             recovery_actions=(),
         )
 
@@ -395,7 +395,7 @@ async def test_export_run_rejects_legacy_redaction_selectors(legacy: str) -> Non
         },
     )
 
-    assert response.isError is True
+    assert response.is_error is True
 
 
 @pytest.mark.parametrize(
@@ -504,7 +504,7 @@ async def test_exports_set_canonicalizes_local_destination_path_before_persistin
             },
         )
 
-    assert response.isError is False
+    assert response.is_error is False
     assert set_local.call_args.kwargs["local_path"] == supplied_path.resolve()
 
 
@@ -647,7 +647,7 @@ async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
         cli_arguments = [
             "export",
             "report",
-            "core:networth",
+            "core:net_worth",
             "--to",
             "sheets:dashboard",
             "--yes",
@@ -657,7 +657,7 @@ async def test_cli_and_mcp_export_receipts_have_same_observable_outcome(
         mcp_arguments = {
             "subject": {
                 "kind": "report",
-                "report_id": "core:networth",
+                "report_id": "core:net_worth",
                 "parameters": {},
             },
             "destination": {"kind": "sheets", "name": "dashboard"},
@@ -723,7 +723,7 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
         cli_arguments = [
             "export",
             "report",
-            "core:networth",
+            "core:net_worth",
             "--to",
             "sheets:dashboard",
             "--yes",
@@ -731,7 +731,7 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
             "json",
         ]
         mcp_arguments = {
-            "subject": {"kind": "report", "report_id": "core:networth"},
+            "subject": {"kind": "report", "report_id": "core:net_worth"},
             "destination": {"kind": "sheets", "name": "dashboard"},
             "redaction_mode": "redacted",
         }
@@ -760,15 +760,20 @@ async def test_cli_and_mcp_export_failures_are_equally_safe(
 async def test_report_export_reuses_the_registered_reports_catalog_result(
     mcp_db: object,
 ) -> None:
-    from moneybin.database import get_database
+    from moneybin.database import Database, get_database
     from moneybin.exports.service import ExportService
     from moneybin.mcp.tools.reports import register_reports_tools
     from moneybin.privacy.taxonomy import DataClass
-    from moneybin.reports._framework.catalog import ReportCatalog, ServiceReportSpec
-    from moneybin.reports._framework.contract import OutputColumn, ReportSemantics
-    from moneybin.reports._framework.execute import build_catalog_execution
+    from moneybin.reports._framework.catalog import ReportCatalog
+    from moneybin.reports._framework.contract import (
+        OutputColumn,
+        ReportQuery,
+        ReportSemantics,
+        ReportSpec,
+    )
+    from moneybin.tables import TableRef
 
-    calls: list[tuple[dict[str, Any], int | None]] = []
+    calls: list[dict[str, Any]] = []
     semantics = ReportSemantics(
         unit="count",
         currency=None,
@@ -783,28 +788,20 @@ async def test_report_export_reuses_the_registered_reports_catalog_result(
         provenance=("reports.parity_export",),
     )
 
-    def execute(_: Any, parameters: Any, limit: int | None) -> Any:
-        calls.append((dict(parameters), limit))
-        return build_catalog_execution(
-            spec,
-            parameters=parameters,
-            sql=None,
-            records=[{"count": 7}],
-            columns=["count"],
-            column_types=["BIGINT"],
-            max_rows=limit,
-        )
+    def runner(db: Database, **params: Any) -> ReportQuery:  # contract handle
+        calls.append(dict(params))
+        return ReportQuery("SELECT 7 AS count", [])
 
-    spec = ServiceReportSpec(
+    spec = ReportSpec(
         report_id="test:parity_export",
         name="parity_export",
         description="A registered report reused by export.",
-        parameters=(),
+        view=TableRef("reports", "parity_export"),
+        runner=runner,
         columns=(OutputColumn("count", "Row count.", DataClass.AGGREGATE),),
         semantics=semantics,
         classes={"count": DataClass.AGGREGATE},
         examples=(),
-        executor=execute,
     )
     catalog = ReportCatalog((spec,))
 
@@ -828,6 +825,10 @@ async def test_report_export_reuses_the_registered_reports_catalog_result(
     report_data = _structured(report_response)["data"]
     assert report_data["rows"] == [{"count": 7}]
     assert snapshot.tables[0].rows == ((7,),)
-    assert calls == [({}, 10), ({}, None)]
+    # Two dispatches through the same spec: the MCP `reports` call (capped at
+    # 10) and the export's own full read. A `ReportSpec` runner is not handed
+    # `limit` directly (the framework applies the cap after the query runs),
+    # so this pins the shared spec is reused rather than the exact caps.
+    assert calls == [{}, {}]
     assert snapshot.provenance is not None
     assert snapshot.provenance.report_id == report_data["report_id"]

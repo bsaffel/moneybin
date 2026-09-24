@@ -15,7 +15,6 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-import click
 import typer
 
 from moneybin import error_codes
@@ -300,8 +299,6 @@ def reports_explain(
             disclosures.append(
                 format_cli_attention(explanation.drift_reason, policy=policy)
             )
-        if explanation.sql_unavailable:
-            disclosures.append(f"SQL: {explanation.sql_unavailable}")
         if explanation.withheld_parameters:
             disclosures.append(
                 "Withheld from the rendered SQL (classed above the lowest tier): "
@@ -333,7 +330,6 @@ def reports_explain(
                 "tier": explanation.tier,
                 "sql": explanation.sql,
                 "sql_template": explanation.sql_template,
-                "sql_unavailable": explanation.sql_unavailable,
                 "withheld_parameters": list(explanation.withheld_parameters),
                 "sql_suppressed_by": list(explanation.sql_suppressed_by),
                 "columns": [
@@ -559,7 +555,7 @@ def reports_delete(
 def _confirm_delete(name: object, report_id: str) -> bool:
     """Ask before a permanent delete, failing loudly when nobody can be asked.
 
-    ``typer.confirm`` raises ``click.Abort`` on EOF, which is what a piped or
+    ``typer.confirm`` raises ``typer.Abort`` on EOF, which is what a piped or
     non-TTY invocation without ``--yes`` produces. ``classify_user_error`` does
     not recognize ``Abort``, so letting it escape spends the interaction on a bare
     ``Aborted.`` — no error code, and no JSON envelope for a caller that asked for
@@ -577,7 +573,7 @@ def _confirm_delete(name: object, report_id: str) -> bool:
         )
     try:
         return typer.confirm(f"Delete saved report {name} ({report_id})?", err=True)
-    except click.Abort as e:
+    except typer.Abort as e:
         raise UserError(
             "Deleting a saved report needs explicit confirmation.",
             code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
@@ -611,7 +607,7 @@ def _prompt_for_downgrade(
             f"{to_class.value} for {name}, on every future run?",
             err=True,
         )
-    except click.Abort:
+    except typer.Abort:
         return None
 
 
