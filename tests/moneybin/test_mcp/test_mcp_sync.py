@@ -337,7 +337,8 @@ async def test_sync_disconnect_calls_service(mock_build: MagicMock) -> None:
     )
 
     service.disconnect_confirmed.assert_called_once()
-    # SyncDisconnectPayload has only TXN_TYPE + INSTITUTION → Tier.LOW derived sensitivity
+    # SyncInstitutionDisconnectView has only TXN_TYPE + INSTITUTION + RECORD_ID
+    # fields → Tier.LOW derived sensitivity
     assert envelope.summary.sensitivity == "low"
 
 
@@ -430,6 +431,59 @@ async def test_sync_disconnect_by_provider_item_id_threads_through_to_service(
     )
     assert envelope.error is None
     assert envelope.data.institution == "Chase"
+    assert envelope.data.provider_item_id == "item_b"
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_result_distinguishes_same_named_connections(
+    mock_build: MagicMock,
+) -> None:
+    """Two same-named connections (e.g. after a relink) must be distinguishable.
+
+    Both share institution="Chase"; only provider_item_id tells them apart.
+    """
+    item_a = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    item_b = item_a.model_copy(update={"id": "conn_b", "provider_item_id": "item_b"})
+    service = MagicMock()
+
+    async def _run(target: ConnectedInstitution):
+        service.plan_disconnect.return_value = target
+
+        def disconnect_confirmed(
+            *,
+            institution: str | None,
+            provider_item_id: str | None,
+            verify: object,
+        ) -> ConnectedInstitution:
+            verify(target)  # type: ignore[operator]
+            return target
+
+        service.disconnect_confirmed.side_effect = disconnect_confirmed
+        mock_build.return_value.__enter__.return_value = service
+        from moneybin.mcp.tools.sync import sync_disconnect
+
+        required = await sync_disconnect(provider_item_id=target.provider_item_id)
+        assert required.error is not None
+        assert required.error.details is not None
+        return await sync_disconnect(
+            provider_item_id=target.provider_item_id,
+            confirmation_token=str(required.error.details["confirmation_token"]),
+        )
+
+    envelope_a = await _run(item_a)
+    envelope_b = await _run(item_b)
+
+    assert envelope_a.data.institution == envelope_b.data.institution == "Chase"
+    assert envelope_a.data.provider_item_id == "item_a"
+    assert envelope_b.data.provider_item_id == "item_b"
 
 
 @pytest.mark.unit

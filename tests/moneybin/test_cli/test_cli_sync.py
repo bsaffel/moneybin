@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -1008,7 +1009,42 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
     service.disconnect.assert_called_once_with(
         institution=None, provider_item_id="item_b"
     )
-    assert "Chase" in result.output
+    assert re.search(r"Institution:\s+Chase", result.output)
+    assert "Provider item ID: item_b" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_json_carries_provider_item_id(mock_build: MagicMock) -> None:
+    """`--output json --yes` must carry provider_item_id, not just institution."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_b",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["institution"] == "Chase"
+    assert payload["data"]["provider_item_id"] == "item_b"
 
 
 @pytest.mark.unit
@@ -1016,10 +1052,13 @@ def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
 def test_sync_disconnect_completion_receipt_labels_nameless_connection(
     mock_build: MagicMock,
 ) -> None:
-    """A connection with no institution_name gets a 'Provider item ID' label.
+    """A nameless connection's receipt shows '-' for Institution, not the id.
 
-    Regression: the receipt hardcoded the row label "Institution" even when
-    the value fell back to the bare provider_item_id.
+    Regression: the receipt used to fall back to printing the bare
+    provider_item_id under an "Institution" label. Now Institution and
+    Provider item ID are always separate rows, so a nameless connection
+    shows "Institution: -" plus its own "Provider item ID" row rather than
+    conflating the two.
     """
     from moneybin.connectors.sync_models import ConnectedInstitution
 
@@ -1038,7 +1077,7 @@ def test_sync_disconnect_completion_receipt_labels_nameless_connection(
     )
     assert result.exit_code == 0, result.output
     assert "Provider item ID: item_c" in result.output
-    assert "Institution:" not in result.output
+    assert re.search(r"Institution:\s+-", result.output)
 
 
 @pytest.mark.unit
@@ -1199,7 +1238,8 @@ def test_sync_disconnect_refusal_performs_no_mutation(
 
     receipt = Text.from_ansi(capsys.readouterr().out).plain
     assert "Disconnect cancelled" in receipt
-    assert "Institution: Chase" in receipt
+    assert re.search(r"Institution:\s+Chase", receipt)
+    assert "Provider item ID: item_a" in receipt
     assert "No connection was removed" in receipt
     mock_confirm.assert_called_once()
     service.disconnect.assert_not_called()

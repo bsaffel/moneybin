@@ -708,13 +708,11 @@ def sync_disconnect(
                     f"Disconnect {target} (provider_item_id={plan.provider_item_id})?",
                     default=False,
                 ):
-                    target_label = (
-                        "Institution" if plan.institution_name else "Provider item ID"
-                    )
                     _emit_sync_receipt(
                         "Disconnect cancelled",
                         [
-                            (target_label, target),
+                            ("Institution", plan.institution_name or "-"),
+                            ("Provider item ID", plan.provider_item_id),
                             ("Outcome", "No connection was removed"),
                         ],
                     )
@@ -734,18 +732,20 @@ def sync_disconnect(
         render_or_json(
             sync_disconnect_envelope(
                 institution=resolved,
+                provider_item_id=disconnected.provider_item_id,
                 actions=["Use 'moneybin sync link' to reconnect an institution"],
             ),
             output,
             cli_actor="sync_disconnect",
         )
     else:
-        resolved_label = (
-            "Institution" if disconnected.institution_name else "Provider item ID"
-        )
         _emit_sync_receipt(
             "Disconnect complete",
-            [(resolved_label, resolved), ("Outcome", "Disconnected")],
+            [
+                ("Institution", disconnected.institution_name or "-"),
+                ("Provider item ID", disconnected.provider_item_id),
+                ("Outcome", "Disconnected"),
+            ],
         )
 
 

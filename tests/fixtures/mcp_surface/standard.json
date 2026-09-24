@@ -1,5 +1,5 @@
 {
-  "sha256": "3d7a49a8d12c1cf27aacb22258857f29866ac759ec0b39520a2c1f4eebb79950",
+  "sha256": "8820f72cb33e8b3504c3c921be7cf080c7f57c91b1952b24b82380538dc10801",
   "tool_count": 50,
   "tools": [
     {
@@ -3364,7 +3364,7 @@
           "openWorldHint": true,
           "readOnlyHint": false
         },
-        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.",
+        "description": "Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection \u2014 required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3415,12 +3415,12 @@
         "name": "sync_disconnect",
         "title": "Sync Disconnect"
       },
-      "description_bytes": 293,
+      "description_bytes": 393,
       "input_schema_bytes": 379,
       "name": "sync_disconnect",
       "other_bytes": 84,
       "output_schema_bytes": 0,
-      "total_bytes": 895
+      "total_bytes": 995
     },
     {
       "annotation_bytes": 90,
@@ -5312,5 +5312,5 @@
       "total_bytes": 599
     }
   ],
-  "total_bytes": 64019
+  "total_bytes": 64119
 }

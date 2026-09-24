@@ -637,7 +637,7 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution connection or clear profile-scoped sync credentials. provider_item_id (from sync_status) targets one exact connection — required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection — required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.
 
 Access: write, destructive, not idempotent, open world. Sensitivity: at least `low`.
 

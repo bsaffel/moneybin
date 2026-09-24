@@ -162,10 +162,15 @@ def sync_status_envelope(
 def sync_disconnect_envelope(
     *,
     institution: str,
+    provider_item_id: str,
     actions: list[str],
 ) -> ResponseEnvelope[SyncDisconnectPayload]:
     """Wrap the confirmation that one institution was disconnected."""
     return build_envelope(
-        data=SyncDisconnectPayload(status="disconnected", institution=institution),
+        data=SyncDisconnectPayload(
+            status="disconnected",
+            institution=institution,
+            provider_item_id=provider_item_id,
+        ),
         actions=actions,
     )
