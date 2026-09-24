@@ -1,4 +1,4 @@
-<!-- Last reviewed: 2026-09-23 -->
+<!-- Last reviewed: 2026-09-24 -->
 
 # CLI Startup Flow
 
@@ -20,7 +20,14 @@ sequenceDiagram
     Main->>Main: instantiate Typer app, register groups
     Python->>Main: main()
     Main->>Typer: app()
+    alt root --help
+        Typer-->>Shell: complete grouped help, exit 0
+    else callback path
     Typer->>Callback: parse top-level flags
+    alt no subcommand
+        Callback->>Callback: validate explicit profile-name format
+        Callback-->>Shell: short command menu, exit 0
+    else subcommand present
     Callback->>Callback: stash_cli_flags(profile_name, verbose)
     Callback->>Callback: setup_observability(profile=None)
     Callback->>Callback: maybe set_current_profile(name) — no I/O
@@ -28,6 +35,8 @@ sequenceDiagram
     Typer->>Leaf: dispatch to subcommand
     Leaf->>Leaf: lazy imports + get_database()
     Leaf-->>Shell: stdout / stderr, exit code
+    end
+    end
 ```
 
 1. **Shell exec.** The `moneybin` console script is registered by `pyproject.toml`:
@@ -41,11 +50,11 @@ sequenceDiagram
 
 2. **Python import.** Python imports `moneybin.cli.main`. The module imports Typer, the config helpers, the observability setup, and every command-group module in [`src/moneybin/cli/commands/`](../../src/moneybin/cli/commands/). Heavy transitive dependencies (`fastmcp`, `sqlmesh`, `polars`) are **not** imported here — they live inside individual command bodies (see "Cold-start hygiene" below).
 
-3. **Typer app instantiation.** `app = typer.Typer(name="moneybin", no_args_is_help=True, ...)`. Each sub-group is attached via `app.add_typer(...)`; the five leaf commands registered directly on the root — `demo`, `review`, `refresh`, `stats`, `logs` — are attached via `app.command(...)`.
+3. **Typer app instantiation.** The root uses `cls=RootGroup`, `no_args_is_help=False`, and `invoke_without_command=True`. Each sub-group is attached via `app.add_typer(...)`; root leaves use `app.command(...)`. `navigation.HELP_SECTIONS` governs root ordering, section headings, and short descriptions. `configure_root_help` sets `short_help` and the help panel without replacing a command's detailed help.
 
 4. **Typer argument parsing.** Typer (a thin layer over Click) parses argv, identifies the leaf command, and routes through `main_callback` on the way down.
 
-5. **`main_callback` runs.** Stashes flags, calls `setup_observability` with no profile, eagerly validates the profile name when one is explicit, registers the lazy resolver. No I/O against the profile dir or database.
+5. **`main_callback` runs.** Without a subcommand, validates an explicit profile-name format, prints the nine-command starting menu, and returns before runtime setup. With a subcommand, stashes flags, calls `setup_observability` with no profile, eagerly validates the profile name when one is explicit, and registers the lazy resolver where needed. No I/O against the profile dir or database.
 
 6. **Leaf command body runs.** First call to `get_settings()` / `get_current_profile()` fires the lazy resolver. First call to `get_database()` opens the encrypted DuckDB connection.
 
@@ -64,7 +73,7 @@ sequenceDiagram
 
 Typer short-circuits explicit `--help` before any callback or command body runs. Bare-group invocations (`moneybin db`, `moneybin import`) exit via `no_args_is_help=True` before the subcommand body runs. Because `main_callback` itself is inert (no `get_settings()`, no `resolve_profile()` call), `moneybin <subgroup> --help` is also safe — the callback runs, but only stashes flags and registers the resolver.
 
-This is why `main_callback`'s name validation uses only `set_current_profile(name)`, which is a format-and-cache update with no I/O.
+Bare `moneybin` runs the callback's discovery branch and exits successfully. This branch validates an explicit profile name without selecting a profile, then renders the starting menu without observability setup or resolver registration. Subcommand paths use `set_current_profile(name)`, a format-and-cache update with no I/O.
 
 ### Lazy imports in command bodies
 
@@ -92,7 +101,7 @@ The non-obvious failure mode: `from x import Y` at module top of any command fil
 
 ### `main_callback` stays inert
 
-The callback in [`src/moneybin/cli/main.py`](../../src/moneybin/cli/main.py) does four things, plus one guard clause, and nothing else:
+The callback in [`src/moneybin/cli/main.py`](../../src/moneybin/cli/main.py) first handles discovery: with no subcommand, it validates an explicit profile-name format and renders the starting menu. It returns before the following subcommand setup:
 
 1. `stash_cli_flags(profile_name, verbose)` — writes to a module-level `_CLIFlags` dataclass.
 2. `setup_observability(stream="cli", verbose=verbose, profile=None)` — console logging only; no file handler yet because the profile isn't resolved.
@@ -130,11 +139,13 @@ ls -la /tmp/mb-test-home 2>/dev/null   # should not exist
 
 ## Profile resolution flow
 
-Profile resolution has two paths: an **eager** path when the user supplies a profile name explicitly, and a **lazy** path when the resolver fires from the first `get_settings()` call inside the command body.
+For subcommands, profile resolution has two paths: an **eager** path when the user supplies a profile name explicitly, and a **lazy** path when the resolver fires from the first `get_settings()` call inside the command body. Root discovery returns before either path.
 
 ```mermaid
 flowchart TD
-    A[main_callback entry] --> Z{invoked_subcommand == demo<br/>AND --profile explicit?}
+    A[main_callback entry] --> R{no subcommand?}
+    R -->|yes| S[validate explicit profile-name format<br/>render short menu and return]
+    R -->|no| Z{invoked_subcommand == demo<br/>AND --profile explicit?}
     Z -->|yes| ZZ["raise BadParameter (exit 2)<br/>demo owns its own profile"]
     Z -->|no| B{--profile flag<br/>or MONEYBIN_PROFILE?}
     B -->|yes| C["set_current_profile(name)<br/>name validation only"]
@@ -156,7 +167,7 @@ flowchart TD
 
 ### Eager path (no I/O)
 
-When `--profile <name>` is on argv, or `MONEYBIN_PROFILE` is in the environment, `main_callback` calls `stash_cli_flags(...)` followed by `set_current_profile(name)`. This is just module-state mutation:
+For a subcommand, when `--profile <name>` is on argv, or `MONEYBIN_PROFILE` is in the environment, `main_callback` calls `stash_cli_flags(...)` followed by `set_current_profile(name)`. This is just module-state mutation:
 
 - `_current_profile` gets the normalized name.
 - `_current_settings` is invalidated.
@@ -276,6 +287,7 @@ What a regression in this layer looks like, and where to look first:
 
 ## Edge cases
 
+- **`moneybin` (bare root).** `main_callback` prints the short menu and exits 0 without loading a profile or initializing observability. A malformed explicit `--profile` value exits 2 before rendering the menu.
 - **`moneybin --help`.** Typer prints help and exits. `main_callback` does not run. No profile resolution, no DB open.
 - **`moneybin <subgroup> --help`.** `main_callback` runs (inert), Typer prints the subgroup help, exits. Resolver is registered but never fires.
 - **`moneybin db` (bare group).** `main_callback` runs (inert), Typer exits with the group's help via `no_args_is_help=True`. Resolver is registered but never fires.
@@ -289,8 +301,10 @@ What a regression in this layer looks like, and where to look first:
 Where to add a new command (per [`.claude/rules/cli.md`](../../.claude/rules/cli.md) → "Leaf Commands vs Sub-Groups"):
 
 - **New subcommand in an existing group:** add a function in the relevant module under `src/moneybin/cli/commands/<group>/`. Use `<group>_<verb>` naming.
-- **New sub-group:** create `src/moneybin/cli/commands/<group>/__init__.py` with its own `typer.Typer(no_args_is_help=True)`, then register it from `src/moneybin/cli/main.py` via `app.add_typer(...)` in the workflow-ordered list (setup → ingest → enrich → pipeline → analyze → output → integrations → ops).
+- **New sub-group:** create `src/moneybin/cli/commands/<group>/__init__.py` with its own `typer.Typer(no_args_is_help=True)`, then register it from `src/moneybin/cli/main.py` via `app.add_typer(...)`.
 - **New top-level leaf:** add a free function named `<name>_command` and register with `app.command(name=...)(...)`.
+
+For either root registration, add the command and its concise summary to the appropriate section in `navigation.HELP_SECTIONS`, alphabetically within that section. Add it to `SHORT_COMMANDS` only when it belongs in the starting menu. Keep detailed help on the command or sub-app itself. Update the independent approved-layout expectations in `test_help_navigation.py` when intentionally changing the menu; its catalog comparison catches omissions and drift.
 
 Before opening the PR, verify cold start stays clean:
 

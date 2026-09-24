@@ -533,7 +533,7 @@ Records:  2,892 rows
 └───────────────────────────────────────────┴──────┴────────────┴────────────┘
 ```
 
-A raw table at `0 rows` is not an error — it is a source this profile has never used; 17 of the 21 are in that state here. Three lines are trimmed above: the `Database:` label and the two lines its absolute path wrapped onto.
+A raw table at `0 rows` is not an error — it is a source this profile has never used; 16 of the 21 are in that state here. Three lines are trimmed above: the `Database:` label and the two lines its absolute path wrapped onto.
 
 `system doctor` is the assertion-level check. It reports the number of invariants it ran and the number of transactions it ran them over, and says nothing else when they all hold:
 

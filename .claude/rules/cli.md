@@ -84,8 +84,9 @@ When a command modifies multiple persistent stores in sequence (e.g., file move 
 
 ## Command Group Registration
 
-- **Workflow ordering**: Top-level commands in `main.py` are registered in workflow order: setup → ingest → enrich → pipeline → analyze → output → integrations → ops. New commands should be inserted at the appropriate workflow stage.
-- **`no_args_is_help=True`**: Every `typer.Typer()` *group* must set this flag so bare invocation shows help text consistently. Leaf commands (registered via `app.command()` directly on the root app, like `stats` and `logs`) follow a different convention — see "Leaf Commands vs Sub-Groups" below. Do not use `invoke_without_command=True` callbacks as a substitute — that flag runs the callback even when a subcommand is provided, causing confusing side effects like duplicate setup or output.
+- **Root discovery**: `navigation.py` owns the top-level help sections, descriptions, and short-menu selection. Keep commands alphabetical within each section. Bare `moneybin` shows the short menu and exits successfully before runtime setup; `moneybin --help` shows every visible command in the same sections and order.
+- **Subgroups**: Set `no_args_is_help=True` so bare group invocation shows help. The root alone uses `invoke_without_command=True` with an early `ctx.invoked_subcommand is None` return; never print its menu or initialize runtime on a help path. Leaves with required arguments still report usage errors.
+
 ## Cold-Start Hygiene
 
 Every E2E test, every shell autocomplete, and every CLI invocation pays the full module-import cost for `moneybin.cli.main`. Keep that path light.

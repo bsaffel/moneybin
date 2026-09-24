@@ -1,6 +1,12 @@
 <!-- Last reviewed: 2026-09-23 -->
 # CLI Reference
 
+Run `moneybin` for a short menu of common commands, or `moneybin --help` for
+all commands and global options. Both views use the same task sections and
+alphabetical command order; the full view adds entries without moving the
+familiar ones. Use `moneybin <command> --help` for a command's options and
+subcommands. These discovery commands do not open a profile or database.
+
 MoneyBin's CLI covers everything its MCP server does. Read commands return text or JSON with `--output json`; every interactive prompt has a flag equivalent so scripts and agents can drive the same commands. Parity is **functional, not nominal** — the same outcomes are reachable on both surfaces, but tool names don't always map 1:1 (e.g., `moneybin transactions list` reaches the MCP tool `transactions`). See [`mcp-server.md`](mcp-server.md) for the MCP catalog.
 
 This page covers the full user-facing surface. Per-command flag detail lives in `moneybin <cmd> --help`. `--help` is always side-effect free — it does not touch profiles, open the database, or hit the network.
