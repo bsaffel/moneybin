@@ -290,8 +290,11 @@ rows, idempotent, wrapped in the runner's `BEGIN`/`COMMIT`) per
 Per the app-code-touches-metrics rule, the `app.category_source_map` write
 path (rows added / updated / removed) gets counters in
 `src/moneybin/metrics/registry.py`, mirroring existing `app.*` writers — this
-lands with the override writer itself (see "Deferred to Tier-2b" below; no
-writer exists yet, so there is nothing to instrument). The coverage query
+lands with the override writer itself. MB-180 PR2's curation writer records
+`moneybin_category_source_mapping_outcomes_total{outcome}` — `added`,
+`updated`, or `refused` — after its transaction commits; `removed` arrives
+with the MCP slice's `absent` state. Every write also increments the generic
+`app_mutation_audit_emitted_total{action="category_source_map.upsert"}`. The coverage query
 (source codes with no bridge row) shipped as observability with its first
 consumer as planned — [`category-taxonomy-audit.md`](category-taxonomy-audit.md)
 (M1W), not the categorizer.
@@ -350,9 +353,8 @@ consumer that needs it, rather than speculatively here:
    typed `CategoryRow` field (`src/moneybin/privacy/payloads/categories.py`)
    is still not added — M1U's categorizer shipped without needing it on the
    typed path, so this remains open for whichever future consumer needs it.
-3. **Write-path metrics** for `app.category_source_map`. No writer exists yet
-   — an override writer still hasn't shipped; instrumenting an unwritten path
-   would be speculative.
+3. **Write-path metrics** for `app.category_source_map`. Landed with the
+   MB-180 PR2 curation writer — see Observability above.
 
 ## Coordination
 

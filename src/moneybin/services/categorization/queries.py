@@ -115,8 +115,8 @@ class UnmappedSourceTerm:
 
     The decision unit for curation is the *term* — the distinct
     ``(source_origin, category, subcategory)`` triple — not the transaction:
-    many rows can carry the same imported text. ``row_count`` is how many
-    ``prep.int_transactions__matched`` rows carry this exact term;
+    many rows can carry the same imported text. ``transaction_count`` is how
+    many transactions mapping this term would categorize on the next sweep;
     ``suggestions`` are up to 3 ``did_you_mean`` guesses against active
     MoneyBin category names, for a curator choosing where to map it.
     """
@@ -124,7 +124,7 @@ class UnmappedSourceTerm:
     source_origin: str
     category: str
     subcategory: str | None
-    row_count: int
+    transaction_count: int
     suggestions: list[str]
 
 
@@ -171,9 +171,15 @@ class CategorizationQueries:
         (``source_category_bridge_match_predicate``) already share, so a
         term enumerated here binds correctly when resolved.
 
+        ``transaction_count`` counts only what the apply path would write:
+        distinct gold transactions not yet categorized by any source and not
+        already covered by another member's mapping. A transaction carrying
+        two unmapped terms counts under each, since either mapping alone
+        would resolve it. A term with nothing left to resolve is omitted.
+
         ``namespace`` optionally filters to one ``source_origin``. Results
-        are ordered by affected-row count descending, then the term itself,
-        so the biggest wins surface first — per the owner's ruling, curation
+        are ordered by that count descending, then the term itself, so the
+        biggest wins surface first — per the owner's ruling, curation
         answers ~17 term-questions, not ~879 row-questions.
 
         Degrades to an empty list when ``prep.int_transactions__matched``
@@ -181,14 +187,31 @@ class CategorizationQueries:
         ``_source_category_bridge_candidates``.
         """
         sql = f"""
+            WITH mapped AS (
+                SELECT DISTINCT m.transaction_id
+                FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                JOIN {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
+                    ON {
+            source_category_bridge_match_predicate(
+                "m.source_origin", "m.category", "m.subcategory"
+            )
+        }
+                JOIN {CATEGORIES.full_name} AS dc ON dc.category_id = b.category_id
+            )
             SELECT
                 m.source_origin,
                 m.category,
                 COALESCE(m.subcategory, '') AS subcategory,
-                COUNT(*) AS row_count
+                COUNT(DISTINCT m.transaction_id) AS transaction_count
             FROM {INT_TRANSACTIONS_MATCHED.full_name} AS m
+            LEFT JOIN {TRANSACTION_CATEGORIES.full_name} AS tc
+                ON tc.transaction_id = m.transaction_id
             WHERE m.category IS NOT NULL
                 AND m.source_origin IS NOT NULL
+                AND tc.transaction_id IS NULL
+                AND NOT EXISTS (
+                    SELECT 1 FROM mapped WHERE mapped.transaction_id = m.transaction_id
+                )
                 AND NOT EXISTS (
                     SELECT 1 FROM {BRIDGE_CATEGORY_SOURCE_MAP.full_name} AS b
                     WHERE {
@@ -204,7 +227,7 @@ class CategorizationQueries:
             params.append(namespace)
         sql += """
             GROUP BY m.source_origin, m.category, COALESCE(m.subcategory, '')
-            ORDER BY row_count DESC, m.source_origin, m.category,
+            ORDER BY transaction_count DESC, m.source_origin, m.category,
                 COALESCE(m.subcategory, '')
         """
         try:
@@ -218,10 +241,10 @@ class CategorizationQueries:
                 source_origin=str(source_origin),
                 category=str(category),
                 subcategory=str(subcategory) if subcategory else None,
-                row_count=int(row_count),
+                transaction_count=int(transaction_count),
                 suggestions=did_you_mean(str(category), valid_categories),
             )
-            for source_origin, category, subcategory, row_count in rows
+            for source_origin, category, subcategory, transaction_count in rows
         ]
 
     def _fct_transactions_exists(self) -> bool:

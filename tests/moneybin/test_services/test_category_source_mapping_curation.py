@@ -131,7 +131,7 @@ class TestListUnmappedSourceTerms:
         assert terms[0].source_origin == "chase_credit"
         assert terms[0].category == "Some Unmapped Category"
         assert terms[0].subcategory is None
-        assert terms[0].row_count == 1
+        assert terms[0].transaction_count == 1
 
     @pytest.mark.unit
     def test_term_with_bridge_row_does_not_appear(self, db: Database) -> None:
@@ -184,10 +184,12 @@ class TestListUnmappedSourceTerms:
 
         assert len(terms) == 1, "NULL and '' subcategory must collapse to one term"
         assert terms[0].subcategory is None
-        assert terms[0].row_count == 2, "count must reflect both affected rows"
+        assert terms[0].transaction_count == 2, (
+            "count must reflect both affected transactions"
+        )
 
     @pytest.mark.unit
-    def test_count_reflects_affected_rows_not_terms(self, db: Database) -> None:
+    def test_count_reflects_affected_transactions_not_terms(self, db: Database) -> None:
         refresh_views(db)
         for i in range(3):
             _insert_matched_txn(
@@ -202,10 +204,10 @@ class TestListUnmappedSourceTerms:
         terms = CategorizationService(db).list_unmapped_source_terms()
 
         assert len(terms) == 1
-        assert terms[0].row_count == 3
+        assert terms[0].transaction_count == 3
 
     @pytest.mark.unit
-    def test_ordered_by_row_count_descending(self, db: Database) -> None:
+    def test_ordered_by_transaction_count_descending(self, db: Database) -> None:
         refresh_views(db)
         _insert_matched_txn(
             db,
@@ -305,6 +307,107 @@ class TestListUnmappedSourceTerms:
         refresh_views(db)
         terms = CategorizationService(db).list_unmapped_source_terms()
         assert terms == []
+
+    @pytest.mark.unit
+    def test_already_categorized_transaction_is_not_counted(self, db: Database) -> None:
+        """The apply path never overwrites a categorization, so neither does the count."""
+        refresh_views(db)
+        for transaction_id in ("t_done", "t_open"):
+            _insert_matched_txn(
+                db,
+                transaction_id,
+                source_type="tabular",
+                source_origin="chase_credit",
+                category="Partly Done",
+                subcategory=None,
+            )
+        _insert_matched_txn(
+            db,
+            "t_only_done",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="All Done",
+            subcategory=None,
+        )
+        db.execute(
+            "INSERT INTO app.transaction_categories "
+            "(transaction_id, category, categorized_by, rule_id, merchant_id) "
+            "VALUES ('t_done', 'Shopping', 'user', NULL, NULL), "
+            "('t_only_done', 'Shopping', 'rule', 'r_1', NULL)"
+        )
+
+        terms = CategorizationService(db).list_unmapped_source_terms()
+
+        assert [(t.category, t.transaction_count) for t in terms] == [
+            ("Partly Done", 1)
+        ]
+
+    @pytest.mark.unit
+    def test_merged_members_with_the_same_term_count_once(self, db: Database) -> None:
+        """Two source rows merged into one transaction are one transaction to resolve."""
+        refresh_views(db)
+        for source_transaction_id in ("src_a", "src_b"):
+            _insert_matched_txn(
+                db,
+                "gold_1",
+                source_type="tabular",
+                source_origin="chase_credit",
+                category="Duplicated Export",
+                subcategory=None,
+                source_transaction_id=source_transaction_id,
+            )
+
+        terms = CategorizationService(db).list_unmapped_source_terms()
+
+        assert len(terms) == 1
+        assert terms[0].transaction_count == 1
+
+    @pytest.mark.unit
+    def test_transaction_covered_by_another_members_mapping_is_not_counted(
+        self, db: Database
+    ) -> None:
+        """A merge group the bridge already resolves through a sibling member is not work."""
+        refresh_views(db)
+        _seed_bridge_mapping(
+            db,
+            source_category_code="Groceries",
+            code_level="detailed",
+            category_id="cat-groceries",
+            category="Food & Dining",
+            subcategory="Groceries",
+        )
+        _insert_matched_txn(
+            db,
+            "gold_2",
+            source_type="tabular",
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+            source_transaction_id="src_mapped",
+        )
+        _insert_matched_txn(
+            db,
+            "gold_2",
+            source_type="tabular",
+            source_origin="amex_gold",
+            category="Unmapped Twin",
+            subcategory=None,
+            source_transaction_id="src_unmapped",
+        )
+        _insert_matched_txn(
+            db,
+            "gold_3",
+            source_type="tabular",
+            source_origin="amex_gold",
+            category="Unmapped Twin",
+            subcategory=None,
+        )
+
+        terms = CategorizationService(db).list_unmapped_source_terms()
+
+        assert [(t.source_origin, t.category, t.transaction_count) for t in terms] == [
+            ("amex_gold", "Unmapped Twin", 1)
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -458,3 +561,49 @@ class TestResolveSourceTerm:
         assert row is None, (
             "category creation must roll back when the mapping write fails"
         )
+
+    @pytest.mark.unit
+    def test_outcome_counter_tells_added_from_updated(self, db: Database) -> None:
+        refresh_views(db)
+        service = CategorizationService(db)
+        first = service.create_category("Counter First", actor="test")
+        second = service.create_category("Counter Second", actor="test")
+        added_before = _mapping_outcomes("added")
+        updated_before = _mapping_outcomes("updated")
+
+        for category_id in (first, second):
+            service.resolve_source_term(
+                source_origin="chase_credit",
+                category="Counted Term",
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+
+        assert _mapping_outcomes("added") == added_before + 1
+        assert _mapping_outcomes("updated") == updated_before + 1
+
+    @pytest.mark.unit
+    def test_outcome_counter_records_a_refusal(self, db: Database) -> None:
+        refresh_views(db)
+        refused_before = _mapping_outcomes("refused")
+        added_before = _mapping_outcomes("added")
+
+        with pytest.raises(UserError):
+            CategorizationService(db).resolve_source_term(
+                source_origin="chase_credit",
+                category="Whatever",
+                subcategory=None,
+                category_id="does-not-exist",
+                actor="test",
+            )
+
+        assert _mapping_outcomes("refused") == refused_before + 1
+        assert _mapping_outcomes("added") == added_before
+
+
+def _mapping_outcomes(outcome: str) -> float:
+    """Current value of the mapping-outcome counter for one outcome label."""
+    from moneybin.metrics.registry import CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL
+
+    return CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome=outcome)._value.get()  # type: ignore[reportPrivateUsage]  # prometheus internals

@@ -525,6 +525,14 @@ CATEGORIZE_PROVIDER_NATIVE_TOTAL = Counter(
     ["source_type", "trigger"],
 )
 
+CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL = Counter(
+    "moneybin_category_source_mapping_outcomes_total",
+    "Outcomes of curating one imported category term into "
+    "app.category_source_map via resolve_source_term.",
+    # outcome: added | updated | refused
+    ["outcome"],
+)
+
 AUTO_RULE_PATTERN_DOWNGRADED_TOTAL = Counter(
     "moneybin_auto_rule_pattern_downgraded_total",
     "Machine-invented auto-rule patterns proposed as 'exact' rather than "
@@ -1231,6 +1239,7 @@ METRIC_DOMAINS: dict[str, str] = {
     "moneybin_categorize_match_outcome": "Categorization",
     "moneybin_categorize_write_skipped_precedence": "Categorization",
     "moneybin_categorize_provider_native": "Categorization",
+    "moneybin_category_source_mapping_outcomes": "Categorization",
     "moneybin_auto_rule_pattern_downgraded": "Categorization",
     "moneybin_auto_rule_broad_pending": "Categorization",
     "moneybin_auto_rule_broad_accept_blocked": "Categorization",

@@ -788,7 +788,7 @@
     "exemption": null
   },
   {
-    "capability_id": "category_source_mappings.curate",
+    "capability_id": "taxonomy.source-categories.curate",
     "mcp_tools": [],
     "cli_commands": [
       "categories mappings pending",

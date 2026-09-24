@@ -433,8 +433,9 @@ moneybin [--profile NAME] [--verbose] <command> [--output text|json] [--quiet] [
 |   +-- mappings                   -- Map a source's own category text to a MoneyBin category
 |       +-- pending [--namespace <source_origin>] [--output json] [--quiet]
 |       |         Distinct unmapped (source_origin, category, subcategory) terms, one row per
-|       |         term with the count of rows it affects and up to 3 suggestions drawn from
-|       |         active categories; most-affected first.
+|       |         term with the count of uncategorized transactions mapping it would
+|       |         categorize and up to 3 suggestions drawn from active categories;
+|       |         largest count first. A term with nothing left to categorize is omitted.
 |       +-- set --namespace <source_origin> --category <text> [--subcategory <text>]
 |                 --into <category_id> | --new <name>
 |                 Map one term to an existing category (--into), or create a category and

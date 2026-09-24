@@ -44,6 +44,7 @@ from moneybin.matching.aliasing import (
 )
 from moneybin.metrics.registry import (
     CATEGORIZE_WRITE_SKIPPED_PRECEDENCE_TOTAL,
+    CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL,
     MERCHANT_EXEMPLAR_COUNT,
     RULE_CREATE_UNSELECTIVE_CONTAINS_BLOCKED_TOTAL,
 )
@@ -1377,35 +1378,43 @@ class MatchApplier:
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
                 ``category_id`` does not name an existing category.
         """
-        if (category_id is None) == (new_category is None):
-            raise UserError(
-                "Specify exactly one of category_id or new_category",
-                code=error_codes.MUTATION_INVALID_INPUT,
-            )
-        with self._transaction():
-            if new_category is not None:
-                resolved_category_id = self.create_category(
-                    new_category, actor=actor, in_outer_txn=True
+        try:
+            if (category_id is None) == (new_category is None):
+                raise UserError(
+                    "Specify exactly one of category_id or new_category",
+                    code=error_codes.MUTATION_INVALID_INPUT,
                 )
-            else:
-                resolved_category_id = cast(str, category_id)
-                exists = self._db.execute(
-                    f"SELECT 1 FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
-                    [resolved_category_id],
-                ).fetchone()
-                if not exists:
-                    raise UserError(
-                        f"Category {resolved_category_id} not found",
-                        code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+            with self._transaction():
+                if new_category is not None:
+                    resolved_category_id = self.create_category(
+                        new_category, actor=actor, in_outer_txn=True
                     )
-            self._category_source_map.upsert(
-                source_type=source_origin,
-                category=category,
-                subcategory=subcategory,
-                category_id=resolved_category_id,
-                actor=actor,
-                in_outer_txn=True,
-            )
+                else:
+                    resolved_category_id = cast(str, category_id)
+                    exists = self._db.execute(
+                        f"SELECT 1 FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
+                        [resolved_category_id],
+                    ).fetchone()
+                    if not exists:
+                        raise UserError(
+                            f"Category {resolved_category_id} not found",
+                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                        )
+                event = self._category_source_map.upsert(
+                    source_type=source_origin,
+                    category=category,
+                    subcategory=subcategory,
+                    category_id=resolved_category_id,
+                    actor=actor,
+                    in_outer_txn=True,
+                )
+        except UserError:
+            CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(outcome="refused").inc()
+            raise
+        # Recorded only after the transaction commits, so a rollback never counts.
+        CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(
+            outcome="added" if event.before_value is None else "updated"
+        ).inc()
         return resolved_category_id
 
     def _complete_rows(

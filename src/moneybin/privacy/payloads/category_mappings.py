@@ -43,7 +43,7 @@ class UnmappedSourceTermRow:
     source_origin: Annotated[str, DataClass.TXN_TYPE]
     category: Annotated[str, DataClass.CATEGORY]
     subcategory: Annotated[str | None, DataClass.CATEGORY]
-    row_count: Annotated[int, DataClass.AGGREGATE]
+    transaction_count: Annotated[int, DataClass.AGGREGATE]
     suggestions: Annotated[list[str], DataClass.CATEGORY]
 
     @classmethod
@@ -53,7 +53,7 @@ class UnmappedSourceTermRow:
             source_origin=term.source_origin,
             category=term.category,
             subcategory=term.subcategory,
-            row_count=term.row_count,
+            transaction_count=term.transaction_count,
             suggestions=list(term.suggestions),
         )
 

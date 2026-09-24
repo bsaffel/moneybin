@@ -52,7 +52,7 @@ class TestMappingsPending:
                 source_origin="chase_credit",
                 category="Groceries",
                 subcategory=None,
-                row_count=42,
+                transaction_count=42,
                 suggestions=["Food & Dining"],
             )
         ]
@@ -76,7 +76,7 @@ class TestMappingsPending:
                 source_origin="amex_gold",
                 category="Auto",
                 subcategory="Gas",
-                row_count=7,
+                transaction_count=7,
                 suggestions=["Transportation"],
             )
         ]
@@ -91,7 +91,7 @@ class TestMappingsPending:
         assert terms[0]["source_origin"] == "amex_gold"
         assert terms[0]["category"] == "Auto"
         assert terms[0]["subcategory"] == "Gas"
-        assert terms[0]["row_count"] == 7
+        assert terms[0]["transaction_count"] == 7
         assert terms[0]["suggestions"] == ["Transportation"]
 
     @patch("moneybin.cli.commands.categories.mappings.get_database")

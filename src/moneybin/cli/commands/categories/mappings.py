@@ -57,8 +57,9 @@ def mappings_pending(
 
     Each term is a distinct (namespace, category, subcategory) triple pulled
     from imported transaction data — the decision unit is the term, not the
-    transaction, so a handful of terms can stand behind many affected rows.
-    Shows the affected row count and up to 3 suggested MoneyBin categories.
+    transaction, so a handful of terms can stand behind many transactions.
+    Shows how many uncategorized transactions mapping each term would
+    categorize, and up to 3 suggested MoneyBin categories.
     Use `categories mappings set` to resolve each term.
     """
     from moneybin.services.categorization import CategorizationService
@@ -91,18 +92,24 @@ def mappings_pending(
     if payload.terms:
         parts.append(
             build_rows(
-                ["namespace", "category", "subcategory", "rows", "suggestions"],
+                [
+                    "namespace",
+                    "category",
+                    "subcategory",
+                    "transactions",
+                    "suggestions",
+                ],
                 [
                     (
                         t.source_origin,
                         t.category,
                         t.subcategory or "-",
-                        t.row_count,
+                        t.transaction_count,
                         ", ".join(t.suggestions) or "-",
                     )
                     for t in payload.terms
                 ],
-                numeric=("rows",),
+                numeric=("transactions",),
                 terminal=policy,
             )
         )

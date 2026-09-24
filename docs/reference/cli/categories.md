@@ -112,8 +112,9 @@ List imported category-vocabulary terms with no curated mapping.
 
 Each term is a distinct (namespace, category, subcategory) triple pulled
 from imported transaction data — the decision unit is the term, not the
-transaction, so a handful of terms can stand behind many affected rows.
-Shows the affected row count and up to 3 suggested MoneyBin categories.
+transaction, so a handful of terms can stand behind many transactions.
+Shows how many uncategorized transactions mapping each term would
+categorize, and up to 3 suggested MoneyBin categories.
 Use `categories mappings set` to resolve each term.
 
 Usage: `moneybin categories mappings pending [OPTIONS]`
