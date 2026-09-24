@@ -56,8 +56,6 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 › Run reports(report_id='core:net_worth') for the single home-currency total
 › Run reports(report_id='core:net_worth_accounts') for the account-level
 breakdown
-› Run `moneybin profile set home_currency <CODE>` to get converted totals; this
-profile has no usable home currency
 
 $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no-pager
 ┏━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
@@ -75,8 +73,9 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-accounts --no
 4 of 14 columns shown — --wide for all
 ```
 
-The account report's three next-step hints are trimmed above. The `*_home`
-columns stay `-` until a home currency is set.
+Each report's third hint, which points to `moneybin profile set home_currency`
+because this profile has none, and the account report's other two hints are
+trimmed above. The `*_home` columns stay `-` until a home currency is set.
 
 The doctor reports this as a warning: the profile is internally coherent, but
 it cannot produce one combined figure until it has rates for the requested
@@ -168,13 +167,12 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 │ USD           │ USD              │ 2025-12-27   │  6,294.20 │       6,294.20 │
 └───────────────┴──────────────────┴──────────────┴───────────┴────────────────┘
 5 of 14 columns shown — --wide for all
-
-Converted from AED, CAD, EUR, GBP using 4 stored rates; run 'moneybin --profile
-cli-ux-international fx rate AED USD 2025-12-27' for one of them, or --output
-json for all
 ```
 
-The currency report's two next-step hints are trimmed above.
+The currency report's closing disclosure and two next-step hints are trimmed
+above. The disclosure reads "Converted from AED, CAD, EUR, GBP using 4 stored
+rates" and points to `moneybin fx rate AED USD 2025-12-27` for any one of them,
+or `--output json` for all.
 `reports net-worth-accounts` takes the same dates and prices each account the
 same way.
 
