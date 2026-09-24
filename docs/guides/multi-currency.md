@@ -148,8 +148,6 @@ $ uv run moneybin --profile cli-ux-international reports net-worth --from-date 2
 └──────────────┴─────────────────────────┴────────────┘
 3 of 9 columns shown — --wide for all
 
-› Run reports(report_id='core:net_worth', parameters={'interval': 'monthly'}) for period-over-period
-change
 › Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --from-date 2025-12-27 --to-date 2025-12-27 --no-pager
 ┏━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
@@ -164,7 +162,8 @@ $ uv run moneybin --profile cli-ux-international reports net-worth-currencies --
 5 of 14 columns shown — --wide for all
 ```
 
-The currency report's closing disclosure and two next-step hints are trimmed
+The net-worth report's first hint, which points to `--interval monthly`, and
+the currency report's closing disclosure and two next-step hints are trimmed
 above. The disclosure reads "Converted from AED, CAD, EUR, GBP using 4 stored
 rates" and points to `moneybin fx rate AED USD 2025-12-27` for any one of them,
 or `--output json` for all.

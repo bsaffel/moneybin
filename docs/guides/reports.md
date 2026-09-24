@@ -8,7 +8,7 @@ beside them. One catalog serves every surface: `moneybin reports …` on the CLI
 the `reports` MCP tool, and `moneybin export report`. Same report ids, same
 parameters, same masking.
 
-Every transcript below is real output from the family demo persona at a 100-column width, trimmed only by whole lines; the one other edit is the trailing space the renderer leaves where it wraps a long line, which the repository strips from every file:
+Every transcript below is real output from the family demo persona at a 100-column width, trimmed only by whole lines:
 
 ```bash
 uv run moneybin demo --persona family
@@ -78,8 +78,6 @@ $ uv run moneybin reports net-worth --interval monthly --from-date 2025-01-01 --
 
 › Run reports(report_id='core:net_worth') for the single latest-day total
 › Run reports(report_id='core:net_worth_accounts') for the account-level breakdown
-› Set from_date to bound a recent window — rows return oldest-first, so a row limit keeps the
-earliest buckets, not the most recent
 ```
 
 `net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.
@@ -104,8 +102,6 @@ $ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12
 └─────────────────────┴───────────────┴────────────┴─────────────┴────────────────────────┘
 5 of 12 columns shown — --wide for all
 
-› Run reports(report_id='core:spending_trend', parameters={'category': '<name>'}) to filter to one
-category
 › Run reports(report_id='core:cash_flow') for inflow, outflow, and net
 › Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
 ```
@@ -134,8 +130,6 @@ $ uv run moneybin reports spending-trend --from-month 2025-01 --to-month 2025-12
 └──────────────┴───────────────┴────────────┴─────────────┴───────────────────────┘
 5 of 12 columns shown — --wide for all
 
-› Run reports(report_id='core:spending_trend', parameters={'category': '<name>'}) to filter to one
-category
 › Run reports(report_id='core:cash_flow') for inflow, outflow, and net
 › Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns
 ```
@@ -260,8 +254,6 @@ Twenty-five rows come back on this persona (the default `--top`); twenty are tri
 
 ```console
 $ uv run moneybin reports balance-drift
-› Rerun reports(report_id='core:balance_drift', parameters={'account': '<name or id>'}) to filter to
-one account
 › Rerun reports(report_id='core:balance_drift', parameters={'status': 'drift'}) to show drift rows
 ```
 
