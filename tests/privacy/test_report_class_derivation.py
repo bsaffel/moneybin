@@ -289,6 +289,7 @@ def test_core_excludes_views_the_deriver_cannot_resolve() -> None:
         "core.dim_holdings",  # reads prep.stg_plaid__investment_holdings* and core.fct_security_prices
         "core.dim_holdings_broker_reported",  # reads prep.stg_plaid__accounts and prep.stg_plaid__investment_holdings*
         "core.dim_securities",  # unaliased single-table SELECT (no qualify())
+        "core.dim_unanchored_accounts",  # evidence CTE's UNION ALL branches are unaliased single-table SELECTs
         "core.fct_balances",  # bare SELECT * inside a UNION ALL branch
         "core.fct_exchange_rates",  # reads prep.stg_exchange_rates
         "core.fct_exchange_rates_effective",  # GENERATE_SERIES(...) AS s(...) in uncovered_spine's FROM clause

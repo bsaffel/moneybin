@@ -956,6 +956,14 @@ CLASSIFICATION: dict[tuple[str, str], dict[str, DataClass]] = {
         # same concept, so it takes the same class throughout.
         "as_of": DataClass.TXN_DATE,
     },
+    ("core", "dim_unanchored_accounts"): {
+        "account_id": DataClass.RECORD_ID,
+        # Evidence flags — booleans take TXN_TYPE.
+        "has_holdings": DataClass.TXN_TYPE,
+        "has_broker_position": DataClass.TXN_TYPE,
+        "has_transactions": DataClass.TXN_TYPE,
+        "has_investment_transactions": DataClass.TXN_TYPE,
+    },
     ("core", "dim_merchants"): {
         "canonical_name": DataClass.MERCHANT_NAME,
         "category": DataClass.CATEGORY,

@@ -719,6 +719,20 @@ EXAMPLES: dict[str, list[Example]] = {
             """,
         ),
     ],
+    "core.dim_unanchored_accounts": [
+        Example(
+            question="Which accounts hold value but have no balance observation, "
+            "and what shows they hold value?",
+            sql="""
+                SELECT u.account_id, a.display_name, u.has_holdings,
+                       u.has_broker_position, u.has_transactions,
+                       u.has_investment_transactions
+                FROM core.dim_unanchored_accounts AS u
+                JOIN core.dim_accounts AS a USING (account_id)
+                ORDER BY a.display_name
+            """,
+        ),
+    ],
     "core.fct_security_prices": [
         Example(
             question="Price history for one security, most recent first "

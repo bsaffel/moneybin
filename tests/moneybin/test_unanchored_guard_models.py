@@ -247,3 +247,122 @@ def test_broker_reported_relink_zero_as_of_is_the_older_receipt(
     _receipt(guard_db, "item_old", "sync_a", "2026-08-01 10:00:00")
     _receipt(guard_db, "item_new", "sync_b", "2026-09-01 10:00:00")
     assert _broker(guard_db)["inv"] == (False, date(2026, 8, 1))
+
+
+# ---------------------------------------------------------------------------
+# core.dim_unanchored_accounts
+# ---------------------------------------------------------------------------
+
+
+def _install_unanchored_sources(db: Database) -> None:
+    db.execute("CREATE SCHEMA IF NOT EXISTS core")
+    db.execute(
+        "CREATE TABLE core.dim_holdings (account_id VARCHAR, security_id VARCHAR)"
+    )
+    db.execute(
+        "CREATE TABLE core.dim_holdings_broker_reported "
+        "(account_id VARCHAR, has_position BOOLEAN, as_of DATE)"
+    )
+    db.execute(
+        "CREATE TABLE core.fct_transactions (account_id VARCHAR, amount DECIMAL(18, 2))"
+    )
+    db.execute(
+        "CREATE TABLE core.fct_investment_transactions "
+        "(account_id VARCHAR, subtype VARCHAR, quantity DECIMAL(28, 10), amount DECIMAL(18, 2))"
+    )
+    db.execute("CREATE TABLE core.fct_balances (account_id VARCHAR, balance_date DATE)")
+    _install_core_view(db, "dim_unanchored_accounts")
+
+
+def _unanchored(db: Database) -> dict[str, tuple[bool, bool, bool, bool]]:
+    rows = db.execute(
+        "SELECT account_id, has_holdings, has_broker_position, has_transactions, "
+        "has_investment_transactions FROM core.dim_unanchored_accounts"
+    ).fetchall()
+    return {str(r[0]): (r[1], r[2], r[3], r[4]) for r in rows}
+
+
+def test_unanchored_open_lot_arm(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute("INSERT INTO core.dim_holdings VALUES ('lots', 'sec_1')")
+    assert _unanchored(guard_db) == {"lots": (True, False, False, False)}
+
+
+def test_unanchored_broker_position_arm_needs_true(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute(
+        "INSERT INTO core.dim_holdings_broker_reported VALUES "
+        "('pos', TRUE, DATE '2026-09-01'), ('zero', FALSE, DATE '2026-09-01'), "
+        "('unknown', NULL, DATE '2026-09-01')"
+    )
+    assert _unanchored(guard_db) == {"pos": (False, True, False, False)}
+
+
+def test_unanchored_cash_ledger_arm(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute("INSERT INTO core.fct_transactions VALUES ('cash', -25.00)")
+    assert _unanchored(guard_db) == {"cash": (False, False, True, False)}
+
+
+def test_unanchored_dividend_only_arm(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute(
+        "INSERT INTO core.fct_investment_transactions VALUES ('div', 'dividend', NULL, 12.00)"
+    )
+    assert _unanchored(guard_db) == {"div": (False, False, False, True)}
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        # Sold at cost: the pair nets to exactly zero.
+        [("buy", "10", "-1000.00"), ("sell", "-10", "1000.00")],
+        # Sold at a gain, the sell row is the only cash evidence.
+        [("buy", "10", "-1000.00"), ("sell", "-10", "1250.00")],
+        # A synthetic opening-lot bootstrap sold at its synthesized cost.
+        [("opening_bootstrap", "10", "-1000.00"), ("sell", "-10", "1000.00")],
+    ],
+)
+def test_unanchored_investment_ledger_is_existential_never_a_sum(
+    guard_db: Database, rows: list[tuple[str, str, str]]
+) -> None:
+    """Cash held is never decisive at zero, whatever produced the zero."""
+    _install_unanchored_sources(guard_db)
+    guard_db.execute(
+        "INSERT INTO core.dim_holdings_broker_reported VALUES ('liq', FALSE, DATE '2026-09-01')"
+    )
+    for subtype, quantity, amount in rows:
+        guard_db.execute(
+            "INSERT INTO core.fct_investment_transactions VALUES ('liq', ?, ?, ?)",
+            [subtype, quantity, amount],
+        )
+    assert "liq" in _unanchored(guard_db)
+
+
+def test_unanchored_a_balance_row_anchors_the_account(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute("INSERT INTO core.fct_transactions VALUES ('anchored', -25.00)")
+    guard_db.execute(
+        "INSERT INTO core.fct_balances VALUES ('anchored', DATE '2026-01-31')"
+    )
+    assert _unanchored(guard_db) == {}
+
+
+def test_unanchored_no_evidence_is_the_residual_gap(guard_db: Database) -> None:
+    """No holding, no transaction, no balance: stays out, by design."""
+    _install_unanchored_sources(guard_db)
+    guard_db.execute(
+        "INSERT INTO core.dim_holdings_broker_reported VALUES ('empty', FALSE, DATE '2026-09-01')"
+    )
+    assert _unanchored(guard_db) == {}
+
+
+def test_unanchored_one_row_per_account_across_arms(guard_db: Database) -> None:
+    _install_unanchored_sources(guard_db)
+    guard_db.execute(
+        "INSERT INTO core.dim_holdings VALUES ('multi', 'a'), ('multi', 'b')"
+    )
+    guard_db.execute(
+        "INSERT INTO core.fct_transactions VALUES ('multi', 1), ('multi', 2)"
+    )
+    assert _unanchored(guard_db) == {"multi": (True, False, True, False)}

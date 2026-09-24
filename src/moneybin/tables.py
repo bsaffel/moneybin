@@ -146,6 +146,9 @@ DIM_HOLDINGS = TableRef("core", "dim_holdings", audience="interface")
 DIM_HOLDINGS_BROKER_REPORTED = TableRef(
     "core", "dim_holdings_broker_reported", audience="interface"
 )
+DIM_UNANCHORED_ACCOUNTS = TableRef(
+    "core", "dim_unanchored_accounts", audience="interface"
+)
 SECURITY_PRICES = TableRef("raw", "security_prices")
 SECURITY_PRICE_OVERRIDES = TableRef("app", "security_price_overrides")
 FCT_SECURITY_PRICES = TableRef("core", "fct_security_prices", audience="interface")
