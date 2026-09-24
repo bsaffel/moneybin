@@ -21,26 +21,26 @@ MODEL (
 
 WITH evidence AS (
   SELECT DISTINCT
-    account_id,
+    h.account_id,
     'holdings' AS evidence_source
-  FROM core.dim_holdings
+  FROM core.dim_holdings AS h
   UNION ALL
   SELECT
-    account_id,
+    r.account_id,
     'broker_position' AS evidence_source
-  FROM core.dim_holdings_broker_reported
+  FROM core.dim_holdings_broker_reported AS r
   WHERE
-    has_position
+    r.has_position
   UNION ALL
   SELECT DISTINCT
-    account_id,
+    t.account_id,
     'transactions' AS evidence_source
-  FROM core.fct_transactions
+  FROM core.fct_transactions AS t
   UNION ALL
   SELECT DISTINCT
-    account_id,
+    i.account_id,
     'investment_transactions' AS evidence_source
-  FROM core.fct_investment_transactions
+  FROM core.fct_investment_transactions AS i
 )
 SELECT
   e.account_id, /* Grain. Foreign key to core.dim_accounts */
