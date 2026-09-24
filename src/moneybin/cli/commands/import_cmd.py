@@ -1088,11 +1088,8 @@ def _sign_assumed_notice(sign_assumed: str, import_id: str | None) -> str:
     positives, and rows with source ids are ignored on re-import and keep the
     wrong sign. Revert first; the id is the one `import history` shows.
     """
-    revert = (
-        f"revert it with 'moneybin import revert {import_id}'"
-        if import_id
-        else "revert it with 'moneybin import revert <import_id>'"
-    )
+    revert_cmd = generated_cli_command("import", "revert", import_id or "<import_id>")
+    revert = f"revert it with '{revert_cmd}'"
     return (
         f"Sign convention assumed: {sign_assumed} (all amounts appear positive). "
         f"If expense amounts look wrong, {revert} and re-import the file with "
@@ -1110,11 +1107,12 @@ def _batch_sign_assumed_notice(files: list[tuple[str, str | None]]) -> str:
         f"{Path(file_path).name} (import {import_id or '<import_id>'})"
         for file_path, import_id in files
     )
+    revert_cmd = generated_cli_command("import", "revert", "<import_id>")
     return (
         f"Sign convention assumed for {named} (all amounts appear positive). "
-        "If expense amounts look wrong, revert each with 'moneybin import revert "
-        "<import_id>' and re-import that file on its own with --sign "
-        "negative_is_income; --sign is ignored when several files import together."
+        f"If expense amounts look wrong, revert each with '{revert_cmd}' and "
+        "re-import that file on its own with --sign negative_is_income; --sign "
+        "is ignored when several files import together."
     )
 
 

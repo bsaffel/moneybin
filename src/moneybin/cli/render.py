@@ -817,6 +817,21 @@ def build_summary(
     return Group(*lines)
 
 
+def build_code(text: str) -> RenderableType:
+    """A code block — SQL, a template — carried inside one answer.
+
+    Plain `Text`, so a line longer than the terminal wraps at a space and
+    never inside a token: joining the wrapped lines with single spaces gives
+    the statement back. Not `no_wrap` with `overflow="ignore"`, because
+    `render_human_text` crops every line to the console width and a cropped
+    statement loses its tail with no mark. Not `build_summary`, whose label
+    grid pads and reflows a value as prose.
+    """
+    from rich.text import Text
+
+    return Text(text)
+
+
 def compose_human_result(
     parts: Sequence[object], *, disclosures: Sequence[str] = ()
 ) -> RenderableType:

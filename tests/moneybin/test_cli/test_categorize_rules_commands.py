@@ -623,6 +623,74 @@ def test_rules_create_title_says_no_rules_created_when_all_refused(
 
 @patch("moneybin.services.categorization.CategorizationService")
 @patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_title_says_already_exist_when_nothing_was_refused(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """Re-running the same create is an idempotent success, not a failure."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=1,
+        skipped=0,
+        error_details=[],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(app, _ARGS)
+
+    assert result.exit_code == 0, result.output
+    assert "Rules already exist" in result.stdout
+    assert "No rules created" not in result.stdout
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
+def test_rules_create_exact_match_rerun_carries_the_scoping_flags(
+    mock_get_db: MagicMock, mock_svc_cls: MagicMock
+) -> None:
+    """The suggested rerun recreates the refused rule, not a broader one."""
+    mock_get_db.return_value.__enter__.return_value = MagicMock()
+    svc = mock_svc_cls.return_value
+    svc.create_rules.return_value = RuleCreationResult(
+        created=0,
+        existing=0,
+        skipped=1,
+        error_details=[
+            {
+                "name": "Transfer TO",
+                "reason": "Pattern 'TO' is too short to be a 'contains' rule.",
+                "merchant_pattern": "TO",
+                "category": "Transfer",
+                "subcategory": "Internal Transfer",
+            }
+        ],
+        rule_ids=[],
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            *_ARGS,
+            "--account-id",
+            "acct1234",
+            "--min-amount",
+            "5",
+            "--priority",
+            "7",
+            "--reapply",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert (
+        "--match-type exact --account-id acct1234 --min-amount 5.0 --priority 7 "
+        "--reapply" in result.stderr
+    )
+
+
+@patch("moneybin.services.categorization.CategorizationService")
+@patch("moneybin.cli.commands.transactions.categorize.rules.get_database")
 def test_rules_create_shows_recategorized_count_after_reapply(
     mock_get_db: MagicMock, mock_svc_cls: MagicMock
 ) -> None:

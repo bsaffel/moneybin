@@ -2,6 +2,7 @@
 
 import json
 import logging
+from collections.abc import Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -154,7 +155,9 @@ def rules_apply() -> None:
     )
 
 
-def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
+def _warn_rule_create_rows(
+    result: "RuleCreationResult", *, carry: Sequence[str] = ()
+) -> None:
     """Report each failed and each refused row on stderr.
 
     Per-row warnings always surface — they're diagnostic, not informational —
@@ -162,6 +165,11 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
     than the logger: each names the rule its author named, and the log pipeline
     persists to disk where `SanitizedLogFormatter` cannot recognize
     user-authored text.
+
+    ``carry`` is the caller's own scoping flags (`--account-id`, amount
+    bounds, `--priority`, `--reapply`), appended to the exact-match rerun so
+    the suggested command creates the rule that was refused, not a broader
+    one: an account-scoped proposal must not come back account-agnostic.
     """
     for err in result.error_details:
         render_note(
@@ -185,7 +193,7 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
             subcategory = err.get("subcategory")
             if subcategory:
                 args.extend(["--subcategory", subcategory])
-            args.extend(["--match-type", "exact"])
+            args.extend(["--match-type", "exact", *carry])
             render_note(
                 f"› Rerun with an exact match: {generated_cli_command(*args)}",
                 warn=True,
@@ -337,6 +345,20 @@ def rules_create(
                 validated, reapply=reapply, actor="cli", allow_broad=allow_broad
             )
         result.merge_parse_errors(parse_errors)
+        # The flags a refused rule was created with, for its exact-match rerun.
+        # A --from-file batch carries none: each of its rules has its own.
+        carry: list[str] = []
+        if from_file is None:
+            if account_id:
+                carry += ["--account-id", account_id]
+            if min_amount is not None:
+                carry += ["--min-amount", str(min_amount)]
+            if max_amount is not None:
+                carry += ["--max-amount", str(max_amount)]
+            if priority is not None:
+                carry += ["--priority", str(priority)]
+            if reapply:
+                carry.append("--reapply")
         if result.conflicts > 0 and result.created == 0:
             # An error promises the call changed nothing. This batch routes
             # each row independently, so one call can create a rule *and*
@@ -346,7 +368,7 @@ def rules_create(
             # The notes go out first: the refusal below names no rule — a rule
             # name is its author's text and this message reaches the logger —
             # so they carry the conflict id the resolve command needs.
-            _warn_rule_create_rows(result)
+            _warn_rule_create_rows(result, carry=carry)
             raise UserError(
                 "A rule in this batch matches the same transactions as an "
                 "active rule and assigns a different category.",
@@ -379,14 +401,20 @@ def rules_create(
         render_or_json(envelope, output, cli_actor="rules_create")
     else:
         policy = get_terminal_policy()
-        if result.created > 0 and not (result.skipped or result.conflicts):
+        refused = bool(result.skipped or result.conflicts)
+        if result.created > 0 and not refused:
             title = f"{policy.symbols.success} Rules created"
         elif result.created > 0:
             title = f"{policy.symbols.attention} Rules partially created"
+        elif not refused and result.existing > 0:
+            # Every submitted rule already exists and nothing was refused:
+            # re-running the same create is an idempotent success, not a
+            # failure, and the command exits 0.
+            title = f"{policy.symbols.success} Rules already exist"
         else:
-            # created == 0 here always means every proposed rule was refused
-            # (or the batch was empty): a conflict-only zero-created batch
-            # already raised UserError above and never reaches this render.
+            # A conflict-only zero-created batch already raised UserError
+            # above, so reaching here means every proposed rule was refused
+            # (or the batch was empty).
             title = f"{policy.symbols.failure} No rules created"
         summary_pairs = [
             ("Created", str(result.created)),
@@ -406,7 +434,7 @@ def rules_create(
             receipt=True,
         )
 
-    _warn_rule_create_rows(result)
+    _warn_rule_create_rows(result, carry=carry)
 
     if result.skipped > 0:
         raise typer.Exit(1)

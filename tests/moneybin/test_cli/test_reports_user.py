@@ -1654,12 +1654,12 @@ def test_explain_help_offers_no_pager() -> None:
 
 
 def test_explain_prints_sql_verbatim_never_reflowed() -> None:
-    """Requirement 10: a code block is data — it never wraps like prose.
+    """Requirement 10: a code block is data — it never breaks inside a token.
 
     Long identifiers used to break mid-token when the SQL went through
-    `build_summary`'s word-wrap the same way a long path did. Printed via
-    `typer.echo` instead, the whole statement survives on one line regardless
-    of terminal width.
+    `build_summary`'s label grid the same way a long path did. As a code
+    block inside the one paged answer it wraps only at a space, so joining
+    the wrapped lines gives the statement back exactly.
     """
     long_sql = (
         "SELECT core.dim_accounts.account_id_with_a_very_long_column_alias_name "
@@ -1685,9 +1685,12 @@ def test_explain_prints_sql_verbatim_never_reflowed() -> None:
 
     assert result.exit_code == 0, result.output
     lines = result.output.splitlines()
-    assert long_sql in lines, "SQL was reflowed instead of printed verbatim"
     assert lines.count("SQL:") == 1
     assert lines.count("Template:") == 1
+    sql_block = lines[lines.index("SQL:") + 1 : lines.index("Template:")]
+    joined = " ".join(line.strip() for line in sql_block if line.strip())
+    assert joined == long_sql, "SQL was reflowed instead of wrapped at spaces"
+    assert "account_id_with_a_very_long_column_alias_name" in result.output
 
 
 def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
