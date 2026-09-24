@@ -40,7 +40,7 @@ The standard registry exposes 50 tools. Each entry below is the tool's client-vi
 | [`reviews_decide`](#reviews_decide) | Accept or reject an atomic batch of transaction, match, auto-rule, or rule-conflict review decisions. | write, idempotent | at least `low` |
 | [`sql_query`](#sql_query) | Execute a read-only SQL query against the database. | read-only, idempotent | up to `critical` |
 | [`sql_schema`](#sql_schema) | Return the curated database schema. | read-only, idempotent | up to `critical` |
-| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
+| [`sync_disconnect`](#sync_disconnect) | Disconnect one institution connection or clear profile-scoped sync credentials. | write, destructive, not idempotent, open world | at least `low` |
 | [`sync_link`](#sync_link) | Start a hosted institution-link or nonblocking device-login session. | write, not idempotent, open world | at least `medium` |
 | [`sync_pull`](#sync_pull) | Pull connected financial data. | write, not idempotent, open world | at least `medium` |
 | [`sync_status`](#sync_status) | Read global health, one link session, or advance one device-login session. | write, idempotent, open world | up to `medium` |
@@ -637,13 +637,14 @@ Access: read-only, idempotent. Sensitivity: up to `critical`.
 
 ### sync_disconnect
 
-Disconnect one institution or clear profile-scoped sync credentials.
+Disconnect one institution connection or clear profile-scoped sync credentials. Institution disconnect is permanent (no revert); logout is recoverable via sync_link(mode='login'). provider_item_id (from sync_status) targets one exact connection — required when an institution has more than one (e.g. after a relink), where institution alone is ambiguous. Mutually exclusive with institution.
 
 Access: write, destructive, not idempotent, open world. Sensitivity: at least `low`.
 
 | Parameter | Type | Default | Notes |
 |---|---|---|---|
 | `institution` | string |  |  |
+| `provider_item_id` | string |  |  |
 | `mode` | one of `institution`, `logout` | `institution` |  |
 | `confirmation_token` | string |  |  |
 

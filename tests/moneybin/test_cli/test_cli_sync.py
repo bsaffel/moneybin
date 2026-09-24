@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from moneybin import error_codes
 from moneybin.cli.main import app
 from moneybin.cli.output import OutputFormat
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
@@ -20,6 +22,7 @@ from moneybin.connectors.sync_models import (
     PullResult,
     SyncConnectionView,
 )
+from moneybin.errors import UserError
 from moneybin.services.refresh_outcome import RefreshStepOutcome
 
 runner = CliRunner()
@@ -668,6 +671,7 @@ def test_sync_link_declined_reauth_performs_no_link(
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         )
     ]
@@ -711,6 +715,7 @@ def test_sync_link_json_tty_refuses_ambiguous_reauth_without_prompt(
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         )
     ]
@@ -754,6 +759,7 @@ def test_sync_link_json_refuses_multiple_reauth_choices_without_initiating(
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         ),
         SyncConnectionView(
@@ -763,6 +769,7 @@ def test_sync_link_json_refuses_multiple_reauth_choices_without_initiating(
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -966,14 +973,208 @@ def test_sync_connect_status_alias_forwards_presentation_flags(
 @patch("moneybin.cli.commands.sync._build_sync_service")
 def test_sync_disconnect_requires_yes_or_confirm(mock_build: MagicMock) -> None:
     service = MagicMock()
+    service.disconnect.return_value.institution_name = "Chase"
     mock_build.return_value.__enter__.return_value = service
     result = runner.invoke(
         app, ["sync", "disconnect", "--institution", "Chase", "--yes"]
     )
     assert result.exit_code == 0, result.output
-    service.disconnect.assert_called_once_with(institution="Chase")
+    service.disconnect.assert_called_once_with(
+        institution="Chase", provider_item_id=None
+    )
     assert "Disconnected" in result.stdout
     assert "Chase" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_by_provider_item_id(mock_build: MagicMock) -> None:
+    """--provider-item-id targets one exact connection, bypassing name lookup."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--provider-item-id", "item_b", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    service.disconnect.assert_called_once_with(
+        institution=None, provider_item_id="item_b"
+    )
+    assert re.search(r"Institution:\s+Chase", result.output)
+    assert "Provider item ID: item_b" in result.output
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_json_carries_provider_item_id(mock_build: MagicMock) -> None:
+    """`--output json --yes` must carry provider_item_id, not just institution."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_b",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["institution"] == "Chase"
+    assert payload["data"]["provider_item_id"] == "item_b"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_json_keeps_nameless_institution_null(
+    mock_build: MagicMock,
+) -> None:
+    """`--output json` must not fall back to provider_item_id for institution.
+
+    Regression: a nameless connection used to write the raw provider_item_id
+    into the structured `institution` field. It must stay null, with the id
+    only in `provider_item_id`.
+    """
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--provider-item-id",
+            "item_c",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["data"]["institution"] is None
+    assert payload["data"]["provider_item_id"] == "item_c"
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_completion_receipt_labels_nameless_connection(
+    mock_build: MagicMock,
+) -> None:
+    """A nameless connection's receipt shows '-' for Institution, not the id.
+
+    Regression: the receipt used to fall back to printing the bare
+    provider_item_id under an "Institution" label. Now Institution and
+    Provider item ID are always separate rows, so a nameless connection
+    shows "Institution: -" plus its own "Provider item ID" row rather than
+    conflating the two.
+    """
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    service = MagicMock()
+    service.disconnect.return_value = ConnectedInstitution(
+        id="conn_c",
+        provider_item_id="item_c",
+        provider="plaid",
+        institution_name=None,
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(
+        app, ["sync", "disconnect", "--provider-item-id", "item_c", "--yes"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "Provider item ID: item_c" in result.output
+    assert re.search(r"Institution:\s+-", result.output)
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_rejects_both_institution_and_provider_item_id(
+    mock_build: MagicMock,
+) -> None:
+    """Both selectors refuse as a usage error before the confirmation gate.
+
+    Even with --yes present, the selector check must fire first — passing
+    both should never reach the service, and the message must name both
+    flags rather than telling the caller to add --yes.
+    """
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--institution",
+            "Chase",
+            "--provider-item-id",
+            "item_a",
+            "--yes",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    assert "--institution" in result.stderr
+    assert "--provider-item-id" in result.stderr
+    assert "--yes" not in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_rejects_both_selectors_json(mock_build: MagicMock) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "sync",
+            "disconnect",
+            "--institution",
+            "Chase",
+            "--provider-item-id",
+            "item_a",
+            "--yes",
+            "--output",
+            "json",
+        ],
+    )
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "mutation_invalid_input"
+    assert "--institution" in payload["error"]["hint"]
+    assert "--provider-item-id" in payload["error"]["hint"]
+    assert "--yes" not in payload["error"]["hint"]
+    mock_build.assert_not_called()
 
 
 @pytest.mark.unit
@@ -986,6 +1187,36 @@ def test_sync_disconnect_requires_yes_without_an_interactive_terminal(
 
     assert result.exit_code == 2, result.output
     assert "--yes" in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_a_target(mock_build: MagicMock) -> None:
+    """Neither --institution nor --provider-item-id given must refuse, not delete.
+
+    The selector check fires before the confirmation gate — even with --yes,
+    the message must name both flags rather than telling the caller to add
+    --yes.
+    """
+    result = runner.invoke(app, ["sync", "disconnect", "--yes"])
+    assert result.exit_code == 2, result.output
+    assert "--institution" in result.stderr
+    assert "--provider-item-id" in result.stderr
+    assert "--yes" not in result.stderr
+    mock_build.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_disconnect_requires_a_target_json(mock_build: MagicMock) -> None:
+    result = runner.invoke(app, ["sync", "disconnect", "--yes", "--output", "json"])
+    assert result.exit_code == 2, result.output
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == "sync_institution_required"
+    assert "--institution" in payload["error"]["hint"]
+    assert "--provider-item-id" in payload["error"]["hint"]
+    assert "--yes" not in payload["error"]["hint"]
     mock_build.assert_not_called()
 
 
@@ -1016,24 +1247,190 @@ def test_sync_disconnect_refusal_performs_no_mutation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The disconnect confirmation refusal must happen before service construction."""
+    """Declining the confirmation must resolve the plan but never delete."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
     monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
     monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
     from moneybin.cli.commands.sync import sync_disconnect
 
+    service = MagicMock()
+    service.plan_disconnect.return_value = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    mock_build.return_value.__enter__.return_value = service
+
     with pytest.raises(typer.Exit) as exit_info:
-        sync_disconnect(institution="Chase", yes=False, output=OutputFormat.TEXT)
+        sync_disconnect(
+            institution="Chase",
+            provider_item_id=None,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
 
     assert exit_info.value.exit_code == 0
     from rich.text import Text
 
     receipt = Text.from_ansi(capsys.readouterr().out).plain
     assert "Disconnect cancelled" in receipt
-    assert "Institution: Chase" in receipt
+    assert re.search(r"Institution:\s+Chase", receipt)
+    assert "Provider item ID: item_a" in receipt
     assert "No connection was removed" in receipt
     mock_confirm.assert_called_once()
-    mock_build.assert_not_called()
+    service.disconnect.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+def test_sync_disconnect_interactive_confirm_names_provider_item_id(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The interactive prompt must name the planned connection's exact id."""
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    service = MagicMock()
+    service.plan_disconnect.return_value = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    service.disconnect.return_value = service.plan_disconnect.return_value
+    mock_build.return_value.__enter__.return_value = service
+
+    sync_disconnect(
+        institution="Chase",
+        provider_item_id=None,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
+
+    prompt = mock_confirm.call_args.args[0]
+    assert "Chase" in prompt
+    assert "provider_item_id=item_a" in prompt
+    service.disconnect.assert_called_once_with(provider_item_id="item_a")
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm", return_value=True)
+def test_sync_disconnect_interactive_confirm_targets_planned_connection(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirming deletes the planned connection, not a same-named replacement.
+
+    Regression for a bug where confirmation re-resolved `institution` by name
+    after the prompt closed: if the planned connection was removed or relinked
+    while the prompt was open, a different sole item with the same name would
+    be deleted instead of the one the user actually confirmed.
+    """
+    from moneybin.connectors.sync_models import ConnectedInstitution
+
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    item_a = ConnectedInstitution(
+        id="conn_a",
+        provider_item_id="item_a",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 1, tzinfo=UTC),
+    )
+    item_b = ConnectedInstitution(
+        id="conn_b",
+        provider_item_id="item_b",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 3, 15, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = item_a
+
+    def _disconnect(
+        *, institution: str | None = None, provider_item_id: str | None = None
+    ) -> ConnectedInstitution:
+        if institution is not None:
+            # A relink while the prompt was open replaced item A with item B
+            # under the same institution name — a name-based resolve here
+            # would delete the wrong connection.
+            return item_b
+        assert provider_item_id == "item_a"
+        return item_a
+
+    service.disconnect.side_effect = _disconnect
+    mock_build.return_value.__enter__.return_value = service
+
+    sync_disconnect(
+        institution="Chase",
+        provider_item_id=None,
+        yes=False,
+        output=OutputFormat.TEXT,
+    )
+
+    service.disconnect.assert_called_once_with(provider_item_id="item_a")
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+@patch("moneybin.cli.commands.sync.typer.confirm")
+def test_sync_disconnect_ambiguous_institution_fails_before_prompt(
+    mock_confirm: MagicMock,
+    mock_build: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ambiguous name must refuse before any prompt and point at the flag."""
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("moneybin.cli.utils.sys.stderr.isatty", lambda: True)
+
+    service = MagicMock()
+    service.plan_disconnect.side_effect = UserError(
+        "multiple connected institutions match 'Chase': "
+        "item_a (linked 2026-01-05 09:00 UTC), "
+        "item_b (linked 2026-02-10 14:30 UTC). "
+        "Only disconnect can target one of several same-named connections: "
+        "remove the extra one by provider_item_id "
+        "(`moneybin sync disconnect --provider-item-id <id>`, or "
+        "`sync_disconnect` over MCP), then retry.",
+        code=error_codes.SYNC_INSTITUTION_AMBIGUOUS,
+    )
+    mock_build.return_value.__enter__.return_value = service
+
+    from moneybin.cli.commands.sync import sync_disconnect
+
+    with pytest.raises(typer.Exit) as exit_info:
+        sync_disconnect(
+            institution="Chase",
+            provider_item_id=None,
+            yes=False,
+            output=OutputFormat.TEXT,
+        )
+
+    assert exit_info.value.exit_code == 1
+    mock_confirm.assert_not_called()
+    service.disconnect.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1048,6 +1445,7 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
         SyncConnectionView(
@@ -1057,6 +1455,7 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 2, 1, 9, 0, tzinfo=UTC),
             guidance="Schwab needs re-authentication — run `moneybin sync link --institution Schwab`",
         ),
     ]
@@ -1067,6 +1466,42 @@ def test_sync_status_text_output(mock_build: MagicMock) -> None:
     assert "Schwab" in result.stdout
     assert "needs re-authentication" in result.stdout.replace("\n", " ")
     assert "Connected institutions" in result.stdout
+    # created_at (the link date) must reach text output — several items at one
+    # institution otherwise render as identical, unorderable rows (issue #408).
+    assert "2026-01-05" in result.stdout
+    # Item ID is narrowed by default; --wide (or JSON) is required to see it.
+    assert "item_a" not in result.stdout
+    assert "Item ID" not in result.stdout
+    assert "5 of 6 columns shown — --wide for all" in result.stdout
+
+
+@pytest.mark.unit
+@patch("moneybin.cli.commands.sync._build_sync_service")
+def test_sync_status_wide_shows_item_id(mock_build: MagicMock) -> None:
+    """`--wide` restores the `Item ID` column.
+
+    An identically-named duplicate connection can then be targeted by
+    `provider_item_id` (issue #408).
+    """
+    service = MagicMock()
+    service.list_connections.return_value = [
+        SyncConnectionView(
+            id="u1",
+            provider_item_id="item_a",
+            institution_name="Chase",
+            provider="plaid",
+            status="active",
+            last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
+            guidance=None,
+        ),
+    ]
+    mock_build.return_value.__enter__.return_value = service
+    result = runner.invoke(app, ["sync", "status", "--wide"])
+    assert result.exit_code == 0, result.output
+    assert "Item ID" in result.stdout
+    assert "item_a" in result.stdout
+    assert "columns shown" not in result.stdout
 
 
 @pytest.mark.unit
@@ -1101,6 +1536,7 @@ def test_sync_status_no_pager_bypasses_shared_pager(
             provider="plaid",
             status="active",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         )
     ]
@@ -1130,6 +1566,7 @@ def test_sync_status_pages_complete_answer_and_no_pager_prints_same_answer(
             provider="plaid",
             status="active",
             last_sync=None,
+            created_at=datetime(2026, 1, 1, tzinfo=UTC),
             guidance=None,
         )
         for number in range(12)
@@ -1385,6 +1822,7 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -1395,6 +1833,8 @@ def test_sync_status_json_output(mock_build: MagicMock) -> None:
     assert rows[0]["institution_name"] == "Chase"
     assert rows[0]["status"] == "active"
     assert rows[0]["error_code"] is None
+    # created_at must survive the projection to CLI JSON output.
+    assert rows[0]["created_at"] == "2026-01-05T09:00:00+00:00"
 
 
 @pytest.mark.unit
@@ -1418,6 +1858,7 @@ def test_sync_status_json_fields_still_projects_after_the_envelope(
             provider="plaid",
             status="active",
             last_sync=datetime(2026, 4, 7, 14, 30, tzinfo=UTC),
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             guidance=None,
         ),
     ]
@@ -1446,6 +1887,7 @@ def test_sync_status_shows_error_code_when_present(mock_build: MagicMock) -> Non
             provider="plaid",
             status="error",
             last_sync=None,
+            created_at=datetime(2026, 1, 5, 9, 0, tzinfo=UTC),
             error_code="ITEM_LOGIN_REQUIRED",
             guidance="Chase needs re-authentication",
         ),

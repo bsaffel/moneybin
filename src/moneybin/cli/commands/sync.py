@@ -2,7 +2,9 @@
 
 import logging
 import webbrowser
+from collections.abc import Callable
 from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -14,11 +16,13 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import (
     build_rows,
     build_summary,
+    column_view,
     compose_human_result,
     render_rows,
     render_summary,
@@ -37,6 +41,9 @@ from moneybin.matching.reconciliation import RETIRED_SIDES_COLLAPSED
 from moneybin.progress import ProgressEvent
 
 from .stubs import _not_implemented
+
+if TYPE_CHECKING:
+    from moneybin.connectors.sync_models import SyncConnectionView
 
 app = typer.Typer(
     help="Sync financial data from external services",
@@ -610,10 +617,22 @@ def sync_connect_status_alias(  # Typer-registered alias; referenced by decorato
 
 @app.command("disconnect")
 def sync_disconnect(
-    institution: str = typer.Option(
-        ...,
+    institution: str | None = typer.Option(
+        None,
         "--institution",
-        help="Institution name to disconnect.",
+        help=(
+            "Institution name to disconnect. Ambiguous when it has more "
+            "than one connection (e.g. after a relink) — use "
+            "--provider-item-id instead."
+        ),
+    ),
+    provider_item_id: str | None = typer.Option(
+        None,
+        "--provider-item-id",
+        help=(
+            "Exact connection to disconnect, from `moneybin sync status`. "
+            "Mutually exclusive with --institution."
+        ),
     ),
     yes: bool = typer.Option(
         False,
@@ -624,33 +643,86 @@ def sync_disconnect(
     output: OutputFormat = output_option,
 ) -> None:
     """Remove a bank connection."""
-    if not yes:
-        if output == OutputFormat.JSON or not get_terminal_policy().interactive:
-            message = "Disconnect requires explicit confirmation. Re-run with --yes."
-            if output == OutputFormat.JSON:
-                emit_json_failure(
-                    UserError(
-                        "Disconnect confirmation is required",
-                        code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
-                        hint=message,
-                    ),
-                    cli_actor="sync_disconnect",
-                )
-            else:
-                typer.echo(message, err=True)
-            raise typer.Exit(2)
-        if not typer.confirm(f"Disconnect {institution}?", default=False):
-            _emit_sync_receipt(
-                "Disconnect cancelled",
-                [
-                    ("Institution", institution),
-                    ("Outcome", "No connection was removed"),
-                ],
+    if institution is not None and provider_item_id is not None:
+        message = (
+            "--institution and --provider-item-id are mutually exclusive — "
+            "pass exactly one."
+        )
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "institution and provider_item_id are mutually exclusive",
+                    code=error_codes.MUTATION_INVALID_INPUT,
+                    hint=message,
+                ),
+                cli_actor="sync_disconnect",
             )
-            raise typer.Exit(0)
+        else:
+            typer.echo(message, err=True)
+        raise typer.Exit(2)
+    if institution is None and provider_item_id is None:
+        message = (
+            "One of --institution or --provider-item-id is required to disconnect."
+        )
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "institution or provider_item_id is required",
+                    code=error_codes.SYNC_INSTITUTION_REQUIRED,
+                    hint=message,
+                ),
+                cli_actor="sync_disconnect",
+            )
+        else:
+            typer.echo(message, err=True)
+        raise typer.Exit(2)
+    if not yes and (
+        output == OutputFormat.JSON or not get_terminal_policy().interactive
+    ):
+        message = "Disconnect requires explicit confirmation. Re-run with --yes."
+        if output == OutputFormat.JSON:
+            emit_json_failure(
+                UserError(
+                    "Disconnect confirmation is required",
+                    code=error_codes.MUTATION_CONFIRMATION_REQUIRED,
+                    hint=message,
+                ),
+                cli_actor="sync_disconnect",
+            )
+        else:
+            typer.echo(message, err=True)
+        raise typer.Exit(2)
     with handle_cli_errors():
         with _build_sync_service() as service:
-            service.disconnect(institution=institution)
+            if yes:
+                # No prompt to diverge from — resolving directly here is safe.
+                disconnected = service.disconnect(
+                    institution=institution, provider_item_id=provider_item_id
+                )
+            else:
+                plan = service.plan_disconnect(
+                    institution=institution, provider_item_id=provider_item_id
+                )
+                target = plan.institution_name or plan.provider_item_id
+                if not typer.confirm(
+                    f"Disconnect {target} (provider_item_id={plan.provider_item_id})?",
+                    default=False,
+                ):
+                    _emit_sync_receipt(
+                        "Disconnect cancelled",
+                        [
+                            ("Institution", plan.institution_name or "-"),
+                            ("Provider item ID", plan.provider_item_id),
+                            ("Outcome", "No connection was removed"),
+                        ],
+                    )
+                    raise typer.Exit(0)
+                # Delete exactly the connection the prompt named, not whatever
+                # `institution` now resolves to — it may have been removed or
+                # relinked while the prompt was open.
+                disconnected = service.disconnect(
+                    provider_item_id=plan.provider_item_id
+                )
     if output == OutputFormat.JSON:
         from moneybin.adapters.sync_adapters import (
             sync_disconnect_envelope,
@@ -658,7 +730,8 @@ def sync_disconnect(
 
         render_or_json(
             sync_disconnect_envelope(
-                institution=institution,
+                institution=disconnected.institution_name,
+                provider_item_id=disconnected.provider_item_id,
                 actions=["Use 'moneybin sync link' to reconnect an institution"],
             ),
             output,
@@ -667,7 +740,11 @@ def sync_disconnect(
     else:
         _emit_sync_receipt(
             "Disconnect complete",
-            [("Institution", institution), ("Outcome", "Disconnected")],
+            [
+                ("Institution", disconnected.institution_name or "-"),
+                ("Provider item ID", disconnected.provider_item_id),
+                ("Outcome", "Disconnected"),
+            ],
         )
 
 
@@ -763,10 +840,30 @@ def sync_pull(
         raise typer.Exit(1)
 
 
+_STATUS_COLUMNS: tuple[tuple[str, Callable[["SyncConnectionView"], object]], ...] = (
+    ("Institution", lambda c: c.institution_name),
+    ("Status", lambda c: c.status),
+    (
+        "Last sync",
+        lambda c: (
+            c.last_sync.strftime("%Y-%m-%d %H:%M UTC") if c.last_sync else "never"
+        ),
+    ),
+    ("Linked", lambda c: c.created_at.strftime("%Y-%m-%d %H:%M UTC")),
+    ("Error", lambda c: c.error_code or "-"),
+    ("Item ID", lambda c: c.provider_item_id),
+)
+_STATUS_DEFAULT = ("Institution", "Status", "Last sync", "Linked", "Error")
+"""`created_at` (Linked) tells two identically named items apart by default;
+`provider_item_id` — what `sync disconnect --provider-item-id` takes — follows
+under `--wide` and in JSON (issue #408)."""
+
+
 @app.command("status")
 def sync_status(
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # nothing to suppress yet
+    wide: bool = wide_option,
     no_pager: bool = no_pager_option,
     json_fields: str | None = typer.Option(
         None,
@@ -774,7 +871,7 @@ def sync_status(
         help=(
             "Comma-separated field projection (json output only). Available: "
             "id, provider_item_id, institution_name, provider, status, last_sync, "
-            "error_code, guidance"
+            "created_at, error_code, guidance"
         ),
     ),
 ) -> None:
@@ -818,20 +915,14 @@ def sync_status(
             ])
         )
     else:
+        view = column_view(
+            _STATUS_COLUMNS, connections, default=_STATUS_DEFAULT, wide=wide
+        )
         parts.append(
             build_rows(
-                ["Institution", "Status", "Last sync", "Error"],
-                [
-                    (
-                        c.institution_name,
-                        c.status,
-                        c.last_sync.strftime("%Y-%m-%d %H:%M UTC")
-                        if c.last_sync
-                        else "never",
-                        c.error_code or "-",
-                    )
-                    for c in connections
-                ],
+                view.names,
+                view.rows,
+                total_columns=view.total,
                 terminal=policy,
             )
         )
