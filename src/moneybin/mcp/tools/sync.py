@@ -520,6 +520,12 @@ async def sync_disconnect(
             "institution or provider_item_id is required when mode='institution'.",
             code=error_codes.SYNC_INSTITUTION_REQUIRED,
         )
+    if institution is not None and provider_item_id is not None:
+        raise UserError(
+            "institution and provider_item_id are mutually exclusive — "
+            "pass exactly one",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
     binding: ConfirmationBinding | None = None
     message = (
         "Permanently disconnect this connection? Previously pulled local rows remain."

@@ -536,7 +536,12 @@ async def test_sync_disconnect_result_distinguishes_same_named_connections(
 
 @pytest.mark.unit
 async def test_sync_disconnect_rejects_both_institution_and_provider_item_id() -> None:
-    """Mirrors pull()'s mutual-exclusion guard shape — surfaced via the service."""
+    """Mirrors pull()'s mutual-exclusion guard shape.
+
+    The MCP tool now rejects this before planning, so the service is never
+    reached — the mock's side_effect stands ready as defense in depth but
+    should not fire.
+    """
     from moneybin.mcp.tools.sync import sync_disconnect
 
     with patch("moneybin.mcp.tools.sync._build_sync_service") as mock_build:
@@ -550,7 +555,70 @@ async def test_sync_disconnect_rejects_both_institution_and_provider_item_id() -
 
     assert envelope.error is not None
     assert envelope.error.code == error_codes.MUTATION_INVALID_INPUT
+    service.plan_disconnect.assert_not_called()
     service.disconnect_confirmed.assert_not_called()
+
+
+@pytest.mark.unit
+@patch("moneybin.mcp.tools.sync._build_sync_service")
+async def test_sync_disconnect_both_selectors_retry_does_not_consume_token(
+    mock_build: MagicMock,
+) -> None:
+    """A malformed both-selectors retry must not burn a valid confirmation token.
+
+    Regression: previously the both-selectors case skipped straight to
+    `grant_confirmation_or_raise` (consuming the single-use token) and only
+    the service's own guard caught it afterward — leaving a corrected retry
+    unable to reuse the token. The tool must reject before token consumption.
+    """
+    connection = ConnectedInstitution(
+        id="conn_x",
+        provider_item_id="item_x",
+        provider="plaid",
+        institution_name="Chase",
+        status="active",
+        created_at=datetime(2026, 4, 1, tzinfo=UTC),
+    )
+    service = MagicMock()
+    service.plan_disconnect.return_value = connection
+
+    def disconnect_confirmed(
+        *,
+        institution: str | None,
+        provider_item_id: str | None,
+        verify: object,
+    ) -> ConnectedInstitution:
+        assert institution is None
+        assert provider_item_id == "item_x"
+        verify(connection)  # type: ignore[operator]
+        return connection
+
+    service.disconnect_confirmed.side_effect = disconnect_confirmed
+    mock_build.return_value.__enter__.return_value = service
+    from moneybin.mcp.tools.sync import sync_disconnect
+
+    required = await sync_disconnect(provider_item_id="item_x")
+    assert required.error is not None
+    assert required.error.details is not None
+    token = str(required.error.details["confirmation_token"])
+
+    malformed = await sync_disconnect(
+        institution="Chase",
+        provider_item_id="item_x",
+        confirmation_token=token,
+    )
+    assert malformed.error is not None
+    assert malformed.error.code == error_codes.MUTATION_INVALID_INPUT
+    service.disconnect_confirmed.assert_not_called()
+
+    envelope = await sync_disconnect(
+        provider_item_id="item_x",
+        confirmation_token=token,
+    )
+    assert envelope.error is None
+    assert envelope.data.institution == "Chase"
+    assert envelope.data.provider_item_id == "item_x"
+    service.disconnect_confirmed.assert_called_once()
 
 
 @pytest.mark.unit
