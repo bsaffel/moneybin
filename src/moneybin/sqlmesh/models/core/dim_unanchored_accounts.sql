@@ -6,6 +6,12 @@
    — read existentially, never by SUM: a zero net cash effect is never proof of
    zero cash held, however it was reached.
 
+   The anchor test reads core.fct_balances_daily, the FULL table the totals sum,
+   not the live core.fct_balances view: a balance asserted since the last
+   refresh is not yet in the spine, so the account stays a candidate (and the
+   total NULL) until a refresh carries it there, instead of vanishing from both
+   the guard and the total at once.
+
    Carries NO eligibility. include_in_net_worth and archival are applied by each
    reader at its own date (the report rungs per balance_date, the runner
    fallbacks at the synthesized date, system doctor at the account's current
@@ -54,7 +60,7 @@ WHERE
   AND NOT EXISTS(
     SELECT
       1
-    FROM core.fct_balances AS b
+    FROM core.fct_balances_daily AS b
     WHERE
       b.account_id = e.account_id
   )

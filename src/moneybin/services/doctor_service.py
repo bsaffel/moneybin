@@ -2114,7 +2114,7 @@ class DoctorService:
                 JOIN {DIM_ACCOUNTS.full_name} AS a ON a.account_id = u.account_id
                 WHERE a.include_in_net_worth AND NOT a.archived
                 ORDER BY u.account_id
-                """  # TableRef constants, no user input
+                """
             ).fetchall()
         except Exception as e:  # core views absent before first transform
             return InvariantResult(
@@ -2133,7 +2133,8 @@ class DoctorService:
                     "(holdings or transactions) but have no balance observation, "
                     "so the net-worth total is withheld — record a balance with "
                     "`moneybin accounts balance assert`, or leave the account out "
-                    "with `moneybin accounts set <account_id> --exclude`"
+                    "with `moneybin accounts set <account_id> --exclude`, then run "
+                    "`moneybin refresh` so the total and this check pick it up"
                 ),
                 affected_ids=unanchored,
             )
@@ -2160,7 +2161,7 @@ class DoctorService:
                 WHERE n.is_observed AND a.include_in_net_worth AND NOT a.archived
                 GROUP BY n.account_id
                 ORDER BY n.account_id
-                """  # TableRef constants, no user input
+                """
             ).fetchall()
         except Exception as e:  # reports views absent before first transform
             return InvariantResult(
@@ -2178,7 +2179,8 @@ class DoctorService:
                     f"{len(stale)} account(s) in net worth have no balance "
                     f"observed in the last {threshold} days, so their balances "
                     "are carried forward — import a recent statement, sync, or "
-                    "record one with `moneybin accounts balance assert`"
+                    "record one with `moneybin accounts balance assert` and run "
+                    "`moneybin refresh`"
                 ),
                 affected_ids=stale,
             )

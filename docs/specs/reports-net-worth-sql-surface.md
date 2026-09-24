@@ -177,6 +177,15 @@ this spec's to close.
     check that Defect 4 deferred — see §"`moneybin system doctor`: balance
     staleness" for its full specification.
 
+    **"No balance observation" means no row on the spine the totals sum.**
+    The anchor test reads `core.fct_balances_daily`, not the live
+    `core.fct_balances` view. `moneybin accounts balance assert` does not
+    rebuild the spine, so a balance recorded since the last rebuild is not
+    yet summed: the account stays a candidate, and the total stays NULL,
+    until `moneybin refresh` carries it into the spine. The guard and the
+    total therefore move together, never one without the other — see
+    §"Deviations recorded during implementation" → M2B.3, item 6.
+
     **The guard applies at the aggregate and per-account grains, deliberately
     not at the per-currency one.** `reports.net_worth_accounts` reads the
     same `core.fct_balances_daily` spine as `reports.net_worth`, so an
@@ -766,7 +775,7 @@ three sources but not closed.
 row's own `balance_date` — the same shape Requirement 9's eligibility
 predicate already uses.** For every balance-driven row `reports.net_worth`
 emits, `unanchored_account_count` is the number of candidate accounts (the
-four sources above) that have no row in `core.fct_balances` at all and pass
+four sources above) that have no row in `core.fct_balances_daily` at all and pass
 `include_in_net_worth AND (NOT archived OR (archived_at IS NOT NULL AND
 balance_date <= archived_at))` — correlated to that row's own `balance_date`, exactly as
 Requirement 9 already evaluates eligibility for the balance-backed measures
@@ -1269,10 +1278,11 @@ at its own `archived_at` in place of the single date the unranged contract
 (`:2236`, below) actually owes the read. That is the defect the anti-join
 above corrects.
 
-**This is also the row `moneybin system doctor`'s `net_worth_unanchored_accounts`
-invariant reads** — see §"`moneybin system doctor`: unanchored accounts" —
-because it is the one relation in this spec that names the affected accounts
-by id rather than only a count.
+**`moneybin system doctor`'s `net_worth_unanchored_accounts` invariant does
+not read this row.** It reads `core.dim_unanchored_accounts` joined to
+`core.dim_accounts`'s current eligibility — see §"`moneybin system doctor`:
+unanchored accounts" — so it names the same accounts by id without depending
+on which date a read of this rung lands on.
 
 #### `reports.net_worth_currencies`
 
@@ -1715,7 +1725,7 @@ the per-consumer four-source union this section originally specified, and
 which the account rung, the aggregate rung, and both runner fallbacks now all
 read instead of restating the union each. That relation's own docstring
 states it carries **no eligibility and no `balance_date` filter** — it is a
-plain `NOT EXISTS` against `core.fct_balances` behind the evidence union — so
+plain `NOT EXISTS` against `core.fct_balances_daily` behind the evidence union — so
 this check needs neither: it reads the relation as-is with **no `balance_date`
 filter**, never a NULL-total read off `reports.net_worth`'s own aggregate
 rung, and never scoped to `CURRENT_DATE`. The false-negative and
@@ -1741,7 +1751,7 @@ directly rather than off the account rung. A row surviving both the
 eligibility join and membership in `core.dim_unanchored_accounts` means
 `core.dim_holdings`, `core.dim_holdings_broker_reported`,
 `core.fct_transactions`, or `core.fct_investment_transactions` carries
-evidence for a presently eligible account `core.fct_balances` has no anchor
+evidence for a presently eligible account `core.fct_balances_daily` has no anchor
 for at all — Requirement 14's own predicate, already computed once by the
 shared relation this check re-reads rather than duplicating.
 
@@ -2220,7 +2230,7 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
 
 1. **One shared candidate relation, `core.dim_unanchored_accounts`, replaces
    four per-consumer copies of the evidence union.** Brandon chose this on
-   2026-09-24: the evidence union and the "no `core.fct_balances` row" test
+   2026-09-24: the evidence union and the no-balance-anchor test
    live once in `src/moneybin/sqlmesh/models/core/dim_unanchored_accounts.sql`,
    read by both rungs, both runner fallbacks, and the doctor check.
 2. **A mixed decisive/all-NULL newest snapshot resolves `has_position` to
@@ -2244,6 +2254,21 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
    `net_worth_accounts.py` need the validated bounds themselves, not just the
    `WHERE` fragment `_shared.py` already produced; an internal change to
    `src/moneybin/reports/definitions/_shared.py`.
+6. **The anchor test reads `core.fct_balances_daily`, not `core.fct_balances`.**
+   The plan tested "no balance anchor" against the live `core.fct_balances`
+   view, but the totals sum `core.fct_balances_daily`, a `kind FULL` table
+   that changes only when a refresh rebuilds it. After
+   `moneybin accounts balance assert`, which does not rebuild, the account
+   left the candidate set at once and `system doctor` passed, while the total
+   was non-NULL and still omitted the account until the next refresh — the
+   silent zero Requirement 14 exists to close. Reading the spine keeps the
+   guard in step with the totals: between the assertion and the refresh the
+   account stays flagged, visibly. Both doctor remedies (`net_worth_unanchored_accounts`,
+   `net_worth_stale_balance`) now tell the user to run `moneybin refresh`
+   after recording a balance or excluding the account. `fct_balances_daily`
+   carries at least one row for every account with a `fct_balances` row after
+   a rebuild (each account's spine runs from its first observation to the
+   global last one), so the switch drops no anchored account.
 
 Three controller rulings made while implementing M2B.3, not anticipated by
 the plan above:

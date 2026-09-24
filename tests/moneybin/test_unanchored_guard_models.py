@@ -270,7 +270,12 @@ def _install_unanchored_sources(db: Database) -> None:
         "CREATE TABLE core.fct_investment_transactions "
         "(account_id VARCHAR, subtype VARCHAR, quantity DECIMAL(28, 10), amount DECIMAL(18, 2))"
     )
+    # Both balance relations exist, so reading the wrong one is an assertion
+    # failure rather than a missing-table error.
     db.execute("CREATE TABLE core.fct_balances (account_id VARCHAR, balance_date DATE)")
+    db.execute(
+        "CREATE TABLE core.fct_balances_daily (account_id VARCHAR, balance_date DATE)"
+    )
     _install_core_view(db, "dim_unanchored_accounts")
 
 
@@ -339,13 +344,25 @@ def test_unanchored_investment_ledger_is_existential_never_a_sum(
     assert "liq" in _unanchored(guard_db)
 
 
-def test_unanchored_a_balance_row_anchors_the_account(guard_db: Database) -> None:
+def test_unanchored_a_spine_row_anchors_the_account(guard_db: Database) -> None:
     _install_unanchored_sources(guard_db)
     guard_db.execute("INSERT INTO core.fct_transactions VALUES ('anchored', -25.00)")
     guard_db.execute(
-        "INSERT INTO core.fct_balances VALUES ('anchored', DATE '2026-01-31')"
+        "INSERT INTO core.fct_balances_daily VALUES ('anchored', DATE '2026-01-31')"
     )
     assert _unanchored(guard_db) == {}
+
+
+def test_unanchored_an_unrefreshed_balance_does_not_anchor(
+    guard_db: Database,
+) -> None:
+    """A balance asserted since the last refresh is not yet in the spine the totals sum."""
+    _install_unanchored_sources(guard_db)
+    guard_db.execute("INSERT INTO core.fct_transactions VALUES ('pending', -25.00)")
+    guard_db.execute(
+        "INSERT INTO core.fct_balances VALUES ('pending', DATE '2026-01-31')"
+    )
+    assert _unanchored(guard_db) == {"pending": (False, False, True, False)}
 
 
 def test_unanchored_no_evidence_is_the_residual_gap(guard_db: Database) -> None:
