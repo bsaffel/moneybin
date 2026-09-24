@@ -92,7 +92,7 @@ uv run moneybin investments add --account Brokerage --type buy --date 2025-08-01
 
 Each prints `✓ Recorded <id>` with the event's id; the sale's, `4176672c2e91f1a2`, is used below. A `reinvest` is the one event that writes two rows, the acquisition and its paired income, so it prints two ids, income reports sum only income-typed rows, and a reinvested dividend is never counted twice. `--currency` denominates an event in something other than the account's currency, `--acquired` and `--basis` carry the original date and cost on a `transfer_in` so the holding period travels with the shares, and `split` takes the multiplier in `--quantity`: `2` for 2-for-1, `0.5` for a 1-for-2 reverse. There is no edit and no delete for a recorded event; each write is its own import batch, so `import revert <import_id>` is the undo.
 
-The ledger is the only authored surface; lots, holdings, and gains are rebuilt from it by `moneybin refresh`:
+The ledger is the only authored surface; lots, holdings, and gains are rebuilt from it by `moneybin refresh`. A `--step transform` request always runs `investment_match` first, because the transforms read the matched events, so the receipt lists both steps:
 
 ```console
 $ uv run moneybin refresh --step transform
