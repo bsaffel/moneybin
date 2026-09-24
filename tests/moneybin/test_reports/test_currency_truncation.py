@@ -22,16 +22,15 @@ second is guarded behaviourally beside the surface that ranks:
 Why a scan and not fixtures alone: a per-report mixed-currency fixture only
 covers the report someone thought to write a fixture for. Limb A has now
 reached six sites across three review rounds — four runners, then the curated
-`sql_schema` examples, then `cash_flow` / `spending_trend` /
-`networth_history` — each fixed where it was found rather than swept for. The
-scan fires on the seventh without anyone building a fixture for it.
+`sql_schema` examples, then `cash_flow` / `spending_trend` / the retired
+service-backed `networth_history` — each fixed where it was found rather than
+swept for. The scan fires on the seventh without anyone building a fixture for
+it.
 
-It covers both channels that reach `reports(...)`: the SQL runners in
-`reports/definitions/` and the service methods behind `ServiceReportSpec`
-executors. The service channel is derived from what `service_reports` actually
-imports, so a new service-backed report inherits the guard instead of escaping
-it — `networth_history` escaped the previous definitions-only scan exactly that
-way.
+Every SQL-backed report is now an `@report` runner in `reports/definitions/`
+(reports-net-worth-sql-surface.md §Files to Delete retired the second,
+service-executor channel this scan once had to derive separately) — one
+Python source tree, scanned directly.
 """
 
 from __future__ import annotations
@@ -42,7 +41,6 @@ from pathlib import Path
 
 import pytest
 
-from moneybin.reports import service_reports
 from moneybin.reports.definitions import large_transactions
 
 pytestmark = pytest.mark.unit
@@ -90,34 +88,16 @@ def _lets_a_cap_omit_a_currency(keys: str) -> bool:
 #
 # Set equality below, not a subset: a new offender fails, and so does a stale
 # exemption for a site that was since fixed or deleted.
-_CURRENCY_SORT_OK: dict[tuple[str, str], str] = {
-    (
-        "networth_service.py",
-        "n.currency_code",
-    ): (
-        "The query pins one balance_date (the MAX from the `latest` CTE), and "
-        "reports.net_worth is grained (balance_date, currency_code), so the "
-        "result is exactly one row per currency. Any prefix of k rows holds k "
-        "currencies whatever the sort key is — there is no ordering that "
-        "survives truncation better."
-    ),
-}
+_CURRENCY_SORT_OK: dict[tuple[str, str], str] = {}
 
 
 def _scanned_sources() -> list[Path]:
     """Every module whose SQL can reach a truncated `reports(...)` response.
 
-    Derived, not listed: the definitions package plus the service classes
-    `service_reports` imports to build `ServiceReportSpec` rows. A new
-    service-backed report inherits the scan by being imported there.
+    Every SQL-backed report is an `@report` runner in this one package now —
+    see the module docstring.
     """
-    definitions = sorted(Path(inspect.getfile(large_transactions)).parent.glob("*.py"))
-    services = {
-        Path(inspect.getfile(member))
-        for _, member in inspect.getmembers(service_reports, inspect.isclass)
-        if member.__module__.startswith("moneybin.services.")
-    }
-    return definitions + sorted(services)
+    return sorted(Path(inspect.getfile(large_transactions)).parent.glob("*.py"))
 
 
 def _offenders() -> dict[tuple[str, str], str]:
@@ -157,17 +137,13 @@ def test_no_report_sort_lets_a_cap_omit_a_currency() -> None:
     )
 
 
-def test_scan_reaches_both_report_channels() -> None:
-    """The scan must cover service-backed reports, not just the runners.
+def test_scan_reaches_the_definitions_package() -> None:
+    """The scan must actually find the runner modules it exists to cover.
 
-    `networth_history` is a `ServiceReportSpec` whose SQL lives in
-    `networth_service`, so a definitions-only scan could not see it — which is
-    how it kept a currency-major sort through the round that swept the
-    runners. This asserts the derivation actually reaches that module, so
-    narrowing `_scanned_sources` back to the definitions package fails here
-    rather than silently halving the guard's coverage.
+    A narrowed or mistyped glob in `_scanned_sources` would silently scan
+    nothing and report every runner clean regardless of what it does.
     """
     scanned = {path.name for path in _scanned_sources()}
 
     assert "cash_flow.py" in scanned
-    assert "networth_service.py" in scanned
+    assert "net_worth_currencies.py" in scanned

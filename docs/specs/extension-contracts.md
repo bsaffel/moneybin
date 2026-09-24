@@ -374,7 +374,7 @@ callers install a decorated runner explicitly through
 
 | Position | Stable report ID / surface pattern | Example |
 |---|---|---|
-| Core cross-entity reports | `core:<name>`; CLI `reports <name>` | `core:networth`, `moneybin reports networth` |
+| Core cross-entity reports | `core:<name>`; CLI `reports <name>` | `core:net_worth`, `moneybin reports net-worth` |
 | Core single-entity reads | Domain operation when not analytical | `accounts` |
 | Package reports | `<package>:<name>`; package CLI namespace | `assets:summary` |
 | Standalone report extensions | `<publisher-or-package>:<name>` | `community:seasonal_spending` |
@@ -657,10 +657,10 @@ The six in-tree view-backed reports — `core:cash_flow`, `core:spending_trend`,
 `src/moneybin/reports/definitions/`. They are wired via an explicit
 `ALL_REPORTS` list in `src/moneybin/reports/definitions/__init__.py`;
 extensions may use `discover_reports` to collect decorated runners but must
-pass that explicit collection to `register_extension_reports`. The `networth`
-/ `networth-history` CLI commands stay hand-written for their established
-flags and text layouts, while their execution uses the same `ReportCatalog`
-and service-backed specs.
+pass that explicit collection to `register_extension_reports`. Every built-in
+report, including the three net-worth rungs (`net-worth`,
+`net-worth-currencies`, `net-worth-accounts`), is framework-generated the
+same way; nothing in the built-in registry is hand-written any more.
 
 ### Documentation requirements
 

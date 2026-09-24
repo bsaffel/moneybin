@@ -231,7 +231,7 @@ def test_perf_timing_summary_is_visible_at_warning_level(
         ("reports_spending", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
         ("accounts", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
         ("budget_status_service", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
-        ("reports_networth_history", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
+        ("reports_net_worth", 1.0, 2.0, 3.0, 4.0, 2.0, 2.0),
     ]
 
     with caplog.at_level(logging.WARNING, logger=perf.__name__):

@@ -202,10 +202,12 @@ Numbered, testable. Tagged by phase.
    **Implemented 2026-07-25.** Every `reports.*` model that sums money projects and
    groups by `currency_code`; `reports.balance_drift` projects it without regrouping
    (asserted and computed balances are the same account's, so the comparison is
-   single-currency by construction). Two consumers re-aggregate the segmented views
-   and had to segment too: the `core:cash_flow` runner (`currency_code` is in
-   `select_cols`/`group_cols` unconditionally, for every `by` value) and
-   `NetworthService` (see Requirement 7). `reports.large_transactions` additionally
+   single-currency by construction). At the time, one further consumer re-aggregated
+   the segmented views and had to segment too: the `core:cash_flow` runner
+   (`currency_code` is in `select_cols`/`group_cols` unconditionally, for every `by`
+   value). `NetworthService` did the same (see Requirement 7); it retired with the
+   service-backed net-worth kind, and `reports.net_worth_currencies` now segments
+   by `currency_code` directly in SQL. `reports.large_transactions` additionally
    scopes its median/MAD baselines and its top-100 rank per currency — a pooled
    baseline compares unlike units and scores a typical charge in the
    smaller-denominated currency as an anomaly. That per-currency scoping is also
@@ -463,15 +465,21 @@ Numbered, testable. Tagged by phase.
    segment (default) or return an explicit "cross-currency total unavailable until
    conversion ships" signal — never a silent blend. Single-currency profiles (the
    common case, including USD-only users) see **zero behavior change**.
-   **Implemented 2026-07-25.** Segmentation is the default everywhere. The one place
-   that takes the explicit-signal branch is `core:networth`'s scalar headline, which
-   has no room for a sub-total per currency: `NetWorthSnapshotPayload` nulls
-   `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than one
-   currency contributes and carries each currency's totals in `per_currency`; its
-   report records attach each account row to its own currency's totals.
-   `NetworthService.history` partitions both its bucketing and its period-over-period
-   `LAG` by `currency_code`, so a change is never the difference between two
-   currencies' positions. Zero-behavior-change is held by fixtures, not assertion: the
+   **Implemented 2026-07-25.** Segmentation is the default everywhere. At the time,
+   the one place that took the explicit-signal branch was `core:networth`'s scalar
+   headline, which had no room for a sub-total per currency: `NetWorthSnapshotPayload`
+   nulled `net_worth`/`total_assets`/`total_liabilities`/`currency_code` when more than
+   one currency contributed and carried each currency's totals in `per_currency`; its
+   report records attached each account row to its own currency's totals.
+   `NetworthService.history` partitioned both its bucketing and its period-over-period
+   `LAG` by `currency_code`, so a change was never the difference between two
+   currencies' positions. **Superseded (2026-09-19):** the service-backed kind
+   retired onto three SQL-backed rungs
+   ([`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)).
+   `core:net_worth` still gives no combined figure when a held currency cannot be
+   priced — `net_worth` is `NULL` whenever `unpriced_currency_count > 0` — and
+   `core:net_worth_currencies` carries each currency's own totals as SQL rows
+   instead of a `per_currency` map. Zero-behavior-change is held by fixtures, not assertion: the
    pre-existing single-currency report and net-worth tests assert the same figures
    unchanged, and `tests/scenarios/test_multi_currency_report_segmentation.py` proves
    the mixed case is what discriminates a segmented model from a blending one
@@ -522,7 +530,7 @@ Numbered, testable. Tagged by phase.
     projects it. Present only on a read that actually priced something: on a
     segmented or already-in-target result it would restate `currency_code` and
     imply a conversion that did not happen. The one row it cannot describe is
-    `core:networth`'s collapsed headline, which sums several currencies and so
+    `core:net_worth`'s collapsed headline, which sums several currencies and so
     carries null rather than name whichever one sorted first.
     The published set is also narrowed to the rows that survive a row cap. A
     capped read prices one row past the cap to decide `has_more`, so a rate

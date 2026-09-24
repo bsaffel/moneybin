@@ -121,17 +121,17 @@ from this constant, and the text renderer says so whenever it bites.
 Here rather than in `cli_register`, which is the module that generates report
 commands: the help string is built at import time, and `reports run` defers that
 import to keep sqlglot off the CLI cold-start path. It had been defined twice
-with `networth` reaching across for the copy it liked.
+with `net-worth` reaching across for the copy it liked.
 """
 
 UNKNOWN_CURRENCY = "n/a"
 """Printed in the currency slot when the ledger does not know the currency.
 
-One token everywhere, because the two slots are read together: `reports
-networth` uses the currency as a heading (`n/a: 1234.56`) and `accounts
-balance` puts it after the amount (`1234.56 n/a`). `?` is cryptic as a
-heading and `unknown` reads as though the *amount* were unknown, so each
-position had grown its own spelling.
+One token everywhere, because the two slots are read together: `demo` uses
+the currency as a heading (`n/a: 1234.56`) and `accounts balance` puts it
+after the amount (`1234.56 n/a`). `?` is cryptic as a heading and `unknown`
+reads as though the *amount* were unknown, so each position had grown its
+own spelling.
 """
 
 

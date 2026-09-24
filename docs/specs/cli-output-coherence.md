@@ -11,6 +11,17 @@ M3K.3 — the third increment under M3K (CLI / MCP UX standards), after M3K.1
 ([`mcp-tool-surface-scaling.md`](mcp-tool-surface-scaling.md)). Those two govern
 what the MCP surface returns; this one governs what the CLI's text branch prints.
 
+> **Superseded surface (2026-09-19):** every reference below to "the two
+> hand-written commands" (`reports networth`, `reports networth-history`),
+> their `NetworthService` backing, and the file
+> `src/moneybin/cli/commands/reports/networth.py` names code
+> [`reports-net-worth-sql-surface.md`](reports-net-worth-sql-surface.md)
+> deleted. The three net-worth commands that replaced them are generated from
+> `@report` specs like every other report command, so they take `--wide` and
+> `DEFAULT_COLUMNS` from the shared path rather than choosing columns in code,
+> and the hand-written exceptions this spec carved out no longer exist. Every
+> rendering rule the spec sets stands; only the exception does not.
+
 ## Goal
 
 Give the CLI one way to render each kind of result, so every command looks like it

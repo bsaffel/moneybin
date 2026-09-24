@@ -133,10 +133,12 @@ def rates_pricing(
     been relabelled to the target by now.
 
     Narrows only when every row can name what priced it. A row that names no
-    original currency was priced by more than one rate — the collapsed
-    ``core:networth`` headline — so pruning to what the rows can name would drop
-    real provenance. Provenance is audit evidence: publishing one rate too many
-    is a smaller error than dropping the rate behind a figure on screen.
+    original currency was priced by more than one rate — an ``on_converted``
+    callback that collapses several currencies' rows into one headline row
+    would produce exactly this — so pruning to what the rows can name would
+    drop real provenance. Provenance is audit evidence: publishing one rate
+    too many is a smaller error than dropping the rate behind a figure on
+    screen.
 
     A report declaring a home-basis column needs a second key beside the row's
     own: ``ORIGINAL_CURRENCY_COLUMN`` names only the row's currency, so a rate
@@ -231,12 +233,13 @@ def convert_records(
         # no complaint.
         #
         # Declaring a money column is not holding money in one, so the test is
-        # the values rather than the schema: `core:networth` on an empty profile
-        # returns one placeholder row with every amount NULL, and its NULL
-        # `currency_code` would otherwise be read below as a row that lost its
-        # currency. A report returning no rows at all reaches the same state
-        # from the other side — the row loop is what resolves a rate, so it
-        # would otherwise claim the target currency without reading one.
+        # the values rather than the schema: a report that synthesizes one
+        # placeholder row with every amount NULL for an otherwise-empty result
+        # has a NULL `currency_code` too, which would otherwise be read below
+        # as a row that lost its currency. A report returning no rows at all
+        # reaches the same state from the other side — the row loop is what
+        # resolves a rate, so it would otherwise claim the target currency
+        # without reading one.
         return ConversionOutcome(rows, None)
 
     currency_column = semantics.currency

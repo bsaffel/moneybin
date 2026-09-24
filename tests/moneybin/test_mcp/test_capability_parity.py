@@ -555,7 +555,7 @@ def _seed_refresh_sources(path: Path) -> None:
         )
 
 
-def _seed_nonzero_networth(path: Path) -> None:
+def _seed_nonzero_net_worth(path: Path) -> None:
     """Materialize a meaningful report source instead of the empty schema stub."""
     _select_database(path)
     with get_database(read_only=False) as db:
@@ -571,18 +571,27 @@ def _seed_nonzero_networth(path: Path) -> None:
         )
         db.execute(
             """
-            CREATE OR REPLACE VIEW reports.net_worth AS
+            CREATE OR REPLACE VIEW reports.net_worth_currencies AS
             SELECT
-                d.balance_date,
                 d.currency_code,
-                SUM(d.balance) AS net_worth,
+                CAST(NULL AS VARCHAR) AS home_currency_code,
+                CAST(NULL AS VARCHAR) AS rate_source,
+                d.balance_date,
+                CAST(NULL AS DATE) AS rate_published_date,
                 COUNT(DISTINCT d.account_id) AS account_count,
+                COUNT(DISTINCT CASE WHEN NOT d.is_observed THEN d.account_id END)
+                    AS carried_forward_count,
                 SUM(CASE WHEN d.balance > 0 THEN d.balance ELSE 0 END) AS total_assets,
-                SUM(CASE WHEN d.balance < 0 THEN d.balance ELSE 0 END) AS total_liabilities
+                SUM(CASE WHEN d.balance < 0 THEN d.balance ELSE 0 END)
+                    AS total_liabilities,
+                SUM(d.balance) AS net_worth,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_assets_home,
+                CAST(NULL AS DECIMAL(18, 2)) AS total_liabilities_home,
+                CAST(NULL AS DECIMAL(18, 2)) AS net_worth_home
             FROM core.fct_balances_daily AS d
             INNER JOIN core.dim_accounts AS a ON d.account_id = a.account_id
             WHERE a.include_in_net_worth AND NOT a.archived
-            GROUP BY d.balance_date, d.currency_code
+            GROUP BY d.currency_code, d.balance_date
             """
         )
 
@@ -701,19 +710,19 @@ async def test_report_execution_returns_same_rows(
     tmp_path: Path,
 ) -> None:
     cli_path, mcp_path = _database_pair(mcp_db, tmp_path)
-    _seed_nonzero_networth(cli_path)
-    _seed_nonzero_networth(mcp_path)
+    _seed_nonzero_net_worth(cli_path)
+    _seed_nonzero_net_worth(mcp_path)
     _select_database(cli_path)
     cli = CliRunner().invoke(
         app,
-        ["reports", "networth", "--output", "json"],
+        ["reports", "net-worth-currencies", "--output", "json"],
     )
     assert cli.exit_code == 0, cli.output
 
     _select_database(mcp_path)
     mcp_envelope = await reports(
-        report_id="core:networth",
-        parameters={"as_of": None, "account_ids": None},
+        report_id="core:net_worth_currencies",
+        parameters={},
     )
     mcp = json.loads(mcp_envelope.to_json())
     cli_payload = json.loads(cli.stdout)
@@ -724,7 +733,7 @@ async def test_report_execution_returns_same_rows(
         float(value) != 0
         for row in mcp_data["rows"]
         for key, value in row.items()
-        if key in {"balance", "net_worth"} and value is not None
+        if key == "net_worth" and value is not None
     )
     assert [column["name"] for column in mcp_data["columns"]] == list(
         mcp_data["rows"][0]

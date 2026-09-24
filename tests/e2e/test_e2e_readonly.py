@@ -426,15 +426,20 @@ class TestDBReadOnlyCommands:
         assert "core:spending_trend" in {entry["report_id"] for entry in entries}
         assert {entry["tier"] for entry in entries} == {"builtin"}
 
-    def test_reports_networth_help(self) -> None:
-        result = _runner.invoke(app, ["reports", "networth", "--help"])
+    def test_reports_net_worth_help(self) -> None:
+        result = _runner.invoke(app, ["reports", "net-worth", "--help"])
+        assert result.exit_code == 0, result.output
+        assert "--interval" in result.output
+
+    def test_reports_net_worth_currencies_help(self) -> None:
+        result = _runner.invoke(app, ["reports", "net-worth-currencies", "--help"])
         assert result.exit_code == 0, result.output
         assert "--output" in result.output
 
-    def test_reports_networth_history_help(self) -> None:
-        result = _runner.invoke(app, ["reports", "networth-history", "--help"])
+    def test_reports_net_worth_accounts_help(self) -> None:
+        result = _runner.invoke(app, ["reports", "net-worth-accounts", "--help"])
         assert result.exit_code == 0, result.output
-        assert "--from" in result.output
+        assert "--output" in result.output
 
     # ── review ──────────────────────────────────────────────────────────
 

@@ -85,9 +85,9 @@ def reports(
     # Built by hand rather than through `ReportResult.to_envelope`, which sends
     # raw records where this surface owes a typed payload and its own
     # `returned_count`. Every other field it carries must therefore be repeated
-    # here — `applied_rates` included, or the one report-reading surface an
-    # agent actually calls silently drops the provenance its own tool
-    # description promises.
+    # here — `applied_rates` and `home_currency` included, or the one
+    # report-reading surface an agent actually calls silently drops the
+    # provenance its own tool description promises.
     return build_envelope(
         data=payload,
         sensitivity=tier_to_sensitivity(result.tier).value,
@@ -101,6 +101,7 @@ def reports(
         degraded_reason=result.degraded_reason,
         recovery_actions=list(result.recovery_actions) or None,
         applied_rates=[rate.as_provenance() for rate in result.applied_rates] or None,
+        home_currency=result.home_currency,
     )
 
 

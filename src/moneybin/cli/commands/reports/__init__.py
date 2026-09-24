@@ -7,12 +7,9 @@ lifecycle capability over saved reports. Everything but ``list`` and ``run`` is
 CLI-only by design — ``reports-dynamic.md`` names no MCP identity for a lifecycle
 verb or for the verify surface.
 
-The view-backed reports (cash_flow, spending_trend, recurring_subscriptions,
-merchant_activity, large-transactions, balance-drift, realized_fx) are
-generated from ``@report`` runners in ``moneybin.reports.definitions`` and
-registered via ``register_reports_cli``.
-``networth`` / ``networth-history`` are NetworthService-backed and stay
-hand-written for flag and text ergonomics while executing through the catalog.
+Every report — including the three net-worth rungs — is generated from an
+``@report`` runner in ``moneybin.reports.definitions`` and registered via
+``register_reports_cli``. There is no hand-written report command left.
 """
 
 from __future__ import annotations
@@ -22,7 +19,6 @@ import typer
 from moneybin.reports._framework.registry import register_reports_cli
 from moneybin.reports.definitions import ALL_REPORTS
 
-from .networth import reports_networth, reports_networth_history
 from .user_reports import (
     reports_create,
     reports_delete,
@@ -45,6 +41,4 @@ app.command("create")(reports_create)
 app.command("set")(reports_set)
 app.command("delete")(reports_delete)
 app.command("reclassify")(reports_reclassify)
-app.command("networth")(reports_networth)
-app.command("networth-history")(reports_networth_history)
 register_reports_cli(ALL_REPORTS, app)

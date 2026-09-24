@@ -1,9 +1,7 @@
 """In-tree report runners — the reference set every report (incl. packages) mirrors.
 
 Each module declares one ``@report`` runner; ``ALL_REPORTS`` is the explicit
-registration list the application wires via ``register_reports``. ``networth`` /
-``networth_history`` are NetworthService-backed (not single reports.* view reads)
-and stay hand-written — a documented exception, not part of this list.
+registration list the application wires via ``register_reports``.
 """
 
 from __future__ import annotations
@@ -13,6 +11,9 @@ from moneybin.reports.definitions.balance_drift import balance_drift
 from moneybin.reports.definitions.cash_flow import cash_flow
 from moneybin.reports.definitions.large_transactions import large_transactions
 from moneybin.reports.definitions.merchant_activity import merchant_activity
+from moneybin.reports.definitions.net_worth import net_worth
+from moneybin.reports.definitions.net_worth_accounts import net_worth_accounts
+from moneybin.reports.definitions.net_worth_currencies import net_worth_currencies
 from moneybin.reports.definitions.realized_fx import realized_fx
 from moneybin.reports.definitions.recurring_subscriptions import recurring_subscriptions
 from moneybin.reports.definitions.spending_trend import spending_trend
@@ -25,6 +26,9 @@ ALL_REPORTS: list[Runner] = [
     large_transactions,
     balance_drift,
     realized_fx,
+    net_worth_currencies,
+    net_worth_accounts,
+    net_worth,
 ]
 
 __all__ = ["ALL_REPORTS"]
