@@ -123,6 +123,7 @@ from moneybin.services.categorization.applier import (
     RuleStateTarget,
     RuleTargetPlan,
     RuleTargetResult,
+    SourceTermMapping,
     TaxonomyStateTarget,
     TaxonomyTargetPlan,
     TaxonomyTargetResult,
@@ -572,7 +573,7 @@ class CategorizationService:
         category_id: str | None = None,
         new_category: str | None = None,
         actor: str = "system",
-    ) -> str:
+    ) -> SourceTermMapping:
         """Map one imported vocabulary term to a MoneyBin category.
 
         See :meth:`MatchApplier.resolve_source_term` for the write contract

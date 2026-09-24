@@ -13,9 +13,26 @@ from unittest.mock import MagicMock, patch
 from typer.testing import CliRunner
 
 from moneybin.cli.commands.categories.mappings import app
+from moneybin.services.categorization.applier import SourceTermMapping
 from moneybin.services.categorization.queries import UnmappedSourceTerm
 
 runner = CliRunner()
+
+
+def _stored(
+    category_id: str,
+    *,
+    source_origin: str = "chase_credit",
+    category: str = "Groceries",
+    subcategory: str | None = None,
+) -> SourceTermMapping:
+    """A term as the service reports storing it."""
+    return SourceTermMapping(
+        source_origin=source_origin,
+        category=category,
+        subcategory=subcategory,
+        category_id=category_id,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +139,7 @@ class TestMappingsSet:
         self, mock_resolve: MagicMock, mock_get_db: MagicMock
     ) -> None:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_resolve.return_value = "cat-groceries"
+        mock_resolve.return_value = _stored("cat-groceries")
 
         result = runner.invoke(
             app,
@@ -152,7 +169,12 @@ class TestMappingsSet:
         self, mock_resolve: MagicMock, mock_get_db: MagicMock
     ) -> None:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_resolve.return_value = "cat-new123"
+        mock_resolve.return_value = _stored(
+            "cat-new123",
+            source_origin="mint",
+            category="Home Improvement",
+            subcategory="Tools",
+        )
 
         result = runner.invoke(
             app,
@@ -231,7 +253,7 @@ class TestMappingsSet:
         self, mock_resolve: MagicMock, mock_get_db: MagicMock
     ) -> None:
         mock_get_db.return_value.__enter__.return_value = MagicMock()
-        mock_resolve.return_value = "cat-groceries"
+        mock_resolve.return_value = _stored("cat-groceries")
 
         result = runner.invoke(
             app,
@@ -254,3 +276,35 @@ class TestMappingsSet:
         assert parsed["data"]["category"] == "Groceries"
         assert parsed["data"]["category_id"] == "cat-groceries"
         assert parsed["data"]["action"] == "mapped"
+
+    @patch("moneybin.cli.commands.categories.mappings.get_database")
+    @patch("moneybin.services.categorization.CategorizationService.resolve_source_term")
+    def test_set_receipt_names_the_stored_term_not_the_typed_one(
+        self, mock_resolve: MagicMock, mock_get_db: MagicMock
+    ) -> None:
+        """A padded term is stored trimmed; the receipt must name that row."""
+        mock_get_db.return_value.__enter__.return_value = MagicMock()
+        mock_resolve.return_value = _stored(
+            "cat-groceries", category="Groceries", subcategory="Produce"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "set",
+                "--namespace",
+                "chase_credit",
+                "--category",
+                "  Groceries\t",
+                "--subcategory",
+                " Produce ",
+                "--into",
+                "cat-groceries",
+                "--output",
+                "json",
+            ],
+        )
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        assert parsed["data"]["category"] == "Groceries"
+        assert parsed["data"]["subcategory"] == "Produce"

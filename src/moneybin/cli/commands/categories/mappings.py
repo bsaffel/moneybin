@@ -157,7 +157,8 @@ def mappings_set(
 
     Identify the term with --namespace, --category, and (if applicable)
     --subcategory — the exact triple `categories mappings pending` reported.
-    Pass exactly one of:
+    A term no imported transaction carries, and that has no mapping yet, is
+    refused. Pass exactly one of:
       --into <category_id>   map to this existing category
       --new <name>           create a new category, then map to it
 
@@ -184,7 +185,7 @@ def mappings_set(
 
     with handle_cli_errors():
         with get_database(read_only=False) as db:
-            category_id = CategorizationService(db).resolve_source_term(
+            mapping = CategorizationService(db).resolve_source_term(
                 source_origin=namespace,
                 category=category,
                 subcategory=subcategory,
@@ -193,11 +194,13 @@ def mappings_set(
                 actor="cli",
             )
 
+    # Echo the term as stored (trimmed), not as typed, so the receipt names
+    # the row a later `set` on the same term would address.
     payload = CategoryMappingSetPayload(
-        source_origin=namespace,
-        category=category,
-        subcategory=subcategory,
-        category_id=category_id,
+        source_origin=mapping.source_origin,
+        category=mapping.category,
+        subcategory=mapping.subcategory,
+        category_id=mapping.category_id,
         action="mapped",
     )
     if output == OutputFormat.JSON:
@@ -209,10 +212,10 @@ def mappings_set(
             cli_actor="categories_mappings_set",
         )
         return
-    receipt = [("Namespace", namespace), ("Category", category)]
-    if subcategory:
-        receipt.append(("Subcategory", subcategory))
-    receipt.append(("Mapped to", category_id))
+    receipt = [("Namespace", payload.source_origin), ("Category", payload.category)]
+    if payload.subcategory:
+        receipt.append(("Subcategory", payload.subcategory))
+    receipt.append(("Mapped to", payload.category_id))
     emit_human_result(
         compose_human_result([
             build_summary(receipt, title="Category mapping recorded")

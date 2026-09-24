@@ -204,6 +204,23 @@ term to an existing category or a newly-created one (via `create_category`),
 sharing one transaction with the `CategorySourceMapRepo.upsert` write. Both
 are exposed as `moneybin categories mappings pending` / `... set`.
 
+In PR2, `set` on an already-mapped term rebinds it for later sweeps only.
+Transactions the earlier mapping already categorized keep that category,
+because the sweep fills only uncategorized rows. The follow-up that lets a
+term be ignored also makes a changed mapping follow through to history: it
+removes the `provider_native` categorizations that term produced and sweeps
+again, leaving user, rule, and merchant categorizations untouched. `set`
+refuses an inactive target category, since an inactive category takes no new
+categorizations.
+
+`set` accepts a term only when an imported row carries it — keyed through the
+sweep's own `source_category_bridge_match_predicate`, so it accepts exactly
+the terms the sweep can apply — or when the term is already mapped, so a
+mapping outlives a reverted import and can still be changed. Anything else is
+refused with `mutation_not_found` instead of being stored as a mapping that
+never matches. The term carries no length cap: imports bound none of its three
+parts, and a value that must already exist in the database is bounded by it.
+
 PR2 is CLI-only. The MCP surface, decided after PR2 opened, extends two
 existing tools instead of adding one: an unmapped term is a
 `source_categories` kind in `reviews`, and a mapping is a `source_category`

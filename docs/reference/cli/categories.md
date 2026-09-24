@@ -134,7 +134,8 @@ Map one imported category-vocabulary term to a MoneyBin category.
 
 Identify the term with --namespace, --category, and (if applicable)
 --subcategory — the exact triple `categories mappings pending` reported.
-Pass exactly one of:
+A term no imported transaction carries, and that has no mapping yet, is
+refused. Pass exactly one of:
 
 ```text
 --into <category_id>   map to this existing category

@@ -105,6 +105,20 @@ def _seed_active_category(db: Database, category_id: str, category: str) -> None
     )
 
 
+def _carry_term(
+    db: Database, source_origin: str, category: str, subcategory: str | None = None
+) -> None:
+    """Make one imported row carry the term, as ``resolve_source_term`` requires."""
+    _insert_matched_txn(
+        db,
+        f"t_{source_origin}_{category}_{subcategory}",
+        source_type="tabular",
+        source_origin=source_origin,
+        category=category,
+        subcategory=subcategory,
+    )
+
+
 # ---------------------------------------------------------------------------
 # list_unmapped_source_terms
 # ---------------------------------------------------------------------------
@@ -421,11 +435,12 @@ class TestResolveSourceTerm:
     @pytest.mark.unit
     def test_map_to_existing_writes_the_row(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Some Imported Text")
         category_id = CategorizationService(db).create_category(
             "Test Existing Category", actor="test"
         )
 
-        result_id = CategorizationService(db).resolve_source_term(
+        mapping = CategorizationService(db).resolve_source_term(
             source_origin="chase_credit",
             category="Some Imported Text",
             subcategory=None,
@@ -433,7 +448,7 @@ class TestResolveSourceTerm:
             actor="test",
         )
 
-        assert result_id == category_id
+        assert mapping.category_id == category_id
         row = db.execute(
             "SELECT category_id, source_subcategory_code "
             "FROM app.category_source_map "
@@ -445,13 +460,18 @@ class TestResolveSourceTerm:
     @pytest.mark.unit
     def test_create_new_creates_category_and_mapping(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Imported Newness")
 
-        result_id = CategorizationService(db).resolve_source_term(
-            source_origin="chase_credit",
-            category="Imported Newness",
-            subcategory=None,
-            new_category="Freshly Minted Category",
-            actor="test",
+        result_id = (
+            CategorizationService(db)
+            .resolve_source_term(
+                source_origin="chase_credit",
+                category="Imported Newness",
+                subcategory=None,
+                new_category="Freshly Minted Category",
+                actor="test",
+            )
+            .category_id
         )
 
         category_row = db.execute(
@@ -470,6 +490,7 @@ class TestResolveSourceTerm:
     @pytest.mark.unit
     def test_subcategory_normalized_to_empty_sentinel(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "manual", "Rent")
         category_id = CategorizationService(db).create_category(
             "Test Sentinel Category", actor="test"
         )
@@ -520,6 +541,7 @@ class TestResolveSourceTerm:
     @pytest.mark.unit
     def test_unknown_category_id_raises_not_found(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Whatever")
         with pytest.raises(UserError) as exc_info:
             CategorizationService(db).resolve_source_term(
                 source_origin="chase_credit",
@@ -531,6 +553,30 @@ class TestResolveSourceTerm:
         assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
 
     @pytest.mark.unit
+    def test_inactive_category_id_is_refused(self, db: Database) -> None:
+        """An inactive category takes no new categorizations, so no mapping either."""
+        refresh_views(db)
+        _carry_term(db, "chase_credit", "Whatever")
+        service = CategorizationService(db)
+        category_id = service.create_category("Retired Category", actor="test")
+        service.toggle_category(category_id, is_active=False, actor="test")
+
+        with pytest.raises(UserError) as exc_info:
+            service.resolve_source_term(
+                source_origin="chase_credit",
+                category="Whatever",
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+
+        assert exc_info.value.code == error_codes.TAXONOMY_CATEGORY_NOT_FOUND
+        assert "inactive" in str(exc_info.value)
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+
+    @pytest.mark.unit
     def test_mapping_write_failure_rolls_back_created_category(
         self, db: Database, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -540,6 +586,7 @@ class TestResolveSourceTerm:
         as an orphan nobody chose to keep.
         """
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Whatever")
 
         def _boom(self: CategorySourceMapRepo, **kwargs: object) -> None:
             raise RuntimeError("simulated mapping-write failure")
@@ -568,13 +615,11 @@ class TestResolveSourceTerm:
         [
             pytest.param("chase_credit", "", None, id="empty-category"),
             pytest.param("chase_credit", " \t ", None, id="whitespace-category"),
-            pytest.param("chase_credit", "x" * 101, None, id="overlong-category"),
             pytest.param("chase_credit", "Auto", "  ", id="whitespace-subcategory"),
             pytest.param("", "Auto", None, id="empty-namespace"),
-            pytest.param("o" * 65, "Auto", None, id="overlong-namespace"),
         ],
     )
-    def test_term_no_imported_row_can_carry_is_refused(
+    def test_blank_term_part_is_refused(
         self,
         db: Database,
         source_origin: str,
@@ -602,13 +647,121 @@ class TestResolveSourceTerm:
         ).fetchone() == (0,)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("source_origin", "category", "subcategory"),
+        [
+            pytest.param("chase_credit", "Grocerys", None, id="mistyped-category"),
+            pytest.param("mint", "Groceries", None, id="other-namespace"),
+            pytest.param(
+                "chase_credit", "Groceries", "Produce", id="extra-subcategory"
+            ),
+            pytest.param("chase_credit", "Auto", None, id="missing-subcategory"),
+        ],
+    )
+    def test_term_no_imported_row_carries_is_refused(
+        self,
+        db: Database,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+    ) -> None:
+        """A term matching nothing would store a mapping that never applies."""
+        refresh_views(db)
+        _carry_term(db, "chase_credit", "Groceries")
+        _carry_term(db, "chase_credit", "Auto", "Gas")
+        category_id = CategorizationService(db).create_category(
+            "Unreached Target", actor="test"
+        )
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin=source_origin,
+                category=category,
+                subcategory=subcategory,
+                category_id=category_id,
+                actor="test",
+            )
+
+        assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    def test_nothing_imported_yet_refuses_every_term(self, db: Database) -> None:
+        """No prep.int_transactions__matched yet -> refused, not a raw catalog error."""
+        refresh_views(db)
+        category_id = CategorizationService(db).create_category(
+            "Early Target", actor="test"
+        )
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin="chase_credit",
+                category="Groceries",
+                subcategory=None,
+                category_id=category_id,
+                actor="test",
+            )
+
+        assert exc_info.value.code == error_codes.MUTATION_NOT_FOUND
+
+    @pytest.mark.unit
+    def test_long_term_an_import_carries_is_accepted(self, db: Database) -> None:
+        """Imports bound none of the three parts, so neither may the writer."""
+        refresh_views(db)
+        origin, category, subcategory = "o" * 80, "c" * 150, "s" * 150
+        _carry_term(db, origin, category, subcategory)
+        category_id = CategorizationService(db).create_category(
+            "Long Term Target", actor="test"
+        )
+
+        mapping = CategorizationService(db).resolve_source_term(
+            source_origin=origin,
+            category=category,
+            subcategory=subcategory,
+            category_id=category_id,
+            actor="test",
+        )
+
+        assert mapping.category_id == category_id
+
+    @pytest.mark.unit
+    def test_mapped_term_can_change_after_its_rows_are_gone(self, db: Database) -> None:
+        """A reverted import must not strand its mappings beyond correction."""
+        refresh_views(db)
+        _carry_term(db, "chase_credit", "Groceries")
+        service = CategorizationService(db)
+        first = service.create_category("Before Revert", actor="test")
+        second = service.create_category("After Revert", actor="test")
+        service.resolve_source_term(
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+            category_id=first,
+            actor="test",
+        )
+        db.execute("DELETE FROM prep.int_transactions__matched")
+
+        mapping = service.resolve_source_term(
+            source_origin="chase_credit",
+            category="Groceries",
+            subcategory=None,
+            category_id=second,
+            actor="test",
+        )
+
+        assert mapping.category_id == second
+
+    @pytest.mark.unit
     def test_padded_term_is_stored_as_staging_trims_it(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Groceries", "Produce")
         category_id = CategorizationService(db).create_category(
             "Trim Target", actor="test"
         )
 
-        CategorizationService(db).resolve_source_term(
+        mapping = CategorizationService(db).resolve_source_term(
             source_origin="chase_credit",
             category="  Groceries\t",
             subcategory=" Produce ",
@@ -621,10 +774,12 @@ class TestResolveSourceTerm:
             "FROM app.category_source_map WHERE source_type = 'chase_credit'"
         ).fetchone()
         assert row == ("Groceries", "Produce")
+        assert (mapping.category, mapping.subcategory) == row
 
     @pytest.mark.unit
     def test_outcome_counter_tells_added_from_updated(self, db: Database) -> None:
         refresh_views(db)
+        _carry_term(db, "chase_credit", "Counted Term")
         service = CategorizationService(db)
         first = service.create_category("Counter First", actor="test")
         second = service.create_category("Counter Second", actor="test")

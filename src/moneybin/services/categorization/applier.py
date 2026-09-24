@@ -38,7 +38,6 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
-from moneybin.limits import IDENTIFIER_MAX_LEN
 from moneybin.matching.aliasing import (
     resolve_curation_transaction_id,
     resolve_curation_transaction_ids,
@@ -80,6 +79,7 @@ from moneybin.services.categorization._shared import (
     canonical_matcher_key,
     is_unselective_contains,
     resolve_category_id,
+    source_category_bridge_match_predicate,
 )
 from moneybin.services.categorization.conflicts import (
     ActiveRule,
@@ -99,6 +99,7 @@ from moneybin.tables import (
     CATEGORIES,
     CATEGORIZATION_RULES,
     CATEGORY_SOURCE_MAP,
+    INT_TRANSACTIONS_MATCHED,
     PROPOSED_RULES,
     TRANSACTION_CATEGORIES,
     TRANSACTION_SPLITS,
@@ -372,27 +373,35 @@ class TaxonomyTargetResult:
     changed: bool
 
 
+@dataclass(frozen=True, slots=True)
+class SourceTermMapping:
+    """One imported term as ``app.category_source_map`` stored it, and its target."""
+
+    source_origin: str
+    category: str
+    subcategory: str | None
+    category_id: str
+
+
 def _normalized_source_term(
     source_origin: str, category: str, subcategory: str | None
 ) -> tuple[str, str | None]:
-    """Refuse a term no imported row can carry; return it as staging stores it.
+    """Return the term as staging stores it; refuse a blank part.
 
     Staging trims category text with a class equal to ``str.strip()`` and
     NULLs a blank, so an untrimmed key would store and never match, and a
-    blank one could never be enumerated or applied.
+    blank one names nothing. No length cap: imports bound none of the three
+    parts, and :meth:`MatchApplier.resolve_source_term` accepts only a term
+    already in the database, which bounds it by construction.
     """
-    try:
-        validate_category_text(category, "category")
-        if subcategory is not None:
-            validate_category_text(subcategory, "subcategory")
-    except ValueError as exc:
-        raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
-    if not source_origin.strip() or len(source_origin) > IDENTIFIER_MAX_LEN:
+    category = category.strip()
+    subcategory = subcategory.strip() if subcategory is not None else None
+    if not source_origin.strip() or not category or subcategory == "":
         raise UserError(
-            f"source_origin must be non-empty and at most {IDENTIFIER_MAX_LEN} chars",
+            "source_origin, category, and any subcategory must be non-blank",
             code=error_codes.MUTATION_INVALID_INPUT,
         )
-    return category.strip(), subcategory.strip() if subcategory is not None else None
+    return category, subcategory
 
 
 class MatchApplier:
@@ -1377,7 +1386,7 @@ class MatchApplier:
         category_id: str | None = None,
         new_category: str | None = None,
         actor: str,
-    ) -> str:
+    ) -> SourceTermMapping:
         """Map one imported vocabulary term to a MoneyBin category.
 
         ``(source_origin, category, subcategory)`` identifies the term being
@@ -1396,12 +1405,21 @@ class MatchApplier:
         atomically: if the mapping upsert fails, a category just created for
         it must not survive as an orphan nobody chose.
 
+        Only a term an imported row carries, or one already mapped, is
+        accepted: a mistyped term would otherwise store a mapping that never
+        matches anything, with nothing to say so.
+
+        Returns the term as stored — trimmed — so a receipt names the row
+        actually written rather than the caller's padded input.
+
         Raises:
             UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
-                both of ``category_id`` / ``new_category`` were given, or the
-                term is blank or over its length cap.
+                both of ``category_id`` / ``new_category`` were given, or a
+                part of the term is blank.
+            UserError(code=error_codes.MUTATION_NOT_FOUND): no imported row
+                carries the term and it has no mapping to change.
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
-                ``category_id`` does not name an existing category.
+                ``category_id`` does not name an active category.
             UserError(code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS):
                 ``new_category`` collides with an existing category name.
         """
@@ -1415,19 +1433,33 @@ class MatchApplier:
                     code=error_codes.MUTATION_INVALID_INPUT,
                 )
             with self._transaction():
+                if not self._is_known_source_term(source_origin, category, subcategory):
+                    raise UserError(
+                        "No imported transaction carries this term, and it has "
+                        "no mapping to change",
+                        code=error_codes.MUTATION_NOT_FOUND,
+                    )
                 if new_category is not None:
                     resolved_category_id = self.create_category(
                         new_category, actor=actor, in_outer_txn=True
                     )
                 else:
                     resolved_category_id = cast(str, category_id)
-                    exists = self._db.execute(
-                        f"SELECT 1 FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
+                    target = self._db.execute(
+                        f"SELECT is_active FROM {CATEGORIES.full_name} WHERE category_id = ?",  # TableRef constant
                         [resolved_category_id],
                     ).fetchone()
-                    if not exists:
+                    if target is None:
                         raise UserError(
                             f"Category {resolved_category_id} not found",
+                            code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
+                        )
+                    # An inactive category takes no new categorizations; the
+                    # review-decision writer refuses one as a target too.
+                    if not target[0]:
+                        raise UserError(
+                            f"Category {resolved_category_id} is inactive; "
+                            "activate it or map the term to an active category",
                             code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND,
                         )
                 event = self._category_source_map.upsert(
@@ -1445,7 +1477,57 @@ class MatchApplier:
         CATEGORY_SOURCE_MAPPING_OUTCOMES_TOTAL.labels(
             outcome="added" if event.before_value is None else "updated"
         ).inc()
-        return resolved_category_id
+        return SourceTermMapping(
+            source_origin=source_origin,
+            category=category,
+            subcategory=subcategory,
+            category_id=resolved_category_id,
+        )
+
+    def _is_known_source_term(
+        self, source_origin: str, category: str, subcategory: str | None
+    ) -> bool:
+        """Whether an imported row carries the term, or it is already mapped.
+
+        The imported side keys through the sweep's own predicate, so this
+        accepts exactly the terms the sweep can apply. An existing mapping is
+        accepted too, so a mapping whose rows have since gone can still change.
+        """
+        params = [source_origin, category, subcategory or ""]
+        mapped = self._db.execute(
+            f"""
+            SELECT 1 FROM {CATEGORY_SOURCE_MAP.full_name}
+            WHERE source_type = ?
+                AND source_category_code = ?
+                AND source_subcategory_code = ?
+            """,  # TableRef constant
+            params,
+        ).fetchone()
+        if mapped is not None:
+            return True
+        try:
+            carried = self._db.execute(
+                f"""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM (
+                        SELECT ? AS source_type, ? AS source_category_code,
+                            ? AS source_subcategory_code
+                    ) AS b
+                    JOIN {INT_TRANSACTIONS_MATCHED.full_name} AS m
+                        ON {
+                    source_category_bridge_match_predicate(
+                        "m.source_origin", "m.category", "m.subcategory"
+                    )
+                }
+                )
+                """,  # TableRef constant + code-constant bridge predicate
+                params,
+            ).fetchone()
+        except (duckdb.CatalogException, duckdb.BinderException):
+            # Nothing imported yet: prep.int_transactions__matched is absent.
+            return False
+        return bool(carried and carried[0])
 
     def _complete_rows(
         self,
