@@ -1,7 +1,7 @@
 # Feature: Net Worth on the SQL Surface
 
 ## Status
-in-progress
+implemented
 
 ## Goal
 
@@ -1708,46 +1708,42 @@ produces the opposite false positive (also below). Neither names the real
 condition, which was never a date — it is the account's current inclusion
 state.
 
-Only an account that passes the join is then scanned in
-`reports.net_worth_accounts` for `account_balance IS NULL`, still with
-**no `balance_date` filter** — never a NULL-total read off
-`reports.net_worth`'s own aggregate rung, and never scoped to
-`CURRENT_DATE`. Every ordinary row populates `account_balance` (the
-column's own comment at `:1079`, "In currency_code," carries no NULL case);
-the synthesized-row arm is the only source of a NULL there, so the bare
-predicate identifies it regardless of what date §`reports.net_worth_accounts`
-dates that row at — that date is stated once, where the row is produced,
-and is not restated here. A mixed profile whose newest anchored balance
-predates today dates its synthesized row at the balance spine's own
-maximum, not at `CURRENT_DATE` (§`reports.net_worth_accounts`'s dating
-rule); filtering this check on `balance_date = CURRENT_DATE` in addition
-to `account_balance IS NULL` would silently exclude exactly that mixed
-profile — a false negative,
-because the spine can end before today with no row dated today at all.
-Omitting the date filter without the eligibility join produced the other
-failure: `reports.net_worth_accounts` intentionally retains an archived
-account's synthesized pre-archive row — preserving it for the range in
-which the account really was eligible and unanchored is the whole point
-of Requirement 9's date-scoped history — so an unrestricted scan kept
-that row at `fail` long after the account's current `archived = TRUE`
-excludes it from Requirement 14's guard. The eligibility join closes that
-false positive without bringing a date filter back. The account rung is
-the one relation in this spec that names the affected accounts by id;
-`reports.net_worth`'s `unanchored_account_count` is a number with nothing
-to attach `affected_ids` to, while several existing `fail` invariants in
-this file already return the specific rows they flag rather than only a
-count — `investment_source_overlap`, `orphan_app_state`,
+Only an account that passes the join is then checked for membership in
+`core.dim_unanchored_accounts` — the shared candidate relation Deviation 1
+(§"Deviations recorded during implementation" → M2B.3) introduces in place of
+the per-consumer four-source union this section originally specified, and
+which the account rung, the aggregate rung, and both runner fallbacks now all
+read instead of restating the union each. That relation's own docstring
+states it carries **no eligibility and no `balance_date` filter** — it is a
+plain `NOT EXISTS` against `core.fct_balances` behind the evidence union — so
+this check needs neither: it reads the relation as-is with **no `balance_date`
+filter**, never a NULL-total read off `reports.net_worth`'s own aggregate
+rung, and never scoped to `CURRENT_DATE`. The false-negative and
+false-positive failure modes this section originally analyzed for a
+`reports.net_worth_accounts` scan still hold for the same reason, one join
+earlier: a mixed profile whose newest anchored balance predates today is
+still caught, because `core.dim_unanchored_accounts` has no date to filter on
+in the first place; and an archived account's preserved pre-archive history
+never leaks in, because this check never reads `reports.net_worth_accounts`
+at all — the eligibility join against `core.dim_accounts`'s current state is
+what excludes such an account, exactly as before. The account rung is still
+the one relation in this spec that names the affected accounts by id for a
+human reading it directly; `reports.net_worth`'s `unanchored_account_count` is
+a number with nothing to attach `affected_ids` to, while several existing
+`fail` invariants in this file already return the specific rows they flag
+rather than only a count — `investment_source_overlap`, `orphan_app_state`,
 `app_audit_coverage_*`, `currency_integrity` all do (`dedup_reconciliation`
 is the exception, and only because a global count mismatch genuinely has
 no individual row to name). The affected accounts here are individually
 addressable, so this check follows the row-naming pattern rather than
-`dedup_reconciliation`'s. A row surviving both the eligibility join and
-the `account_balance IS NULL` filter means `core.dim_holdings`,
-`core.dim_holdings_broker_reported`, `core.fct_transactions`, or
-`core.fct_investment_transactions` carries evidence for a presently
-eligible account `core.fct_balances` has no anchor for at all —
-Requirement 14's own predicate, already computed once by the view this
-check re-reads rather than duplicating.
+`dedup_reconciliation`'s — reading `affected_ids` off `core.dim_unanchored_accounts.account_id`
+directly rather than off the account rung. A row surviving both the
+eligibility join and membership in `core.dim_unanchored_accounts` means
+`core.dim_holdings`, `core.dim_holdings_broker_reported`,
+`core.fct_transactions`, or `core.fct_investment_transactions` carries
+evidence for a presently eligible account `core.fct_balances` has no anchor
+for at all — Requirement 14's own predicate, already computed once by the
+shared relation this check re-reads rather than duplicating.
 
 Severity is `fail`, not `warn` — the opposite of the staleness check just
 above, and deliberately so: the balance `net_worth_stale_balance` flags is
@@ -2005,7 +2001,14 @@ only a write that flipped the flag is cascade evidence.
 - `src/moneybin/sqlmesh/models/core/dim_holdings_broker_reported.sql` — the
   classified `core.*` relation the guard reads instead of `prep.*` directly;
   see §Data Model.
-- `src/moneybin/privacy/taxonomy.py` — its `CLASSIFICATION` entry.
+- `src/moneybin/sqlmesh/models/core/dim_unanchored_accounts.sql` — the shared
+  candidate relation Deviation 1 (§"Deviations recorded during
+  implementation" → M2B.3) introduces: one `kind VIEW`, aliasing each of the
+  four evidence branches so the privacy class deriver resolves it, read by
+  both rungs, both runner fallbacks, and the doctor check below instead of
+  each restating the union.
+- `src/moneybin/privacy/taxonomy.py` — a `CLASSIFICATION` entry for each of
+  `dim_holdings_broker_reported` and `dim_unanchored_accounts`.
 - `src/moneybin/reports/definitions/net_worth.py` — the inverted-range
   validation carried over from `service_reports.py`'s retired
   `_validate_networth_history_parameters`, the ordinary range filter (or
@@ -2025,9 +2028,11 @@ only a write that flipped the flag is cascade evidence.
   live in `net_worth_accounts.sql` itself, not here.
 - `src/moneybin/config.py` — `DoctorSettings.balance_staleness_threshold_days`.
 - `src/moneybin/services/doctor_service.py` — the `net_worth_stale_balance`
-  (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; see
-  §"`moneybin system doctor`: unanchored accounts" for why the second one is
-  `fail` and the first stays `warn`.
+  (`warn`) and `net_worth_unanchored_accounts` (`fail`) invariants; the
+  second reads `core.dim_unanchored_accounts` joined to `core.dim_accounts`,
+  not `reports.net_worth_accounts`. See §"`moneybin system doctor`:
+  unanchored accounts" for why the second one is `fail` and the first stays
+  `warn`.
 - `docs/specs/moneybin-doctor.md` — both invariants' table entries.
 
 ### Files to Delete
@@ -2210,6 +2215,56 @@ Decisions the plan above left implicit, made concrete while building M2B.2:
   reports need three parts") and are verified against derivation in CI, the
   same as every other runner-backed report. `_derived_classes.py` covers
   runner-less views only; none of the three rungs is one.
+
+**M2B.3**
+
+1. **One shared candidate relation, `core.dim_unanchored_accounts`, replaces
+   four per-consumer copies of the evidence union.** Brandon chose this on
+   2026-09-24: the evidence union and the "no `core.fct_balances` row" test
+   live once in `src/moneybin/sqlmesh/models/core/dim_unanchored_accounts.sql`,
+   read by both rungs, both runner fallbacks, and the doctor check.
+2. **A mixed decisive/all-NULL newest snapshot resolves `has_position` to
+   `NULL`, not `FALSE`.** `src/moneybin/sqlmesh/models/core/dim_holdings_broker_reported.sql`:
+   only a definitive-zero reading requires every row decisive; a mixed origin
+   is inconclusive rather than a confirmed zero, and it changes no candidacy
+   because only `TRUE` adds evidence.
+3. **`core.dim_holdings`'s arm has no isolated end-to-end scenario.** Every
+   open lot traces back to `core.fct_investment_transactions`, so any
+   end-to-end account with a lot also trips that ledger's own arm; the
+   `dim_holdings` arm is pinned in isolation only at the unit level, in
+   `tests/moneybin/test_unanchored_guard_models.py`.
+4. **The Tier 3 doctor cases split between unit and scenario level.** The
+   per-evidence-shape cases (zero-quantity row, empty receipt, sold at a
+   gain, the bootstrap row) are pinned at the unit level against
+   `core.dim_unanchored_accounts` directly; one scenario profile in
+   `tests/scenarios/test_net_worth_unanchored.py` runs `DoctorService` end to
+   end over real transforms of those same shapes plus sibling checking.
+5. **`DateRange` gains `from_bound`/`to_bound`/`is_ranged`.** The runner
+   fallbacks in `src/moneybin/reports/definitions/net_worth.py` and
+   `net_worth_accounts.py` need the validated bounds themselves, not just the
+   `WHERE` fragment `_shared.py` already produced; an internal change to
+   `src/moneybin/reports/definitions/_shared.py`.
+
+Three controller rulings made while implementing M2B.3, not anticipated by
+the plan above:
+
+- **`core.dim_holdings_broker_reported.as_of` is classed `TXN_DATE`, not
+  `TIMESTAMP_OBSERVABILITY`.** One column name carries one class across the
+  registry — `BalanceAssertionStatePayload.as_of` already uses `TXN_DATE`, and
+  a second class for the same name would make the registry ambiguous by
+  column name alone.
+- **`core.dim_unanchored_accounts` aliases each evidence branch.** The four
+  `UNION ALL` arms in `dim_unanchored_accounts.sql` each carry an
+  `evidence_source` alias so the privacy class deriver can resolve the view;
+  without it, the view sits on `report_class_derivation.py`'s unresolvable
+  list.
+- **The end-to-end broker-arm scenario uses the spec's declined-bootstrap
+  shape.** `tests/scenarios/test_net_worth_unanchored.py` exercises a
+  value-only holding with NULL quantity for the broker-reported arm. A
+  positive-quantity snapshot with no transactions correctly writes an
+  `opening_bootstrap` row instead, and that shape lights the
+  investment-ledger arm, not the broker arm — it is pinned separately at the
+  unit level.
 
 ## Testing Strategy
 

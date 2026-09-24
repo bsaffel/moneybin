@@ -366,6 +366,51 @@ Current positions: the sum of open lots per `(account_id, security_id)` — a "n
 
 Logical grain key: `(account_id, security_id)`.
 
+### `core.dim_holdings_broker_reported`
+
+What each Plaid item's newest holdings snapshot says about an account's
+position, reduced to one row per account — the broker's claim, not
+MoneyBin's ledger. Closes the gap `core.dim_holdings` cannot: `dim_holdings`
+sums open lots, so it has no row for a broker-reported position with no
+matching lot (an unbound security, a declined bootstrap, a snapshot that
+landed before its transactions). `VIEW`. Grain: `account_id`.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
+| `has_position` | BOOLEAN | `TRUE`: a newest snapshot reports a nonzero quantity or value. `FALSE`: every investment-typed item pulled and reported nothing nonzero. `NULL`: pulled, but every row is NULL on both figures. |
+| `as_of` | DATE | Date of the stalest receipt behind `has_position` (MIN across contributing items — a newer item's receipt says nothing about an older item's own silence). |
+
+Reads only `quantity` and `institution_value`; `cost_basis` is a
+reconciliation reference and never evidence of a position. A relinked
+account (several `source_origin`s) reduces in a fixed order: `TRUE`, then
+absent (no row at all), then `FALSE`, then `NULL` — one confirmed position
+always outranks a sibling item's silence, zero, or absence.
+
+### `core.dim_unanchored_accounts`
+
+Accounts carrying evidence of holding value with no balance observation at
+all — Requirement 14's candidate set
+([`reports-net-worth-sql-surface.md`](../specs/reports-net-worth-sql-surface.md)),
+stated once and read by both net-worth rungs, both report runners, and
+`moneybin system doctor`. `VIEW`. Grain: `account_id`.
+
+| Column | Type | Description |
+|---|---|---|
+| `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
+| `has_holdings` | BOOLEAN | Has an open lot in `core.dim_holdings`. |
+| `has_broker_position` | BOOLEAN | `core.dim_holdings_broker_reported.has_position` is `TRUE`. |
+| `has_transactions` | BOOLEAN | Has any row in `core.fct_transactions`. |
+| `has_investment_transactions` | BOOLEAN | Has any row in `core.fct_investment_transactions`. |
+
+Evidence is read existentially, never by `SUM` — a zero net cash effect is
+never proof of zero cash held, however it was reached. Carries **no**
+eligibility: `include_in_net_worth` and archival are applied by each reader
+at its own date, because the report rungs, the runner fallbacks, and system
+doctor each need that eligibility evaluated at a different point in time. An
+account with no evidence of any kind stays out of this view entirely —
+nothing distinguishes "never funded" from "not yet observed" for it.
+
 ### `core.fct_investment_transactions`
 
 The canonical investment-transaction ledger. Grain: one row per `investment_transaction_id`. `FULL` model (materialized table, not a view — unlike `fct_transactions`). Unions manual entry, Plaid transactions, and the Plaid opening-lot bootstrap (a reconstruction of pre-import-window lots, carrying the non-user-authorable `subtype = 'opening_bootstrap'` so it's always distinguishable from a real transfer).
@@ -492,9 +537,10 @@ Cross-account daily net-worth rollup, converted to the profile's home currency. 
 | `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
 | `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
 | `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means the totals below are complete. |
-| `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0`. |
-| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0`. |
-| `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0`. |
+| `unanchored_account_count` | INTEGER | Eligible accounts holding priced securities or transaction activity with no balance observation at all; 0 means none. |
+| `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
+| `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
+| `net_worth` | DECIMAL(18,2) | `total_assets + total_liabilities`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 
 ### `reports.net_worth_currencies`
 
@@ -536,6 +582,11 @@ Net worth per included account per day, in its own currency and converted to hom
 | `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days. |
 | `account_balance` | DECIMAL(18,2) | In `currency_code`. |
 | `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced. |
+
+An eligible account with no balance observation at all still gets a row
+here — synthesized with `account_balance` and every other balance-derived
+column NULL and `is_observed = FALSE`, so an unanchored account is visible
+per-account rather than only as a count on `reports.net_worth`.
 
 ### `reports.cash_flow`
 
