@@ -3,8 +3,8 @@
 import re
 from pathlib import Path
 
-import click
 import pytest
+from typer.core import TyperGroup
 from typer.main import get_command
 from typer.testing import CliRunner
 
@@ -67,7 +67,7 @@ def test_short_menu_expands_without_moving_commands(
     assert not short.stderr
     assert "budget" not in full.stdout
     command = get_command(app)
-    assert isinstance(command, click.Group)
+    assert isinstance(command, TyperGroup)
     visible = {name for name, child in command.commands.items() if not child.hidden}
     assert set(_commands(full.stdout)) == visible
 

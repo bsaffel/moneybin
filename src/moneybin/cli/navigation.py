@@ -1,7 +1,7 @@
 """One root command menu for quick discovery and complete help."""
 
-import click
 import typer
+from typer import _click as click
 from typer.core import TyperGroup
 
 HELP_SECTIONS: dict[str, dict[str, str]] = {
