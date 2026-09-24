@@ -56,7 +56,9 @@ from moneybin.tables import REPORTS_MERCHANT_ACTIVITY
         OutputColumn("top_category", "Modal category.", DataClass.CATEGORY),
         OutputColumn("first_seen", "Earliest transaction date.", DataClass.TXN_DATE),
         OutputColumn("last_seen", "Latest transaction date.", DataClass.TXN_DATE),
-        OutputColumn("txn_count", "Transaction count.", DataClass.AGGREGATE),
+        OutputColumn(
+            "txn_count", "Transaction count.", DataClass.AGGREGATE, numeric=True
+        ),
         OutputColumn(
             "active_months",
             "Distinct active calendar-month count.",

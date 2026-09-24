@@ -25,6 +25,7 @@ from moneybin.cli.output import (
     output_option,
     quiet_option,
     render_or_json,
+    wide_option,
 )
 from moneybin.cli.progress import operation_progress
 from moneybin.cli.render import (
@@ -52,6 +53,9 @@ key_app = typer.Typer(
 )
 app.add_typer(key_app, name="key")
 logger = logging.getLogger(__name__)
+
+_DB_INFO_TABLE_LIMIT = 20
+"""Default `db info` table-listing cap — a demo database alone carries 80+."""
 
 if TYPE_CHECKING:
     from moneybin.cli.terminal import TerminalPolicy
@@ -465,6 +469,7 @@ def db_info(
     ),
     output: OutputFormat = output_option,
     quiet: bool = quiet_option,  # db info has no info-only chatter; only data lines
+    wide: bool = wide_option,
     no_pager: bool = no_pager_option,
 ) -> None:
     """Display database metadata: file size, tables, encryption status, versions."""
@@ -504,14 +509,20 @@ def db_info(
             return
         policy = get_terminal_policy(no_pager=no_pager)
         emit_human_result(
-            build_summary([
-                ("Database", str(payload["database"])),
-                ("File size", _format_bytes(cast(int, payload["file_size_bytes"]))),
-                ("Encryption", "AES-256-GCM (always on)"),
-                ("Key mode", str(payload["key_mode"])),
-                ("Lock state", "locked (no key in keychain or env)"),
-                ("Tables", "unavailable while locked"),
-            ]),
+            build_summary(
+                [
+                    ("Database", str(payload["database"])),
+                    (
+                        "File size",
+                        _format_bytes(cast(int, payload["file_size_bytes"])),
+                    ),
+                    ("Encryption", "AES-256-GCM (always on)"),
+                    ("Key mode", str(payload["key_mode"])),
+                    ("Lock state", "locked (no key in keychain or env)"),
+                    ("Tables", "unavailable while locked"),
+                ],
+                terminal=policy,
+            ),
             policy=policy,
             finite_read=True,
             no_pager=no_pager,
@@ -566,27 +577,45 @@ def db_info(
                 typer.echo(json.dumps(payload, indent=2, default=str))
                 return
 
+            # Text defaults to the biggest tables — the ones most likely to be
+            # the reason someone ran this command — and discloses the cap
+            # (requirement 12); `--wide` restores every table (requirement 4).
+            # JSON already returns the whole `table_rows` list unconditionally.
+            shown_rows = table_rows
+            truncated = False
+            if not wide and len(table_rows) > _DB_INFO_TABLE_LIMIT:
+                shown_rows = sorted(
+                    table_rows, key=lambda row: cast(int, row["rows"]), reverse=True
+                )[:_DB_INFO_TABLE_LIMIT]
+                truncated = True
+            tables_summary = (
+                f"{len(shown_rows)} of {len(table_rows)} shown, largest first "
+                "— --wide for all"
+                if truncated
+                else str(len(table_rows))
+            )
             pairs = [
                 ("Database", str(payload["database"])),
                 ("File size", _format_bytes(cast(int, payload["file_size_bytes"]))),
                 ("Encryption", "AES-256-GCM (always on)"),
                 ("Key mode", str(payload["key_mode"])),
                 ("Lock state", "unlocked"),
-                ("Tables", str(len(table_rows))),
+                ("Tables", tables_summary),
             ]
             if "duckdb_version" in payload:
                 pairs.append(("DuckDB version", str(payload["duckdb_version"])))
             policy = get_terminal_policy(no_pager=no_pager)
-            parts: list[object] = [build_summary(pairs)]
-            if table_rows:
+            parts: list[object] = [build_summary(pairs, terminal=policy)]
+            if shown_rows:
                 parts.append(
                     build_rows(
                         ["schema", "table", "rows"],
                         [
                             (row["schema"], row["table"], row["rows"])
-                            for row in table_rows
+                            for row in shown_rows
                         ],
                         numeric=["rows"],
+                        grouped=["rows"],
                         terminal=policy,
                     )
                 )
@@ -1320,7 +1349,7 @@ def db_ps(
         return
     emit_human_result(
         compose_human_result([
-            build_summary([("Database", str(db_path))]),
+            build_summary([("Database", str(db_path))], terminal=policy),
             build_rows(
                 ["pid", "command", "args"],
                 [(proc["pid"], proc["command"], proc["cmdline"]) for proc in procs],

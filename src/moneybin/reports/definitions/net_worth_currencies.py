@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     OutputColumn,
@@ -228,8 +229,16 @@ def net_worth_currencies(
         FROM ranked
         ORDER BY rank_in_currency, balance_date, currency_code NULLS LAST
     """  # noqa: S608  # TableRef interpolation, static column list
-    actions = [
-        "Run reports(report_id='core:net_worth') for the single home-currency total",
-        "Run reports(report_id='core:net_worth_accounts') for the account-level breakdown",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="the single home-currency total",
+            cli=("reports", "net-worth"),
+            mcp="reports(report_id='core:net_worth')",
+        ),
+        NextStep(
+            reason="the account-level breakdown",
+            cli=("reports", "net-worth-accounts"),
+            mcp="reports(report_id='core:net_worth_accounts')",
+        ),
     ]
     return ReportQuery(sql, rng.params, actions=actions, period=rng.period)

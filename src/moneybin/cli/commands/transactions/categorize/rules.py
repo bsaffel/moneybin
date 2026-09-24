@@ -25,7 +25,12 @@ from moneybin.cli.render import (
     compose_human_result,
     render_note,
 )
-from moneybin.cli.utils import abort_cli_error, get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    abort_cli_error,
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.errors import UserError
 from moneybin.limits import RULE_PRIORITY_MAX, RULE_PRIORITY_MIN
@@ -163,13 +168,36 @@ def _warn_rule_create_rows(result: "RuleCreationResult") -> None:
             f"Attention: {err.get('name', '(unknown)')}: {err.get('reason', 'failed')}",
             warn=True,
         )
+        pattern = err.get("merchant_pattern")
+        category = err.get("category")
+        if pattern is not None and category is not None:
+            args: list[object] = [
+                "transactions",
+                "categorize",
+                "rules",
+                "create",
+                err.get("name", ""),
+                "--pattern",
+                pattern,
+                "--category",
+                category,
+            ]
+            subcategory = err.get("subcategory")
+            if subcategory:
+                args.extend(["--subcategory", subcategory])
+            args.extend(["--match-type", "exact"])
+            render_note(
+                f"› Rerun with an exact match: {generated_cli_command(*args)}",
+                warn=True,
+            )
     for conflict in result.conflict_details:
-        render_note(
-            f"Attention: {conflict.name}: {conflict.reason} "
-            f"Decide it with `moneybin transactions categorize rules resolve "
-            f"{conflict.conflict_id} --replace|--reprioritize N|--cancel`.",
-            warn=True,
+        render_note(f"Attention: {conflict.name}: {conflict.reason}", warn=True)
+        resolve_cmd = generated_cli_command(
+            "transactions", "categorize", "rules", "resolve", conflict.conflict_id
         )
+        render_note(f"› Decide it: {resolve_cmd} --replace", warn=True)
+        render_note(f"› Or: {resolve_cmd} --reprioritize <N>", warn=True)
+        render_note(f"› Or: {resolve_cmd} --cancel", warn=True)
 
 
 @app.command("create")
@@ -350,23 +378,30 @@ def rules_create(
         )
         render_or_json(envelope, output, cli_actor="rules_create")
     else:
+        policy = get_terminal_policy()
+        if result.created > 0 and not (result.skipped or result.conflicts):
+            title = f"{policy.symbols.success} Rules created"
+        elif result.created > 0:
+            title = f"{policy.symbols.attention} Rules partially created"
+        else:
+            # created == 0 here always means every proposed rule was refused
+            # (or the batch was empty): a conflict-only zero-created batch
+            # already raised UserError above and never reaches this render.
+            title = f"{policy.symbols.failure} No rules created"
+        summary_pairs = [
+            ("Created", str(result.created)),
+            ("Existing", str(result.existing)),
+            ("Skipped", str(result.skipped)),
+            ("Conflicts", str(result.conflicts)),
+        ]
+        if result.recategorized is not None:
+            summary_pairs.append((
+                "Recategorized",
+                f"{result.recategorized:,} rows (every active rule, not just this one)",
+            ))
         emit_human_result(
-            compose_human_result([
-                build_summary(
-                    [
-                        ("Created", str(result.created)),
-                        ("Existing", str(result.existing)),
-                        ("Skipped", str(result.skipped)),
-                        ("Conflicts", str(result.conflicts)),
-                    ],
-                    title=(
-                        "Rules partially created"
-                        if result.skipped or result.conflicts
-                        else "Rules created"
-                    ),
-                )
-            ]),
-            policy=get_terminal_policy(),
+            compose_human_result([build_summary(summary_pairs, title=title)]),
+            policy=policy,
             finite_read=False,
             receipt=True,
         )

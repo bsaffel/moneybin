@@ -973,6 +973,42 @@ class TestRuleConflictPayloadPrivacy:
         assert envelope.status == "ok"
 
     @pytest.mark.unit
+    def test_rules_create_surfaces_recategorized_count_additively(self) -> None:
+        """``recategorized`` rides the existing payload without a new field name."""
+        result = RuleCreationResult(
+            created=1,
+            existing=0,
+            skipped=0,
+            error_details=[],
+            rule_ids=["r2"],
+            recategorized=7,
+        )
+        with (
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.get_database"
+            ) as mock_get_db,
+            patch(
+                "moneybin.mcp.tools.transactions_categorize.CategorizationService"
+            ) as mock_svc_cls,
+        ):
+            mock_get_db.return_value.__enter__.return_value = MagicMock()
+            mock_svc_cls.return_value.create_rules.return_value = result
+            envelope = transactions_categorize_rules_create(
+                [
+                    {
+                        "name": "Amazon",
+                        "merchant_pattern": "AMAZON",
+                        "category": "Shopping",
+                    }
+                ],
+                reapply=True,
+            )
+
+        assert envelope.status == "ok"
+        assert envelope.data is not None
+        assert envelope.data.recategorized == 7
+
+    @pytest.mark.unit
     def test_rules_create_that_wrote_nothing_raises_a_conflict(self) -> None:
         result = RuleCreationResult(
             created=0,

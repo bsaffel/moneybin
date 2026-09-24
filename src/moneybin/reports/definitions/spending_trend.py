@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -222,6 +223,7 @@ def spending_trend(
         from_month,
         to_month,
         report_id="core:spending_trend",
+        cli=("reports", "spending-trend"),
     )
 
     ranked = f"""
@@ -268,11 +270,23 @@ def spending_trend(
         ORDER BY year_month, rank_in_currency, currency_code
     """  # noqa: S608  # subquery built from TableRef + allowlisted filters
 
-    actions = [
-        "Run reports(report_id='core:spending_trend', "
-        "parameters={'category': '<name>'}) to filter to one category",
-        "Run reports(report_id='core:cash_flow') for inflow, outflow, and net",
-        "Run reports(report_id='core:recurring_subscriptions') for recurring charge patterns",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="filtering to one category",
+            cli=("reports", "spending-trend", "--category", "<name>"),
+            mcp="reports(report_id='core:spending_trend', "
+            "parameters={'category': '<name>'})",
+        ),
+        NextStep(
+            reason="inflow, outflow, and net",
+            cli=("reports", "cash-flow"),
+            mcp="reports(report_id='core:cash_flow')",
+        ),
+        NextStep(
+            reason="recurring charge patterns",
+            cli=("reports", "recurring-subscriptions"),
+            mcp="reports(report_id='core:recurring_subscriptions')",
+        ),
     ]
     if hint:
         actions.insert(0, hint)

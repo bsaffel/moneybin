@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 
 from moneybin import error_codes
-from moneybin.errors import UserError
+from moneybin.errors import NextStep, UserError
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import Binding
 from moneybin.tables import TableRef
@@ -94,15 +94,18 @@ def resolve_window(
     from_month: str | None,
     to_month: str | None,
     *,
-    report_id: str | None = None,
-) -> tuple[str | None, str | None, str | None, str | None]:
+    report_id: str,
+    cli: tuple[str, ...],
+) -> tuple[str | None, str | None, str | None, NextStep | None]:
     """Default to the last 12 months when both bounds are omitted.
 
     Returns ``(from_month, to_month, period, hint)`` — ``period`` is the
     human-readable window for the envelope, and ``hint`` is the "widen the
-    window" actions note when the window was defaulted (else ``None``). Shared
-    by the time-windowed runners so the defaulting and the hint string stay in
-    lockstep.
+    window" next step when the window was defaulted (else ``None``). Shared
+    by the time-windowed runners so the defaulting and the hint stay in
+    lockstep. ``cli`` is the report's own argv prefix (e.g.
+    ``("reports", "cash-flow")``), so the CLI-rendered hint is a runnable
+    command rather than the MCP call syntax it used to share with agents.
     """
     if from_month is not None:
         validate_month(from_month, "from_month")
@@ -123,13 +126,15 @@ def resolve_window(
         period = None
     hint = None
     if defaulted:
-        report_call = (
-            f"reports(report_id={report_id!r}, "
-            "parameters={'from_month': 'YYYY-MM', 'to_month': 'YYYY-MM'})"
-            if report_id is not None
-            else "reports with explicit from_month and to_month parameters"
+        hint = NextStep(
+            reason="a wider or shifted window than the last 12 months",
+            cli=(*cli, "--from-month", "<YYYY-MM>", "--to-month", "<YYYY-MM>"),
+            mcp=(
+                f"reports(report_id={report_id!r}, "
+                "parameters={'from_month': 'YYYY-MM', 'to_month': 'YYYY-MM'})"
+            ),
+            verb="Rerun",
         )
-        hint = f"Rerun {report_call} to widen or shift the last 12 months"
     return from_month, to_month, period, hint
 
 

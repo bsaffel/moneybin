@@ -29,7 +29,7 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import render_human_text
+from moneybin.cli.render import render_human_text, render_note
 from moneybin.cli.utils import (
     _flags,  # pyright: ignore[reportPrivateUsage]
     get_terminal_policy,
@@ -95,13 +95,18 @@ _CODEX_STARTUP_TIMEOUT_SEC = 30
 def _emit_diagnostic(
     message: str,
     *,
-    level: Literal["error", "info", "warning"],
+    level: Literal["error", "warning"],
 ) -> None:
-    """Send a human diagnostic to stderr with the active terminal symbol policy."""
+    """Send a human diagnostic to stderr with the active terminal symbol policy.
+
+    Only for the two states that warrant a symbol (failure, attention). A
+    plain note uses `render_note`; a reported completion uses the success
+    symbol explicitly at its call site — `_emit_diagnostic` never infers
+    "done" from "informational" (rule 14: checkmark means completed, not noted).
+    """
     policy = get_terminal_policy()
     symbol = {
         "error": policy.symbols.failure,
-        "info": policy.symbols.success,
         "warning": policy.symbols.attention,
     }[level]
     rendered = render_human_text(f"{symbol} {message}", terminal=policy).rstrip("\n")
@@ -319,11 +324,10 @@ def mcp_install(
         # generated from.
         canonical_root = canonical_checkout_root(repo_root)
         if canonical_root != repo_root:
-            _emit_diagnostic(
+            render_note(
                 "Installing from a linked worktree. Anchoring the config at "
                 f"the main checkout ({canonical_root}) so it stays valid after "
-                "this worktree is removed.",
-                level="info",
+                "this worktree is removed."
             )
         args: list[str] = ["run", "--directory", str(canonical_root)]
     else:
@@ -490,7 +494,13 @@ def _confirm_and_merge(
         _merge_toml_config(config_path, snippet)
     else:
         _merge_client_config(config_path, snippet)
-    _emit_diagnostic(f"Config written to {config_path}", level="info")
+    # The write just completed, so this is the one info-level line that earns
+    # the success symbol — set explicitly rather than through _emit_diagnostic,
+    # which no longer infers a completion from "info".
+    typer.echo(
+        f"{get_terminal_policy().symbols.success} Config written to {config_path}",
+        err=True,
+    )
     return True
 
 
@@ -847,9 +857,15 @@ def mcp_list_prompts(
         )
         return
 
+    header = f"{len(sorted_prompts)} registered prompt" + (
+        "s:" if len(sorted_prompts) != 1 else ":"
+    )
     catalog = "\n".join(
-        f"  {prompt.name}  {getattr(prompt, 'description', None) or ''}"
-        for prompt in sorted_prompts
+        [header]
+        + [
+            f"  {prompt.name}  {getattr(prompt, 'description', None) or ''}"
+            for prompt in sorted_prompts
+        ]
     )
     emit_human_result(
         catalog,

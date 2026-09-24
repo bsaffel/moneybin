@@ -1653,6 +1653,43 @@ def test_explain_help_offers_no_pager() -> None:
     assert "--no-pager" in result.stdout
 
 
+def test_explain_prints_sql_verbatim_never_reflowed() -> None:
+    """Requirement 10: a code block is data — it never wraps like prose.
+
+    Long identifiers used to break mid-token when the SQL went through
+    `build_summary`'s word-wrap the same way a long path did. Printed via
+    `typer.echo` instead, the whole statement survives on one line regardless
+    of terminal width.
+    """
+    long_sql = (
+        "SELECT core.dim_accounts.account_id_with_a_very_long_column_alias_name "
+        "FROM core.dim_accounts WHERE routing_number = $rn"
+    )
+    explanation = _explanation(sql=long_sql, sql_template=long_sql)
+    with (
+        _patch_database(),
+        patch(
+            "moneybin.reports._framework.catalog.get_report_catalog",
+            return_value=MagicMock(),
+        ),
+        patch(
+            "moneybin.cli.report_params.coerce_report_parameters",
+            return_value={"rn": "021000021"},
+        ),
+        _patch_explain(explanation),
+    ):
+        result = runner.invoke(
+            app,
+            ["reports", "explain", "my_accounts", "--param", "rn=021000021"],
+        )
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    assert long_sql in lines, "SQL was reflowed instead of printed verbatim"
+    assert lines.count("SQL:") == 1
+    assert lines.count("Template:") == 1
+
+
 def test_explain_reports_a_suppressed_executed_form_with_the_fix() -> None:
     """An agent must be told which ``--param`` would produce the executed form."""
     explanation = _explanation(sql=None, sql_suppressed_by=("acct",))

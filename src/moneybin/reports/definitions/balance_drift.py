@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from moneybin.database import Database
+from moneybin.errors import NextStep
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -292,10 +293,19 @@ def balance_drift(
         ), currency_code
     """
 
-    actions = [
-        "Rerun reports(report_id='core:balance_drift', "
-        "parameters={'account': '<name or id>'}) to filter to one account",
-        "Rerun reports(report_id='core:balance_drift', "
-        "parameters={'status': 'drift'}) to show drift rows",
+    actions: list[NextStep] = [
+        NextStep(
+            reason="filtering to one account",
+            cli=("reports", "balance-drift", "--account", "<name or id>"),
+            mcp="reports(report_id='core:balance_drift', "
+            "parameters={'account': '<name or id>'})",
+            verb="Rerun",
+        ),
+        NextStep(
+            reason="showing drift rows",
+            cli=("reports", "balance-drift", "--status", "drift"),
+            mcp="reports(report_id='core:balance_drift', parameters={'status': 'drift'})",
+            verb="Rerun",
+        ),
     ]
     return ReportQuery(sql, params, actions=actions)

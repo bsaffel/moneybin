@@ -20,11 +20,13 @@ from moneybin import error_codes
 from moneybin.cli.output import OutputFormat
 from moneybin.cli.render import Money
 from moneybin.cli.terminal import TerminalPolicy, TerminalSymbols
+from moneybin.cli.utils import generated_cli_command
 from moneybin.database import Database
 from moneybin.privacy.taxonomy import DataClass, Tier
 from moneybin.reports._framework.cli_register import (
     build_cli_command,
     money_columns,
+    numeric_columns,
     register_report_cli,
     report_note_lines,
     visible_columns,
@@ -430,7 +432,11 @@ def test_the_text_path_prints_the_hint_the_masked_output_earned() -> None:
         result = _runner_cli.invoke(app, ["balance-drift", "--top", "5"])
 
     assert result.exit_code == 0, result.output
-    assert hint in re.sub(r"\s+", " ", result.output)
+    rendered = (
+        f"{hint.reason[:1].upper()}{hint.reason[1:]}: "
+        f"{generated_cli_command(*hint.cli)}"
+    )
+    assert rendered in re.sub(r"\s+", " ", result.output)
 
 
 def test_the_text_path_adds_no_hint_when_the_report_offered_none() -> None:
@@ -614,7 +620,7 @@ _MONEY_COLUMNS = (
         DataClass.TXN_AMOUNT,
         money_kind="magnitude",
     ),
-    OutputColumn("txn_count", "How many rows.", DataClass.AGGREGATE),
+    OutputColumn("txn_count", "How many rows.", DataClass.AGGREGATE, numeric=True),
 )
 
 
@@ -642,8 +648,11 @@ def _money_app():  # test helper
     return app
 
 
-def _money_result() -> ReportResult:
-    return ReportResult(
+def _money_result() -> CatalogReportResult:
+    # A real `CatalogReportResult`, not the base `ReportResult`: the empty-scope
+    # line (`_empty_result_scope`) reads `report_id`/`parameters`, which only
+    # this subclass carries — the shape `catalog.execute` actually returns.
+    return CatalogReportResult(
         records=[
             {
                 "net": Decimal("-1234.5"),
@@ -660,6 +669,10 @@ def _money_result() -> ReportResult:
         tier=Tier.MEDIUM,
         total_count=1,
         truncated=False,
+        report_id="test:money",
+        parameters={"top": 5, "sort": None},
+        semantics=TEST_SEMANTICS,
+        provenance=(),
     )
 
 
@@ -745,6 +758,59 @@ def test_an_empty_result_still_prints_its_disclosures() -> None:
     assert "Run `moneybin refresh`" in result.output
 
 
+def test_an_empty_result_with_no_other_disclosures_still_names_the_scope() -> None:
+    """Requirement 6: zero rows and zero warnings must not read as zero output.
+
+    Before this line existed, an empty result with no degradation, no
+    truncation, and no next steps rendered nothing at all — `render_report_
+    result`'s empty branch only fires when `disclosures` is non-empty.
+    """
+    empty = replace(_money_result(), records=[], total_count=0)
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = empty
+        result = _runner_cli.invoke(_money_app(), ["money"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip(), "an empty result printed nothing at all"
+    assert "No rows matched money" in result.output
+    assert "top=5" in result.output
+    # `sort` is None in the fixture's effective parameters — an unset filter
+    # names nothing rather than printing "sort=None".
+    assert "sort" not in result.output
+
+
+def test_a_reports_declared_numeric_column_right_aligns_like_money() -> None:
+    """Requirement 9 covers a bare count too, not only a declared amount.
+
+    `merchant_activity.txn_count` was left-aligned before `numeric=True`
+    reached `build_rows` through `numeric_columns` — this pins the wiring at
+    the framework level so any report's `numeric` declaration is load-bearing.
+    """
+    with (
+        patch(
+            "moneybin.reports._framework.cli_register.get_database",
+            return_value=no_profile_database(),
+        ),
+        patch("moneybin.reports._framework.catalog.get_report_catalog") as mock_catalog,
+    ):
+        mock_catalog.return_value.execute.return_value = _money_result()
+        result = _runner_cli.invoke(_money_app(), ["money"], env={"COLUMNS": "200"})
+
+    assert result.exit_code == 0, result.output
+    lines = result.output.splitlines()
+    value_line = next(line for line in lines if "2" in line and "txn_count" not in line)
+    assert "  2 " in value_line, (
+        f"{value_line!r} is not right-aligned within its column, "
+        "the way a numeric column declares"
+    )
+
+
 def test_every_declared_money_column_survives_spec_registration() -> None:
     """A declaration that never reaches `money_columns` is decoration.
 
@@ -758,6 +824,13 @@ def test_every_declared_money_column_survives_spec_registration() -> None:
         "net": Money("flow"),
         "spend": Money("magnitude"),
     }, "txn_count declares no kind and must not appear"
+
+
+def test_every_declared_numeric_column_survives_spec_registration() -> None:
+    """Same rebuild risk as `money_columns`, for the bare-number declaration."""
+    declared = numeric_columns(_money_spec())
+
+    assert declared == ("txn_count",), "net/spend are money, not bare numbers"
 
 
 def _noisy_result() -> ReportResult:

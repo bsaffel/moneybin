@@ -94,6 +94,7 @@ def categorize_export_uncategorized(
                 build_summary(
                     [("Transactions", str(len(payload))), ("File", str(output))],
                     title="Uncategorized transactions exported",
+                    terminal=get_terminal_policy(),
                 )
             ]),
             policy=get_terminal_policy(),

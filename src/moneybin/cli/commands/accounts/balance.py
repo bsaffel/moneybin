@@ -27,8 +27,15 @@ from moneybin.cli.render import (
     build_rows,
     build_summary,
     compose_human_result,
+    format_money,
+    render_note,
 )
-from moneybin.cli.utils import get_terminal_policy, handle_cli_errors
+from moneybin.cli.utils import (
+    format_cli_attention,
+    generated_cli_command,
+    get_terminal_policy,
+    handle_cli_errors,
+)
 from moneybin.database import get_database
 from moneybin.privacy.payloads.balances import (
     BalanceAssertionListPayload,
@@ -167,6 +174,7 @@ def accounts_balance_assert(
                 notes=notes,
                 actor="cli",
             )
+    policy = get_terminal_policy()
     emit_human_result(
         compose_human_result([
             build_summary(
@@ -175,16 +183,29 @@ def accounts_balance_assert(
                     ("Date", str(parsed_date)),
                     (
                         "Balance",
-                        f"{result.assertion.balance} "
+                        f"{format_money(result.assertion.balance, 'balance')} "
                         f"{currency_label(result.assertion.currency_code)}",
                     ),
                 ],
                 title="Balance asserted",
+                terminal=policy,
             )
         ]),
-        policy=get_terminal_policy(),
+        policy=policy,
         finite_read=False,
         receipt=True,
+    )
+    # Rule 34: a balance assertion is read by `reports.net_worth_accounts`,
+    # which reads `core.fct_balances_daily` — a FULL SQLMesh model — so this
+    # assertion is invisible to reports until the next `refresh --step
+    # transform`. Always visible: unlike a status line, a stale-reports
+    # warning cannot be dropped under -q per cli.md's quiet contract.
+    render_note(
+        format_cli_attention(
+            "Reports read this after a rebuild: "
+            f"{generated_cli_command('refresh', '--step', 'transform')}"
+        ),
+        warn=True,
     )
 
 

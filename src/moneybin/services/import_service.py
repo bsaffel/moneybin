@@ -305,6 +305,9 @@ class ImportResult:
     the synthesized batch, so this has to ride across onto it."""
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_assumed: str | None = None
+    """The sign convention the import proceeded with when the file could not
+    disambiguate it; None when the sign was explicit or unambiguous."""
     sign_override_replayed: bool = False
     """True when this PDF replayed a saved recipe whose sign convention a human set
     with `sign=` — the card-marker detector is bypassed for that format, so the
@@ -485,6 +488,9 @@ class PerFileResult:
     """
     sign_correction_suggested: bool = False
     """True if running balance suggests sign inversion; amounts were NOT auto-corrected."""
+    sign_assumed: str | None = None
+    """Mirrors ``ImportResult.sign_assumed`` for batch imports — the sign
+    convention this file proceeded with when it could not disambiguate one."""
     sign_override_replayed: bool = False
     """Mirrors ``ImportResult.sign_override_replayed`` for batch imports — a saved
     `sign=` override replayed onto this file, bypassing the card-marker detector."""
@@ -3350,8 +3356,13 @@ class ImportService:
                 and not sign
                 and resolved.sign_convention != "negative_is_income"
             ):
-                logger.warning(
-                    "⚠️  Sign convention is ambiguous (all amounts appear positive). "
+                # Presentation lives on the result, not the console: the CLI's
+                # own attention line (import_cmd.py) is the one the user sees,
+                # so this stays a file-log record rather than a second WARNING
+                # `_ConsoleNoiseFilter` would also print (rule 33).
+                result.sign_assumed = resolved.sign_convention
+                logger.info(
+                    "Sign convention is ambiguous (all amounts appear positive). "
                     f"Proceeding with '{resolved.sign_convention}' — "
                     "use --sign to override if expense amounts look wrong."
                 )
@@ -6330,6 +6341,7 @@ class ImportService:
                         rows_loaded=rows_loaded,
                         import_id=r.import_id,
                         sign_correction_suggested=r.sign_correction_suggested,
+                        sign_assumed=r.sign_assumed,
                         sign_override_replayed=r.sign_override_replayed,
                         accounts_created=r.accounts_created,
                     )

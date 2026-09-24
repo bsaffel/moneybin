@@ -25,10 +25,16 @@ from moneybin.cli.output import (
     quiet_option,
     render_or_json,
 )
-from moneybin.cli.render import build_rows, build_summary, compose_human_result
+from moneybin.cli.render import (
+    build_rows,
+    build_summary,
+    compose_human_result,
+    render_note,
+)
 from moneybin.cli.utils import (
     abort_cli_error,
     format_cli_attention,
+    generated_cli_command,
     get_terminal_policy,
     handle_cli_errors,
 )
@@ -439,6 +445,18 @@ def accounts_set(
         finite_read=False,
         receipt=True,
     )
+    if "currency_code" in diff:
+        # Rule 34: `core.dim_accounts` is a FULL SQLMesh model reading
+        # `app.account_settings`, so a currency change is invisible to
+        # reports until the next `refresh --step transform` — same claim,
+        # same remedy, as `accounts balance assert`.
+        render_note(
+            format_cli_attention(
+                "Reports read this after a rebuild: "
+                f"{generated_cli_command('refresh', '--step', 'transform')}"
+            ),
+            warn=True,
+        )
 
 
 @app.command("resolve")

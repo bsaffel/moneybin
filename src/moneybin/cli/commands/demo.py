@@ -51,8 +51,12 @@ def _render_demo_receipt(result: DemoResult, *, quiet: bool) -> None:
         ("Categorized", str(demo_result.categorized_count)),
     ]
     if demo_result.net_worth is not None:
+        # `per_currency` always carries the one currency behind the combined
+        # scalar here — `net_worth` is only ever set when there is exactly one
+        # segment (`demo_service.py`) — so this is the same currency, not a
+        # guess, matching the per-currency branch's own labelling below.
         facts.append((
-            "Net worth",
+            f"Net worth ({currency_label(demo_result.per_currency[0].currency_code)})",
             format_money(demo_result.net_worth, "balance", minus=terminal.minus),
         ))
     else:

@@ -169,6 +169,42 @@ def test_show_pages_complete_config_and_settings_answer(
     )
 
 
+def test_show_keeps_a_database_path_wider_than_the_terminal_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Requirement 10: a `Database:` path wider than the terminal folds, never truncates.
+
+    A path no line can hold folds across lines; joining them gives the path
+    back, so nothing the reader needs to open the file is lost. An `…` would
+    lose the filename.
+    """
+    long_path = "/profiles/a-fairly-long-profile-name/moneybin.duckdb"
+    service = MagicMock()
+    service.show.return_value = {
+        "name": "alice",
+        "active": True,
+        "path": "/profiles/alice",
+        "database_path": long_path,
+        "database_exists": True,
+        "config": {},
+    }
+    monkeypatch.setattr("moneybin.cli.commands.profile.ProfileService", lambda: service)
+
+    def _narrow_policy(**_kwargs: object) -> TerminalPolicy:
+        return replace(_paging_policy(), page=False, width=40, height=24)
+
+    monkeypatch.setattr(
+        "moneybin.cli.commands.profile.get_terminal_policy", _narrow_policy
+    )
+
+    result = runner.invoke(app, ["show", "--no-pager"])
+
+    assert result.exit_code == 0, result.output
+    joined = "".join(line.strip() for line in result.stdout.splitlines())
+    assert long_path in joined, "the database path lost characters"
+    assert "…" not in result.stdout
+
+
 def test_create_receipt_distinguishes_adoption_and_preserved_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

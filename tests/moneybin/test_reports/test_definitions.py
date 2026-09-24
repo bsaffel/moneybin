@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from moneybin.database import Database
+from moneybin.errors import next_step_text
 from moneybin.privacy.taxonomy import DataClass
 from moneybin.reports._framework.contract import (
     Binding,
@@ -377,7 +378,7 @@ def test_cashflow_never_blends_currencies_whichever_by_is_chosen(
 def test_cashflow_defaults_to_12_month_window() -> None:
     rq = cash_flow(None)  # type: ignore[arg-type]  # runner builds pure SQL, ignores db
     assert rq.period is not None
-    assert any("last 12 months" in a for a in rq.actions)
+    assert any("last 12 months" in next_step_text(a) for a in rq.actions)
     assert len(rq.params) == 2  # from + to bounds applied
 
 

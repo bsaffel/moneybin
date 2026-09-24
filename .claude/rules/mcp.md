@@ -90,7 +90,10 @@ Every tool returns this shape:
 - **`status`** — always emitted, and always exactly `"ok"` or `"error"`.
 - **`summary`** — metadata for the AI: counts, truncation, sensitivity, currency.
 - **`data`** — structured objects, never pre-formatted strings.
-- **`actions`** — contextual next-step hints for composability.
+- **`actions`** — contextual next-step hints for composability. A report's
+  `actions[]` strings are `NextStep.for_mcp()` (`src/moneybin/errors.py`) —
+  the same authored hint the CLI renders as a runnable command instead; see
+  `.claude/rules/cli.md` "Next-step hints".
 
 Three further keys are conditional, omitted when unset: **`error`** (`message`,
 `code`, optional `hint` and `details`), **`recovery_actions`** (structured

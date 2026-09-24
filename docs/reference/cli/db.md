@@ -115,6 +115,7 @@ Usage: `moneybin db info [OPTIONS]`
 | `--database, -d` | path |  | Path to DuckDB database file (default: profile config) |
 | `-o, --output` | one of `text`, `json` | `text` | Output format: 'text' (human-readable) or 'json' (machine-readable). |
 | `-q, --quiet` | flag |  | Suppress optional status lines and progress; preserve results and recovery. |
+| `--wide` | flag |  | Render every column, not just the default set. |
 | `--no-pager` | flag |  | Print the complete text result directly instead of opening a pager. |
 
 ## moneybin db backup

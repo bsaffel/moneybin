@@ -309,18 +309,22 @@ def reports_explain(
                 "No executed form — supply a value for "
                 f"{', '.join(explanation.sql_suppressed_by)} with --param"
             )
-        for label, form in (
-            ("SQL", explanation.sql),
-            ("Template", explanation.sql_template),
-        ):
-            if form is not None:
-                parts.append(build_summary([(label, form)]))
         emit_human_result(
             compose_human_result(parts, disclosures=disclosures),
             policy=policy,
             finite_read=True,
             no_pager=no_pager,
         )
+        # Printed verbatim via `typer.echo`, never through `build_summary`:
+        # a summary value reflows as prose (rule 10 treats a code block as
+        # data), which breaks identifiers mid-token exactly the way a path
+        # value does. SQL is data, so it prints unwrapped, line by line.
+        for label, form in (
+            ("SQL", explanation.sql),
+            ("Template", explanation.sql_template),
+        ):
+            if form is not None:
+                typer.echo(f"\n{label}:\n{form}")
 
     render_or_json(
         build_envelope(
