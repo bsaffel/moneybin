@@ -38,6 +38,7 @@ import duckdb
 from moneybin import error_codes
 from moneybin.database import Database
 from moneybin.errors import UserError
+from moneybin.limits import IDENTIFIER_MAX_LEN
 from moneybin.matching.aliasing import (
     resolve_curation_transaction_id,
     resolve_curation_transaction_ids,
@@ -369,6 +370,29 @@ class TaxonomyTargetResult:
     target_id: str | None
     state: Literal["present", "inactive", "absent"]
     changed: bool
+
+
+def _normalized_source_term(
+    source_origin: str, category: str, subcategory: str | None
+) -> tuple[str, str | None]:
+    """Refuse a term no imported row can carry; return it as staging stores it.
+
+    Staging trims category text with a class equal to ``str.strip()`` and
+    NULLs a blank, so an untrimmed key would store and never match, and a
+    blank one could never be enumerated or applied.
+    """
+    try:
+        validate_category_text(category, "category")
+        if subcategory is not None:
+            validate_category_text(subcategory, "subcategory")
+    except ValueError as exc:
+        raise UserError(str(exc), code=error_codes.MUTATION_INVALID_INPUT) from exc
+    if not source_origin.strip() or len(source_origin) > IDENTIFIER_MAX_LEN:
+        raise UserError(
+            f"source_origin must be non-empty and at most {IDENTIFIER_MAX_LEN} chars",
+            code=error_codes.MUTATION_INVALID_INPUT,
+        )
+    return category.strip(), subcategory.strip() if subcategory is not None else None
 
 
 class MatchApplier:
@@ -1374,13 +1398,17 @@ class MatchApplier:
 
         Raises:
             UserError(code=error_codes.MUTATION_INVALID_INPUT): neither or
-                both of ``category_id`` / ``new_category`` were given.
+                both of ``category_id`` / ``new_category`` were given, or the
+                term is blank or over its length cap.
             UserError(code=error_codes.TAXONOMY_CATEGORY_NOT_FOUND):
                 ``category_id`` does not name an existing category.
             UserError(code=error_codes.TAXONOMY_CATEGORY_ALREADY_EXISTS):
                 ``new_category`` collides with an existing category name.
         """
         try:
+            category, subcategory = _normalized_source_term(
+                source_origin, category, subcategory
+            )
             if (category_id is None) == (new_category is None):
                 raise UserError(
                     "Specify exactly one of category_id or new_category",

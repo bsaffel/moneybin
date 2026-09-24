@@ -177,6 +177,12 @@ class CategorizationQueries:
         two unmapped terms counts under each, since either mapping alone
         would resolve it. A term with nothing left to resolve is omitted.
 
+        It joins ``transaction_id`` directly rather than resolving
+        ``app.transaction_id_aliases``: ids are forwarded at re-key and never
+        resolved on read (``matching/aliasing.py``), so this live view serves
+        only current ids and every categorization already sits on one. The
+        apply path resolves only because a write must land on a live id.
+
         ``namespace`` optionally filters to one ``source_origin``. Results
         are ordered by that count descending, then the term itself, so the
         biggest wins surface first — per the owner's ruling, curation

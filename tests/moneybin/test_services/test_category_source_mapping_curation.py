@@ -563,6 +563,66 @@ class TestResolveSourceTerm:
         )
 
     @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("source_origin", "category", "subcategory"),
+        [
+            pytest.param("chase_credit", "", None, id="empty-category"),
+            pytest.param("chase_credit", " \t ", None, id="whitespace-category"),
+            pytest.param("chase_credit", "x" * 101, None, id="overlong-category"),
+            pytest.param("chase_credit", "Auto", "  ", id="whitespace-subcategory"),
+            pytest.param("", "Auto", None, id="empty-namespace"),
+            pytest.param("o" * 65, "Auto", None, id="overlong-namespace"),
+        ],
+    )
+    def test_term_no_imported_row_can_carry_is_refused(
+        self,
+        db: Database,
+        source_origin: str,
+        category: str,
+        subcategory: str | None,
+    ) -> None:
+        """Staging NULLs a blank, so a blank key would store and never match."""
+        refresh_views(db)
+        category_id = CategorizationService(db).create_category(
+            "Refusal Target", actor="test"
+        )
+
+        with pytest.raises(UserError) as exc_info:
+            CategorizationService(db).resolve_source_term(
+                source_origin=source_origin,
+                category=category,
+                subcategory=subcategory,
+                category_id=category_id,
+                actor="test",
+            )
+
+        assert exc_info.value.code == error_codes.MUTATION_INVALID_INPUT
+        assert db.execute(
+            "SELECT COUNT(*) FROM app.category_source_map"
+        ).fetchone() == (0,)
+
+    @pytest.mark.unit
+    def test_padded_term_is_stored_as_staging_trims_it(self, db: Database) -> None:
+        refresh_views(db)
+        category_id = CategorizationService(db).create_category(
+            "Trim Target", actor="test"
+        )
+
+        CategorizationService(db).resolve_source_term(
+            source_origin="chase_credit",
+            category="  Groceries\t",
+            subcategory=" Produce ",
+            category_id=category_id,
+            actor="test",
+        )
+
+        row = db.execute(
+            "SELECT source_category_code, source_subcategory_code "
+            "FROM app.category_source_map WHERE source_type = 'chase_credit'"
+        ).fetchone()
+        assert row == ("Groceries", "Produce")
+
+    @pytest.mark.unit
     def test_outcome_counter_tells_added_from_updated(self, db: Database) -> None:
         refresh_views(db)
         service = CategorizationService(db)
