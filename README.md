@@ -111,10 +111,6 @@ Accounts:    2
 │ Capital One credit card   │       0.00 │ USD      │ tabular │
 │ Chase Bank checking …0001 │ 211,413.05 │ USD      │         │
 └───────────────────────────┴────────────┴──────────┴─────────┘
-› Run reports(report_id='core:networth_history', parameters={'from_date': 'YYYY-MM-DD', 'to_date':
-'YYYY-MM-DD'}) for the time series
-› Run accounts_balances(view='history', reference='<account>') to drill into one account
-› Run accounts(include_closed=True) to inspect closed or excluded accounts
 
 $ uv run moneybin sql query "
     SELECT category, COUNT(*) AS txns, SUM(amount) AS total
@@ -132,11 +128,11 @@ $ uv run moneybin sql query "
 └─────────────────────┴──────┴───────────┘
 ```
 
-The transcript is stdout. `demo` also writes five diagnostic lines to stderr —
-two SQLMesh notices about reseeded tables, a two-line pandas `FutureWarning` a
-dependency emits, and one line naming the merchant patterns it skipped because
-two categories claim them. Where a hint wraps at 100 columns the terminal
-leaves a trailing space on the broken line; those spaces are stripped here.
+The transcript is stdout, trimmed by whole lines only: the three `›` next-step
+hints `reports networth` prints under its table, and the five diagnostic lines
+`demo` writes to stderr (two SQLMesh notices about reseeded tables, a two-line
+pandas `FutureWarning` a dependency emits, and one naming the merchant patterns
+it skipped because two categories claim them).
 
 The demo is deterministic synthetic data pushed through the real pipeline —
 import, transform, dedup, categorization, integrity checks. Its window is the
