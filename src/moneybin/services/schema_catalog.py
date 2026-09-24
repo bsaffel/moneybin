@@ -413,6 +413,7 @@ EXAMPLES: dict[str, list[Example]] = {
             question="Net worth today, in the profile's home currency",
             sql="""
                 SELECT home_currency_code, balance_date, account_count,
+                       unpriced_currency_count, unanchored_account_count,
                        total_assets, total_liabilities, net_worth
                 FROM reports.net_worth
                 WHERE balance_date = (SELECT MAX(balance_date) FROM reports.net_worth)

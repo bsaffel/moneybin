@@ -74,12 +74,15 @@ _COLUMNS = (
         ),
         OutputColumn(
             "is_observed",
-            "False means the balance is carried forward from an earlier observation.",
+            "False means the balance is carried forward from an earlier "
+            "observation; false with a null account_balance means the account "
+            "holds value but has no balance observation at all.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn(
             "observation_source",
-            "ofx, tabular, assertion, or plaid; null when interpolated.",
+            "ofx, tabular, assertion, or plaid; null when interpolated or "
+            "the account has no balance observation.",
             DataClass.TXN_TYPE,
         ),
         OutputColumn(
@@ -100,12 +103,14 @@ _COLUMNS = (
         ),
         OutputColumn(
             "days_since_observed",
-            "Days since the balance was last actually observed; 0 on an observed day.",
+            "Days since the balance was last actually observed; 0 on an "
+            "observed day; null when the account has no balance observation.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
             "reconciliation_delta",
-            "Observed minus transaction-derived; null on interpolated days.",
+            "Observed minus transaction-derived; null on interpolated days "
+            "and when the account has no balance observation.",
             DataClass.BALANCE,
             # `balance` for its rendering contract, not because a discrepancy is
             # a position: signed, and uncoloured. Mirrors balance_drift.drift's
@@ -120,13 +125,15 @@ _COLUMNS = (
         ),
         OutputColumn(
             "account_balance",
-            "In currency_code.",
+            "In currency_code; null when the account holds value but has no "
+            "balance observation, which also makes core:net_worth's total null.",
             DataClass.BALANCE,
             money_kind="balance",
         ),
         OutputColumn(
             "account_balance_home",
-            "In home_currency_code; null when unpriced.",
+            "In home_currency_code; null when unpriced or the account has no "
+            "balance observation.",
             DataClass.BALANCE,
             money_kind="balance",
             currency_basis="home",
@@ -155,12 +162,16 @@ _COLUMNS = (
         exclusions=(
             "accounts excluded from net worth",
             "archived accounts after their archive date",
+            "no amounts for an eligible account holding value with no balance "
+            "observation: it gets one synthesized row with is_observed false "
+            "and every balance column null",
         ),
         provenance=(
             "reports.net_worth_accounts",
             "core.fct_balances_daily",
             "core.dim_accounts",
             "core.fct_exchange_rates_effective",
+            "core.dim_unanchored_accounts",
         ),
     ),
     class_downgrades={
@@ -198,9 +209,13 @@ def net_worth_accounts(
     Args:
         db: Open read-only database connection.
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
-            end open when given alone.
+            end open when given alone. An eligible account holding value with
+            no balance observation still gets one row dated inside the range,
+            with null balances.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
-            end open when given alone.
+            end open when given alone. An eligible account holding value with
+            no balance observation still gets one row dated inside the range,
+            with null balances.
 
     Examples:
         reports(report_id="core:net_worth_accounts")
@@ -244,7 +259,7 @@ def net_worth_accounts(
     sql = f"""
         WITH {source}
         ORDER BY balance_date, account_name, account_id
-    """  # CTE text built above from TableRefs and a static column list
+    """
     actions = [
         "Run reports(report_id='core:net_worth') for the single home-currency total",
         "Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown",

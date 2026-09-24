@@ -51,7 +51,7 @@ Using profile: demo
 💡 Run reports(report_id='core:net_worth_currencies') for the currency-level breakdown
 ```
 
-With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Holdings in investment accounts do not count toward net worth yet.
+With no range the report reads the latest balance date; `--from-date 2025-06-30 --to-date 2025-06-30` reads that day instead, carrying each balance forward from the last one on or before it. `net-worth-currencies` sums the same rows per currency, and `net-worth` into one home-currency total; none of the three takes an account filter. An account excluded from net worth (`accounts set <id> --exclude`) drops out of both after the next `moneybin refresh` or `moneybin transform apply`, because the exclusion is a setting the canonical account table picks up when it is rebuilt. Net worth is not valued from holdings yet: an account counts through its recorded balance. An account in net worth that holds value (holdings, or any transaction) but has no balance at all blanks the `net-worth` total, with `unanchored_account_count` (under `--wide`) saying how many, and appears on `net-worth-accounts` with an empty balance. `moneybin system doctor` names those accounts under `net_worth_unanchored_accounts`. Record a balance with `accounts balance assert`, or leave the account out with `accounts set <id> --exclude`, then run `moneybin refresh`; the total returns once the rebuild picks the change up.
 
 ### Net worth over time
 
@@ -75,7 +75,7 @@ Using profile: demo
 │ 2025-11-30   │ 0                       │ 410,775.08 │ +10,007.19 │
 │ 2025-12-31   │ 0                       │ 420,080.77 │  +9,305.69 │
 └──────────────┴─────────────────────────┴────────────┴────────────┘
-4 of 11 columns shown — --wide for all
+4 of 12 columns shown — --wide for all
 ```
 
 `net-worth` is a home-currency total, so it reports no figure until the profile has a home currency; the `profile set` output is trimmed above. `--interval` is `daily`, `weekly` (ISO weeks starting Monday), or `monthly`; each row is the bucket's last available balance date, and `change_abs` (with `change_pct` under `--wide`) compares it to the bucket before it. Both bounds are optional.

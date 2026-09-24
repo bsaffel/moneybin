@@ -110,7 +110,7 @@ WITH newest_snapshot AS (
 )
 SELECT
   account_id, /* Grain. Foreign key to core.dim_accounts */
-  CASE WHEN any_true THEN TRUE WHEN every_negative_origin_false THEN FALSE END AS has_position, /* TRUE: a newest snapshot reports a nonzero quantity or value. FALSE: every investment-typed item pulled and reported nothing nonzero. NULL: pulled, but every row is NULL on both figures */
+  CASE WHEN any_true THEN TRUE WHEN every_negative_origin_false THEN FALSE END AS has_position, /* TRUE: a newest snapshot reports a nonzero quantity or value. FALSE: every investment-typed item pulled and reported only definitive zeros, or no rows at all. NULL: pulled, nothing nonzero, but inconclusive: a snapshot with any row NULL on both figures (including a zero/NULL mix), or investment-typed items that disagree (one a definitive zero, another inconclusive) */
   CASE WHEN any_true THEN true_as_of ELSE negative_as_of END AS as_of /* Date of the stalest receipt behind has_position (MIN across contributing items) */
 FROM reduced
 WHERE

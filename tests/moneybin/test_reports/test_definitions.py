@@ -64,6 +64,9 @@ _HOME_TOTAL_REPORTS = frozenset({"net_worth"})
 #: read too, beside the view itself — reports-net-worth-sql-surface.md
 #: Requirement 10's deeper lineage disclosure. Shared by all three rungs.
 _DEEP_LINEAGE_REPORTS = _POSITION_PLAIN_REPORTS | _HOME_TOTAL_REPORTS
+#: The rungs carrying Requirement 14's unanchored-account guard, whose
+#: provenance names core.dim_unanchored_accounts too.
+_UNANCHORED_GUARD_REPORTS = frozenset({"net_worth", "net_worth_accounts"})
 _FLOW_REPORTS = (
     frozenset(_CORE_REPORT_IDS)
     - _POSITION_COMPARISON_REPORTS
@@ -212,10 +215,10 @@ def test_core_report_definitions_have_complete_financial_semantics() -> None:
                 "core.dim_accounts",
                 "core.fct_exchange_rates_effective",
             )
-            if name in _HOME_TOTAL_REPORTS:
-                # Requirement 14: net_worth also reads the unanchored-account
-                # candidate set, beside the rate-spine tables the other two
-                # rungs share.
+            if name in _UNANCHORED_GUARD_REPORTS:
+                # Requirement 14: the aggregate and account rungs also read the
+                # unanchored-account candidate set; the currency rung does not
+                # carry the guard (spec §Out of Scope).
                 expected_provenance += ("core.dim_unanchored_accounts",)
             assert semantics.provenance == expected_provenance
         else:

@@ -134,7 +134,9 @@ WITH home AS (
   UNION ALL
   /* No balance-spine row at all, but an eligible candidate today: one row, dated
      today, every measure NULL — so a bare read never returns zero rows for a
-     profile that holds value. The runner covers an explicit past range. */
+     profile that holds value. The runner covers an explicit past range.
+     reports.net_worth_accounts dates the same candidate at the global spine
+     max, which with no spine row falls back to this same CURRENT_DATE. */
   SELECT
     h.home_currency_code,
     CURRENT_DATE AS balance_date,

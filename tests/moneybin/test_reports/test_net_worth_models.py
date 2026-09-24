@@ -1189,6 +1189,25 @@ def test_accounts_view_omits_a_candidate_archived_before_the_spine_max(
     assert [r["account_id"] for r in _account_rows(model_db)] == ["chk"]
 
 
+def test_accounts_view_keeps_a_candidate_archived_after_the_spine_max(
+    model_db: Database,
+) -> None:
+    """Still eligible at the spine max, so it appears there, not at its archive date."""
+    _install_net_worth_sources(model_db)
+    _account(model_db, "chk", "Checking", "USD")
+    _account(
+        model_db, "brk", "Brokerage", "USD", archived=True, archived_at="2026-01-10"
+    )
+    _balance(model_db, "chk", "2026-01-05", "100.00", "USD")
+    _unanchored(model_db, "brk")
+    _install_report(model_db, "net_worth_accounts")
+
+    brk = [r for r in _account_rows(model_db) if r["account_id"] == "brk"]
+
+    assert [str(r["balance_date"]) for r in brk] == ["2026-01-05"]
+    assert brk[0]["account_balance"] is None
+
+
 def test_accounts_view_omits_an_excluded_candidate(model_db: Database) -> None:
     _install_net_worth_sources(model_db)
     _account(model_db, "brk", "Brokerage", "USD", include=False)

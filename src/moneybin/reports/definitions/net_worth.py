@@ -114,6 +114,10 @@ def _default_columns(parameters: Mapping[str, Any]) -> tuple[str, ...]:
     characters, and a fifth column crosses requirement 9's 80-character
     bound. It stays one `--wide` away rather than pushed onto a reader who
     only asked for the trend.
+
+    `unanchored_account_count` is not a default for the same reason: beside
+    the unbucketed three it measures 85 characters. A NULL `net_worth` beside
+    `unpriced_currency_count` 0 is the reader's cue to look for it.
     """
     if parameters.get("interval") is not None:
         return ("balance_date", "unpriced_currency_count", "net_worth", "change_abs")
@@ -204,8 +208,9 @@ def _recompute_net_worth_and_change(rows: list[dict[str, Any]], currency: str) -
         ),
         OutputColumn(
             "unpriced_currency_count",
-            "How many of them had no rate on this date; 0 means the totals "
-            "below are complete.",
+            "How many of them had no rate on this date; 0 means no currency "
+            "blanks the totals, but they are complete only when "
+            "unanchored_account_count is 0 too.",
             DataClass.AGGREGATE,
         ),
         OutputColumn(
@@ -340,7 +345,10 @@ def net_worth(
     Args:
         db: Open read-only database connection.
         from_date: Lower bound (inclusive) as 'YYYY-MM-DD'; leaves the upper
-            end open when given alone.
+            end open when given alone. An explicit range with no balance
+            rows, while an eligible account holding value has no balance
+            observation, returns one row dated inside the range with null
+            measures and unanchored_account_count set.
         to_date: Upper bound (inclusive) as 'YYYY-MM-DD'; leaves the lower
             end open when given alone. An explicit range with no balance
             rows, while an eligible account holding value has no balance

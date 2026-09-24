@@ -47,15 +47,15 @@ SELECT
   s.currency_code, /* The account's own denomination; NULL is the unknown segment and is never priced */
   h.home_currency_code, /* app.profile_settings.home_currency; NULL until the user chooses one */
   a.account_type, /* Canonical account classification: depository, credit, loan, investment, other */
-  s.is_observed, /* FALSE means the balance is carried forward from an earlier observation */
-  s.observation_source, /* ofx / tabular / assertion / plaid; NULL when interpolated */
+  s.is_observed, /* FALSE means the balance is carried forward from an earlier observation, or, with account_balance NULL, that the account holds value but has no balance observation at all */
+  s.observation_source, /* ofx / tabular / assertion / plaid; NULL when interpolated or when the account has no balance observation */
   r.rate_source, /* override / provider / identity; NULL when the pair is unpriced on this date */
   s.balance_date, /* Grain. Calendar date */
   r.published_date AS rate_published_date, /* The day the applied rate was actually published */
-  CAST(s.balance_date - s.last_observed_date AS INT) AS days_since_observed, /* 0 on an observed day */
-  s.reconciliation_delta, /* Observed minus transaction-derived; NULL on interpolated days */
-  s.balance AS account_balance, /* In currency_code */
-  ROUND(s.balance * r.rate, 2)::DECIMAL(18, 2) AS account_balance_home /* In home_currency_code; NULL when the pair is unpriced */
+  CAST(s.balance_date - s.last_observed_date AS INT) AS days_since_observed, /* 0 on an observed day; NULL when the account has no balance observation */
+  s.reconciliation_delta, /* Observed minus transaction-derived; NULL on interpolated days and when the account has no balance observation */
+  s.balance AS account_balance, /* In currency_code; NULL when the account holds value but has no balance observation (Requirement 14) */
+  ROUND(s.balance * r.rate, 2)::DECIMAL(18, 2) AS account_balance_home /* In home_currency_code; NULL when the pair is unpriced or the account has no balance observation */
 FROM spine AS s
 INNER JOIN core.dim_accounts AS a
   ON s.account_id = a.account_id

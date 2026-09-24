@@ -378,7 +378,7 @@ landed before its transactions). `VIEW`. Grain: `account_id`.
 | Column | Type | Description |
 |---|---|---|
 | `account_id` | VARCHAR | FK → `core.dim_accounts` (grain). |
-| `has_position` | BOOLEAN | `TRUE`: a newest snapshot reports a nonzero quantity or value. `FALSE`: every investment-typed item pulled and reported nothing nonzero. `NULL`: pulled, but every row is NULL on both figures. |
+| `has_position` | BOOLEAN | `TRUE`: a newest snapshot reports a nonzero quantity or value. `FALSE`: every investment-typed item pulled and reported only definitive zeros, or no rows at all. `NULL`: pulled, nothing nonzero, but inconclusive — a snapshot with any row NULL on both figures (including one mixing zero and NULL rows), or investment-typed items that disagree (one a definitive zero, another inconclusive). |
 | `as_of` | DATE | Date of the stalest receipt behind `has_position` (MIN across contributing items — a newer item's receipt says nothing about an older item's own silence). |
 
 Reads only `quantity` and `institution_value`; `cost_basis` is a
@@ -394,6 +394,12 @@ all — Requirement 14's candidate set
 ([`reports-net-worth-sql-surface.md`](../specs/reports-net-worth-sql-surface.md)),
 stated once and read by both net-worth rungs, both report runners, and
 `moneybin system doctor`. `VIEW`. Grain: `account_id`.
+
+"No balance observation" means no row in `core.fct_balances_daily`, the
+rebuilt spine the net-worth totals sum — not the live `core.fct_balances`
+view. A balance recorded with `accounts balance assert` anchors the account
+only after `moneybin refresh` rebuilds the spine, so the account stays listed,
+and the total stays NULL, until then.
 
 | Column | Type | Description |
 |---|---|---|
@@ -536,7 +542,7 @@ Cross-account daily net-worth rollup, converted to the profile's home currency. 
 | `account_count` | INTEGER | Accounts contributing on this date, across every currency. |
 | `carried_forward_count` | INTEGER | How many of them are carried forward rather than observed. |
 | `currency_count` | INTEGER | Distinct currencies held on this date; the unknown-currency segment counts as one. |
-| `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means the totals below are complete. |
+| `unpriced_currency_count` | INTEGER | How many of them had no rate on this date; 0 means every currency is priced. The totals below are complete only when `unanchored_account_count` is 0 too. |
 | `unanchored_account_count` | INTEGER | Eligible accounts holding priced securities or transaction activity with no balance observation at all; 0 means none. |
 | `total_assets` | DECIMAL(18,2) | Sum of positive balances converted to `home_currency_code`; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
 | `total_liabilities` | DECIMAL(18,2) | Sum of negative balances converted to `home_currency_code`, kept negative; NULL when `unpriced_currency_count > 0` or `unanchored_account_count > 0`. |
@@ -573,15 +579,15 @@ Net worth per included account per day, in its own currency and converted to hom
 | `currency_code` | VARCHAR | The account's own denomination; NULL is the unknown segment and is never priced. |
 | `home_currency_code` | VARCHAR | `app.profile_settings.home_currency`. |
 | `account_type` | VARCHAR | `depository` / `credit` / `loan` / `investment` / `other`. |
-| `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation. |
-| `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated. |
+| `is_observed` | BOOLEAN | `FALSE` means the balance is carried forward from an earlier observation, or, with `account_balance` NULL, that the account holds value but has no balance observation at all. |
+| `observation_source` | VARCHAR | `ofx` / `tabular` / `assertion` / `plaid`; NULL when interpolated or when the account has no balance observation. |
 | `rate_source` | VARCHAR | `override` / `provider` / `identity` behind the rate that converted the account's `currency_code` to `home_currency_code`; NULL when unpriced. A `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
 | `balance_date` | DATE | Grain. |
 | `rate_published_date` | DATE | The day the `currency_code`→`home_currency_code` rate was published; a `display_currency` conversion's rates are reported in the response's `applied_rates`, not here. |
-| `days_since_observed` | INTEGER | 0 on an observed day. |
-| `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days. |
-| `account_balance` | DECIMAL(18,2) | In `currency_code`. |
-| `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced. |
+| `days_since_observed` | INTEGER | 0 on an observed day; NULL when the account has no balance observation. |
+| `reconciliation_delta` | DECIMAL(18,2) | Observed minus transaction-derived; NULL on interpolated days and when the account has no balance observation. |
+| `account_balance` | DECIMAL(18,2) | In `currency_code`; NULL when the account holds value but has no balance observation. |
+| `account_balance_home` | DECIMAL(18,2) | In `home_currency_code`; NULL when the pair is unpriced or the account has no balance observation. |
 
 An eligible account with no balance observation at all still gets a row
 here — synthesized with `account_balance` and every other balance-derived
